@@ -52,6 +52,7 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 * #### No external dependencies
 	* This refers to dependencies external to CrossCraft / Project Aether
 	* The only allowed dependencies are modules controlled by CrossCraft / Project Aether
+        * Tooling is not considered to be a dependency (i.e. ZeeBuffers, zig-vulkan)
 	* The only dependencies must be the Zig compiler and sections of the Standard Library
 	* Standard Library:
 		* Allowed imports: 
