@@ -65,6 +65,7 @@ pub fn RingBuffer(comptime T: type) type {
         pub fn deinit(self: *Self) void {
             self.backing_allocator.dealloc(self.data);
             self.capacity = 0;
+            self.* = undefined;
         }
     };
 }
