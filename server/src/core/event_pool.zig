@@ -35,15 +35,15 @@ pub const EventPool = struct {
     pub fn init(allocator: std.mem.Allocator, capacity: u32) EventPool {
         var res = EventPool{
             .backing_allocator = allocator,
-            .backing_list = allocator.alloc(Event, capacity),
+            .backing_list = allocator.alloc(Event, capacity) catch unreachable,
             .capacity = capacity,
-            .free_list = std.ArrayList(u32).initCapacity(allocator, capacity),
+            .free_list = std.ArrayList(u32).initCapacity(allocator, capacity) catch unreachable,
         };
 
         defer assert(res.free_list.items.len == capacity);
 
         for (0..capacity) |i| {
-            res.free_list.appendAssumeCapacity(i);
+            res.free_list.appendAssumeCapacity(@intCast(i));
         }
 
         return res;

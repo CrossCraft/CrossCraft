@@ -1,6 +1,14 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
+const Event = @import("event.zig").Event;
+const EventPool = @import("event_pool.zig").EventPool;
+const RefCountEvent = EventPool.RefCountEvent;
+const RingBuffer = @import("ringbuffer.zig").RingBuffer;
+
+const MAX_INPUT_EVENTS = 4096;
+const MAX_OUTPUT_EVENTS = 8192;
+
 pub const World = struct {
     /// The size of the world in blocks
     /// The size must be a multiple of 16
@@ -24,12 +32,28 @@ pub const World = struct {
         }
     };
 
-    world_allocator: std.mem.Allocator = undefined,
-    world_init: bool = undefined,
-    world_raw_blocks: []u8 = undefined,
-    world_blocks: []u8 = undefined,
-    world_size: WorldSize = undefined,
-    world_seed: u64 = std.math.maxInt(u64),
+    // World fields
+    world_allocator: std.mem.Allocator,
+    world_init: bool,
+    world_raw_blocks: []u8,
+    world_blocks: []u8,
+    world_size: WorldSize,
+    world_seed: u64,
+
+    // Event fields
+
+    // Input: Events from sources
+    world_in_event_queue: RingBuffer(Event),
+
+    // Storage: Pool of events to be output
+    world_event_pool: EventPool,
+
+    // Output: Events to be sent to sources
+    world_out_event_queue: RingBuffer(RefCountEvent),
+
+    // Output: Pending events to be sent to sources
+    // Occurs when the output event queue is full
+    world_out_pending_event: ?RefCountEvent,
 
     /// Get the block at the given position
     /// The position must be within the bounds of the world
@@ -75,6 +99,13 @@ pub const World = struct {
         defer assert(self.world_init);
         defer assert(std.meta.eql(size, self.world_size));
         defer assert(seed == self.world_seed);
+        defer assert(self.world_out_pending_event == null);
+
+        // Setup the event system
+        self.world_in_event_queue = RingBuffer(Event).init(allocator, MAX_INPUT_EVENTS);
+        self.world_event_pool = EventPool.init(allocator, MAX_OUTPUT_EVENTS);
+        self.world_out_event_queue = RingBuffer(RefCountEvent).init(allocator, MAX_OUTPUT_EVENTS);
+        self.world_out_pending_event = null;
 
         // Initialize the world
         self.world_size = size;
@@ -98,8 +129,10 @@ pub const World = struct {
     /// Deallocates the memory used by the world
     pub fn deinit(self: *World) void {
         assert(self.world_init);
+        self.world_out_event_queue.deinit();
+        self.world_event_pool.deinit();
+        self.world_in_event_queue.deinit();
         self.world_allocator.dealloc(self.world_blocks);
-        self.world_init = false;
         self.* = undefined;
     }
 };
