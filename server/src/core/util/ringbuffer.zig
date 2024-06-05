@@ -43,7 +43,6 @@ pub fn RingBuffer(comptime T: type) type {
 
             self.data[self.write_index] = item;
             self.write_index = (self.write_index + 1) % self.capacity;
-            return true;
         }
 
         /// Pop an item from the ring buffer.
