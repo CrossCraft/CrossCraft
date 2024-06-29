@@ -3,7 +3,7 @@
     .version = "0.1.0",
 
     // Pegged to v0.12.0 because this is a stable release.
-    .minimum_zig_version = "0.12.0",
+    .minimum_zig_version = "0.13.0",
 
     // CrossCraft Server is a dependency.
     .dependencies = .{

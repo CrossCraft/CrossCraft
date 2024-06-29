@@ -11,10 +11,14 @@ pub fn main() !void {
 
     const allocator = sta.allocator();
 
+    std.debug.print("Starting Server...\n", .{});
+
     var server = Server.init(allocator);
     defer server.deinit();
 
     sta.transition_to_static();
+
+    std.debug.print("Running...\n", .{});
 
     // The only allowed true loop in the program
     while (true) {
@@ -22,4 +26,5 @@ pub fn main() !void {
     }
 
     sta.transition_to_deinit();
+    std.debug.print("Deinitializing...\n", .{});
 }
