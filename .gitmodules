@@ -1,0 +1,3 @@
+[submodule "ZeeBuffer"]
+	path = ZeeBuffer
+	url = git@github.com:IridescentRose/ZeeBuffer.git

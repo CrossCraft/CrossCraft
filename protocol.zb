@@ -1,0 +1,19 @@
+@endian big
+
+@state {
+    Connected: 0,
+}
+
+PlayerIDToServer: Event(0, Connected, Server) {
+    protocol_version: u8,
+    username: Array(u8, 64),
+    key: Array(u8, 64),
+    extension: u8,
+}
+
+PlayerIDToClient: Event(0, Connected, Client) {
+    protocol_version: u8,
+    server_name: Array(u8, 64),
+    server_motd: Array(u8, 64),
+    user_type: u8,
+}
