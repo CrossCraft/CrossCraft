@@ -4,7 +4,7 @@ const IO = @import("io.zig");
 
 const Self = @This();
 
-id: u8,
+id: i8,
 x: u16,
 y: u16,
 z: u16,

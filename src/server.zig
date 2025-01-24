@@ -46,7 +46,7 @@ pub fn tick(self: *Self) void {
 
             const stay_connected = self.ringbuffer.ring[i].?.tick();
             if (!stay_connected) {
-                self.ringbuffer.remove(client.id);
+                self.ringbuffer.remove(@intCast(client.id));
             }
         }
     }

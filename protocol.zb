@@ -4,16 +4,109 @@
     Connected: 0,
 }
 
-PlayerIDToServer: Event(0, Connected, Server) {
+# Server received packets
+
+PlayerIDToServer: Event(0x00, Connected, Server) {
     protocol_version: u8,
     username: Array(u8, 64),
     key: Array(u8, 64),
     extension: u8,
 }
 
-PlayerIDToClient: Event(0, Connected, Client) {
+ClickMode: Enum(u8) {
+    Destroy: 0,
+    Create: 1,
+}
+
+SetBlockToServer: Event(0x05, Connected, Server) {
+    x: u16,
+    y: u16,
+    z: u16,
+    mode: u8,
+    block: u8,
+}
+
+PositionAndOrientationToServer: Event(0x08, Connected, Server) {
+    id: i8,
+    x: u16,
+    y: u16,
+    z: u16,
+    yaw: u8,
+    pitch: u8,
+}
+
+Message: Event(0x0D, Connected, Both) {
+    id: i8,
+    message: Array(u8, 64),
+}
+
+PlayerIDToClient: Event(0x00, Connected, Client) {
     protocol_version: u8,
     server_name: Array(u8, 64),
     server_motd: Array(u8, 64),
     user_type: u8,
+}
+
+Ping: Event(0x01, Connected, Client) {
+}
+
+LevelInitialize: Event(0x02, Connected, Client) {
+}
+
+LevelDataChunk: Event(0x03, Connected, Client) {
+    length: u16,
+    data: Array(u8, 1024),
+    percent: u8,
+}
+
+LevelFinalize: Event(0x04, Connected, Client) {
+    x: u16,
+    y: u16,
+    z: u16,
+}
+
+SetBlockToClient: Event(0x06, Connected, Client) {
+    x: u16,
+    y: u16,
+    z: u16,
+    block: u8,
+}
+
+SpawnPlayer: Event(0x07, Connected, Client) {
+    id: i8,
+    name: Array(u8, 64),
+    x: u16,
+    y: u16,
+    z: u16,
+    yaw: u8,
+    pitch: u8,
+}
+
+SetPositionOrientation: Event(0x08, Connected, Client) {
+    id: i8,
+    x: u16,
+    y: u16,
+    z: u16,
+    yaw: u8,
+    pitch: u8,
+}
+
+# We don't care about the other relative movements
+
+DespawnPlayer: Event(0x0C, Connected, Client) {
+    id: i8,
+}
+
+DisconnectPlayer: Event(0x0E, Connected, Client) {
+    id: i8,
+    reason: Array(u8, 64),
+}
+
+PlayerType: Enum(u8) {
+    Normal: 0x00,
+    Op: 0x64,
+}
+
+UpdatePlayerType: Event(0x0F, Connected, Client) {
+    mode: u8,
 }

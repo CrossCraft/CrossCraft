@@ -20,12 +20,19 @@ pub fn deinit(self: *Self) void {
 }
 
 fn set_nonblocking(socket: posix.socket_t) !void {
-    const flags = try posix.fcntl(socket, posix.F.GETFL, 0);
-    const nb = posix.O{
-        .NONBLOCK = true,
-    };
+    if (builtin.os.tag != .windows) {
+        const flags = try posix.fcntl(socket, posix.F.GETFL, 0);
+        const nb = posix.O{
+            .NONBLOCK = true,
+        };
 
-    _ = try posix.fcntl(socket, posix.F.SETFL, flags | @as(u32, @bitCast(nb)));
+        _ = try posix.fcntl(socket, posix.F.SETFL, flags | @as(u32, @bitCast(nb)));
+    } else {
+        var mode: u32 = 1;
+        if (std.os.windows.ws2_32.ioctlsocket(socket, std.os.windows.ws2_32.FIONBIO, &mode) == std.os.windows.ws2_32.SOCKET_ERROR) {
+            return error.WindowsFailedNonblocking;
+        }
+    }
 }
 
 /// Creates a server socket, binds and listens.
