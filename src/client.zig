@@ -32,11 +32,11 @@ fn write_world(self: *Self, buf: []const u8) anyerror!usize {
 
             const writer = self.connection.writer().any();
             var level_chunk = zb.LevelDataChunk{
+                .id = 0x3,
                 .length = 1024,
                 .data = &self.buffer,
                 .percent = 0,
             };
-            try writer.writeByte(0x3);
             try level_chunk.write(writer);
 
             @memset(&self.buffer, 0);
@@ -64,6 +64,7 @@ fn send_disconnect(self: *Self, reason: []const u8) !void {
     var reason_buf = [_]u8{0x00} ** 64;
 
     var packet: zb.DisconnectPlayer = .{
+        .id = 0x0E,
         .reason = &reason_buf,
     };
 
@@ -76,9 +77,6 @@ fn send_disconnect(self: *Self, reason: []const u8) !void {
     }
 
     const writer = self.connection.writer();
-
-    // ID
-    try writer.writeByte(0x0E);
 
     // Data
     try packet.write(writer.any());
@@ -110,12 +108,12 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
 
     // TODO: Customize Server data
     var server_data = zb.PlayerIDToClient{
+        .id = 0x00,
         .protocol_version = 0x07,
         .server_motd = &server_name_buf,
         .server_name = &motd_buf,
         .user_type = 0x00, // TODO: Verify this
     };
-    try writer.writeByte(0x00);
     try server_data.write(writer);
 
     // TODO: Passwd verification
@@ -137,16 +135,16 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     try std.compress.gzip.compress(reader, wwriter.any(), .{});
 
     var level_chunk = zb.LevelDataChunk{
+        .id = 0x03,
         .length = @intCast(1024 - self.world_buffer_idx),
         .data = self.buffer[0..],
         .percent = 0,
     };
-    try writer.writeByte(0x03);
     try level_chunk.write(writer);
 
     // Level Finalize
-    try writer.writeByte(0x04);
     var level_finalize = zb.LevelFinalize{
+        .id = 0x04,
         .x = c.WorldLength,
         .y = c.WorldHeight,
         .z = c.WorldDepth,
@@ -164,7 +162,7 @@ fn tick_unsafe(self: *Self) !void {
     var received = try self.connection.read(&self.buffer);
 
     while (received) {
-        try self.protocol.handle_packet(self.buffer[1..], self.buffer[0]);
+        try self.protocol.handle_packet(self.buffer[0..], self.buffer[0]);
         received = try self.connection.read(&self.buffer);
     }
 }
