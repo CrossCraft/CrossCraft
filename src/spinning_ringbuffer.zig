@@ -25,6 +25,7 @@ pub fn SpinningRingbuffer(comptime T: type, comptime U: usize) type {
         }
 
         pub fn remove(self: *Self, id: usize) void {
+            self.ring[id].? = undefined;
             self.ring[id] = null;
         }
     };

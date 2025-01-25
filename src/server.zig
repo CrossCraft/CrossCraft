@@ -22,6 +22,14 @@ pub fn deinit() void {
     world.deinit();
 }
 
+pub fn broadcast_chat_message(id: i8, message: []u8) void {
+    for (0..c.MaxClients) |i| {
+        if (ringbuffer.ring[i] != null and ringbuffer.ring[i].?.initialized) {
+            ringbuffer.ring[i].?.send_message(id, message) catch continue;
+        }
+    }
+}
+
 pub fn new_client(conn: IO.Connection) void {
     var client: Client = undefined;
     client.connection = conn;
@@ -34,16 +42,12 @@ pub fn new_client(conn: IO.Connection) void {
 
         ringbuffer.ring[i].?.init();
     } else {
-        // TODO: Send disconnect
+        client.send_disconnect("Server Full!") catch return;
     }
 }
 pub fn tick() void {
-    var i: usize = 0;
-    var conns: usize = 0;
-    while (i < c.MaxClients) : (i += 1) {
+    for (0..c.MaxClients) |i| {
         if (ringbuffer.ring[i]) |client| {
-            conns += 1;
-
             const stay_connected = ringbuffer.ring[i].?.tick();
             if (!stay_connected) {
                 ringbuffer.remove(@intCast(client.id));

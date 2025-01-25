@@ -55,10 +55,21 @@ pub fn init(self: *Self) void {
     self.protocol = zb.Protocol.init(.Client, .Connected, self);
     self.protocol.handle = .{
         .handle_PlayerIDToServer = handle_player,
+        .handle_Message = handle_message,
     };
 }
 
-fn send_disconnect(self: *Self, reason: []const u8) !void {
+pub fn send_message(self: *Self, id: i8, message: []u8) !void {
+    var msg = zb.Message{
+        .id = 0x0D,
+        .pid = if (id == self.id) -1 else id,
+        .message = message,
+    };
+    const writer = self.connection.writer().any();
+    try msg.write(writer);
+}
+
+pub fn send_disconnect(self: *Self, reason: []const u8) !void {
     assert(reason.len <= 64);
 
     var reason_buf = [_]u8{0x00} ** 64;
@@ -82,6 +93,35 @@ fn send_disconnect(self: *Self, reason: []const u8) !void {
     try packet.write(writer.any());
 }
 
+fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+
+    var dup_buf = [_]u8{' '} ** 64;
+    dup_buf[0] = '&';
+    dup_buf[1] = 'f';
+
+    var curr_idx: usize = 2;
+    for (0..self.name.len) |i| {
+        if (self.name[i] != ' ') {
+            dup_buf[i + 2] = self.name[i];
+            curr_idx += 1;
+        } else {
+            break;
+        }
+    }
+
+    dup_buf[curr_idx] = ':';
+    curr_idx += 1;
+    dup_buf[curr_idx] = ' ';
+    curr_idx += 1;
+
+    for (curr_idx..dup_buf.len, 0..(dup_buf.len - curr_idx)) |i, j| {
+        dup_buf[i] = event.message[j];
+    }
+
+    server.broadcast_chat_message(self.id, &dup_buf);
+}
+
 fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     var self: *Self = @ptrCast(@alignCast(ctx));
 
@@ -89,9 +129,15 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
         try self.send_disconnect("Protocol version incompatible; Update to Protocol Version 7.");
     }
 
+    var buf_cpy = [_]u8{' '} ** 64;
+    @memcpy(&buf_cpy, event.username);
+
+    @memset(&self.name, ' ');
+    var name_len: usize = 0;
     for (0..16) |i| {
         if (event.username[i] == ' ') {
             // Spaces are not allowed in names, indicates the end.
+            name_len = i;
             break;
         }
 
@@ -150,6 +196,45 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
         .z = c.WorldDepth,
     };
     try level_finalize.write(writer);
+
+    var initial_spawn = zb.SpawnPlayer{
+        .id = 0x07,
+        .pid = -1,
+        .name = &buf_cpy,
+        .x = @intCast(c.WorldLength << 4),
+        .y = @intCast(c.WorldHeight << 4),
+        .z = @intCast(c.WorldDepth << 4),
+        .yaw = 0,
+        .pitch = 0,
+    };
+    self.x = initial_spawn.x;
+    self.y = initial_spawn.y;
+    self.z = initial_spawn.z;
+    self.yaw = 0;
+    self.pitch = 0;
+    try initial_spawn.write(writer);
+
+    var teleport_player = zb.SetPositionOrientation{
+        .id = 0x08,
+        .pid = -1,
+        .x = self.x,
+        .y = self.y,
+        .z = self.z,
+        .yaw = 0,
+        .pitch = 0,
+    };
+    try teleport_player.write(writer);
+
+    self.initialized = true;
+
+    var msg_buf = [_]u8{' '} ** 64;
+    std.mem.copyForwards(u8, &msg_buf, "&eWelcome to the world!");
+
+    try self.send_message(self.id, &msg_buf);
+
+    msg_buf = [_]u8{' '} ** 64;
+    _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..name_len]}) catch unreachable;
+    try self.send_message(self.id, &msg_buf);
 }
 
 pub fn tick(self: *Self) bool {
