@@ -5,13 +5,14 @@ const c = @import("constants.zig");
 const IO = @import("io.zig");
 
 const StaticAllocator = @import("static_allocator.zig");
-const Server = @import("server.zig");
+const server = @import("server.zig");
 
 pub fn main() !void {
     // Boilerplate
     log.info("Starting CrossCraft Server {}.{}.{}", .{ c.MajorVersion, c.MinorVersion, c.PatchVersion });
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .enable_memory_limit = true }){};
+    gpa.requested_memory_limit = c.WorldDepth * c.WorldHeight * c.WorldLength + 4;
     defer _ = gpa.deinit();
 
     var sta = StaticAllocator.init(gpa.allocator());
@@ -21,8 +22,11 @@ pub fn main() !void {
     defer io.deinit();
 
     // Create initial server state
-    var server = Server.init(sta.allocator());
+    try server.init(sta.allocator());
     sta.transition_to_static();
+
+    std.debug.print("Static Limit Hit! Total Allocated: {} bytes\n", .{gpa.total_requested_bytes});
+
     defer sta.transition_to_deinit();
     defer server.deinit();
 

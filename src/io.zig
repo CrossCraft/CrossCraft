@@ -76,8 +76,16 @@ pub const Connection = struct {
     address: posix.sockaddr.in = undefined,
     socket: posix.socket_t,
 
-    pub fn write(self: *Connection, buf: []u8) !void {
-        try posix.write(self.socket, buf, 0);
+    pub const Writer = std.io.Writer(*Connection, std.posix.SendError, write);
+
+    pub fn writer(self: *Connection) Writer {
+        return .{
+            .context = self,
+        };
+    }
+
+    pub fn write(self: *Connection, buf: []const u8) !usize {
+        return try posix.send(self.socket, buf, 0);
     }
 
     pub fn read(self: *Connection, buf: []u8) !bool {

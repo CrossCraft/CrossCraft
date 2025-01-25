@@ -1,6 +1,9 @@
 const std = @import("std");
+const assert = std.debug.assert;
+const server = @import("server.zig");
 const zb = @import("protocol");
 const IO = @import("io.zig");
+const c = @import("constants.zig");
 
 const Self = @This();
 
@@ -15,7 +18,38 @@ name: [16:0]u8,
 initialized: bool,
 protocol: zb.Protocol,
 
-buffer: [131]u8,
+buffer: [1024]u8,
+world_buffer_idx: usize,
+
+const WorldWriter = std.io.Writer(*Self, anyerror, write_world);
+
+fn write_world(self: *Self, buf: []const u8) anyerror!usize {
+    var total_written: usize = 0;
+
+    while (total_written < buf.len) {
+        if (self.world_buffer_idx == 1024) {
+            self.world_buffer_idx = 0;
+
+            const writer = self.connection.writer().any();
+            var level_chunk = zb.LevelDataChunk{
+                .length = 1024,
+                .data = &self.buffer,
+                .percent = 0,
+            };
+            try writer.writeByte(0x3);
+            try level_chunk.write(writer);
+
+            @memset(&self.buffer, 0);
+        }
+
+        self.buffer[self.world_buffer_idx] = buf[total_written];
+
+        total_written += 1;
+        self.world_buffer_idx += 1;
+    }
+
+    return buf.len;
+}
 
 pub fn init(self: *Self) void {
     self.protocol = zb.Protocol.init(.Client, .Connected, self);
@@ -24,23 +58,113 @@ pub fn init(self: *Self) void {
     };
 }
 
-fn handle_player(self: *anyopaque, event: zb.PlayerIDToServer) !void {
-    _ = self;
+fn send_disconnect(self: *Self, reason: []const u8) !void {
+    assert(reason.len <= 64);
 
-    std.debug.print("PlayerIDToServer\n", .{});
+    var reason_buf = [_]u8{0x00} ** 64;
 
-    std.debug.print("Username: {s}\n", .{event.username});
-    std.debug.print("Key: {s}\n", .{event.key});
-    std.debug.print("Protocol Version: {}\n", .{event.protocol_version});
+    var packet: zb.DisconnectPlayer = .{
+        .reason = &reason_buf,
+    };
+
+    for (0..packet.reason.len) |i| {
+        if (i < reason.len) {
+            packet.reason[i] = reason[i];
+        } else {
+            packet.reason[i] = ' ';
+        }
+    }
+
+    const writer = self.connection.writer();
+
+    // ID
+    try writer.writeByte(0x0E);
+
+    // Data
+    try packet.write(writer.any());
+}
+
+fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
+    var self: *Self = @ptrCast(@alignCast(ctx));
+
+    if (event.protocol_version != 0x07) {
+        try self.send_disconnect("Protocol version incompatible; Update to Protocol Version 7.");
+    }
+
+    for (0..16) |i| {
+        if (event.username[i] == ' ') {
+            // Spaces are not allowed in names, indicates the end.
+            break;
+        }
+
+        self.name[i] = event.username[i];
+    }
+
+    const writer = self.connection.writer().any();
+
+    var server_name_buf = [_]u8{' '} ** 64;
+    std.mem.copyForwards(u8, &server_name_buf, "A Classic Server!");
+
+    var motd_buf = [_]u8{' '} ** 64;
+    std.mem.copyForwards(u8, &motd_buf, "Another adventure awaits!");
+
+    // TODO: Customize Server data
+    var server_data = zb.PlayerIDToClient{
+        .protocol_version = 0x07,
+        .server_motd = &server_name_buf,
+        .server_name = &motd_buf,
+        .user_type = 0x00, // TODO: Verify this
+    };
+    try writer.writeByte(0x00);
+    try server_data.write(writer);
+
+    // TODO: Passwd verification
+    // TODO: Send initial packets
+
+    // Level Start
+    try writer.writeByte(0x02);
+
+    // Level Data
+    @memset(&self.buffer, 0x00);
+    self.world_buffer_idx = 0;
+
+    var fbs = std.io.fixedBufferStream(server.world.raw_blocks);
+    const reader = fbs.reader().any();
+
+    var wwriter = WorldWriter{
+        .context = self,
+    };
+    try std.compress.gzip.compress(reader, wwriter.any(), .{});
+
+    var level_chunk = zb.LevelDataChunk{
+        .length = @intCast(1024 - self.world_buffer_idx),
+        .data = self.buffer[0..],
+        .percent = 0,
+    };
+    try writer.writeByte(0x03);
+    try level_chunk.write(writer);
+
+    // Level Finalize
+    try writer.writeByte(0x04);
+    var level_finalize = zb.LevelFinalize{
+        .x = c.WorldLength,
+        .y = c.WorldHeight,
+        .z = c.WorldDepth,
+    };
+    try level_finalize.write(writer);
 }
 
 pub fn tick(self: *Self) bool {
-    var received = self.connection.read(&self.buffer) catch return false;
-
-    while (received) {
-        self.protocol.handle_packet(self.buffer[1..], self.buffer[0]) catch return false;
-        received = self.connection.read(&self.buffer) catch return false;
-    }
+    self.tick_unsafe() catch return false;
 
     return true;
+}
+
+fn tick_unsafe(self: *Self) !void {
+    var received = try self.connection.read(&self.buffer);
+
+    while (received) {
+        try self.protocol.handle_packet(self.buffer[1..], self.buffer[0]);
+        received = try self.connection.read(&self.buffer);
+    }
 }

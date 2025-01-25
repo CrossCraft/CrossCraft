@@ -98,7 +98,6 @@ DespawnPlayer: Event(0x0C, Connected, Client) {
 }
 
 DisconnectPlayer: Event(0x0E, Connected, Client) {
-    id: i8,
     reason: Array(u8, 64),
 }
 

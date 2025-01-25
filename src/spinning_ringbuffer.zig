@@ -16,15 +16,12 @@ pub fn SpinningRingbuffer(comptime T: type, comptime U: usize) type {
         }
 
         pub fn add(self: *Self, data: T) ?usize {
-            var i: usize = 0;
-            while (i < U) : (i += 1) {
+            for (0..U) |i| {
                 if (self.ring[i] == null) {
                     self.ring[i] = data;
                     return i;
                 }
-            }
-
-            return null;
+            } else return null;
         }
 
         pub fn remove(self: *Self, id: usize) void {
