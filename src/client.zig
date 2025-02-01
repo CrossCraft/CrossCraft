@@ -16,6 +16,7 @@ pitch: u8,
 connection: IO.Connection,
 name: [16:0]u8,
 initialized: bool,
+disconnected: bool,
 protocol: zb.Protocol,
 
 buffer: [1024]u8,
@@ -69,8 +70,28 @@ pub fn send_message(self: *Self, id: i8, message: []u8) !void {
     try msg.write(writer);
 }
 
+pub fn send_spawn(ctx: *Self, packet: *zb.SpawnPlayer) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+
+    const writer = self.connection.writer().any();
+    try packet.write(writer);
+}
+
+pub fn send_despawn(ctx: *Self, id: i8) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    const writer = self.connection.writer().any();
+
+    var despawn_packet = zb.DespawnPlayer{
+        .id = 0x0C,
+        .pid = id,
+    };
+    try despawn_packet.write(writer);
+}
+
 pub fn send_disconnect(self: *Self, reason: []const u8) !void {
     assert(reason.len <= 64);
+
+    self.disconnected = true;
 
     var reason_buf = [_]u8{0x00} ** 64;
 
@@ -163,7 +184,6 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     try server_data.write(writer);
 
     // TODO: Passwd verification
-    // TODO: Send initial packets
 
     // Level Start
     try writer.writeByte(0x02);
@@ -197,6 +217,7 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     };
     try level_finalize.write(writer);
 
+    // TODO: Add for all other players
     var initial_spawn = zb.SpawnPlayer{
         .id = 0x07,
         .pid = -1,
@@ -213,6 +234,11 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     self.yaw = 0;
     self.pitch = 0;
     try initial_spawn.write(writer);
+
+    initial_spawn.pid = self.id;
+    server.broadcast_spawn_player(&initial_spawn);
+
+    // TODO: Learn where all other players are.
 
     var teleport_player = zb.SetPositionOrientation{
         .id = 0x08,
