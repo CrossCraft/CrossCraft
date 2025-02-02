@@ -56,6 +56,7 @@ pub fn init(self: *Self) void {
     self.protocol = zb.Protocol.init(.Client, .Connected, self);
     self.protocol.handle = .{
         .handle_PlayerIDToServer = handle_player,
+        .handle_PositionAndOrientationToServer = handle_position,
         .handle_Message = handle_message,
     };
 }
@@ -66,8 +67,24 @@ pub fn send_message(self: *Self, id: i8, message: []u8) !void {
         .pid = if (id == self.id) -1 else id,
         .message = message,
     };
+
     const writer = self.connection.writer().any();
     try msg.write(writer);
+}
+
+pub fn send_player_position(self: *Self, id: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) !void {
+    var position = zb.SetPositionOrientation{
+        .id = 0x08,
+        .pid = id,
+        .x = x,
+        .y = y,
+        .z = z,
+        .yaw = yaw,
+        .pitch = pitch,
+    };
+
+    const writer = self.connection.writer().any();
+    try position.write(writer);
 }
 
 pub fn send_spawn(ctx: *Self, packet: *zb.SpawnPlayer) !void {
@@ -77,14 +94,13 @@ pub fn send_spawn(ctx: *Self, packet: *zb.SpawnPlayer) !void {
     try packet.write(writer);
 }
 
-pub fn send_despawn(ctx: *Self, id: i8) !void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    const writer = self.connection.writer().any();
-
+pub fn send_despawn(self: *Self, id: i8) !void {
     var despawn_packet = zb.DespawnPlayer{
         .id = 0x0C,
         .pid = id,
     };
+
+    const writer = self.connection.writer().any();
     try despawn_packet.write(writer);
 }
 
@@ -112,6 +128,16 @@ pub fn send_disconnect(self: *Self, reason: []const u8) !void {
 
     // Data
     try packet.write(writer.any());
+}
+
+fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+
+    self.x = e.x;
+    self.y = e.y;
+    self.z = e.z;
+    self.yaw = e.yaw;
+    self.pitch = e.pitch;
 }
 
 fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
@@ -217,7 +243,6 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     };
     try level_finalize.write(writer);
 
-    // TODO: Add for all other players
     var initial_spawn = zb.SpawnPlayer{
         .id = 0x07,
         .pid = -1,
@@ -238,7 +263,27 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     initial_spawn.pid = self.id;
     server.broadcast_spawn_player(&initial_spawn);
 
-    // TODO: Learn where all other players are.
+    for (0..server.player_ring.ring.len) |i| {
+        if (server.player_ring.ring[i]) |p| {
+            if (p.id == self.id)
+                continue;
+
+            var name_cpy = [_]u8{' '} ** 64;
+            std.mem.copyForwards(u8, &name_cpy, &p.name);
+
+            var player_spawn = zb.SpawnPlayer{
+                .id = 0x07,
+                .pid = p.id,
+                .name = &name_cpy,
+                .x = p.x,
+                .y = p.y,
+                .z = p.z,
+                .yaw = p.yaw,
+                .pitch = p.pitch,
+            };
+            try player_spawn.write(writer);
+        }
+    }
 
     var teleport_player = zb.SetPositionOrientation{
         .id = 0x08,
@@ -260,7 +305,7 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
 
     msg_buf = [_]u8{' '} ** 64;
     _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..name_len]}) catch unreachable;
-    try self.send_message(self.id, &msg_buf);
+    server.broadcast_chat_message(self.id, &msg_buf);
 }
 
 pub fn tick(self: *Self) bool {
