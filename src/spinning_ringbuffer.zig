@@ -1,4 +1,5 @@
 /// Creates a 'spinning' ringbuffer. This defers from normal FIFO behavior by finding the next possible available spot in an 'incremental' way.
+/// There's probably a better name for this
 pub fn SpinningRingbuffer(comptime T: type, comptime U: usize) type {
     return struct {
         ring: [U]?T,

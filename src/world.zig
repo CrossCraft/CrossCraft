@@ -1,6 +1,7 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const c = @import("constants.zig");
+const fp = @import("fixedpoint.zig");
+const perlin = @import("perlin.zig");
 
 const assert = std.debug.assert;
 
@@ -23,7 +24,20 @@ pub fn init(allocator: std.mem.Allocator) !Self {
 
     const size: u32 = c.WorldDepth * c.WorldHeight * c.WorldLength;
     std.mem.writeInt(u32, world.raw_blocks[0..4], size, .big);
+    const FInt = fp.Fixed(32, 24, true);
+
     world.blocks = world.raw_blocks[4..];
+
+    for (0..c.WorldLength) |x| {
+        for (0..c.WorldDepth) |z| {
+            var noise = perlin.noise3(.{ .value = @intCast(x << 19) }, .{ .value = @intCast(z << 19) }, FInt.from(0));
+            noise = noise.add(.{ .value = 0xFFFFFF });
+
+            for (0..@as(usize, @intCast(noise.value >> 19))) |h| {
+                world.set_block(@intCast(x), @intCast(h), @intCast(z), 1);
+            }
+        }
+    }
 
     return world;
 }
