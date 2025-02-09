@@ -1,5 +1,5 @@
+/// Wraps a Fixed point integer in order to provide common arithmetic functions
 pub fn Fixed(comptime bits: u16, comptime frac_bits: u16, comptime signed: bool) type {
-
     // [0, 64]
     // Not sure if you'd need more bits
     if (bits < 1 or bits > 64) {

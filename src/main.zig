@@ -1,11 +1,11 @@
 const std = @import("std");
 const log = std.log;
 
-const c = @import("constants.zig");
-const IO = @import("io.zig");
+const c = @import("server/constants.zig");
+const server = @import("server/server.zig");
 
-const StaticAllocator = @import("static_allocator.zig");
-const server = @import("server.zig");
+const IO = @import("common/io.zig");
+const StaticAllocator = @import("common/static_allocator.zig");
 
 pub fn main() !void {
     // Boilerplate

@@ -1,7 +1,8 @@
 const std = @import("std");
 const c = @import("constants.zig");
-const fp = @import("fixedpoint.zig");
-const perlin = @import("perlin.zig");
+
+const fp = @import("../common/fixedpoint.zig");
+const perlin = @import("../common/perlin.zig");
 
 const assert = std.debug.assert;
 

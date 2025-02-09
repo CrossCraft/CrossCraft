@@ -1,20 +1,22 @@
 const std = @import("std");
 const assert = std.debug.assert;
-
 const zb = @import("protocol");
+
 const c = @import("constants.zig");
-const srb = @import("spinning_ringbuffer.zig");
-const IO = @import("io.zig");
-const Client = @import("client.zig");
 const world = @import("world.zig");
 
-pub var players: srb.FIFOBuffer(Client, c.MaxClients) = undefined;
+const FIFOBuffer = @import("../common/fifo_buffer.zig").FIFOBuffer;
+const IO = @import("../common/io.zig");
+
+const Client = @import("client.zig");
+
+pub var players: FIFOBuffer(Client, c.MaxClients) = undefined;
 
 const Self = @This();
 
 pub fn init(allocator: std.mem.Allocator) !void {
     try world.init(allocator);
-    players = srb.FIFOBuffer(Client, c.MaxClients).init();
+    players = FIFOBuffer(Client, c.MaxClients).init();
 }
 
 pub fn deinit() void {

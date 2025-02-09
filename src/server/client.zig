@@ -1,10 +1,12 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const zb = @import("protocol");
+
+const c = @import("constants.zig");
 const server = @import("server.zig");
 const world = @import("world.zig");
-const zb = @import("protocol");
-const IO = @import("io.zig");
-const c = @import("constants.zig");
+
+const IO = @import("../common/io.zig");
 
 const Self = @This();
 
