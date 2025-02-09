@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const server = @import("server.zig");
+const world = @import("world.zig");
 const zb = @import("protocol");
 const IO = @import("io.zig");
 const c = @import("constants.zig");
@@ -218,7 +219,7 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     @memset(&self.buffer, 0x00);
     self.world_buffer_idx = 0;
 
-    var fbs = std.io.fixedBufferStream(server.world.raw_blocks);
+    var fbs = std.io.fixedBufferStream(world.raw_blocks);
     const reader = fbs.reader().any();
 
     var wwriter = WorldWriter{
@@ -263,8 +264,8 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     initial_spawn.pid = self.id;
     server.broadcast_spawn_player(&initial_spawn);
 
-    for (0..server.player_ring.ring.len) |i| {
-        if (server.player_ring.ring[i]) |p| {
+    for (0..server.players.items.len) |i| {
+        if (server.players.items[i]) |p| {
             if (p.id == self.id)
                 continue;
 

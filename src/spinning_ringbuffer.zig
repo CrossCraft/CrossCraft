@@ -1,8 +1,8 @@
 /// Creates a 'spinning' ringbuffer. This defers from normal FIFO behavior by finding the next possible available spot in an 'incremental' way.
 /// There's probably a better name for this
-pub fn SpinningRingbuffer(comptime T: type, comptime U: usize) type {
+pub fn FIFOBuffer(comptime T: type, comptime U: usize) type {
     return struct {
-        ring: [U]?T,
+        items: [U]?T,
 
         const Self = @This();
 
@@ -10,7 +10,7 @@ pub fn SpinningRingbuffer(comptime T: type, comptime U: usize) type {
             var srb: Self = undefined;
 
             for (0..U) |i| {
-                srb.ring[i] = null;
+                srb.items[i] = null;
             }
 
             return srb;
@@ -18,16 +18,16 @@ pub fn SpinningRingbuffer(comptime T: type, comptime U: usize) type {
 
         pub fn add(self: *Self, data: T) ?usize {
             for (0..U) |i| {
-                if (self.ring[i] == null) {
-                    self.ring[i] = data;
+                if (self.items[i] == null) {
+                    self.items[i] = data;
                     return i;
                 }
             } else return null;
         }
 
         pub fn remove(self: *Self, id: usize) void {
-            self.ring[id].? = undefined;
-            self.ring[id] = null;
+            self.items[id].? = undefined;
+            self.items[id] = null;
         }
     };
 }
