@@ -22,18 +22,37 @@ pub fn init(allocator: std.mem.Allocator) !void {
 
     const size: u32 = c.WorldDepth * c.WorldHeight * c.WorldLength;
     std.mem.writeInt(u32, raw_blocks[0..4], size, .big);
-    const FInt = fp.Fixed(32, 24, true);
 
-    for (0..c.WorldLength) |x| {
-        for (0..c.WorldDepth) |z| {
-            var noise = perlin.noise3(.{ .value = @intCast(x << 19) }, .{ .value = @intCast(z << 19) }, FInt.from(0));
-            noise = noise.add(.{ .value = 0xFFFFFF });
+    if (load("world.save")) {} else |_| {
+        const FInt = fp.Fixed(32, 24, true);
 
-            for (0..@as(usize, @intCast(noise.value >> 19))) |h| {
-                set_block(@intCast(x), @intCast(h), @intCast(z), 1);
+        for (0..c.WorldLength) |x| {
+            for (0..c.WorldDepth) |z| {
+                var noise = perlin.noise3(.{ .value = @intCast(x << 19) }, .{ .value = @intCast(z << 19) }, FInt.from(0));
+                noise = noise.add(.{ .value = 0xFFFFFF });
+
+                for (0..@as(usize, @intCast(noise.value >> 19))) |h| {
+                    set_block(@intCast(x), @intCast(h), @intCast(z), 1);
+                }
             }
         }
+
+        try save();
     }
+}
+
+pub fn load(path: []const u8) !void {
+    var file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+
+    assert(try file.readAll(raw_blocks) == raw_blocks.len);
+}
+
+pub fn save() !void {
+    var file = try std.fs.cwd().createFile("world.save", .{});
+    defer file.close();
+
+    try file.writeAll(raw_blocks);
 }
 
 pub fn get_block(x: u16, y: u16, z: u16) u8 {

@@ -7,13 +7,13 @@ pub fn FIFOBuffer(comptime T: type, comptime U: usize) type {
         const Self = @This();
 
         pub fn init() Self {
-            var srb: Self = undefined;
+            var fifo: Self = undefined;
 
             for (0..U) |i| {
-                srb.items[i] = null;
+                fifo.items[i] = null;
             }
 
-            return srb;
+            return fifo;
         }
 
         pub fn add(self: *Self, data: T) ?usize {
