@@ -20,7 +20,7 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 		* Recursive code tends to be more complex to understand and optimize.
 	* Zig disallows `goto`'s in favor of `defer` and `errdefer`.
 * #### All Errors Must Be Handled
-	* Handle all error cases
+	* Handle all error cases, bubbling up errors is valid, but should be limited to the minimum necessary.
 	* If an error cannot be handled, panic is a valid solution
 * #### Don't Trust Defaults
 	* Always explicitly set your defaults, in case a library changes its expected defaults, such that your code will always work
@@ -42,26 +42,25 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 * #### Restrict Data Scope
 	* Use global variables sparingly
 	* Use the least number of variables in the scope to reduce the likelihood of misusing a variable.
-* #### Global Modules must be threadsafe
-	* Threadsafety on write actions is required
-	* Threadsafety on reads depends on the nature of the reader, and must be marked clearly how it functions in a multi-threaded environment.
 * #### Check Return Values
 	* Zig enforces checking return values, or explicitly discarding with `_ = x()`
 * #### Avoid blocking operations
 	* Operations should not block a thread. If an operation is reliant on I/O, it should be non-blocking if possible
-* #### No external dependencies
-	* This refers to dependencies external to CrossCraft / Project Aether
-	* The only allowed dependencies are modules controlled by CrossCraft / Project Aether
-        * Tooling is not considered to be a dependency (i.e. ZeeBuffers, zig-vulkan)
-	* The only dependencies must be the Zig compiler and sections of the Standard Library
+* #### Avoid external dependencies
+	* This refers to dependencies external to CrossCraft
+	* The only allowed dependencies are modules controlled by CrossCraft or Iridescence
+        * Tooling is not considered to be a dependency (i.e. ZeeBuffers)
+        * Runtime dependencies are not allowed beyond the Zig runtime and platform APIs (OpenGL, etc.)
+  * Exceptions are made sparingly for platform APIs like GLFW, miniaudio, and zmath
+	* The only dependencies should be the Zig compiler and sections of the Standard Library
 	* Standard Library:
-		* Allowed imports: 
+		* Allowed imports:
 			* All `std.*` not explicitly disallowed
 			* All software submodules built with this design ruleset.
-			* Particularly encouraged: `std.mem`, `std.io`. 
+			* Particularly encouraged: `std.mem`, `std.io`.
 				These implementations are highly generic, and allow for overloading via static polymorphism or runtime VTables, so have no cross-platform concerns (dependency injection)
-		* Must have alternate implementation: 
-			* `std.fs.*` and `std.posix.*` 
+		* Must have alternate implementation:
+			* `std.fs.*` and `std.posix.*`
 				* These abstractions are good in the generic case but fail on custom OS systems.
 				* Therefore the interfaces internally using this must never reference `std.fs.*` or `std.posix.*` as expected parameters.
 		* Disallowed:
