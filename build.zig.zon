@@ -1,0 +1,27 @@
+.{
+    .name = .CrossCraft,
+    .version = "0.0.0",
+    .fingerprint = 0xe210aad5fbf843a4, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{
+        .glfw_zig = .{
+            .url = "git+https://github.com/tiawl/glfw.zig#67ce6cacd25f1cdd497e7175c6a7212a2ad4d77a",
+            .hash = "glfw_zig-1.0.0-NrvYoy3XGQBpaoqirC7595LMOV9RDo6isDtLK870oKNG",
+        },
+        .zglfw = .{
+            .url = "git+https://github.com/IridescenceTech/zglfw#66c48bd3b8499f48fe2c42b9f9cba9dd8fdcffc1",
+            .hash = "zglfw-0.1.0-BghZXTvSAACFK_Bsd87ZzkGmTsBT-JAAOiAy6qa5tUcy",
+        },
+        .zigglgen = .{
+            .url = "git+https://github.com/castholm/zigglgen.git#744d8b6617a7eb8df15f5922faa002e0b5234025",
+            .hash = "zigglgen-0.4.0-bmyqLXT4LQCQviz5TRTU14ntLCRUxLNTK0Us3v93jyxR",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}
