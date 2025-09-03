@@ -16,6 +16,10 @@
             .url = "git+https://github.com/castholm/zigglgen.git#744d8b6617a7eb8df15f5922faa002e0b5234025",
             .hash = "zigglgen-0.4.0-bmyqLXT4LQCQviz5TRTU14ntLCRUxLNTK0Us3v93jyxR",
         },
+        .zmath = .{
+            .url = "git+https://github.com/zig-gamedev/zmath.git#3a5955b2b72cd081563fbb084eff05bffd1e3fbb",
+            .hash = "zmath-0.11.0-dev-wjwivdMsAwD-xaLj76YHUq3t9JDH-X16xuMTmnDzqbu2",
+        },
     },
     .paths = .{
         "build.zig",

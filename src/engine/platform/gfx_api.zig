@@ -1,3 +1,4 @@
+const zm = @import("zmath");
 const Util = @import("../util/util.zig");
 
 const Self = @This();
@@ -10,6 +11,9 @@ pub const VTable = struct {
     deinit: *const fn (ctx: *anyopaque) void,
 
     set_clear_color: *const fn (ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void,
+    set_proj_matrix: *const fn (ctx: *anyopaque, mat: zm.Mat) void,
+    set_view_matrix: *const fn (ctx: *anyopaque, mat: zm.Mat) void,
+    set_model_matrix: *const fn (ctx: *anyopaque, mat: zm.Mat) void,
 
     start_frame: *const fn (ctx: *anyopaque) bool,
     end_frame: *const fn (ctx: *anyopaque) void,
