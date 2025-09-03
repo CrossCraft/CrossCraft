@@ -63,4 +63,14 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
+
+    const engine_tests = b.addTest(.{
+        .name = "engine_tests",
+        .root_module = mod,
+    });
+
+    const run_tests_step = b.step("test", "Run tests");
+    const run_tests_cmd = b.addRunArtifact(engine_tests);
+    run_tests_step.dependOn(&run_tests_cmd.step);
+    run_tests_cmd.step.dependOn(b.getInstallStep());
 }

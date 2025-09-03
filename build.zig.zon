@@ -9,8 +9,8 @@
             .hash = "glfw_zig-1.0.0-NrvYoy3XGQBpaoqirC7595LMOV9RDo6isDtLK870oKNG",
         },
         .zglfw = .{
-            .url = "git+https://github.com/IridescenceTech/zglfw#66c48bd3b8499f48fe2c42b9f9cba9dd8fdcffc1",
-            .hash = "zglfw-0.1.0-BghZXTvSAACFK_Bsd87ZzkGmTsBT-JAAOiAy6qa5tUcy",
+            .url = "git+https://github.com/IridescenceTech/zglfw#e05188a71db6053ec56bba83a27fb736a26562ce",
+            .hash = "zglfw-0.1.0-BghZXabUAACfsXVTPWvmy44XLsc-wux2G9w8Mbp523pJ",
         },
         .zigglgen = .{
             .url = "git+https://github.com/castholm/zigglgen.git#744d8b6617a7eb8df15f5922faa002e0b5234025",

@@ -27,7 +27,7 @@ pub const VTable = struct {
     create_mesh: *const fn (ctx: *anyopaque, layout: Mesh.VertexLayout) anyerror!Mesh.Handle,
     destroy_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle) void,
     update_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, offset: usize, data: []const u8) void,
-    draw_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle) void,
+    draw_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, count: usize) void,
 };
 
 pub inline fn init(self: *Self) !void {

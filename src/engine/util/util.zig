@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const GPA = std.heap.GeneralPurposeAllocator(.{});
+pub const CircularBuffer = @import("circular_buffer.zig").CircularBuffer;
 
 var initialized = false;
 var gpa: GPA = undefined;
