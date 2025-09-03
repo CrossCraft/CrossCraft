@@ -3,7 +3,7 @@ const Util = @import("../util/util.zig");
 const Self = @This();
 
 ptr: *anyopaque,
-tab: VTable,
+tab: *const VTable,
 
 pub const VTable = struct {
     init: *const fn (ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, sync: bool, api: u8) anyerror!void,

@@ -81,7 +81,7 @@ fn get_height(ctx: *anyopaque) u32 {
 }
 
 pub fn surface(self: *Self) Surface {
-    return Surface{ .ptr = self, .tab = .{
+    return Surface{ .ptr = self, .tab = &.{
         .init = init,
         .deinit = deinit,
         .update = update,

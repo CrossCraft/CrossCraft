@@ -4,7 +4,7 @@ const Mesh = @import("../rendering/mesh.zig");
 const Self = @This();
 
 ptr: *anyopaque,
-tab: VTable,
+tab: *const VTable,
 
 pub const VTable = struct {
     // --- API Setup / Lifecycle ---

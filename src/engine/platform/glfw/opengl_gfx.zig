@@ -181,7 +181,7 @@ fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, count: usize) void {
 pub fn gfx_api(self: *Self) GFXAPI {
     return GFXAPI{
         .ptr = self,
-        .tab = .{
+        .tab = &.{
             .init = init,
             .deinit = deinit,
             .set_clear_color = set_clear_color,
