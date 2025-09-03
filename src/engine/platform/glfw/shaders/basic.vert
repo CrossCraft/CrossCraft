@@ -17,7 +17,7 @@ layout(std140, binding = 0) uniform State {
 uniform mat4 u_model;
 
 void main() {
-    gl_Position = u_model * vec4(vert_pos, 1.0); // u_proj * u_view * u_model * vec4(vert_pos, 1.0);
+    gl_Position = u_proj * u_view * u_model * vec4(vert_pos, 1.0);
     frag_uv = vert_uv;
     frag_color = vert_color;
 }

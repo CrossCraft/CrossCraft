@@ -9,7 +9,7 @@ pub fn new() Self {
     return .{
         .pos = @splat(0),
         .rot = @splat(0),
-        .scale = @splat(0),
+        .scale = @splat(1),
     };
 }
 

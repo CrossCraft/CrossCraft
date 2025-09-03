@@ -69,6 +69,8 @@ fn get_width(ctx: *anyopaque) u32 {
 
 fn get_height(ctx: *anyopaque) u32 {
     const self = Util.ctx_to_self(Self, ctx);
+
+    glfw.getWindowSize(self.window, &self.width, &self.height);
     return @intCast(self.height);
 }
 
