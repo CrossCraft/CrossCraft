@@ -86,9 +86,9 @@ pub fn init() !void {
     assert(initialized);
 }
 
-pub fn update_model(model_mat: zm.Mat) void {
+pub fn update_model(model_mat: *const zm.Mat) void {
     assert(initialized);
-    gl.ProgramUniformMatrix4fv(shader_program, model_loc, 1, gl.FALSE, @ptrCast(&model_mat));
+    gl.ProgramUniformMatrix4fv(shader_program, model_loc, 1, gl.FALSE, @ptrCast(model_mat));
 }
 
 pub fn update_ubo() void {

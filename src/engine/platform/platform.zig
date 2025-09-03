@@ -3,10 +3,7 @@ const builtin = @import("builtin");
 pub const gfx = @import("gfx.zig");
 const App = @import("../app.zig");
 
-pub const GraphicsAPI = enum(u8) {
-    default = 0,
-    opengl = 1,
-};
+pub const GraphicsAPI = @import("api.zig").Graphics;
 
 pub fn init(width: u32, height: u32, title: [:0]const u8, sync: bool, comptime api: GraphicsAPI) !void {
     try gfx.init(width, height, title, sync, api);

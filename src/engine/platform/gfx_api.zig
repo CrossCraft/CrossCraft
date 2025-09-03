@@ -1,22 +1,33 @@
 const zm = @import("zmath");
 const Util = @import("../util/util.zig");
-
+const Mesh = @import("../rendering/mesh.zig");
 const Self = @This();
 
 ptr: *anyopaque,
 tab: VTable,
 
 pub const VTable = struct {
+    // --- API Setup / Lifecycle ---
     init: *const fn (ctx: *anyopaque) anyerror!void,
     deinit: *const fn (ctx: *anyopaque) void,
 
+    // --- API State ---
     set_clear_color: *const fn (ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void,
-    set_proj_matrix: *const fn (ctx: *anyopaque, mat: zm.Mat) void,
-    set_view_matrix: *const fn (ctx: *anyopaque, mat: zm.Mat) void,
-    set_model_matrix: *const fn (ctx: *anyopaque, mat: zm.Mat) void,
+    set_proj_matrix: *const fn (ctx: *anyopaque, mat: *const zm.Mat) void,
+    set_view_matrix: *const fn (ctx: *anyopaque, mat: *const zm.Mat) void,
+    set_model_matrix: *const fn (ctx: *anyopaque, mat: *const zm.Mat) void,
 
+    // --- Frame Management ---
     start_frame: *const fn (ctx: *anyopaque) bool,
     end_frame: *const fn (ctx: *anyopaque) void,
+
+    // --- Mesh API (raw) ---
+    // These are intentionally not exposed directly to the user.
+    // Use the Mesh abstraction instead.
+    create_mesh: *const fn (ctx: *anyopaque, layout: Mesh.VertexLayout) anyerror!Mesh.Handle,
+    destroy_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle) void,
+    update_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, offset: usize, data: []const u8) void,
+    draw_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle) void,
 };
 
 pub inline fn init(self: *Self) !void {
@@ -39,15 +50,15 @@ pub inline fn end_frame(self: *Self) void {
     self.tab.end_frame(self.ptr);
 }
 
-pub inline fn set_proj_matrix(self: *Self, mat: zm.Mat) void {
+pub inline fn set_proj_matrix(self: *Self, mat: *const zm.Mat) void {
     self.tab.set_proj_matrix(self.ptr, mat);
 }
 
-pub inline fn set_view_matrix(self: *Self, mat: zm.Mat) void {
+pub inline fn set_view_matrix(self: *Self, mat: *const zm.Mat) void {
     self.tab.set_view_matrix(self.ptr, mat);
 }
 
-pub inline fn set_model_matrix(self: *Self, mat: zm.Mat) void {
+pub inline fn set_model_matrix(self: *Self, mat: *const zm.Mat) void {
     self.tab.set_model_matrix(self.ptr, mat);
 }
 

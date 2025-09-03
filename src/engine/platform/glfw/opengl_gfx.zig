@@ -5,6 +5,7 @@ const zm = @import("zmath");
 
 const shader = @import("shader.zig");
 const gfx = @import("../gfx.zig");
+const Mesh = @import("../../rendering/mesh.zig");
 const GFXAPI = @import("../gfx_api.zig");
 const Self = @This();
 
@@ -58,21 +59,38 @@ fn end_frame(ctx: *anyopaque) void {
     gfx.surface.draw();
 }
 
-fn set_proj_matrix(ctx: *anyopaque, mat: zm.Mat) void {
+fn set_proj_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
     _ = ctx;
-    shader.state.proj = mat;
+    shader.state.proj = mat.*;
     shader.update_ubo();
 }
 
-fn set_view_matrix(ctx: *anyopaque, mat: zm.Mat) void {
+fn set_view_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
     _ = ctx;
-    shader.state.view = mat;
+    shader.state.view = mat.*;
     shader.update_ubo();
 }
 
-fn set_model_matrix(ctx: *anyopaque, mat: zm.Mat) void {
+fn set_model_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
     _ = ctx;
     shader.update_model(mat);
+}
+
+fn create_mesh(ctx: *anyopaque, _: Mesh.VertexLayout) anyerror!Mesh.Handle {
+    _ = ctx;
+    return 0;
+}
+
+fn destroy_mesh(ctx: *anyopaque, _: Mesh.Handle) void {
+    _ = ctx;
+}
+
+fn update_mesh(ctx: *anyopaque, _: Mesh.Handle, _: usize, _: []const u8) void {
+    _ = ctx;
+}
+
+fn draw_mesh(ctx: *anyopaque, _: Mesh.Handle) void {
+    _ = ctx;
 }
 
 pub fn gfx_api(self: *Self) GFXAPI {
@@ -87,6 +105,10 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .set_proj_matrix = set_proj_matrix,
             .set_view_matrix = set_view_matrix,
             .set_model_matrix = set_model_matrix,
+            .create_mesh = create_mesh,
+            .destroy_mesh = destroy_mesh,
+            .update_mesh = update_mesh,
+            .draw_mesh = draw_mesh,
         },
     };
 }
