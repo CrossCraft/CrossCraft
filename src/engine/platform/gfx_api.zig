@@ -39,6 +39,18 @@ pub inline fn end_frame(self: *Self) void {
     self.tab.end_frame(self.ptr);
 }
 
+pub inline fn set_proj_matrix(self: *Self, mat: zm.Mat) void {
+    self.tab.set_proj_matrix(self.ptr, mat);
+}
+
+pub inline fn set_view_matrix(self: *Self, mat: zm.Mat) void {
+    self.tab.set_view_matrix(self.ptr, mat);
+}
+
+pub inline fn set_model_matrix(self: *Self, mat: zm.Mat) void {
+    self.tab.set_model_matrix(self.ptr, mat);
+}
+
 const GraphicsAPI = @import("platform.zig").GraphicsAPI;
 pub fn make_api(comptime api: GraphicsAPI) !Self {
     switch (api) {
