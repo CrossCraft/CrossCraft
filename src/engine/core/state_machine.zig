@@ -33,6 +33,11 @@ pub fn transition(state: *const State) anyerror!void {
     try curr_state.init();
 }
 
+pub fn tick() anyerror!void {
+    assert(initialized);
+    try curr_state.tick();
+}
+
 pub fn update(dt: f32) anyerror!void {
     assert(initialized);
     try curr_state.update(dt);

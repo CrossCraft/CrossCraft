@@ -52,6 +52,10 @@ const MyState = struct {
         self.mesh.deinit(Util.allocator());
     }
 
+    fn tick(ctx: *anyopaque) anyerror!void {
+        _ = ctx;
+    }
+
     fn update(ctx: *anyopaque, dt: f32) anyerror!void {
         _ = ctx;
         _ = dt;
@@ -64,9 +68,10 @@ const MyState = struct {
     }
 
     pub fn state(self: *MyState) State {
-        return .{ .ptr = self, .tab = .{
+        return .{ .ptr = self, .tab = &.{
             .init = init,
             .deinit = deinit,
+            .tick = tick,
             .update = update,
             .draw = draw,
         } };

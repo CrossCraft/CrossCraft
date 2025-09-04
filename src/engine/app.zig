@@ -26,8 +26,11 @@ pub fn deinit() void {
 
 pub fn main_loop() !void {
     // TODO: Configure this
-    const frames_per_second = 60;
+    const frames_per_second = 144;
     const frame_time = std.time.us_per_s / frames_per_second + 1;
+
+    const ticks_per_second = 20;
+    const tick_time = std.time.us_per_s / ticks_per_second + 1;
 
     const updates_per_second = 144;
     const update_time = std.time.us_per_s / updates_per_second + 1;
@@ -37,6 +40,7 @@ pub fn main_loop() !void {
     var next_frame_start = Util.get_micro_timestamp() + frame_time;
     var last_time = Util.get_micro_timestamp();
     var next_input_update = Util.get_micro_timestamp() + update_time;
+    var next_tick = Util.get_micro_timestamp() + tick_time;
 
     while (running) {
         // Frame tracking logic
@@ -48,12 +52,6 @@ pub fn main_loop() !void {
             second_timer = now + std.time.us_per_s;
         }
         fps += 1;
-
-        if (now > next_input_update) {
-            @branchHint(.unpredictable);
-            Platform.update();
-            next_input_update = now + update_time;
-        }
 
         // Wait for synchronization
         if (now < next_frame_start and vsync) {
@@ -73,7 +71,18 @@ pub fn main_loop() !void {
         const dt = @as(f32, @floatFromInt(before_update - last_time)) / @as(f32, std.time.us_per_s);
         last_time = before_update;
 
-        try Core.state_machine.update(dt);
+        if (before_update > next_input_update) {
+            @branchHint(.unpredictable);
+            Platform.update();
+            next_input_update = before_update + update_time;
+            try Core.state_machine.update(dt);
+        }
+
+        if (before_update > next_tick) {
+            @branchHint(.unpredictable);
+            try Core.state_machine.tick();
+            next_tick = before_update + tick_time;
+        }
 
         if (Platform.gfx.api.start_frame()) {
             @branchHint(.likely);
