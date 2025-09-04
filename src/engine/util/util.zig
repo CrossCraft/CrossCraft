@@ -38,3 +38,7 @@ pub fn get_micro_timestamp() u64 {
     // TODO: This is modularized such that other platforms may use different sets here
     return @bitCast(std.time.microTimestamp());
 }
+
+pub fn thread_sleep(micros: u64) void {
+    std.Thread.sleep(micros * std.time.ns_per_us);
+}

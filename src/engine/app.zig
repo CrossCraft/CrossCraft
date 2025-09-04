@@ -63,7 +63,7 @@ pub fn main_loop() !void {
                 Platform.update();
 
                 // Wait 1ms
-                std.Thread.sleep(std.time.us_per_ms);
+                Util.thread_sleep(std.time.us_per_ms);
             }
         }
 
@@ -90,7 +90,7 @@ pub fn main_loop() !void {
             Platform.gfx.api.end_frame();
         } else {
             @branchHint(.unlikely);
-            std.Thread.sleep(std.time.ns_per_ms * 50);
+            Util.thread_sleep(std.time.us_per_ms * 50);
         }
 
         next_frame_start += frame_time;
