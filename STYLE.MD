@@ -51,8 +51,9 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 	* The only allowed dependencies are modules controlled by CrossCraft or Iridescence
         * Tooling is not considered to be a dependency (i.e. ZeeBuffers)
         * Runtime dependencies are not allowed beyond the Zig runtime and platform APIs (OpenGL, etc.)
-  * Exceptions are made sparingly for platform APIs like GLFW, miniaudio, and zmath
-	* The only dependencies should be the Zig compiler and sections of the Standard Library
+  * Exceptions are made sparingly for platform APIs like GLFW, miniaudio
+  * Cross-platform dependencies exceptions: zmath, zstbi for math and image loading
+	* The only other dependencies should be the Zig compiler and sections of the Standard Library
 	* Standard Library:
 		* Allowed imports:
 			* All `std.*` not explicitly disallowed
