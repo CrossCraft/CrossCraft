@@ -5,9 +5,6 @@ const GFXAPI = @import("gfx_api.zig");
 
 const Util = @import("../util/util.zig");
 
-const gl = @import("gl");
-const glfw = @import("glfw");
-
 const zstbi = @import("zstbi");
 
 pub var surface: Surface = undefined;

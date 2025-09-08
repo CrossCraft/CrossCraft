@@ -36,6 +36,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // zaudio provides audio capabilities
+    const zaudio = b.dependency("zaudio", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const mod = b.addModule("Spark", .{
         .root_source_file = b.path("src/engine/root.zig"),
         .target = target,
@@ -44,9 +50,11 @@ pub fn build(b: *std.Build) void {
             .{ .name = "gl", .module = gl_bindings },
             .{ .name = "zmath", .module = zmath.module("root") },
             .{ .name = "zstbi", .module = zstbi.module("root") },
+            .{ .name = "zaudio", .module = zaudio.module("root") },
         },
     });
     mod.linkLibrary(glfw.artifact("glfw"));
+    mod.linkLibrary(zaudio.artifact("miniaudio"));
 
     const exe = b.addExecutable(.{
         .name = "CrossCraft-Classic",

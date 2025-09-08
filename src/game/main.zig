@@ -3,6 +3,7 @@ const sp = @import("Spark");
 const State = sp.Core.State;
 const Util = sp.Util;
 const Rendering = sp.Rendering;
+const Audio = sp.Audio;
 
 const Vertex = struct {
     pos: [3]f32,
@@ -22,6 +23,7 @@ const MyState = struct {
     mesh: MyMesh,
     transform: Rendering.Transform,
     texture: Rendering.Texture,
+    sound: Audio.Clip,
 
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
@@ -48,10 +50,14 @@ const MyState = struct {
         self.mesh.update();
 
         self.texture = try Rendering.Texture.load(Util.allocator(), "test.png");
+        self.sound = try Audio.Clip.load("test.mp3");
+        self.sound.play();
     }
 
     fn deinit(ctx: *anyopaque) void {
         var self = Util.ctx_to_self(MyState, ctx);
+        self.sound.stop();
+        self.sound.deinit();
         self.mesh.deinit(Util.allocator());
         self.texture.deinit(Util.allocator());
     }
@@ -82,8 +88,6 @@ const MyState = struct {
         } };
     }
 };
-
-export var NvOptimusEnablement: u32 = 1;
 
 pub fn main() !void {
     var state: MyState = undefined;

@@ -24,6 +24,10 @@
             .url = "git+https://github.com/zig-gamedev/zstbi#2c4b3100ccb7aed90ecc9439030899764e2a8d47",
             .hash = "zstbi-0.11.0-dev-L0Ea_yaWBwAHwFoCuyjkFyaiSsbjt4UOrkntR0c_nmzz",
         },
+        .zaudio = .{
+            .url = "git+https://github.com/zig-gamedev/zaudio#dd1f002f8d90fc255409b58b89326813354562e3",
+            .hash = "zaudio-0.11.0-dev-_M-91pBlPwDkibUGXKZxd_I_kEIUMJp6CfhwlX4sBEp-",
+        },
     },
     .paths = .{
         "build.zig",
