@@ -30,6 +30,12 @@ pub fn build(b: *std.Build) void {
         .extensions = &.{},
     });
 
+    // zstbi provides image loading capabilities
+    const zstbi = b.dependency("zstbi", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const mod = b.addModule("Spark", .{
         .root_source_file = b.path("src/engine/root.zig"),
         .target = target,
@@ -37,6 +43,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "glfw", .module = zglfw.module("glfw") },
             .{ .name = "gl", .module = gl_bindings },
             .{ .name = "zmath", .module = zmath.module("root") },
+            .{ .name = "zstbi", .module = zstbi.module("root") },
         },
     });
     mod.linkLibrary(glfw.artifact("glfw"));

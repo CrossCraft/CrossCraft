@@ -21,6 +21,7 @@ const MyMesh = Rendering.Mesh(Vertex, &Vertex.Spec);
 const MyState = struct {
     mesh: MyMesh,
     transform: Rendering.Transform,
+    texture: Rendering.Texture,
 
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
@@ -45,11 +46,14 @@ const MyState = struct {
             },
         });
         self.mesh.update();
+
+        self.texture = try Rendering.Texture.load(Util.allocator(), "test.png");
     }
 
     fn deinit(ctx: *anyopaque) void {
         var self = Util.ctx_to_self(MyState, ctx);
         self.mesh.deinit(Util.allocator());
+        self.texture.deinit(Util.allocator());
     }
 
     fn tick(ctx: *anyopaque) anyerror!void {
@@ -63,6 +67,7 @@ const MyState = struct {
 
     fn draw(ctx: *anyopaque, dt: f32) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
+        self.texture.bind();
         self.mesh.draw(&self.transform.get_matrix());
         _ = dt;
     }
@@ -83,7 +88,7 @@ export var NvOptimusEnablement: u32 = 1;
 pub fn main() !void {
     var state: MyState = undefined;
 
-    try sp.App.init(1280, 720, "CrossCraft Classic-Z", .opengl, false, &state.state());
+    try sp.App.init(1920, 1080, "CrossCraft Classic-Z", .opengl, false, &state.state());
     defer sp.App.deinit();
 
     try sp.App.main_loop();

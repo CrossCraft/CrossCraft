@@ -8,9 +8,13 @@ const Util = @import("../util/util.zig");
 const gl = @import("gl");
 const glfw = @import("glfw");
 
+const zstbi = @import("zstbi");
+
 pub var surface: Surface = undefined;
 pub var api: GFXAPI = undefined;
 pub fn init(width: u32, height: u32, title: [:0]const u8, sync: bool, comptime graphics_api: GraphicsAPI) !void {
+    zstbi.init(Util.allocator());
+
     surface = try Surface.make_surface();
     try surface.init(width, height, title, sync, @intFromEnum(graphics_api));
 
@@ -21,4 +25,5 @@ pub fn init(width: u32, height: u32, title: [:0]const u8, sync: bool, comptime g
 pub fn deinit() void {
     api.deinit();
     surface.deinit();
+    zstbi.deinit();
 }

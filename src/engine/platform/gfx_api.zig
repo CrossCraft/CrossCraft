@@ -1,6 +1,7 @@
 const zm = @import("zmath");
 const Util = @import("../util/util.zig");
 const Mesh = @import("../rendering/mesh.zig");
+const Texture = @import("../rendering/texture.zig");
 const Self = @This();
 
 ptr: *anyopaque,
@@ -28,6 +29,10 @@ pub const VTable = struct {
     destroy_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle) void,
     update_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, offset: usize, data: []const u8) void,
     draw_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, count: usize) void,
+
+    // --- Texture API (raw) ---
+    create_texture: *const fn (ctx: *anyopaque, width: u32, height: u32, data: []const u8) anyerror!Texture.Handle,
+    bind_texture: *const fn (ctx: *anyopaque, handle: Texture.Handle) void,
 };
 
 pub inline fn init(self: *Self) !void {

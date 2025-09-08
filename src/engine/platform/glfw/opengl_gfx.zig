@@ -178,6 +178,27 @@ fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, count: usize) void {
     gl.DrawArrays(gl.TRIANGLES, 0, @intCast(count));
 }
 
+fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) anyerror!u32 {
+    _ = ctx;
+
+    var tex: gl.uint = 0;
+    gl.CreateTextures(gl.TEXTURE_2D, 1, @ptrCast(&tex));
+    gl.TextureStorage2D(tex, 1, gl.RGBA8, @intCast(width), @intCast(height));
+    gl.TextureSubImage2D(tex, 0, 0, 0, @intCast(width), @intCast(height), gl.RGBA, gl.UNSIGNED_BYTE, data.ptr);
+    gl.TextureParameteri(tex, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.TextureParameteri(tex, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.TextureParameteri(tex, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.TextureParameteri(tex, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    gl.GenerateTextureMipmap(tex);
+
+    return tex;
+}
+
+fn bind_texture(ctx: *anyopaque, handle: u32) void {
+    _ = ctx;
+    gl.BindTextureUnit(0, handle);
+}
+
 pub fn gfx_api(self: *Self) GFXAPI {
     return GFXAPI{
         .ptr = self,
@@ -194,6 +215,8 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .destroy_mesh = destroy_mesh,
             .update_mesh = update_mesh,
             .draw_mesh = draw_mesh,
+            .create_texture = create_texture,
+            .bind_texture = bind_texture,
         },
     };
 }

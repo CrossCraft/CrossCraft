@@ -5,7 +5,8 @@ layout(location = 0) out vec4 out_color;
 in vec2 frag_uv;
 in vec4 frag_color;
 
+layout(binding = 0) uniform sampler2D u_texture;
+
 void main() {
-    // TODO: Texture sampling
-    out_color = frag_color;
+    out_color = texture(u_texture, frag_uv) * frag_color;
 }
