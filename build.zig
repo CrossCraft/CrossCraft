@@ -42,9 +42,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const mod = b.addModule("Spark", .{
+    const engine = b.addModule("Spark", .{
         .root_source_file = b.path("src/engine/root.zig"),
         .target = target,
+        .optimize = optimize,
         .imports = &.{
             .{ .name = "glfw", .module = zglfw.module("glfw") },
             .{ .name = "gl", .module = gl_bindings },
@@ -53,35 +54,72 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zaudio", .module = zaudio.module("root") },
         },
     });
-    mod.linkLibrary(glfw.artifact("glfw"));
-    mod.linkLibrary(zaudio.artifact("miniaudio"));
+    engine.linkLibrary(glfw.artifact("glfw"));
+    engine.linkLibrary(zaudio.artifact("miniaudio"));
 
-    const exe = b.addExecutable(.{
+    const net = b.addModule("Net", .{
+        .root_source_file = b.path("src/net/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const server = b.addModule("Server", .{
+        .root_source_file = b.path("src/core/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "net", .module = net },
+        },
+    });
+
+    const client_exe = b.addExecutable(.{
         .name = "CrossCraft-Classic",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/game/main.zig"),
+            .root_source_file = b.path("src/client/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "Spark", .module = mod },
+                .{ .name = "Spark", .module = engine },
             },
         }),
     });
 
-    b.installArtifact(exe);
+    const server_exe = b.addExecutable(.{
+        .name = "CrossCraft-Server",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/server/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "core", .module = server },
+            },
+        }),
+    });
 
-    const run_step = b.step("run", "Run the app");
-    const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
-    run_cmd.step.dependOn(b.getInstallStep());
+    b.installArtifact(client_exe);
+    b.installArtifact(server_exe);
+
+    const run_client_step = b.step("run-game", "Run the app");
+    const run_client_cmd = b.addRunArtifact(client_exe);
+    run_client_step.dependOn(&run_client_cmd.step);
+    run_client_cmd.step.dependOn(b.getInstallStep());
 
     if (b.args) |args| {
-        run_cmd.addArgs(args);
+        run_client_cmd.addArgs(args);
+    }
+
+    const run_server_step = b.step("run-server", "Run the server");
+    const run_server_cmd = b.addRunArtifact(server_exe);
+    run_server_step.dependOn(&run_server_cmd.step);
+    run_server_cmd.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        run_server_cmd.addArgs(args);
     }
 
     const engine_tests = b.addTest(.{
         .name = "engine_tests",
-        .root_module = mod,
+        .root_module = engine,
     });
 
     const run_tests_step = b.step("test", "Run tests");
