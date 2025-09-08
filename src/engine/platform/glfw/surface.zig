@@ -19,12 +19,14 @@ fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, sync: boo
 
     try glfw.init();
 
+    Util.engine_logger.debug("GLFW {s}", .{glfw.getVersionString()});
     if (api == 1) {
         // OpenGL
         glfw.windowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile);
         glfw.windowHint(glfw.ContextVersionMajor, 4);
         glfw.windowHint(glfw.ContextVersionMinor, 6);
         self.opengl = true;
+        Util.engine_logger.debug("Requesting OpenGL Core 4.6!", .{});
     } else {
         // Vulkan
         glfw.windowHint(glfw.ClientAPI, glfw.NoAPI);

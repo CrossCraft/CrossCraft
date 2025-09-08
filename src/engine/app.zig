@@ -10,7 +10,7 @@ pub fn init(width: u32, height: u32, title: [:0]const u8, comptime api: Platform
     vsync = sync;
 
     // Allocator is first
-    Util.init();
+    try Util.init();
     try Platform.init(width, height, title, sync, api);
     try Core.state_machine.init(state);
 }
@@ -47,7 +47,7 @@ pub fn main_loop() !void {
         const now = Util.get_micro_timestamp();
         if (now > second_timer) {
             @branchHint(.unpredictable);
-            std.log.info("FPS: {}", .{fps});
+            Util.engine_logger.info("FPS: {}", .{fps});
             fps = 0;
             second_timer = now + std.time.us_per_s;
         }
@@ -102,7 +102,7 @@ pub fn main_loop() !void {
             next_frame_start = curr_time;
 
             if (vsync) {
-                std.log.debug("Fell 2 frames behind!\n", .{});
+                Util.engine_logger.debug("Fell 2 frames behind!\n", .{});
             }
         }
     }

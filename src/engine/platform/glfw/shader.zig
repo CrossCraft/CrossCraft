@@ -2,6 +2,7 @@ const std = @import("std");
 const gl = @import("gl");
 const zm = @import("zmath");
 const assert = std.debug.assert;
+const Util = @import("../../util/util.zig");
 
 const vert_source = @embedFile("shaders/basic.vert");
 const frag_source = @embedFile("shaders/basic.frag");
@@ -34,7 +35,7 @@ fn compile_shader(source: [*]const [*]const gl.char, shader_type: gl.uint) !gl.u
         var buf: [512]u8 = @splat(0);
         var len: c_uint = 0;
         gl.GetShaderInfoLog(shader, 512, @ptrCast(&len), &buf);
-        std.debug.print("ERROR Shader:\n{s}\n", .{buf[0..len]});
+        Util.engine_logger.err("Shader compilation failed:\n{s}\n", .{buf[0..len]});
         return error.ShaderCompilationFailed;
     }
 
@@ -55,7 +56,7 @@ fn link_shader(vert: gl.uint, frag: gl.uint) !gl.uint {
         var buf: [512]u8 = @splat(0);
         var len: c_uint = 0;
         gl.GetProgramInfoLog(program, 512, @ptrCast(&len), &buf);
-        std.debug.print("ERROR Program:\n{s}\n", .{buf[0..len]});
+        Util.engine_logger.err("Program linking failed:\n{s}\n", .{buf[0..len]});
         return error.ProgramLinkingFailed;
     }
 

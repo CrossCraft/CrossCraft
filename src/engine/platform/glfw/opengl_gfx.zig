@@ -32,6 +32,11 @@ fn init(ctx: *anyopaque) !void {
     gl.makeProcTableCurrent(&procs);
     gl.Enable(gl.FRAMEBUFFER_SRGB);
 
+    Util.engine_logger.debug("OpenGL {s}", .{gl.GetString(gl.VERSION).?});
+    Util.engine_logger.debug("GLSL {s}", .{gl.GetString(gl.SHADING_LANGUAGE_VERSION).?});
+    Util.engine_logger.debug("Vendor: {s}", .{gl.GetString(gl.VENDOR).?});
+    Util.engine_logger.debug("Renderer: {s}", .{gl.GetString(gl.RENDERER).?});
+
     try shader.init();
     shader.state.proj = zm.identity();
     shader.state.view = zm.identity();

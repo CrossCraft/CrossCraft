@@ -5,6 +5,8 @@ const Util = sp.Util;
 const Rendering = sp.Rendering;
 const Audio = sp.Audio;
 
+pub const std_options = Util.std_options;
+
 const Vertex = struct {
     pos: [3]f32,
     color: [4]u8,
