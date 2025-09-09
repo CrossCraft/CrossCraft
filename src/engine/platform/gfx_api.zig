@@ -35,35 +35,35 @@ pub const VTable = struct {
     bind_texture: *const fn (ctx: *anyopaque, handle: Texture.Handle) void,
 };
 
-pub inline fn init(self: *Self) !void {
+pub inline fn init(self: *const Self) !void {
     try self.tab.init(self.ptr);
 }
 
-pub inline fn deinit(self: *Self) void {
+pub inline fn deinit(self: *const Self) void {
     self.tab.deinit(self.ptr);
 }
 
-pub inline fn set_clear_color(self: *Self, r: f32, g: f32, b: f32, a: f32) void {
+pub inline fn set_clear_color(self: *const Self, r: f32, g: f32, b: f32, a: f32) void {
     self.tab.set_clear_color(self.ptr, r, g, b, a);
 }
 
-pub inline fn start_frame(self: *Self) bool {
+pub inline fn start_frame(self: *const Self) bool {
     return self.tab.start_frame(self.ptr);
 }
 
-pub inline fn end_frame(self: *Self) void {
+pub inline fn end_frame(self: *const Self) void {
     self.tab.end_frame(self.ptr);
 }
 
-pub inline fn set_proj_matrix(self: *Self, mat: *const zm.Mat) void {
+pub inline fn set_proj_matrix(self: *const Self, mat: *const zm.Mat) void {
     self.tab.set_proj_matrix(self.ptr, mat);
 }
 
-pub inline fn set_view_matrix(self: *Self, mat: *const zm.Mat) void {
+pub inline fn set_view_matrix(self: *const Self, mat: *const zm.Mat) void {
     self.tab.set_view_matrix(self.ptr, mat);
 }
 
-pub inline fn set_model_matrix(self: *Self, mat: *const zm.Mat) void {
+pub inline fn set_model_matrix(self: *const Self, mat: *const zm.Mat) void {
     self.tab.set_model_matrix(self.ptr, mat);
 }
 

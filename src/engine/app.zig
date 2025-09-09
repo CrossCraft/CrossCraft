@@ -6,17 +6,19 @@ const Platform = @import("platform/platform.zig");
 pub var running = true;
 var vsync = true;
 
-pub fn init(width: u32, height: u32, title: [:0]const u8, comptime api: Platform.GraphicsAPI, sync: bool, state: *const Core.State) !void {
+pub fn init(width: u32, height: u32, title: [:0]const u8, comptime api: Platform.GraphicsAPI, fullscreen: bool, sync: bool, state: *const Core.State) !void {
     vsync = sync;
 
     // Allocator is first
     try Util.init();
-    try Platform.init(width, height, title, sync, api);
+    try Platform.init(width, height, title, fullscreen, sync, api);
+    try Core.input.init(Util.allocator());
     try Core.state_machine.init(state);
 }
 
 pub fn deinit() void {
     Core.state_machine.deinit();
+    Core.input.deinit();
 
     Platform.deinit();
 
@@ -42,7 +44,12 @@ pub fn main_loop() !void {
     var next_input_update = Util.get_micro_timestamp() + update_time;
     var next_tick = Util.get_micro_timestamp() + tick_time;
 
-    while (running) {
+    while (true) {
+        if (!running) {
+            @branchHint(.cold);
+            break;
+        }
+
         // Frame tracking logic
         const now = Util.get_micro_timestamp();
         if (now > second_timer) {
@@ -74,8 +81,9 @@ pub fn main_loop() !void {
         if (before_update > next_input_update) {
             @branchHint(.unpredictable);
             Platform.update();
-            next_input_update = before_update + update_time;
+            Core.input.update();
             try Core.state_machine.update(dt);
+            next_input_update = before_update + update_time;
         }
 
         if (before_update > next_tick) {

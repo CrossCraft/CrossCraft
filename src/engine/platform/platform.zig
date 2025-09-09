@@ -6,8 +6,8 @@ const App = @import("../app.zig");
 
 pub const GraphicsAPI = @import("api.zig").Graphics;
 
-pub fn init(width: u32, height: u32, title: [:0]const u8, sync: bool, comptime api: GraphicsAPI) !void {
-    try gfx.init(width, height, title, sync, api);
+pub fn init(width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, comptime api: GraphicsAPI) !void {
+    try gfx.init(width, height, title, fullscreen, sync, api);
     try audio.init();
 }
 

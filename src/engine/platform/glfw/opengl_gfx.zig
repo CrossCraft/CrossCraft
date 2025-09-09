@@ -11,7 +11,8 @@ const GFXAPI = @import("../gfx_api.zig");
 const Self = @This();
 
 var procs: gl.ProcTable = undefined;
-
+var last_width: u32 = 0;
+var last_height: u32 = 0;
 var vaos = Util.CircularBuffer(VAOData, 16).init();
 var meshes = Util.CircularBuffer(MeshInternal, 2048).init();
 
@@ -36,6 +37,8 @@ fn init(ctx: *anyopaque) !void {
     Util.engine_logger.debug("GLSL {s}", .{gl.GetString(gl.SHADING_LANGUAGE_VERSION).?});
     Util.engine_logger.debug("Vendor: {s}", .{gl.GetString(gl.VENDOR).?});
     Util.engine_logger.debug("Renderer: {s}", .{gl.GetString(gl.RENDERER).?});
+
+    gl.Viewport(0, 0, @intCast(gfx.surface.get_width()), @intCast(gfx.surface.get_height()));
 
     try shader.init();
     shader.state.proj = zm.identity();
@@ -62,16 +65,20 @@ fn set_clear_color(ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void {
 fn start_frame(ctx: *anyopaque) bool {
     _ = ctx;
 
-    if (gfx.surface.get_width() == 0 or gfx.surface.get_height() == 0) {
-        return false;
+    const new_width = gfx.surface.get_width();
+    const new_height = gfx.surface.get_height();
+    if (new_width != last_width or new_height != last_height) {
+        @branchHint(.unlikely);
+
+        last_width = new_width;
+        last_height = new_height;
+        gl.Viewport(0, 0, @intCast(new_width), @intCast(new_height));
+
+        if (new_width == 0 or new_height == 0) {
+            return false;
+        }
     }
 
-    gl.Viewport(
-        0,
-        0,
-        @intCast(gfx.surface.get_width()),
-        @intCast(gfx.surface.get_height()),
-    );
     gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     return true;
