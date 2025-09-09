@@ -177,19 +177,19 @@ pub fn update() void {
             if (action.context) |ctx| {
                 switch (action.type) {
                     .button => {
-                        const cb: ButtonCallback = @ptrCast(cb_ptr);
+                        const cb: ButtonCallback = @ptrCast(@alignCast(cb_ptr));
                         if (changed)
                             cb(ctx, new_value.button);
                     },
                     .axis => {
-                        const cb: AxisCallback = @ptrCast(cb_ptr);
+                        const cb: AxisCallback = @ptrCast(@alignCast(cb_ptr));
 
                         // TODO: Deadzone handling
                         if (changed or new_value.axis != 0.0)
                             cb(ctx, new_value.axis);
                     },
                     .vector2 => {
-                        const cb: Vector2Callback = @ptrCast(cb_ptr);
+                        const cb: Vector2Callback = @ptrCast(@alignCast(cb_ptr));
 
                         // TODO: Deadzone handling
                         if (changed or new_value.vector2[0] != 0.0 or new_value.vector2[1] != 0.0)

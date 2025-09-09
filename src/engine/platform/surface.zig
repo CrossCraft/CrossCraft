@@ -41,7 +41,7 @@ pub inline fn get_height(self: *Self) u32 {
 }
 
 pub fn make_surface() !Self {
-    if (builtin.os.tag == .windows or builtin.os.tag == .linux) {
+    if (builtin.os.tag == .windows or builtin.os.tag == .linux or builtin.os.tag == .macos) {
         const GLFWSurface = @import("glfw/surface.zig");
         var glfw_surface = try Util.allocator().create(GLFWSurface);
         return glfw_surface.surface();
