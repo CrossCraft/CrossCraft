@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 
 const Surface = @import("../surface.zig");
 const Self = @This();
+const API = @import("../api.zig").Graphics;
 
 window: *glfw.Window,
 width: c_int,
@@ -15,7 +16,7 @@ pub var mouse_delta: [2]f32 = @splat(0);
 pub var cursor_x: f64 = 0;
 pub var cursor_y: f64 = 0;
 
-fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, _: u8) !void {
+fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, api: API) !void {
     const self = Util.ctx_to_self(Self, ctx);
 
     self.active_joystick = 0;
@@ -28,10 +29,21 @@ fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscree
     try glfw.init();
 
     Util.engine_logger.debug("GLFW {s}", .{glfw.getVersionString()});
-    glfw.windowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile);
-    glfw.windowHint(glfw.ContextVersionMajor, 4);
-    glfw.windowHint(glfw.ContextVersionMinor, 6);
-    Util.engine_logger.debug("Requesting OpenGL Core 4.6!", .{});
+
+    if (api == .opengl) {
+        glfw.windowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile);
+        glfw.windowHint(glfw.ContextVersionMajor, 4);
+        glfw.windowHint(glfw.ContextVersionMinor, 6);
+        Util.engine_logger.debug("Requesting OpenGL Core 4.6!", .{});
+    } else if (api == .vulkan) {
+        glfw.windowHint(glfw.ClientAPI, glfw.NoAPI);
+
+        if (!glfw.vulkanSupported()) {
+            return error.VulkanNotSupported;
+        }
+
+        Util.engine_logger.debug("Requesting Vulkan!", .{});
+    }
 
     glfw.windowHint(glfw.Resizable, 0);
     glfw.windowHint(glfw.SRGBCapable, 1);
@@ -50,8 +62,10 @@ fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscree
     }
 
     // OpenGL
-    glfw.makeContextCurrent(self.window);
-    glfw.swapInterval(@intFromBool(sync));
+    if (api == .opengl) {
+        glfw.makeContextCurrent(self.window);
+        glfw.swapInterval(@intFromBool(sync));
+    }
 
     // Trigger initial size fetch
     glfw.getWindowSize(self.window, &self.width, &self.height);

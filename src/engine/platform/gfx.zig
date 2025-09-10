@@ -17,7 +17,7 @@ pub fn init(width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync
     zstbi.init(Util.allocator());
 
     surface = try Surface.make_surface();
-    try surface.init(width, height, title, fullscreen, sync, @intFromEnum(graphics_api));
+    try surface.init(width, height, title, fullscreen, sync, graphics_api);
 
     api = try GFXAPI.make_api(graphics_api);
     try api.init();

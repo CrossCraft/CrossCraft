@@ -100,5 +100,10 @@ pub fn make_api(comptime api: GraphicsAPI) !Self {
             var opengl = try Util.allocator().create(OpenGLAPI);
             return opengl.gfx_api();
         },
+        .vulkan => {
+            const VulkanAPI = @import("glfw/vulkan/vulkan_gfx.zig");
+            var vulkan = try Util.allocator().create(VulkanAPI);
+            return vulkan.gfx_api();
+        },
     }
 }
