@@ -1,7 +1,6 @@
 const std = @import("std");
 const vk = @import("vulkan");
-
-const Renderer = @import("renderer.zig");
+const Renderer = @import("vulkan_gfx.zig");
 
 const GcItem = union(enum) {
     buffer: struct { buf: vk.Buffer, mem: vk.DeviceMemory },

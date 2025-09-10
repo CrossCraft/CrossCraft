@@ -270,7 +270,7 @@ pub fn init(allocator: std.mem.Allocator, name: [:0]const u8) !Self {
     self.allocator = allocator;
 
     try self.create_instance(name);
-    Util.engine_logger.info("Vulkan 1.4 Loaded!", .{});
+    Util.engine_logger.debug("Vulkan 1.4 Loaded!", .{});
     errdefer allocator.destroy(self.instance.wrapper);
 
     try self.create_surface();
@@ -280,7 +280,7 @@ pub fn init(allocator: std.mem.Allocator, name: [:0]const u8) !Self {
     self.physical_device = device_candidate.pdev;
     self.physical_properties = device_candidate.props;
 
-    Util.engine_logger.info("Selected GPU: {s}", .{self.device_name()});
+    Util.engine_logger.debug("Selected GPU: {s}", .{self.device_name()});
 
     try self.create_logical_device(&device_candidate);
     errdefer self.logical_device.destroyDevice(null);

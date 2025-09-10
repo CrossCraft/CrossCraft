@@ -94,8 +94,11 @@ const GraphicsAPI = @import("platform.zig").GraphicsAPI;
 /// Factory function to create a GraphicsAPI instance based on the specified API type.
 /// This is a comptime function that selects the appropriate implementation, runtime polymorphism is avoided for performance.
 pub fn make_api(comptime api: GraphicsAPI) !Self {
+    const builtin = @import("builtin");
     switch (api) {
         .default, .opengl => {
+            if (builtin.os.tag == .macos) @compileError("OpenGL is not supported on macOS, use Vulkan instead.");
+
             const OpenGLAPI = @import("glfw/opengl/opengl_gfx.zig");
             var opengl = try Util.allocator().create(OpenGLAPI);
             return opengl.gfx_api();
