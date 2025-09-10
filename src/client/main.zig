@@ -27,24 +27,6 @@ const MyState = struct {
     transform: Rendering.Transform,
     texture: Rendering.Texture,
 
-    fn handle_escape(_: *anyopaque, event: Core.input.ButtonEvent) void {
-        if (event == .pressed) {
-            sp.App.quit();
-        }
-    }
-
-    fn handle_scroll(_: *anyopaque, value: f32) void {
-        std.debug.print("Scroll value: {any}\n", .{value});
-    }
-
-    fn handle_move(_: *anyopaque, value: [2]f32) void {
-        std.debug.print("Axis position: {any}\n", .{value});
-    }
-
-    fn handle_look(_: *anyopaque, value: [2]f32) void {
-        std.debug.print("Look delta: {any}\n", .{value});
-    }
-
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
         self.mesh = try MyMesh.new(Util.allocator());
@@ -70,32 +52,6 @@ const MyState = struct {
         self.mesh.update();
 
         self.texture = try Rendering.Texture.load(Util.allocator(), "test.png");
-
-        try Core.input.register_action("escape", .button);
-        try Core.input.bind_action("escape", .{ .source = .{ .key = .Escape } });
-        try Core.input.bind_action("escape", .{ .source = .{ .gamepad_button = .Start } });
-        try Core.input.add_button_callback("escape", self, handle_escape);
-
-        try Core.input.register_action("scroll", .axis);
-        try Core.input.bind_action("scroll", .{ .source = .{ .mouse_scroll = void{} }, .multiplier = 1.0 });
-        try Core.input.add_axis_callback("scroll", self, handle_scroll);
-
-        try Core.input.register_action("move", .vector2);
-        try Core.input.bind_action("move", .{ .source = .{ .key = .W }, .component = .y, .multiplier = 1.0, .deadzone = 0.0 });
-        try Core.input.bind_action("move", .{ .source = .{ .key = .S }, .component = .y, .multiplier = -1.0, .deadzone = 0.0 });
-        try Core.input.bind_action("move", .{ .source = .{ .key = .A }, .component = .x, .multiplier = -1.0, .deadzone = 0.0 });
-        try Core.input.bind_action("move", .{ .source = .{ .key = .D }, .component = .x, .multiplier = 1.0, .deadzone = 0.0 });
-        try Core.input.bind_action("move", .{ .source = .{ .gamepad_axis = .LeftX }, .component = .x, .multiplier = 1.0 });
-        try Core.input.bind_action("move", .{ .source = .{ .gamepad_axis = .LeftY }, .component = .y, .multiplier = 1.0 });
-        try Core.input.add_vector2_callback("move", self, handle_move);
-
-        try Core.input.register_action("look", .vector2);
-        try Core.input.bind_action("look", .{ .source = .{ .mouse_relative = .X }, .component = .x, .multiplier = 1.0, .deadzone = 0.0 });
-        try Core.input.bind_action("look", .{ .source = .{ .mouse_relative = .Y }, .component = .y, .multiplier = 1.0, .deadzone = 0.0 });
-        try Core.input.bind_action("look", .{ .source = .{ .gamepad_axis = .RightX }, .component = .x, .multiplier = 1.0 });
-        try Core.input.bind_action("look", .{ .source = .{ .gamepad_axis = .RightY }, .component = .y, .multiplier = 1.0 });
-        try Core.input.add_vector2_callback("look", self, handle_look);
-        Core.input.set_mouse_relative_mode(true);
     }
 
     fn deinit(ctx: *anyopaque) void {
