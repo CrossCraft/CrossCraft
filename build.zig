@@ -30,6 +30,11 @@ pub fn build(b: *std.Build) void {
         .extensions = &.{},
     });
 
+    // vulkan-zig provides Zig bindings for Vulkan
+    const vulkan = b.dependency("vulkan", .{
+        .registry = b.dependency("vulkan_headers", .{}).path("registry/vk.xml"),
+    }).module("vulkan-zig");
+
     // zstbi provides image loading capabilities
     const zstbi = b.dependency("zstbi", .{
         .target = target,
@@ -52,6 +57,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zmath", .module = zmath.module("root") },
             .{ .name = "zstbi", .module = zstbi.module("root") },
             .{ .name = "zaudio", .module = zaudio.module("root") },
+            .{ .name = "vulkan", .module = vulkan },
         },
     });
     engine.linkLibrary(glfw.artifact("glfw"));
