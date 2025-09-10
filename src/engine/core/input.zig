@@ -59,7 +59,7 @@ pub const BindingSource = union(enum) {
     mouse_button: MouseButton,
     gamepad_button: Button,
     gamepad_axis: Axis,
-    mouse_scroll: MouseScroll,
+    mouse_scroll: void,
     mouse_relative: MouseRelativeAxis,
 };
 
@@ -103,9 +103,13 @@ pub const Action = struct {
 var allocator: std.mem.Allocator = undefined;
 var actions: std.StringArrayHashMap(Action) = undefined;
 
+pub var mouse_sensitivity: f32 = 1.0;
+
 pub fn init(alloc: std.mem.Allocator) !void {
     allocator = alloc;
     actions = std.StringArrayHashMap(Action).init(allocator);
+
+    set_mouse_relative_mode(false);
 }
 
 pub fn deinit() void {
@@ -168,6 +172,10 @@ pub fn add_vector2_callback(name: []const u8, context: *anyopaque, callback: Vec
         return error.InvalidActionType;
     }
     action.callback = @ptrCast(callback);
+}
+
+pub fn set_mouse_relative_mode(enabled: bool) void {
+    Platform.input.set_mouse_relative_mode(enabled);
 }
 
 pub fn update() void {
@@ -280,8 +288,12 @@ fn get_binding_value(binding: *const Binding) f32 {
                 raw = 0.0;
             }
         },
-        .mouse_scroll => |_| {},
-        .mouse_relative => |_| {},
+        .mouse_scroll => {
+            raw = Platform.input.get_mouse_scroll();
+        },
+        .mouse_relative => |mr| {
+            raw = if (mr == .X) Platform.input.get_mouse_delta(mouse_sensitivity)[0] else Platform.input.get_mouse_delta(mouse_sensitivity)[1];
+        },
     }
 
     return raw * multiplier;

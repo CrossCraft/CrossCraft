@@ -10,6 +10,11 @@ width: c_int,
 height: c_int,
 active_joystick: c_int,
 
+pub var curr_scroll: f32 = 0;
+pub var mouse_delta: [2]f32 = @splat(0);
+pub var cursor_x: f64 = 0;
+pub var cursor_y: f64 = 0;
+
 fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, _: u8) !void {
     const self = Util.ctx_to_self(Self, ctx);
 
@@ -50,7 +55,14 @@ fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscree
 
     // Trigger initial size fetch
     glfw.getWindowSize(self.window, &self.width, &self.height);
+
+    // Input
     _ = glfw.updateGamepadMappings(@embedFile("gamecontrollerdb.txt"));
+    _ = glfw.setScrollCallback(self.window, scroll_callback);
+}
+
+export fn scroll_callback(_: *c_long, _: f64, yoffset: f64) void {
+    curr_scroll += @floatCast(yoffset);
 }
 
 fn deinit(ctx: *anyopaque) void {
@@ -74,6 +86,7 @@ fn update(ctx: *anyopaque) bool {
         }
     }
 
+    glfw.getCursorPos(self.window, &cursor_x, &cursor_y);
     return !glfw.windowShouldClose(self.window);
 }
 
