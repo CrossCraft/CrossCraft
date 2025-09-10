@@ -68,6 +68,14 @@ pub fn layout_from_struct(comptime V: type, comptime attrs: []const Attribute) V
     return .{ .stride = @sizeOf(V), .attributes = attrs };
 }
 
+/// A generic mesh type that holds vertex data and interfaces with the graphics API.
+/// The mesh is defined by a vertex struct type `V` and an array of attribute specifications.
+/// The vertex struct `V` should contain fields that correspond to the attributes defined in `specs`.
+/// The attribute specifications define how the fields of the vertex struct map to shader attribute locations.
+/// The mesh provides methods to create, update, and draw the mesh using the underlying graphics API.
+/// The vertex data is stored in a dynamic array, allowing for flexible mesh sizes.
+/// The mesh must be initialized with an allocator to manage its vertex data.
+/// The mesh must be deinitialized to free its resources when no longer needed.
 pub fn Mesh(comptime V: type, comptime specs: []const AttributeSpec) type {
     return struct {
         const Self = @This();

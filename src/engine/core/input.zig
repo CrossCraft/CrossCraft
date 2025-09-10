@@ -105,6 +105,7 @@ var actions: std.StringArrayHashMap(Action) = undefined;
 
 pub var mouse_sensitivity: f32 = 1.0;
 
+/// Initializes the input system with the given allocator.
 pub fn init(alloc: std.mem.Allocator) !void {
     allocator = alloc;
     actions = std.StringArrayHashMap(Action).init(allocator);
@@ -112,6 +113,7 @@ pub fn init(alloc: std.mem.Allocator) !void {
     set_mouse_relative_mode(false);
 }
 
+/// Deinitializes the input system, freeing all resources.
 pub fn deinit() void {
     for (actions.values()) |*action| {
         action.bindings.deinit(allocator);
@@ -119,6 +121,8 @@ pub fn deinit() void {
     actions.deinit();
 }
 
+/// Registers a new action with the given name and type.
+/// Returns an error if an action with the same name already exists.
 pub fn register_action(name: []const u8, action_type: ActionType) !void {
     if (actions.get(name)) |_| {
         return error.ActionAlreadyExists;
@@ -142,11 +146,14 @@ pub fn register_action(name: []const u8, action_type: ActionType) !void {
     try actions.put(name, action);
 }
 
+/// Binds a new input source to the specified action.
+/// Returns an error if the action does not exist.
 pub fn bind_action(name: []const u8, binding: Binding) !void {
     const action = actions.getPtr(name) orelse return error.ActionNotFound;
     try action.bindings.append(allocator, binding);
 }
 
+/// Adds a callback for button actions.
 pub fn add_button_callback(name: []const u8, context: *anyopaque, callback: ButtonCallback) !void {
     const action = actions.getPtr(name) orelse return error.ActionNotFound;
     action.context = context;
@@ -156,6 +163,7 @@ pub fn add_button_callback(name: []const u8, context: *anyopaque, callback: Butt
     action.callback = @ptrCast(callback);
 }
 
+/// Adds a callback for axis actions.
 pub fn add_axis_callback(name: []const u8, context: *anyopaque, callback: AxisCallback) !void {
     const action = actions.getPtr(name) orelse return error.ActionNotFound;
     action.context = context;
@@ -165,6 +173,7 @@ pub fn add_axis_callback(name: []const u8, context: *anyopaque, callback: AxisCa
     action.callback = @ptrCast(callback);
 }
 
+/// Adds a callback for vector2 actions.
 pub fn add_vector2_callback(name: []const u8, context: *anyopaque, callback: Vector2Callback) !void {
     const action = actions.getPtr(name) orelse return error.ActionNotFound;
     action.context = context;
@@ -174,10 +183,12 @@ pub fn add_vector2_callback(name: []const u8, context: *anyopaque, callback: Vec
     action.callback = @ptrCast(callback);
 }
 
+/// Enables or disables mouse relative mode (captured and hidden).
 pub fn set_mouse_relative_mode(enabled: bool) void {
     Platform.input.set_mouse_relative_mode(enabled);
 }
 
+/// Updates the input system, polling the current state and invoking callbacks as necessary.
 pub fn update() void {
     var iter = actions.iterator();
     while (iter.next()) |entry| {

@@ -21,14 +21,17 @@ pub const VTable = struct {
     set_clip_position: *const fn (ctx: *anyopaque, handle: Clip.Handle, pos: zm.Vec) void,
 };
 
+/// Initializes the Audio API. Must be called before any other audio functions.
 pub fn init(self: *const Self) anyerror!void {
     try self.tab.init(self.ptr);
 }
 
+/// Shuts down the Audio API and frees all associated resources.
 pub fn deinit(self: *const Self) void {
     self.tab.deinit(self.ptr);
 }
 
+/// Factory function to create an AudioAPI instance appropriate for the current platform.
 pub fn make_api() !Self {
     const ZAudio = @import("miniaudio/zaudio.zig");
     var audio = try Util.allocator().create(ZAudio);

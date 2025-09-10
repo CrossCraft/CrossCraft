@@ -4,12 +4,15 @@ const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
 
 pub const Handle = u32;
+
+/// A texture image loaded into GPU memory.
 pub const Image = struct {
     width: u32,
     height: u32,
     data: []u8,
     handle: Handle,
 
+    /// Loads an image from the specified file path into GPU memory.
     pub fn load(allocator: std.mem.Allocator, path: []const u8) !Image {
         var file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
@@ -38,6 +41,7 @@ pub const Image = struct {
         stbi_image_free(self.data.ptr);
     }
 
+    /// Binds the texture for rendering.
     pub fn bind(self: *const Image) void {
         gfx.api.tab.bind_texture(gfx.api.ptr, self.handle);
     }

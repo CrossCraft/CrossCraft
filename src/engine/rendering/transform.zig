@@ -13,6 +13,7 @@ pub fn new() Self {
     };
 }
 
+/// Computes and returns the transformation matrix combining scaling, rotation, and translation.
 pub fn get_matrix(self: *const Self) zm.Mat {
     const scaling = zm.scaling(self.scale[0], self.scale[1], self.scale[2]);
     const rotation_x = zm.rotationX(self.rot[0]);
