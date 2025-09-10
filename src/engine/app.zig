@@ -26,6 +26,10 @@ pub fn deinit() void {
     Util.deinit();
 }
 
+pub fn quit() void {
+    running = false;
+}
+
 pub fn main_loop() !void {
     // TODO: Configure this
     const frames_per_second = 144;

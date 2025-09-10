@@ -71,7 +71,7 @@ const GraphicsAPI = @import("platform.zig").GraphicsAPI;
 pub fn make_api(comptime api: GraphicsAPI) !Self {
     switch (api) {
         .default, .opengl => {
-            const OpenGLAPI = @import("glfw/opengl_gfx.zig");
+            const OpenGLAPI = @import("glfw/opengl/opengl_gfx.zig");
             var opengl = try Util.allocator().create(OpenGLAPI);
             return opengl.gfx_api();
         },

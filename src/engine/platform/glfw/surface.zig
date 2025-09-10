@@ -8,13 +8,17 @@ const Self = @This();
 window: *glfw.Window,
 width: c_int,
 height: c_int,
+active_joystick: c_int,
 
 fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, _: u8) !void {
     const self = Util.ctx_to_self(Self, ctx);
 
+    self.active_joystick = 0;
+
     if (builtin.os.tag == .linux) {
         glfw.initHint(glfw.Platform, glfw.PlatformX11);
     }
+    glfw.initHint(glfw.JoystickHatButtons, 1);
 
     try glfw.init();
 
@@ -46,6 +50,7 @@ fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscree
 
     // Trigger initial size fetch
     glfw.getWindowSize(self.window, &self.width, &self.height);
+    _ = glfw.updateGamepadMappings(@embedFile("gamecontrollerdb.txt"));
 }
 
 fn deinit(ctx: *anyopaque) void {
@@ -60,6 +65,14 @@ fn update(ctx: *anyopaque) bool {
     const self = Util.ctx_to_self(Self, ctx);
     glfw.pollEvents();
     glfw.getWindowSize(self.window, &self.width, &self.height);
+
+    for (0..16) |joystick| {
+        if (glfw.joystickPresent(@intCast(joystick))) {
+            self.active_joystick = @intCast(joystick);
+
+            break;
+        }
+    }
 
     return !glfw.windowShouldClose(self.window);
 }

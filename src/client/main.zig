@@ -1,9 +1,10 @@
 const std = @import("std");
 const sp = @import("Spark");
-const State = sp.Core.State;
+const Core = sp.Core;
 const Util = sp.Util;
 const Rendering = sp.Rendering;
 const Audio = sp.Audio;
+const State = Core.State;
 
 pub const std_options = Util.std_options;
 
@@ -25,6 +26,16 @@ const MyState = struct {
     mesh: MyMesh,
     transform: Rendering.Transform,
     texture: Rendering.Texture,
+
+    fn handle_escape(_: *anyopaque, event: Core.input.ButtonEvent) void {
+        if (event == .pressed) {
+            sp.App.quit();
+        }
+    }
+
+    fn handle_move(_: *anyopaque, value: [2]f32) void {
+        std.debug.print("Axis position: {any}\n", .{value});
+    }
 
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
@@ -51,6 +62,19 @@ const MyState = struct {
         self.mesh.update();
 
         self.texture = try Rendering.Texture.load(Util.allocator(), "test.png");
+
+        try Core.input.register_action("escape", .button);
+        try Core.input.bind_action("escape", .{ .source = .{ .key = .Escape } });
+        try Core.input.add_button_callback("escape", self, handle_escape);
+
+        try Core.input.register_action("move", .vector2);
+        try Core.input.bind_action("move", .{ .source = .{ .key = .W }, .component = .y, .multiplier = 1.0, .deadzone = 0.0 });
+        try Core.input.bind_action("move", .{ .source = .{ .key = .S }, .component = .y, .multiplier = -1.0, .deadzone = 0.0 });
+        try Core.input.bind_action("move", .{ .source = .{ .key = .A }, .component = .x, .multiplier = -1.0, .deadzone = 0.0 });
+        try Core.input.bind_action("move", .{ .source = .{ .key = .D }, .component = .x, .multiplier = 1.0, .deadzone = 0.0 });
+        try Core.input.bind_action("move", .{ .source = .{ .gamepad_axis = .LeftX }, .component = .x, .multiplier = 1.0 });
+        try Core.input.bind_action("move", .{ .source = .{ .gamepad_axis = .LeftY }, .component = .y, .multiplier = 1.0 });
+        try Core.input.add_vector2_callback("move", self, handle_move);
     }
 
     fn deinit(ctx: *anyopaque) void {

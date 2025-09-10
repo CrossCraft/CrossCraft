@@ -2,6 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 pub const gfx = @import("gfx.zig");
 pub const audio = @import("audio.zig");
+pub const input = @import("glfw/input.zig");
+
 const App = @import("../app.zig");
 
 pub const GraphicsAPI = @import("api.zig").Graphics;

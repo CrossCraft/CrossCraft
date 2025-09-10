@@ -1,13 +1,13 @@
 const std = @import("std");
-const Util = @import("../../util/util.zig");
+const Util = @import("../../../util/util.zig");
 const glfw = @import("glfw");
 const gl = @import("gl");
 const zm = @import("zmath");
 
 const shader = @import("shader.zig");
-const gfx = @import("../gfx.zig");
-const Mesh = @import("../../rendering/mesh.zig");
-const GFXAPI = @import("../gfx_api.zig");
+const gfx = @import("../../gfx.zig");
+const Mesh = @import("../../../rendering/mesh.zig");
+const GFXAPI = @import("../../gfx_api.zig");
 const Self = @This();
 
 var procs: gl.ProcTable = undefined;

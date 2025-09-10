@@ -2,7 +2,7 @@ const std = @import("std");
 const gl = @import("gl");
 const zm = @import("zmath");
 const assert = std.debug.assert;
-const Util = @import("../../util/util.zig");
+const Util = @import("../../../util/util.zig");
 
 const vert_source = @embedFile("shaders/basic.vert");
 const frag_source = @embedFile("shaders/basic.frag");
