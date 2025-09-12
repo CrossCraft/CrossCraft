@@ -35,6 +35,9 @@ const MyState = struct {
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
+        // const vert align(@alignOf(u32)) = @embedFile("shaders/basic.vert").*;
+        // const frag align(@alignOf(u32)) = @embedFile("shaders/basic.frag").*;
+        // pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
         const vert_spv align(@alignOf(u32)) = @embedFile("vertex_shader").*;
         const frag_spv align(@alignOf(u32)) = @embedFile("fragment_shader").*;
         pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert_spv, &frag_spv);

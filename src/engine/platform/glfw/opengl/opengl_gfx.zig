@@ -182,18 +182,13 @@ fn destroy_mesh(ctx: *anyopaque, handle: Mesh.Handle) void {
     _ = meshes.remove_element(handle);
 }
 
-fn update_mesh(ctx: *anyopaque, handle: Mesh.Handle, offset: usize, data: []const u8) void {
+fn update_mesh(ctx: *anyopaque, handle: Mesh.Handle, data: []const u8) void {
     _ = ctx;
 
     const mesh = meshes.get_element(handle) orelse return;
-    var sz: gl.int64 = 0;
-    gl.GetNamedBufferParameteri64v(mesh.vbo, gl.BUFFER_SIZE, &sz);
-    const need = @as(gl.int64, @intCast(offset + data.len));
-    if (need > sz) {
-        gl.NamedBufferData(mesh.vbo, need, null, gl.DYNAMIC_DRAW);
-    }
 
-    gl.NamedBufferSubData(mesh.vbo, @intCast(offset), @intCast(data.len), data.ptr);
+    gl.NamedBufferData(mesh.vbo, @intCast(data.len), null, gl.STATIC_DRAW);
+    gl.NamedBufferSubData(mesh.vbo, 0, @intCast(data.len), data.ptr);
 }
 
 fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, model: *const zm.Mat, count: usize) void {
