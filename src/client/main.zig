@@ -36,12 +36,16 @@ const MyState = struct {
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
-        // const vert align(@alignOf(u32)) = @embedFile("shaders/basic.vert").*;
-        // const frag align(@alignOf(u32)) = @embedFile("shaders/basic.frag").*;
-        // pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
-        const vert_spv align(@alignOf(u32)) = @embedFile("vertex_shader").*;
-        const frag_spv align(@alignOf(u32)) = @embedFile("fragment_shader").*;
-        pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert_spv, &frag_spv);
+        if (GPU_API == .opengl) {
+            const vert align(@alignOf(u32)) = @embedFile("shaders/basic.vert").*;
+            const frag align(@alignOf(u32)) = @embedFile("shaders/basic.frag").*;
+            pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
+        } else {
+            const vert_spv align(@alignOf(u32)) = @embedFile("vertex_shader").*;
+            const frag_spv align(@alignOf(u32)) = @embedFile("fragment_shader").*;
+            pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert_spv, &frag_spv);
+        }
+
         self.mesh = try MyMesh.new(Util.allocator(), pipeline);
         self.transform = Rendering.Transform.new();
 
@@ -111,11 +115,12 @@ const MyState = struct {
 };
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
+const GPU_API = .opengl;
 
 pub fn main() !void {
     var state: MyState = undefined;
 
-    try sp.App.init(1280, 720, "CrossCraft Classic-Z", .vulkan, false, false, &state.state());
+    try sp.App.init(1280, 720, "CrossCraft Classic-Z", GPU_API, false, false, &state.state());
     defer sp.App.deinit();
 
     try sp.App.main_loop();
