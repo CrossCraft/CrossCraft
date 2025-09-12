@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 
 const Surface = @import("../surface.zig");
 const Self = @This();
-const API = @import("../api.zig").Graphics;
+const API = @import("options").@"build.Gfx";
 
 window: *glfw.Window,
 width: c_int,

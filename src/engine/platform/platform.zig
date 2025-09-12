@@ -6,7 +6,7 @@ pub const input = @import("glfw/input.zig");
 
 const App = @import("../app.zig");
 
-pub const GraphicsAPI = @import("api.zig").Graphics;
+pub const GraphicsAPI = @import("options").@"build.Gfx";
 
 /// Initializes the platform subsystems: graphics and audio.
 pub fn init(width: u32, height: u32, title: [:0]const u8, fullscreen: bool, sync: bool, comptime api: GraphicsAPI) !void {

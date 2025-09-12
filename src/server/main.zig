@@ -6,28 +6,38 @@ pub fn main() !void {
     var server = try Server.init(std.heap.page_allocator);
     defer server.deinit(std.heap.page_allocator);
 
-    const ticks_per_second = 20;
-    const tick_duration = std.time.us_per_s / ticks_per_second;
+    const ticks_per_second: i64 = 20;
+    const tick_us: i64 = @intCast(std.time.us_per_s / ticks_per_second);
 
-    var next_tick_time = std.time.microTimestamp() + tick_duration;
+    var prev_time: i64 = std.time.microTimestamp();
+    var acc_us: i64 = 0;
+
     var tps: usize = 0;
-    var last_report_time = std.time.microTimestamp() + std.time.us_per_s;
+    var next_report_time: i64 = prev_time + std.time.us_per_s;
+
+    const max_acc_us: i64 = std.time.us_per_s;
+
     while (true) {
         const now = std.time.microTimestamp();
+        var dt = now - prev_time;
+        if (dt < 0) dt = 0;
+        prev_time = now;
 
-        if (now > last_report_time) {
+        acc_us += dt;
+        if (acc_us > max_acc_us) acc_us = max_acc_us;
+
+        while (acc_us >= tick_us) {
+            server.tick();
+            acc_us -= tick_us;
+            tps += 1;
+        }
+
+        if (now >= next_report_time) {
             std.debug.print("TPS: {d}\n", .{tps});
             tps = 0;
-            last_report_time = now + std.time.us_per_s;
+            next_report_time += std.time.us_per_s;
+            if (now > next_report_time + (10 * std.time.us_per_ms))
+                next_report_time = now + std.time.us_per_s;
         }
-        tps += 1;
-
-        if (now < next_tick_time) {
-            std.Thread.sleep(std.time.ns_per_us * @as(u64, @bitCast(next_tick_time - now)));
-        }
-
-        server.tick();
-
-        next_tick_time = std.time.microTimestamp() + tick_duration;
     }
 }

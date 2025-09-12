@@ -1,8 +1,63 @@
 const std = @import("std");
 
+pub const Platform = enum {
+    windows,
+    linux,
+    macos,
+    psp,
+};
+
+pub const Gfx = enum {
+    default,
+    opengl,
+    vulkan,
+};
+
+pub const Audio = enum(u8) {
+    default,
+};
+
+pub const Input = enum(u8) {
+    default,
+};
+
+pub const Config = struct {
+    platform: Platform,
+    gfx: Gfx,
+    audio: Audio = Audio.default,
+    input: Input = Input.default,
+
+    pub fn resolve(target: std.Build.ResolvedTarget) Config {
+        const plat: Platform = switch (target.result.os.tag) {
+            .windows => .windows,
+            .macos => .macos,
+            .linux => .linux,
+            else => |t| {
+                std.debug.panic("Unsupported OS! {}\n", .{t});
+            },
+        };
+
+        const gfx: Gfx = switch (target.result.os.tag) {
+            .windows => .vulkan,
+            .macos => .vulkan,
+            .linux => .opengl,
+            else => .default,
+        };
+
+        return .{
+            .platform = plat,
+            .gfx = gfx,
+        };
+    }
+};
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const options = b.addOptions();
+    options.addOption(Config, "config", Config.resolve(target));
+    const options_module = options.createModule();
 
     // glfw.zig provides glfw compilation and wrapping
     const glfw = b.dependency("glfw_zig", .{
@@ -58,6 +113,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zstbi", .module = zstbi.module("root") },
             .{ .name = "zaudio", .module = zaudio.module("root") },
             .{ .name = "vulkan", .module = vulkan },
+            .{ .name = "options", .module = options_module },
         },
     });
     engine.linkLibrary(glfw.artifact("glfw"));
@@ -91,6 +147,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "Spark", .module = engine },
                 .{ .name = "zmath", .module = zmath.module("root") },
+                .{ .name = "options", .module = options_module },
             },
         }),
     });

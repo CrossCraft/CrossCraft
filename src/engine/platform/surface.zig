@@ -1,7 +1,7 @@
 const builtin = @import("builtin");
 const Util = @import("../util/util.zig");
 const Self = @This();
-const API = @import("api.zig").Graphics;
+const API = @import("options").@"build.Gfx";
 
 ptr: *anyopaque,
 tab: *const VTable,
