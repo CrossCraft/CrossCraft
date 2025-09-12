@@ -13,8 +13,8 @@ const Self = @This();
 
 /// A simple 3D camera with position and orientation.
 pub fn update(self: *Self) void {
-    gfx.api.set_proj_matrix(self.get_projection_matrix());
-    gfx.api.set_view_matrix(self.get_view_matrix());
+    gfx.api.set_proj_matrix(&self.get_projection_matrix());
+    gfx.api.set_view_matrix(&self.get_view_matrix());
 }
 
 /// Computes and returns the camera's projection matrix based on its field of view and the current aspect ratio.
