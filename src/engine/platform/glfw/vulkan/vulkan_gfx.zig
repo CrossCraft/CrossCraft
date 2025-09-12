@@ -221,6 +221,24 @@ fn set_view_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
     _ = mat;
 }
 
+fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]const u8, fs: ?[:0]const u8) anyerror!Pipeline.Handle {
+    _ = ctx;
+    _ = layout;
+    _ = vs;
+    _ = fs;
+    return 0;
+}
+
+fn destroy_pipeline(ctx: *anyopaque, handle: Pipeline.Handle) void {
+    _ = ctx;
+    _ = handle;
+}
+
+fn bind_pipeline(ctx: *anyopaque, handle: Pipeline.Handle) void {
+    _ = ctx;
+    _ = handle;
+}
+
 fn create_mesh(ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!u32 {
     _ = ctx;
     _ = pipeline;
@@ -239,9 +257,10 @@ fn update_mesh(ctx: *anyopaque, handle: u32, offset: usize, data: []const u8) vo
     _ = data;
 }
 
-fn draw_mesh(ctx: *anyopaque, handle: u32, count: usize) void {
+fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const zm.Mat, count: usize) void {
     _ = ctx;
     _ = handle;
+    _ = model;
     _ = count;
 }
 
@@ -254,6 +273,11 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) an
 }
 
 fn bind_texture(ctx: *anyopaque, handle: u32) void {
+    _ = ctx;
+    _ = handle;
+}
+
+fn destroy_texture(ctx: *anyopaque, handle: u32) void {
     _ = ctx;
     _ = handle;
 }
@@ -275,6 +299,10 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .draw_mesh = draw_mesh,
             .create_texture = create_texture,
             .bind_texture = bind_texture,
+            .destroy_texture = destroy_texture,
+            .create_pipeline = create_pipeline,
+            .destroy_pipeline = destroy_pipeline,
+            .bind_pipeline = bind_pipeline,
         },
     };
 }

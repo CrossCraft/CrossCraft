@@ -101,7 +101,7 @@ var pipeline: Rendering.Pipeline.Handle = undefined;
 pub fn main() !void {
     var state: MyState = undefined;
 
-    try sp.App.init(1280, 720, "CrossCraft Classic-Z", .opengl, false, false, &state.state());
+    try sp.App.init(1280, 720, "CrossCraft Classic-Z", .vulkan, false, false, &state.state());
     defer sp.App.deinit();
 
     defer Rendering.Pipeline.deinit(pipeline);
