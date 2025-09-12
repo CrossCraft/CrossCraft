@@ -25,7 +25,7 @@ pub const VTable = struct {
     end_frame: *const fn (ctx: *anyopaque) void,
 
     // --- Pipeline API ---
-    create_pipeline: *const fn (ctx: *anyopaque, layout: Pipeline.VertexLayout, v_shader: ?[:0]const u8, f_shader: ?[:0]const u8) anyerror!Pipeline.Handle,
+    create_pipeline: *const fn (ctx: *anyopaque, layout: Pipeline.VertexLayout, v_shader: ?[:0]align(4) const u8, f_shader: ?[:0]align(4) const u8) anyerror!Pipeline.Handle,
     destroy_pipeline: *const fn (ctx: *anyopaque, pipeline: Pipeline.Handle) void,
     bind_pipeline: *const fn (ctx: *anyopaque, pipeline: Pipeline.Handle) void,
 
@@ -34,7 +34,7 @@ pub const VTable = struct {
     // Use the Mesh abstraction instead.
     create_mesh: *const fn (ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!Mesh.Handle,
     destroy_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle) void,
-    update_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, offset: usize, data: []const u8) void,
+    update_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, data: []const u8) void,
     draw_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, model: *const zm.Mat, count: usize) void,
 
     // --- Texture API (raw) ---

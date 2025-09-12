@@ -69,7 +69,7 @@ pub fn layout_from_struct(comptime V: type, comptime attrs: []const Attribute) V
 
 handle: Handle,
 
-pub fn new(layout: VertexLayout, vs: ?[:0]const u8, fs: ?[:0]const u8) !Handle {
+pub fn new(layout: VertexLayout, vs: ?[:0]align(4) const u8, fs: ?[:0]align(4) const u8) !Handle {
     return gfx.api.tab.create_pipeline(gfx.api.ptr, layout, vs, fs);
 }
 

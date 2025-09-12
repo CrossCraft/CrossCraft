@@ -34,7 +34,10 @@ const MyState = struct {
 
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
-        pipeline = try Rendering.Pipeline.new(Vertex.Layout, @embedFile("shaders/basic.vert"), @embedFile("shaders/basic.frag"));
+
+        const vert_spv align(@alignOf(u32)) = @embedFile("vertex_shader").*;
+        const frag_spv align(@alignOf(u32)) = @embedFile("fragment_shader").*;
+        pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert_spv, &frag_spv);
         self.mesh = try MyMesh.new(Util.allocator(), pipeline);
         self.transform = Rendering.Transform.new();
 
@@ -103,8 +106,6 @@ pub fn main() !void {
 
     try sp.App.init(1280, 720, "CrossCraft Classic-Z", .vulkan, false, false, &state.state());
     defer sp.App.deinit();
-
-    defer Rendering.Pipeline.deinit(pipeline);
 
     try sp.App.main_loop();
 }

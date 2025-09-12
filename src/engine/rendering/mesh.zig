@@ -36,15 +36,7 @@ pub fn Mesh(comptime V: type) type {
         }
 
         pub fn update(self: *Self) void {
-            gfx.api.tab.update_mesh(gfx.api.ptr, self.handle, 0, std.mem.sliceAsBytes(self.vertices.items));
-        }
-
-        pub fn update_range(self: *Self, offset: usize, len: usize) void {
-            const offset_bytes = offset * @sizeOf(Vertex);
-            const len_bytes = len * @sizeOf(Vertex);
-            const vertex_bytes = std.mem.asBytes(self.vertices.items);
-
-            gfx.api.tab.update_mesh(gfx.api.ptr, self.handle, offset_bytes, vertex_bytes[offset_bytes .. offset_bytes + len_bytes]);
+            gfx.api.tab.update_mesh(gfx.api.ptr, self.handle, std.mem.sliceAsBytes(self.vertices.items));
         }
 
         pub fn draw(self: *Self, mat: *const zm.Mat) void {
