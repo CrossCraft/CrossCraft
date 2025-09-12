@@ -115,7 +115,7 @@ const MyState = struct {
 };
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
-const GPU_API = .opengl;
+const GPU_API = .vulkan;
 
 pub fn main() !void {
     var state: MyState = undefined;

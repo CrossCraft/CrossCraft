@@ -68,7 +68,7 @@ var descriptor_set_layout: vk.DescriptorSetLayout = .null_handle;
 var descriptor_pool: vk.DescriptorPool = .null_handle;
 var descriptor_sets: []vk.DescriptorSet = undefined;
 
-const TEXTURE_CAP: u32 = 16384;
+const TEXTURE_CAP: u32 = 4096;
 
 var tex_set_layout: vk.DescriptorSetLayout = .null_handle;
 var tex_pool: vk.DescriptorPool = .null_handle;
@@ -135,26 +135,35 @@ fn destroy_uniform_buffers() void {
 }
 
 fn create_texture_set_layout() !void {
-    const binding = vk.DescriptorSetLayoutBinding{
-        .binding = 0,
-        .descriptor_type = .combined_image_sampler,
-        .descriptor_count = TEXTURE_CAP,
-        .stage_flags = .{ .fragment_bit = true },
+    const bindings = [_]vk.DescriptorSetLayoutBinding{
+        .{ // binding 0: exactly ONE sampler
+            .binding = 0,
+            .descriptor_type = .sampler,
+            .descriptor_count = 1,
+            .stage_flags = .{ .fragment_bit = true },
+        },
+        .{ // binding 1: texture array (variable)
+            .binding = 1,
+            .descriptor_type = .sampled_image,
+            .descriptor_count = TEXTURE_CAP, // max
+            .stage_flags = .{ .fragment_bit = true },
+        },
     };
 
     const bind_flags = [_]vk.DescriptorBindingFlags{
+        .{ .update_after_bind_bit = true },
         .{ .partially_bound_bit = true, .update_after_bind_bit = true, .variable_descriptor_count_bit = true },
     };
 
     var flags_info = vk.DescriptorSetLayoutBindingFlagsCreateInfo{
-        .binding_count = 1,
+        .binding_count = @intCast(bindings.len),
         .p_binding_flags = @ptrCast(&bind_flags),
     };
 
     tex_set_layout = try context.logical_device.createDescriptorSetLayout(&.{
         .flags = .{ .update_after_bind_pool_bit = true },
-        .binding_count = 1,
-        .p_bindings = @ptrCast(&binding),
+        .binding_count = @intCast(bindings.len),
+        .p_bindings = @ptrCast(&bindings),
         .p_next = &flags_info,
     }, null);
 }
@@ -164,18 +173,19 @@ fn destroy_texture_set_layout() void {
 }
 
 fn create_texture_descriptor_pool_and_set(actual_count: u32) !void {
-    const pool_size = vk.DescriptorPoolSize{
-        .type = .combined_image_sampler,
-        .descriptor_count = actual_count,
+    const pool_sizes = [_]vk.DescriptorPoolSize{
+        .{ .type = .sampler, .descriptor_count = 1 },
+        .{ .type = .sampled_image, .descriptor_count = actual_count },
     };
 
     tex_pool = try context.logical_device.createDescriptorPool(&.{
         .flags = .{ .update_after_bind_bit = true, .free_descriptor_set_bit = true },
         .max_sets = 1,
-        .pool_size_count = 1,
-        .p_pool_sizes = @ptrCast(&pool_size),
+        .pool_size_count = @intCast(pool_sizes.len),
+        .p_pool_sizes = @ptrCast(&pool_sizes),
     }, null);
 
+    // VDC applies to the LAST variable binding in the set (binding = 1 here)
     const counts = [_]u32{actual_count};
     var vdc_info = vk.DescriptorSetVariableDescriptorCountAllocateInfo{
         .descriptor_set_count = 1,
@@ -227,7 +237,7 @@ fn create_descriptor_set_layout() !void {
         .binding = 0,
         .descriptor_count = 1,
         .descriptor_type = .uniform_buffer,
-        .stage_flags = .{ .vertex_bit = true },
+        .stage_flags = .{ .vertex_bit = true, .fragment_bit = true },
     };
 
     descriptor_set_layout = try context.logical_device.createDescriptorSetLayout(&.{
@@ -373,9 +383,9 @@ fn start_frame(ctx: *anyopaque) bool {
 
     const viewport = vk.Viewport{
         .x = 0,
-        .y = 0,
+        .y = @floatFromInt(gfx.surface.get_height()),
         .width = @floatFromInt(gfx.surface.get_width()),
-        .height = @floatFromInt(gfx.surface.get_height()),
+        .height = -@as(f32, @floatFromInt(gfx.surface.get_height())),
         .min_depth = 0,
         .max_depth = 1,
     };
@@ -498,7 +508,7 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
     const set_layouts = [_]vk.DescriptorSetLayout{ descriptor_set_layout, tex_set_layout };
 
     const range = vk.PushConstantRange{
-        .stage_flags = .{ .vertex_bit = true },
+        .stage_flags = .{ .vertex_bit = true, .fragment_bit = true },
         .offset = 0,
         .size = @sizeOf(DrawState),
     };
@@ -974,22 +984,42 @@ fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) an
     }
     const idx: u32 = @intCast(handle_opt.?);
 
-    const img_info = vk.DescriptorImageInfo{
+    // Write sampler once at binding 0, elem 0
+    const samp_info = vk.DescriptorImageInfo{
         .sampler = tex_sampler,
+        .image_view = .null_handle,
+        .image_layout = .undefined,
+    };
+    const write_sampler = vk.WriteDescriptorSet{
+        .dst_set = tex_set,
+        .dst_binding = 0,
+        .dst_array_element = 0,
+        .descriptor_count = 1,
+        .descriptor_type = .sampler,
+        .p_image_info = @ptrCast(&samp_info),
+        .p_buffer_info = undefined,
+        .p_texel_buffer_view = undefined,
+    };
+
+    // For each texture 'idx' at binding 1
+    const img_info = vk.DescriptorImageInfo{
+        .sampler = .null_handle,
         .image_view = view,
         .image_layout = .shader_read_only_optimal,
     };
-    const write = vk.WriteDescriptorSet{
+    const write_image = vk.WriteDescriptorSet{
         .dst_set = tex_set,
-        .dst_binding = 0,
+        .dst_binding = 1,
         .dst_array_element = idx,
         .descriptor_count = 1,
-        .descriptor_type = .combined_image_sampler,
+        .descriptor_type = .sampled_image,
         .p_image_info = @ptrCast(&img_info),
         .p_buffer_info = undefined,
         .p_texel_buffer_view = undefined,
     };
-    context.logical_device.updateDescriptorSets(1, @ptrCast(&write), 0, null);
+
+    const writes = [_]vk.WriteDescriptorSet{ write_sampler, write_image };
+    context.logical_device.updateDescriptorSets(@intCast(writes.len), @ptrCast(&writes), 0, null);
 
     return idx;
 }
@@ -1004,22 +1034,39 @@ fn destroy_texture(ctx: *anyopaque, handle: u32) void {
 
     const rec = textures.get_element(handle) orelse return;
 
-    const null_info = vk.DescriptorImageInfo{
+    const null_img = vk.DescriptorImageInfo{
         .sampler = .null_handle,
         .image_view = .null_handle,
         .image_layout = .undefined,
     };
-    const clear_write = vk.WriteDescriptorSet{
-        .dst_set = tex_set,
-        .dst_binding = 0,
-        .dst_array_element = handle,
-        .descriptor_count = 1,
-        .descriptor_type = .combined_image_sampler,
-        .p_image_info = @ptrCast(&null_info),
-        .p_buffer_info = undefined,
-        .p_texel_buffer_view = undefined,
+    const null_smp = vk.DescriptorImageInfo{
+        .sampler = .null_handle,
+        .image_view = .null_handle,
+        .image_layout = .undefined,
     };
-    context.logical_device.updateDescriptorSets(1, @ptrCast(&clear_write), 0, null);
+    const clears = [_]vk.WriteDescriptorSet{
+        vk.WriteDescriptorSet{
+            .dst_set = tex_set,
+            .dst_binding = 0,
+            .dst_array_element = handle,
+            .descriptor_count = 1,
+            .descriptor_type = .sampled_image,
+            .p_image_info = @ptrCast(&null_img),
+            .p_buffer_info = undefined,
+            .p_texel_buffer_view = undefined,
+        },
+        vk.WriteDescriptorSet{
+            .dst_set = tex_set,
+            .dst_binding = 1,
+            .dst_array_element = handle,
+            .descriptor_count = 1,
+            .descriptor_type = .sampler,
+            .p_image_info = @ptrCast(&null_smp),
+            .p_buffer_info = undefined,
+            .p_texel_buffer_view = undefined,
+        },
+    };
+    context.logical_device.updateDescriptorSets(@intCast(clears.len), @ptrCast(&clears), 0, null);
 
     _ = context.logical_device.deviceWaitIdle() catch {};
 

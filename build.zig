@@ -63,6 +63,10 @@ pub fn build(b: *std.Build) void {
     engine.linkLibrary(glfw.artifact("glfw"));
     engine.linkLibrary(zaudio.artifact("miniaudio"));
 
+    if (target.result.os.tag == .macos) {
+        engine.linkSystemLibrary("vulkan", .{});
+    }
+
     const net = b.addModule("Net", .{
         .root_source_file = b.path("src/net/root.zig"),
         .target = target,

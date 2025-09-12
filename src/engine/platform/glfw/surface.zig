@@ -68,7 +68,7 @@ fn init(ctx: *anyopaque, width: u32, height: u32, title: [:0]const u8, fullscree
     }
 
     // Trigger initial size fetch
-    glfw.getWindowSize(self.window, &self.width, &self.height);
+    glfw.getFramebufferSize(self.window, &self.width, &self.height);
 
     // Input
     _ = glfw.updateGamepadMappings(@embedFile("gamecontrollerdb.txt"));
@@ -90,7 +90,7 @@ fn deinit(ctx: *anyopaque) void {
 fn update(ctx: *anyopaque) bool {
     const self = Util.ctx_to_self(Self, ctx);
     glfw.pollEvents();
-    glfw.getWindowSize(self.window, &self.width, &self.height);
+    glfw.getFramebufferSize(self.window, &self.width, &self.height);
 
     for (0..16) |joystick| {
         if (glfw.joystickPresent(@intCast(joystick))) {

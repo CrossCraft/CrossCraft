@@ -21,7 +21,6 @@ layout(push_constant, std430) uniform PushConstants {
 
 void main() {
     gl_Position = u_proj * u_view * pc.u_model * vec4(vert_pos, 1.0);
-    gl_Position.y = -gl_Position.y;
     frag_uv = vert_uv;
     frag_color = vert_color;
 }

@@ -14,7 +14,7 @@ const DeviceWrapper = vk.DeviceWrapper;
 const Instance = vk.InstanceProxy;
 const Device = vk.DeviceProxy;
 
-const required_device_extensions = [_][*:0]const u8{ vk.extensions.khr_swapchain.name, vk.extensions.khr_spirv_1_4.name, vk.extensions.khr_synchronization_2.name, vk.extensions.khr_create_renderpass_2.name };
+const required_device_extensions = [_][*:0]const u8{ vk.extensions.khr_swapchain.name, vk.extensions.khr_synchronization_2.name, vk.extensions.khr_create_renderpass_2.name };
 
 const Self = @This();
 
@@ -42,8 +42,11 @@ fn create_instance(self: *Self, name: [:0]const u8) !void {
     const validation_layers = [_][*:0]const u8{"VK_LAYER_KHRONOS_validation"};
 
     if (enable_validation) {
-        try extension_names.append(self.allocator, "VK_EXT_debug_utils");
+        try extension_names.append(self.allocator, vk.extensions.ext_debug_utils.name);
     }
+
+    try extension_names.append(self.allocator, vk.extensions.khr_portability_enumeration.name);
+    try extension_names.append(self.allocator, vk.extensions.khr_get_physical_device_properties_2.name);
 
     // Get required GLFW extensions
     var glfw_exts_count: u32 = 0;
@@ -61,6 +64,7 @@ fn create_instance(self: *Self, name: [:0]const u8) !void {
         },
         .enabled_extension_count = @intCast(extension_names.items.len),
         .pp_enabled_extension_names = extension_names.items.ptr,
+        .flags = .{ .enumerate_portability_bit_khr = true },
     };
 
     // With validation layers?
@@ -222,16 +226,34 @@ fn create_logical_device(self: *Self, candidate: *const DeviceCandidate) !void {
         2;
 
     // Physical device feature enablement
+    // Base features2
     var features = vk.PhysicalDeviceFeatures2{ .features = .{} };
     self.instance.getPhysicalDeviceFeatures2(self.physical_device, &features);
+
+    // Vulkan 1.2 features (descriptor indexing & friends)
+    var vulkan12_features = vk.PhysicalDeviceVulkan12Features{};
+    // master switch for descriptor indexing block
+    vulkan12_features.descriptor_indexing = .true;
+    // bindless / runtime-sized arrays
+    vulkan12_features.runtime_descriptor_array = .true;
+    vulkan12_features.descriptor_binding_variable_descriptor_count = .true;
+    vulkan12_features.descriptor_binding_partially_bound = .true;
+    vulkan12_features.descriptor_binding_sampled_image_update_after_bind = .true;
+    vulkan12_features.descriptor_binding_update_unused_while_pending = .true;
+    vulkan12_features.shader_sampled_image_array_non_uniform_indexing = .true;
+
+    // Vulkan 1.3 features
     var vulkan13_features = vk.PhysicalDeviceVulkan13Features{};
     vulkan13_features.dynamic_rendering = .true;
     vulkan13_features.synchronization_2 = .true;
+
     var extended_dynamic_state_features = vk.PhysicalDeviceExtendedDynamicStateFeaturesEXT{};
     extended_dynamic_state_features.extended_dynamic_state = .true;
-    vulkan13_features.p_next = &extended_dynamic_state_features;
-    features.p_next = &vulkan13_features;
 
+    // pNext chain: features -> v1.2 -> v1.3 -> ext dyn state
+    vulkan13_features.p_next = &extended_dynamic_state_features;
+    vulkan12_features.p_next = &vulkan13_features;
+    features.p_next = &vulkan12_features;
     // Create the device with the aforementioned features
     const device = try self.instance.createDevice(candidate.pdev, &.{
         .queue_create_info_count = queue_count,
