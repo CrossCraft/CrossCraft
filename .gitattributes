@@ -1,0 +1,1 @@
+src/engine/platform/glfw/gamecontrollerdb.txt filter=lfs diff=lfs merge=lfs -text

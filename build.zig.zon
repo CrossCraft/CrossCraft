@@ -1,0 +1,47 @@
+.{
+    .name = .CrossCraft,
+    .version = "0.0.0",
+    .fingerprint = 0xe210aad5fbf843a4, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{
+        .glfw_zig = .{
+            .url = "git+https://github.com/tiawl/glfw.zig#67ce6cacd25f1cdd497e7175c6a7212a2ad4d77a",
+            .hash = "glfw_zig-1.0.0-NrvYoy3XGQBpaoqirC7595LMOV9RDo6isDtLK870oKNG",
+        },
+        .zglfw = .{
+            .url = "git+https://github.com/IridescenceTech/zglfw#e05188a71db6053ec56bba83a27fb736a26562ce",
+            .hash = "zglfw-0.1.0-BghZXabUAACfsXVTPWvmy44XLsc-wux2G9w8Mbp523pJ",
+        },
+        .zigglgen = .{
+            .url = "git+https://github.com/castholm/zigglgen.git#744d8b6617a7eb8df15f5922faa002e0b5234025",
+            .hash = "zigglgen-0.4.0-bmyqLXT4LQCQviz5TRTU14ntLCRUxLNTK0Us3v93jyxR",
+        },
+        .zmath = .{
+            .url = "git+https://github.com/zig-gamedev/zmath.git#3a5955b2b72cd081563fbb084eff05bffd1e3fbb",
+            .hash = "zmath-0.11.0-dev-wjwivdMsAwD-xaLj76YHUq3t9JDH-X16xuMTmnDzqbu2",
+        },
+        .zstbi = .{
+            .url = "git+https://github.com/zig-gamedev/zstbi#2c4b3100ccb7aed90ecc9439030899764e2a8d47",
+            .hash = "zstbi-0.11.0-dev-L0Ea_yaWBwAHwFoCuyjkFyaiSsbjt4UOrkntR0c_nmzz",
+        },
+        .zaudio = .{
+            .url = "git+https://github.com/zig-gamedev/zaudio#dd1f002f8d90fc255409b58b89326813354562e3",
+            .hash = "zaudio-0.11.0-dev-_M-91pBlPwDkibUGXKZxd_I_kEIUMJp6CfhwlX4sBEp-",
+        },
+        .vulkan = .{
+            .url = "git+https://github.com/Snektron/vulkan-zig?ref=zig-0.15-compat#f879074293f0e2f718c93fd19cc0a96260a3aa52",
+            .hash = "vulkan-0.0.0-r7Ytx6hBAwBUnt0XA-uOkR2hda4fAHFhQITNTgJpnFkY",
+        },
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/heads/vulkan-sdk-1.4.304.tar.gz",
+            .hash = "N-V-__8AACUYwwHkOfRNOmzhES0A0wAstELzgG-GdNu-uUE5",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}
