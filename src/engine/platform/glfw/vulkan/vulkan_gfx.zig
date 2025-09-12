@@ -5,7 +5,9 @@ const zm = @import("zmath");
 
 const vk = @import("vulkan");
 const gfx = @import("../../gfx.zig");
-const Mesh = @import("../../../rendering/mesh.zig");
+const Rendering = @import("../../../rendering/rendering.zig");
+const Pipeline = Rendering.Pipeline;
+const Mesh = Rendering.Mesh;
 const GFXAPI = @import("../../gfx_api.zig");
 const Self = @This();
 
@@ -219,30 +221,25 @@ fn set_view_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
     _ = mat;
 }
 
-fn set_model_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
+fn create_mesh(ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!u32 {
     _ = ctx;
-    _ = mat;
-}
-
-fn create_mesh(ctx: *anyopaque, layout: Mesh.VertexLayout) anyerror!Mesh.Handle {
-    _ = ctx;
-    _ = layout;
+    _ = pipeline;
     return 0;
 }
 
-fn destroy_mesh(ctx: *anyopaque, handle: Mesh.Handle) void {
+fn destroy_mesh(ctx: *anyopaque, handle: u32) void {
     _ = ctx;
     _ = handle;
 }
 
-fn update_mesh(ctx: *anyopaque, handle: Mesh.Handle, offset: usize, data: []const u8) void {
+fn update_mesh(ctx: *anyopaque, handle: u32, offset: usize, data: []const u8) void {
     _ = ctx;
     _ = handle;
     _ = offset;
     _ = data;
 }
 
-fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, count: usize) void {
+fn draw_mesh(ctx: *anyopaque, handle: u32, count: usize) void {
     _ = ctx;
     _ = handle;
     _ = count;
@@ -272,7 +269,6 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .end_frame = end_frame,
             .set_proj_matrix = set_proj_matrix,
             .set_view_matrix = set_view_matrix,
-            .set_model_matrix = set_model_matrix,
             .create_mesh = create_mesh,
             .destroy_mesh = destroy_mesh,
             .update_mesh = update_mesh,

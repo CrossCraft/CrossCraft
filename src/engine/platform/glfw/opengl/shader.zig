@@ -4,9 +4,6 @@ const zm = @import("zmath");
 const assert = std.debug.assert;
 const Util = @import("../../../util/util.zig");
 
-const vert_source = @embedFile("shaders/basic.vert");
-const frag_source = @embedFile("shaders/basic.frag");
-
 pub const ShaderState = struct {
     view: zm.Mat,
     proj: zm.Mat,
@@ -17,16 +14,72 @@ pub var state: ShaderState = .{
     .proj = zm.identity(),
 };
 
-var shader_program: gl.uint = 0;
 var ubo: gl.uint = 0;
-var model_loc: gl.int = -1;
-
 var initialized = false;
 
+pub fn init() !void {
+    assert(!initialized);
+    initialized = true;
+
+    gl.CreateBuffers(1, @ptrCast(&ubo));
+    gl.NamedBufferStorage(ubo, @sizeOf(ShaderState), &state, gl.DYNAMIC_STORAGE_BIT);
+    gl.BindBufferBase(gl.UNIFORM_BUFFER, 0, ubo);
+
+    assert(ubo != 0);
+    assert(initialized);
+}
+
+pub fn update_ubo() void {
+    gl.NamedBufferSubData(ubo, 0, @sizeOf(ShaderState), &state);
+}
+
+pub fn deinit() void {
+    assert(initialized);
+    initialized = false;
+
+    gl.DeleteBuffers(1, @ptrCast(&ubo));
+
+    assert(!initialized);
+}
+
+pub const Shader = struct {
+    shader_program: gl.uint = 0,
+    model_loc: gl.int = -1,
+
+    pub fn init(vs: [:0]const u8, fs: [:0]const u8) !Shader {
+        var self = Shader{};
+
+        const vert_shader = try compile_shader(vs, gl.VERTEX_SHADER);
+        const frag_shader = try compile_shader(fs, gl.FRAGMENT_SHADER);
+        self.shader_program = try link_shader(vert_shader, frag_shader);
+
+        self.model_loc = gl.GetUniformLocation(self.shader_program, "u_model");
+        assert(self.model_loc != -1);
+
+        return self;
+    }
+
+    pub fn bind(self: *const Shader) void {
+        gl.UseProgram(self.shader_program);
+    }
+
+    pub fn update_model(self: *const Shader, model: *const zm.Mat) void {
+        gl.UniformMatrix4fv(self.model_loc, 1, gl.FALSE, @ptrCast(model));
+    }
+
+    pub fn deinit(self: *Shader) void {
+        gl.DeleteProgram(self.shader_program);
+        self.shader_program = 0;
+        self.model_loc = -1;
+    }
+};
+
 /// Compile a shader from source code.
-fn compile_shader(source: [*]const [*]const gl.char, shader_type: gl.uint) !gl.uint {
+fn compile_shader(source: [:0]const u8, shader_type: gl.uint) !gl.uint {
     const shader = gl.CreateShader(shader_type);
-    gl.ShaderSource(shader, 1, source, null);
+
+    const pointers = [_][*]const u8{source.ptr};
+    gl.ShaderSource(shader, 1, @ptrCast(&pointers), null);
 
     var success: c_uint = 0;
     gl.CompileShader(shader);
@@ -65,43 +118,4 @@ fn link_shader(vert: gl.uint, frag: gl.uint) !gl.uint {
     gl.UseProgram(program);
 
     return program;
-}
-
-pub fn init() !void {
-    assert(!initialized);
-    initialized = true;
-
-    const vert = try compile_shader(@ptrCast(&vert_source), gl.VERTEX_SHADER);
-    const frag = try compile_shader(@ptrCast(&frag_source), gl.FRAGMENT_SHADER);
-    shader_program = try link_shader(vert, frag);
-
-    gl.CreateBuffers(1, @ptrCast(&ubo));
-    gl.NamedBufferStorage(ubo, @sizeOf(ShaderState), &state, gl.DYNAMIC_STORAGE_BIT);
-    gl.BindBufferBase(gl.UNIFORM_BUFFER, 0, ubo);
-
-    model_loc = gl.GetUniformLocation(shader_program, "u_model");
-
-    assert(model_loc != -1);
-    assert(ubo != 0);
-    assert(shader_program != 0);
-    assert(initialized);
-}
-
-pub fn update_model(model_mat: *const zm.Mat) void {
-    assert(initialized);
-    gl.ProgramUniformMatrix4fv(shader_program, model_loc, 1, gl.FALSE, @ptrCast(model_mat));
-}
-
-pub fn update_ubo() void {
-    gl.NamedBufferSubData(ubo, 0, @sizeOf(ShaderState), &state);
-}
-
-pub fn deinit() void {
-    assert(initialized);
-    initialized = false;
-
-    gl.DeleteProgram(shader_program);
-    shader_program = 0;
-
-    assert(!initialized);
 }

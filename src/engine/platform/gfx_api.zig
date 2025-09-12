@@ -1,7 +1,10 @@
 const zm = @import("zmath");
 const Util = @import("../util/util.zig");
-const Mesh = @import("../rendering/mesh.zig");
-const Texture = @import("../rendering/texture.zig");
+const Rendering = @import("../rendering/rendering.zig");
+const Mesh = Rendering.mesh;
+const Pipeline = Rendering.Pipeline;
+const Texture = Rendering.Texture;
+
 const Self = @This();
 
 ptr: *anyopaque,
@@ -16,23 +19,28 @@ pub const VTable = struct {
     set_clear_color: *const fn (ctx: *anyopaque, r: f32, g: f32, b: f32, a: f32) void,
     set_proj_matrix: *const fn (ctx: *anyopaque, mat: *const zm.Mat) void,
     set_view_matrix: *const fn (ctx: *anyopaque, mat: *const zm.Mat) void,
-    set_model_matrix: *const fn (ctx: *anyopaque, mat: *const zm.Mat) void,
 
     // --- Frame Management ---
     start_frame: *const fn (ctx: *anyopaque) bool,
     end_frame: *const fn (ctx: *anyopaque) void,
 
+    // --- Pipeline API ---
+    create_pipeline: *const fn (ctx: *anyopaque, layout: Pipeline.VertexLayout, v_shader: ?[:0]const u8, f_shader: ?[:0]const u8) anyerror!Pipeline.Handle,
+    destroy_pipeline: *const fn (ctx: *anyopaque, pipeline: Pipeline.Handle) void,
+    bind_pipeline: *const fn (ctx: *anyopaque, pipeline: Pipeline.Handle) void,
+
     // --- Mesh API (raw) ---
     // These are intentionally not exposed directly to the user.
     // Use the Mesh abstraction instead.
-    create_mesh: *const fn (ctx: *anyopaque, layout: Mesh.VertexLayout) anyerror!Mesh.Handle,
+    create_mesh: *const fn (ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!Mesh.Handle,
     destroy_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle) void,
     update_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, offset: usize, data: []const u8) void,
-    draw_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, count: usize) void,
+    draw_mesh: *const fn (ctx: *anyopaque, mesh: Mesh.Handle, model: *const zm.Mat, count: usize) void,
 
     // --- Texture API (raw) ---
     create_texture: *const fn (ctx: *anyopaque, width: u32, height: u32, data: []const u8) anyerror!Texture.Handle,
     bind_texture: *const fn (ctx: *anyopaque, handle: Texture.Handle) void,
+    destroy_texture: *const fn (ctx: *anyopaque, handle: Texture.Handle) void,
 };
 
 /// Starts the Graphics API. Must be called before any other graphics functions.
@@ -80,13 +88,6 @@ pub inline fn set_proj_matrix(self: *const Self, mat: *const zm.Mat) void {
 /// It is typically updated each frame based on camera movement.
 pub inline fn set_view_matrix(self: *const Self, mat: *const zm.Mat) void {
     self.tab.set_view_matrix(self.ptr, mat);
-}
-
-/// Sets the model matrix used for rendering.
-/// This matrix transforms object coordinates into world space.
-/// It is typically updated for each object before drawing it.
-pub inline fn set_model_matrix(self: *const Self, mat: *const zm.Mat) void {
-    self.tab.set_model_matrix(self.ptr, mat);
 }
 
 const GraphicsAPI = @import("platform.zig").GraphicsAPI;

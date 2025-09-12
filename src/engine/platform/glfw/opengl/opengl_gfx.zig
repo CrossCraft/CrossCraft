@@ -6,23 +6,27 @@ const zm = @import("zmath");
 
 const shader = @import("shader.zig");
 const gfx = @import("../../gfx.zig");
-const Mesh = @import("../../../rendering/mesh.zig");
+
+const Rendering = @import("../../../rendering/rendering.zig");
+const Mesh = Rendering.mesh;
+const Pipeline = Rendering.Pipeline;
 const GFXAPI = @import("../../gfx_api.zig");
 const Self = @This();
 
 var procs: gl.ProcTable = undefined;
 var last_width: u32 = 0;
 var last_height: u32 = 0;
-var vaos = Util.CircularBuffer(VAOData, 16).init();
+var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var meshes = Util.CircularBuffer(MeshInternal, 2048).init();
 
-const VAOData = struct {
-    layout: Mesh.VertexLayout,
+const PipelineData = struct {
+    layout: Pipeline.VertexLayout,
     vao: gl.uint,
+    program: shader.Shader,
 };
 
 const MeshInternal = struct {
-    vao: usize,
+    pipeline: Pipeline.Handle,
     vbo: gl.uint,
 };
 
@@ -101,57 +105,69 @@ fn set_view_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
     shader.update_ubo();
 }
 
-fn set_model_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
+fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, v_shader: ?[:0]const u8, f_shader: ?[:0]const u8) anyerror!Pipeline.Handle {
     _ = ctx;
-    shader.update_model(mat);
+
+    if (v_shader == null or f_shader == null) {
+        return error.InvalidShader;
+    }
+
+    var vao: gl.uint = 0;
+    gl.CreateVertexArrays(1, @ptrCast(&vao));
+    for (layout.attributes) |a| {
+        gl.EnableVertexArrayAttrib(vao, a.location);
+
+        gl.VertexArrayAttribFormat(vao, a.location, @intCast(a.size), switch (a.format) {
+            .f32x2, .f32x3 => gl.FLOAT,
+            .unorm8x4 => gl.UNSIGNED_BYTE,
+        }, switch (a.format) {
+            .f32x2, .f32x3 => gl.FALSE,
+            .unorm8x4 => gl.TRUE,
+        }, @intCast(a.offset));
+        gl.VertexArrayAttribBinding(vao, a.location, a.binding);
+    }
+
+    const pipeline = pipelines.add_element(.{
+        .layout = layout,
+        .vao = vao,
+        .program = try shader.Shader.init(v_shader.?, f_shader.?),
+    }) orelse return error.OutOfPipelines;
+
+    return @intCast(pipeline);
 }
 
-fn find_layout(layout: Mesh.VertexLayout) ?gl.uint {
-    return for (1..16) |i| {
-        if (vaos.buffer[i]) |v| {
-            if (std.meta.eql(v.layout, layout)) {
-                break @intCast(i);
-            }
-        }
-    } else null;
+fn bind_pipeline(ctx: *anyopaque, pipeline: Pipeline.Handle) void {
+    _ = ctx;
+
+    const pl = pipelines.get_element(pipeline) orelse return;
+    gl.BindVertexArray(pl.vao);
+    gl.UseProgram(pl.program.shader_program);
 }
 
-fn create_mesh(ctx: *anyopaque, layout: Mesh.VertexLayout) anyerror!Mesh.Handle {
+fn destroy_pipeline(ctx: *anyopaque, pipeline: Pipeline.Handle) void {
     _ = ctx;
-    const vao_idx: usize = find_layout(layout) orelse blk: {
-        var vao: gl.uint = 0;
-        gl.CreateVertexArrays(1, @ptrCast(&vao));
 
-        for (layout.attributes) |a| {
-            gl.EnableVertexArrayAttrib(vao, a.location);
-            gl.VertexArrayAttribFormat(vao, a.location, @intCast(a.size), switch (a.format) {
-                .f32x2, .f32x3 => gl.FLOAT,
-                .unorm8x4 => gl.UNSIGNED_BYTE,
-            }, switch (a.format) {
-                .f32x2, .f32x3 => gl.FALSE,
-                .unorm8x4 => gl.TRUE,
-            }, @intCast(a.offset));
-            gl.VertexArrayAttribBinding(vao, a.location, a.binding);
-        }
+    var pl = pipelines.get_element(pipeline) orelse return;
+    gl.DeleteVertexArrays(1, @ptrCast(&pl.vao));
+    pl.vao = 0;
+    pl.program.deinit();
 
-        const idx = vaos.add_element(.{
-            .layout = layout,
-            .vao = vao,
-        }) orelse @panic("Out of VAOs");
+    _ = pipelines.remove_element(pipeline);
+}
 
-        break :blk idx;
-    };
+fn create_mesh(ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!Mesh.Handle {
+    _ = ctx;
 
-    const vao = vaos.get_element(vao_idx).?.vao;
+    const pl = pipelines.get_element(pipeline).?;
     var vbo: gl.uint = 0;
     gl.CreateBuffers(1, @ptrCast(&vbo));
     gl.NamedBufferData(vbo, 0, null, gl.STATIC_DRAW);
-    gl.VertexArrayVertexBuffer(vao, 0, vbo, 0, @intCast(layout.stride));
+    gl.VertexArrayVertexBuffer(pl.vao, 0, vbo, 0, @intCast(pl.layout.stride));
 
     const mesh_idx = meshes.add_element(.{
-        .vao = vao_idx,
+        .pipeline = pipeline,
         .vbo = vbo,
-    }) orelse @panic("Out of Meshes");
+    }) orelse return error.OutOfMeshes;
 
     return @intCast(mesh_idx);
 }
@@ -180,13 +196,14 @@ fn update_mesh(ctx: *anyopaque, handle: Mesh.Handle, offset: usize, data: []cons
     gl.NamedBufferSubData(mesh.vbo, @intCast(offset), @intCast(data.len), data.ptr);
 }
 
-fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, count: usize) void {
+fn draw_mesh(ctx: *anyopaque, handle: Mesh.Handle, model: *const zm.Mat, count: usize) void {
     _ = ctx;
 
     const mesh = meshes.get_element(handle) orelse return;
-    const vao_data = vaos.get_element(mesh.vao) orelse return;
+    const pl = pipelines.get_element(mesh.pipeline) orelse return;
 
-    gl.BindVertexArray(vao_data.vao);
+    pl.program.update_model(model);
+    gl.VertexArrayVertexBuffer(pl.vao, 0, mesh.vbo, 0, @intCast(pl.layout.stride));
     gl.DrawArrays(gl.TRIANGLES, 0, @intCast(count));
 }
 
@@ -211,6 +228,11 @@ fn bind_texture(ctx: *anyopaque, handle: u32) void {
     gl.BindTextureUnit(0, handle);
 }
 
+fn destroy_texture(ctx: *anyopaque, handle: u32) void {
+    _ = ctx;
+    gl.DeleteTextures(1, @ptrCast(&handle));
+}
+
 pub fn gfx_api(self: *Self) GFXAPI {
     return GFXAPI{
         .ptr = self,
@@ -222,13 +244,16 @@ pub fn gfx_api(self: *Self) GFXAPI {
             .end_frame = end_frame,
             .set_proj_matrix = set_proj_matrix,
             .set_view_matrix = set_view_matrix,
-            .set_model_matrix = set_model_matrix,
             .create_mesh = create_mesh,
             .destroy_mesh = destroy_mesh,
             .update_mesh = update_mesh,
             .draw_mesh = draw_mesh,
             .create_texture = create_texture,
             .bind_texture = bind_texture,
+            .destroy_texture = destroy_texture,
+            .create_pipeline = create_pipeline,
+            .destroy_pipeline = destroy_pipeline,
+            .bind_pipeline = bind_pipeline,
         },
     };
 }

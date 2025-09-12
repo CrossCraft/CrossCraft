@@ -1,72 +1,9 @@
 const std = @import("std");
 const zm = @import("zmath");
+const Pipeline = @import("pipeline.zig");
 const Platform = @import("../platform/platform.zig");
 const gfx = Platform.gfx;
-
 pub const Handle = u32;
-
-pub const AttributeFormat = enum(u8) {
-    f32x2,
-    f32x3,
-    unorm8x4,
-
-    fn infer(comptime T: type) AttributeFormat {
-        return switch (T) {
-            [2]f32 => .f32x2,
-            [3]f32 => .f32x3,
-            [4]u8 => .unorm8x4,
-            else => @compileError("Unsupported attribute field type"),
-        };
-    }
-
-    pub fn count(self: AttributeFormat) usize {
-        return switch (self) {
-            .f32x2 => 2,
-            .f32x3 => 3,
-            .unorm8x4 => 4,
-        };
-    }
-};
-
-pub const Attribute = struct {
-    location: u8,
-    binding: u8 = 0,
-    offset: usize,
-    size: usize,
-    format: AttributeFormat,
-};
-
-pub const VertexLayout = struct {
-    stride: usize,
-    attributes: []const Attribute,
-};
-
-pub const AttributeSpec = struct {
-    field: []const u8,
-    location: u8,
-    binding: u8 = 0,
-};
-
-pub fn attributes_from_struct(comptime V: type, comptime specs: []const AttributeSpec) [specs.len]Attribute {
-    comptime var attrs: [specs.len]Attribute = undefined;
-
-    inline for (specs, 0..) |s, i| {
-        const format = AttributeFormat.infer(@FieldType(V, s.field));
-        attrs[i] = .{
-            .location = s.location,
-            .binding = s.binding,
-            .size = format.count(),
-            .offset = @offsetOf(V, s.field),
-            .format = format,
-        };
-    }
-
-    return attrs;
-}
-
-pub fn layout_from_struct(comptime V: type, comptime attrs: []const Attribute) VertexLayout {
-    return .{ .stride = @sizeOf(V), .attributes = attrs };
-}
 
 /// A generic mesh type that holds vertex data and interfaces with the graphics API.
 /// The mesh is defined by a vertex struct type `V` and an array of attribute specifications.
@@ -76,20 +13,18 @@ pub fn layout_from_struct(comptime V: type, comptime attrs: []const Attribute) V
 /// The vertex data is stored in a dynamic array, allowing for flexible mesh sizes.
 /// The mesh must be initialized with an allocator to manage its vertex data.
 /// The mesh must be deinitialized to free its resources when no longer needed.
-pub fn Mesh(comptime V: type, comptime specs: []const AttributeSpec) type {
+pub fn Mesh(comptime V: type) type {
     return struct {
         const Self = @This();
 
         pub const Vertex = V;
-        pub const Attributes = attributes_from_struct(V, specs);
-        pub const Layout = layout_from_struct(V, &Attributes);
 
         handle: Handle,
         vertices: std.ArrayList(Vertex),
 
-        pub fn new(allocator: std.mem.Allocator) !Self {
+        pub fn new(allocator: std.mem.Allocator, pipeline: Pipeline.Handle) !Self {
             return .{
-                .handle = try gfx.api.tab.create_mesh(gfx.api.ptr, Layout),
+                .handle = try gfx.api.tab.create_mesh(gfx.api.ptr, pipeline),
                 .vertices = try std.ArrayList(V).initCapacity(allocator, 32),
             };
         }
@@ -113,8 +48,7 @@ pub fn Mesh(comptime V: type, comptime specs: []const AttributeSpec) type {
         }
 
         pub fn draw(self: *Self, mat: *const zm.Mat) void {
-            gfx.api.set_model_matrix(mat);
-            gfx.api.tab.draw_mesh(gfx.api.ptr, self.handle, self.vertices.items.len);
+            gfx.api.tab.draw_mesh(gfx.api.ptr, self.handle, mat, self.vertices.items.len);
         }
     };
 }
