@@ -7,15 +7,16 @@ layout(location = 2) in vec2 vert_uv;
 layout(location = 0) out vec2 frag_uv;
 layout(location = 1) out vec4 frag_color;
 
-layout(std140, binding = 0) uniform State {
+layout(std140, set = 0, binding = 0) uniform State {
     mat4 u_view;
     mat4 u_proj;
     // TODO: Add more useful variables here
 };
 
 // Per-object push constant
-layout(push_constant) uniform PushConstants {
-    mat4 u_model; // Moved to uniform for simplicity
+layout(push_constant, std430) uniform PushConstants {
+    mat4 u_model;
+    uint texture_index;
 } pc;
 
 void main() {

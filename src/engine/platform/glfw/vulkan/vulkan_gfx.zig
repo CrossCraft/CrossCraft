@@ -44,6 +44,16 @@ pub const UBO = struct {
     mapped_ptr: *ShaderState,
 };
 
+pub const DrawState = struct {
+    mat: zm.Mat,
+    tex_id: u32,
+};
+
+pub var draw_state = DrawState{
+    .mat = zm.identity(),
+    .tex_id = 0,
+};
+
 pub var ubos: []UBO = undefined;
 
 pub var context: Context = undefined;
@@ -57,6 +67,16 @@ pub var command_buffer: vk.CommandBufferProxy = undefined;
 var descriptor_set_layout: vk.DescriptorSetLayout = .null_handle;
 var descriptor_pool: vk.DescriptorPool = .null_handle;
 var descriptor_sets: []vk.DescriptorSet = undefined;
+
+const TEXTURE_CAP: u32 = 16384;
+
+var tex_set_layout: vk.DescriptorSetLayout = .null_handle;
+var tex_pool: vk.DescriptorPool = .null_handle;
+var tex_set: vk.DescriptorSet = .null_handle;
+var tex_sampler: vk.Sampler = .null_handle;
+
+const TextureRec = struct { image: vk.Image, memory: vk.DeviceMemory, view: vk.ImageView };
+var textures = Util.CircularBuffer(TextureRec, TEXTURE_CAP).init();
 
 var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var meshes = Util.CircularBuffer(MeshData, 2048).init();
@@ -112,6 +132,94 @@ fn destroy_uniform_buffers() void {
         context.logical_device.freeMemory(ubo.memory, null);
     }
     Util.allocator().free(ubos);
+}
+
+fn create_texture_set_layout() !void {
+    const binding = vk.DescriptorSetLayoutBinding{
+        .binding = 0,
+        .descriptor_type = .combined_image_sampler,
+        .descriptor_count = TEXTURE_CAP,
+        .stage_flags = .{ .fragment_bit = true },
+    };
+
+    const bind_flags = [_]vk.DescriptorBindingFlags{
+        .{ .partially_bound_bit = true, .update_after_bind_bit = true, .variable_descriptor_count_bit = true },
+    };
+
+    var flags_info = vk.DescriptorSetLayoutBindingFlagsCreateInfo{
+        .binding_count = 1,
+        .p_binding_flags = @ptrCast(&bind_flags),
+    };
+
+    tex_set_layout = try context.logical_device.createDescriptorSetLayout(&.{
+        .flags = .{ .update_after_bind_pool_bit = true },
+        .binding_count = 1,
+        .p_bindings = @ptrCast(&binding),
+        .p_next = &flags_info,
+    }, null);
+}
+
+fn destroy_texture_set_layout() void {
+    context.logical_device.destroyDescriptorSetLayout(tex_set_layout, null);
+}
+
+fn create_texture_descriptor_pool_and_set(actual_count: u32) !void {
+    const pool_size = vk.DescriptorPoolSize{
+        .type = .combined_image_sampler,
+        .descriptor_count = actual_count,
+    };
+
+    tex_pool = try context.logical_device.createDescriptorPool(&.{
+        .flags = .{ .update_after_bind_bit = true, .free_descriptor_set_bit = true },
+        .max_sets = 1,
+        .pool_size_count = 1,
+        .p_pool_sizes = @ptrCast(&pool_size),
+    }, null);
+
+    const counts = [_]u32{actual_count};
+    var vdc_info = vk.DescriptorSetVariableDescriptorCountAllocateInfo{
+        .descriptor_set_count = 1,
+        .p_descriptor_counts = @ptrCast(&counts),
+    };
+
+    try context.logical_device.allocateDescriptorSets(&.{
+        .descriptor_pool = tex_pool,
+        .descriptor_set_count = 1,
+        .p_set_layouts = @ptrCast(&tex_set_layout),
+        .p_next = &vdc_info,
+    }, @ptrCast(&tex_set));
+}
+
+fn destroy_texture_descriptor_pool_and_set() void {
+    context.logical_device.freeDescriptorSets(tex_pool, 1, @ptrCast(&tex_set)) catch unreachable;
+    context.logical_device.destroyDescriptorPool(tex_pool, null);
+    tex_set = .null_handle;
+    tex_pool = .null_handle;
+}
+
+fn create_texture_sampler() !void {
+    tex_sampler = try context.logical_device.createSampler(&vk.SamplerCreateInfo{
+        .mag_filter = .nearest,
+        .min_filter = .nearest,
+        .mipmap_mode = .nearest,
+        .address_mode_u = .repeat,
+        .address_mode_v = .repeat,
+        .address_mode_w = .repeat,
+        .min_lod = 0,
+        .max_lod = 1000,
+        .anisotropy_enable = .false,
+        .max_anisotropy = 1.0,
+        .compare_enable = .false,
+        .compare_op = .always,
+        .border_color = .int_opaque_black,
+        .unnormalized_coordinates = .false,
+        .mip_lod_bias = 0.0,
+    }, null);
+}
+
+fn destroy_texture_sampler() void {
+    context.logical_device.destroySampler(tex_sampler, null);
+    tex_sampler = .null_handle;
 }
 
 fn create_descriptor_set_layout() !void {
@@ -205,12 +313,19 @@ fn init(ctx: *anyopaque) !void {
     try create_descriptor_set_layout();
     try create_descriptor_pool();
     try create_descriptor_sets();
+
+    try create_texture_set_layout();
+    try create_texture_descriptor_pool_and_set(4096);
+    try create_texture_sampler();
 }
 
 fn deinit(ctx: *anyopaque) void {
     _ = ctx;
     context.logical_device.deviceWaitIdle() catch {};
 
+    destroy_texture_sampler();
+    destroy_texture_descriptor_pool_and_set();
+    destroy_texture_set_layout();
     destroy_descriptor_sets();
     destroy_descriptor_pool();
     destroy_descriptor_set_layout();
@@ -380,15 +495,17 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
 
     if (vs == null or fs == null) return error.InvalidShader;
 
+    const set_layouts = [_]vk.DescriptorSetLayout{ descriptor_set_layout, tex_set_layout };
+
     const range = vk.PushConstantRange{
         .stage_flags = .{ .vertex_bit = true },
         .offset = 0,
-        .size = @sizeOf(zm.Mat),
+        .size = @sizeOf(DrawState),
     };
 
     const pl = try context.logical_device.createPipelineLayout(&.{
-        .set_layout_count = 1,
-        .p_set_layouts = @ptrCast(&descriptor_set_layout),
+        .set_layout_count = @intCast(set_layouts.len),
+        .p_set_layouts = &set_layouts,
         .push_constant_range_count = 1,
         .p_push_constant_ranges = @ptrCast(&range),
     }, null);
@@ -570,7 +687,12 @@ fn bind_pipeline(ctx: *anyopaque, handle: Pipeline.Handle) void {
     const pd = pipelines.get_element(handle) orelse return;
 
     command_buffer.bindPipeline(.graphics, pd.pipeline);
-    command_buffer.bindDescriptorSets(.graphics, pd.layout, 0, 1, @ptrCast(&descriptor_sets[swapchain.image_index]), 0, null);
+
+    const sets = [_]vk.DescriptorSet{
+        descriptor_sets[swapchain.image_index],
+        tex_set,
+    };
+    command_buffer.bindDescriptorSets(.graphics, pd.layout, 0, @intCast(sets.len), &sets, 0, null);
 }
 
 fn create_mesh(ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!u32 {
@@ -690,31 +812,222 @@ fn update_mesh(ctx: *anyopaque, handle: u32, data: []const u8) void {
 fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const zm.Mat, count: usize) void {
     _ = ctx;
 
+    draw_state.mat = model.*;
+
     const m_data = meshes.get_element(handle) orelse return;
     const p_data = pipelines.get_element(m_data.pipeline) orelse return;
 
     const offset = [_]vk.DeviceSize{0};
     command_buffer.bindVertexBuffers(0, 1, @ptrCast(&m_data.buffer), &offset);
-    command_buffer.pushConstants(p_data.layout, .{ .vertex_bit = true, .fragment_bit = true }, 0, @sizeOf(zm.Mat), model);
+    command_buffer.pushConstants(p_data.layout, .{ .vertex_bit = true, .fragment_bit = true }, 0, @sizeOf(DrawState), &draw_state);
     command_buffer.draw(@intCast(count), 1, 0, 0);
 }
 
 fn create_texture(ctx: *anyopaque, width: u32, height: u32, data: []const u8) anyerror!u32 {
     _ = ctx;
-    _ = width;
-    _ = height;
-    _ = data;
-    return 0;
+
+    if (width == 0 or height == 0) return error.InvalidTextureSize;
+    // Expect RGBA8 pixels
+    if (data.len < @as(usize, width) * @as(usize, height) * 4) return error.TextureDataTooSmall;
+
+    const fmt: vk.Format = .r8g8b8a8_unorm;
+
+    const image = try context.logical_device.createImage(&.{
+        .image_type = .@"2d",
+        .format = fmt,
+        .extent = .{ .width = width, .height = height, .depth = 1 },
+        .mip_levels = 1,
+        .array_layers = 1,
+        .samples = .{ .@"1_bit" = true },
+        .tiling = .optimal,
+        .usage = .{ .transfer_dst_bit = true, .sampled_bit = true },
+        .sharing_mode = .exclusive,
+        .initial_layout = .undefined,
+    }, null);
+
+    const mem_reqs = context.logical_device.getImageMemoryRequirements(image);
+    const memory = try context.allocate_gpu_buffer(mem_reqs, .{ .device_local_bit = true });
+    try context.logical_device.bindImageMemory(image, memory, 0);
+
+    // --- Create a staging buffer and upload the pixels ---
+    const byte_count = data.len;
+
+    const staging = try context.logical_device.createBuffer(&.{
+        .size = byte_count,
+        .usage = .{ .transfer_src_bit = true },
+        .sharing_mode = .exclusive,
+    }, null);
+
+    const staging_reqs = context.logical_device.getBufferMemoryRequirements(staging);
+    const staging_mem = try context.allocate_gpu_buffer(staging_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
+    try context.logical_device.bindBufferMemory(staging, staging_mem, 0);
+
+    {
+        const mapped = try context.logical_device.mapMemory(staging_mem, 0, vk.WHOLE_SIZE, .{});
+        defer context.logical_device.unmapMemory(staging_mem);
+        const dst: [*]u8 = @ptrCast(@alignCast(mapped));
+        @memcpy(dst, data);
+    }
+
+    // --- One-time command buffer: transition + copy + transition ---
+    var cmdbuf_handle: vk.CommandBuffer = undefined;
+    try context.logical_device.allocateCommandBuffers(&.{
+        .command_pool = command_pool,
+        .level = .primary,
+        .command_buffer_count = 1,
+    }, @ptrCast(&cmdbuf_handle));
+
+    const cmdbuf = vk.CommandBufferProxy.init(cmdbuf_handle, context.logical_device.wrapper);
+    try cmdbuf.beginCommandBuffer(&.{ .flags = .{ .one_time_submit_bit = true } });
+
+    const subrange = vk.ImageSubresourceRange{
+        .aspect_mask = .{ .color_bit = true },
+        .base_mip_level = 0,
+        .level_count = 1,
+        .base_array_layer = 0,
+        .layer_count = 1,
+    };
+
+    // undefined -> transfer dst
+    const pre_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .top_of_pipe_bit = true },
+        .src_access_mask = .{},
+        .dst_stage_mask = .{ .copy_bit = true },
+        .dst_access_mask = .{ .transfer_write_bit = true },
+        .old_layout = .undefined,
+        .new_layout = .transfer_dst_optimal,
+        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresource_range = subrange,
+    };
+    const pre_dep = vk.DependencyInfo{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&pre_barrier),
+    };
+    cmdbuf.pipelineBarrier2(&pre_dep);
+
+    // copy buffer -> image
+    const copy = vk.BufferImageCopy{
+        .buffer_offset = 0,
+        .buffer_row_length = 0, // tightly packed
+        .buffer_image_height = 0, // tightly packed
+        .image_subresource = .{
+            .aspect_mask = .{ .color_bit = true },
+            .mip_level = 0,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+        .image_offset = .{ .x = 0, .y = 0, .z = 0 },
+        .image_extent = .{ .width = width, .height = height, .depth = 1 },
+    };
+    cmdbuf.copyBufferToImage(staging, image, .transfer_dst_optimal, 1, @ptrCast(&copy));
+
+    // transfer dst -> shader read
+    const post_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .copy_bit = true },
+        .src_access_mask = .{ .transfer_write_bit = true },
+        .dst_stage_mask = .{ .fragment_shader_bit = true },
+        .dst_access_mask = .{ .shader_read_bit = true },
+        .old_layout = .transfer_dst_optimal,
+        .new_layout = .shader_read_only_optimal,
+        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresource_range = subrange,
+    };
+    const post_dep = vk.DependencyInfo{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&post_barrier),
+    };
+    cmdbuf.pipelineBarrier2(&post_dep);
+
+    try cmdbuf.endCommandBuffer();
+
+    const submit = vk.SubmitInfo{
+        .command_buffer_count = 1,
+        .p_command_buffers = @ptrCast(&cmdbuf_handle),
+    };
+    try context.logical_device.queueSubmit(context.graphics_queue.handle, 1, @ptrCast(&submit), .null_handle);
+    try context.logical_device.queueWaitIdle(context.graphics_queue.handle);
+
+    context.logical_device.freeCommandBuffers(command_pool, 1, @ptrCast(&cmdbuf_handle));
+
+    context.logical_device.destroyBuffer(staging, null);
+    context.logical_device.freeMemory(staging_mem, null);
+
+    const view = try context.logical_device.createImageView(&.{
+        .image = image,
+        .view_type = .@"2d",
+        .format = fmt,
+        .subresource_range = subrange,
+        .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
+    }, null);
+
+    const rec = TextureRec{ .image = image, .memory = memory, .view = view };
+    const handle_opt = textures.add_element(rec);
+    if (handle_opt == null) {
+        context.logical_device.destroyImageView(view, null);
+        context.logical_device.destroyImage(image, null);
+        context.logical_device.freeMemory(memory, null);
+        return error.OutOfTextures;
+    }
+    const idx: u32 = @intCast(handle_opt.?);
+
+    const img_info = vk.DescriptorImageInfo{
+        .sampler = tex_sampler,
+        .image_view = view,
+        .image_layout = .shader_read_only_optimal,
+    };
+    const write = vk.WriteDescriptorSet{
+        .dst_set = tex_set,
+        .dst_binding = 0,
+        .dst_array_element = idx,
+        .descriptor_count = 1,
+        .descriptor_type = .combined_image_sampler,
+        .p_image_info = @ptrCast(&img_info),
+        .p_buffer_info = undefined,
+        .p_texel_buffer_view = undefined,
+    };
+    context.logical_device.updateDescriptorSets(1, @ptrCast(&write), 0, null);
+
+    return idx;
 }
 
 fn bind_texture(ctx: *anyopaque, handle: u32) void {
     _ = ctx;
-    _ = handle;
+    draw_state.tex_id = handle;
 }
 
 fn destroy_texture(ctx: *anyopaque, handle: u32) void {
     _ = ctx;
-    _ = handle;
+
+    const rec = textures.get_element(handle) orelse return;
+
+    const null_info = vk.DescriptorImageInfo{
+        .sampler = .null_handle,
+        .image_view = .null_handle,
+        .image_layout = .undefined,
+    };
+    const clear_write = vk.WriteDescriptorSet{
+        .dst_set = tex_set,
+        .dst_binding = 0,
+        .dst_array_element = handle,
+        .descriptor_count = 1,
+        .descriptor_type = .combined_image_sampler,
+        .p_image_info = @ptrCast(&null_info),
+        .p_buffer_info = undefined,
+        .p_texel_buffer_view = undefined,
+    };
+    context.logical_device.updateDescriptorSets(1, @ptrCast(&clear_write), 0, null);
+
+    _ = context.logical_device.deviceWaitIdle() catch {};
+
+    context.logical_device.destroyImageView(rec.view, null);
+    context.logical_device.destroyImage(rec.image, null);
+    context.logical_device.freeMemory(rec.memory, null);
+
+    _ = textures.remove_element(handle);
 }
 
 pub fn gfx_api(self: *Self) GFXAPI {
