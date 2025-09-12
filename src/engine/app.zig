@@ -79,6 +79,7 @@ pub fn main_loop() !void {
             try Core.state_machine.draw(frame_dt_s);
             Platform.gfx.api.end_frame();
         } else {
+            @branchHint(.unlikely);
             Util.thread_sleep(std.time.us_per_ms * 50);
         }
 
