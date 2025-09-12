@@ -86,6 +86,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "Spark", .module = engine },
+                .{ .name = "zmath", .module = zmath.module("root") },
             },
         }),
     });

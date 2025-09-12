@@ -28,6 +28,24 @@ const MeshData = struct {
     built: bool = false,
 };
 
+pub const ShaderState = struct {
+    view: zm.Mat,
+    proj: zm.Mat,
+};
+
+pub var state: ShaderState = .{
+    .view = zm.identity(),
+    .proj = zm.identity(),
+};
+
+pub const UBO = struct {
+    memory: vk.DeviceMemory,
+    buffer: vk.Buffer,
+    mapped_ptr: *ShaderState,
+};
+
+pub var ubos: []UBO = undefined;
+
 pub var context: Context = undefined;
 pub var swapchain: Swapchain = undefined;
 pub var gc: GarbageCollector = undefined;
@@ -35,6 +53,10 @@ pub var gc: GarbageCollector = undefined;
 pub var command_pool: vk.CommandPool = .null_handle;
 var command_buffers: []vk.CommandBuffer = undefined;
 pub var command_buffer: vk.CommandBufferProxy = undefined;
+
+var descriptor_set_layout: vk.DescriptorSetLayout = .null_handle;
+var descriptor_pool: vk.DescriptorPool = .null_handle;
+var descriptor_sets: []vk.DescriptorSet = undefined;
 
 var pipelines = Util.CircularBuffer(PipelineData, 16).init();
 var meshes = Util.CircularBuffer(MeshData, 2048).init();
@@ -63,6 +85,114 @@ fn destroy_command_pool() void {
     context.logical_device.destroyCommandPool(command_pool, null);
 }
 
+fn create_uniform_buffers() !void {
+    ubos = try Util.allocator().alloc(UBO, swapchain.swap_images.len);
+
+    for (ubos) |*ubo| {
+        ubo.buffer = context.logical_device.createBuffer(&.{
+            .size = @sizeOf(ShaderState),
+            .usage = .{ .uniform_buffer_bit = true },
+            .sharing_mode = .exclusive,
+        }, null) catch unreachable;
+
+        const mem_reqs = context.logical_device.getBufferMemoryRequirements(ubo.buffer);
+        ubo.memory = context.allocate_gpu_buffer(mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true }) catch unreachable;
+        context.logical_device.bindBufferMemory(ubo.buffer, ubo.memory, 0) catch unreachable;
+
+        const mapped_data = context.logical_device.mapMemory(ubo.memory, 0, vk.WHOLE_SIZE, .{}) catch unreachable;
+        ubo.mapped_ptr = @ptrCast(@alignCast(mapped_data));
+        ubo.mapped_ptr.* = state;
+    }
+}
+
+fn destroy_uniform_buffers() void {
+    for (ubos) |ubo| {
+        context.logical_device.unmapMemory(ubo.memory);
+        context.logical_device.destroyBuffer(ubo.buffer, null);
+        context.logical_device.freeMemory(ubo.memory, null);
+    }
+    Util.allocator().free(ubos);
+}
+
+fn create_descriptor_set_layout() !void {
+    const ubo_layout_binding = vk.DescriptorSetLayoutBinding{
+        .binding = 0,
+        .descriptor_count = 1,
+        .descriptor_type = .uniform_buffer,
+        .stage_flags = .{ .vertex_bit = true },
+    };
+
+    descriptor_set_layout = try context.logical_device.createDescriptorSetLayout(&.{
+        .binding_count = 1,
+        .p_bindings = @ptrCast(&ubo_layout_binding),
+    }, null);
+}
+
+fn destroy_descriptor_set_layout() void {
+    context.logical_device.destroyDescriptorSetLayout(descriptor_set_layout, null);
+}
+
+fn create_descriptor_pool() !void {
+    const pool_size = vk.DescriptorPoolSize{
+        .type = .uniform_buffer,
+        .descriptor_count = @intCast(swapchain.swap_images.len),
+    };
+
+    descriptor_pool = try context.logical_device.createDescriptorPool(&vk.DescriptorPoolCreateInfo{
+        .max_sets = @intCast(swapchain.swap_images.len),
+        .pool_size_count = 1,
+        .p_pool_sizes = @ptrCast(&pool_size),
+        .flags = .{ .free_descriptor_set_bit = true },
+    }, null);
+}
+
+fn destroy_descriptor_pool() void {
+    context.logical_device.destroyDescriptorPool(descriptor_pool, null);
+}
+
+fn create_descriptor_sets() !void {
+    const layouts = try Util.allocator().alloc(vk.DescriptorSetLayout, swapchain.swap_images.len);
+    defer Util.allocator().free(layouts);
+
+    for (layouts) |*layout| {
+        layout.* = descriptor_set_layout;
+    }
+
+    descriptor_sets = try Util.allocator().alloc(vk.DescriptorSet, swapchain.swap_images.len);
+
+    try context.logical_device.allocateDescriptorSets(&vk.DescriptorSetAllocateInfo{
+        .descriptor_pool = descriptor_pool,
+        .descriptor_set_count = @intCast(swapchain.swap_images.len),
+        .p_set_layouts = @ptrCast(layouts.ptr),
+    }, descriptor_sets.ptr);
+
+    for (descriptor_sets, 0..) |set, i| {
+        const buffer_info = vk.DescriptorBufferInfo{
+            .buffer = ubos[i].buffer,
+            .offset = 0,
+            .range = @sizeOf(ShaderState),
+        };
+
+        const descriptor_write = vk.WriteDescriptorSet{
+            .dst_set = set,
+            .dst_binding = 0,
+            .dst_array_element = 0,
+            .descriptor_count = 1,
+            .descriptor_type = .uniform_buffer,
+            .p_buffer_info = @ptrCast(&buffer_info),
+            .p_image_info = undefined,
+            .p_texel_buffer_view = undefined,
+        };
+
+        context.logical_device.updateDescriptorSets(1, @ptrCast(&descriptor_write), 0, null);
+    }
+}
+
+fn destroy_descriptor_sets() void {
+    context.logical_device.freeDescriptorSets(descriptor_pool, @intCast(swapchain.swap_images.len), @ptrCast(descriptor_sets.ptr)) catch unreachable;
+    Util.allocator().free(descriptor_sets);
+}
+
 fn init(ctx: *anyopaque) !void {
     _ = ctx;
 
@@ -71,12 +201,20 @@ fn init(ctx: *anyopaque) !void {
     gc = GarbageCollector.init(Util.allocator());
 
     try create_command_pool();
+    try create_uniform_buffers();
+    try create_descriptor_set_layout();
+    try create_descriptor_pool();
+    try create_descriptor_sets();
 }
 
 fn deinit(ctx: *anyopaque) void {
     _ = ctx;
     context.logical_device.deviceWaitIdle() catch {};
 
+    destroy_descriptor_sets();
+    destroy_descriptor_pool();
+    destroy_descriptor_set_layout();
+    destroy_uniform_buffers();
     destroy_command_pool();
     swapchain.deinit();
     gc.deinit();
@@ -229,12 +367,12 @@ fn end_frame(ctx: *anyopaque) void {
 
 fn set_proj_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
     _ = ctx;
-    _ = mat;
+    ubos[swapchain.image_index].mapped_ptr.proj = mat.*;
 }
 
 fn set_view_matrix(ctx: *anyopaque, mat: *const zm.Mat) void {
     _ = ctx;
-    _ = mat;
+    ubos[swapchain.image_index].mapped_ptr.view = mat.*;
 }
 
 fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]align(4) const u8, fs: ?[:0]align(4) const u8) anyerror!Pipeline.Handle {
@@ -242,11 +380,17 @@ fn create_pipeline(ctx: *anyopaque, layout: Pipeline.VertexLayout, vs: ?[:0]alig
 
     if (vs == null or fs == null) return error.InvalidShader;
 
+    const range = vk.PushConstantRange{
+        .stage_flags = .{ .vertex_bit = true },
+        .offset = 0,
+        .size = @sizeOf(zm.Mat),
+    };
+
     const pl = try context.logical_device.createPipelineLayout(&.{
-        .set_layout_count = 0,
-        .p_set_layouts = null,
-        .push_constant_range_count = 0,
-        .p_push_constant_ranges = null,
+        .set_layout_count = 1,
+        .p_set_layouts = @ptrCast(&descriptor_set_layout),
+        .push_constant_range_count = 1,
+        .p_push_constant_ranges = @ptrCast(&range),
     }, null);
 
     const vert = try context.logical_device.createShaderModule(&.{
@@ -426,6 +570,7 @@ fn bind_pipeline(ctx: *anyopaque, handle: Pipeline.Handle) void {
     const pd = pipelines.get_element(handle) orelse return;
 
     command_buffer.bindPipeline(.graphics, pd.pipeline);
+    command_buffer.bindDescriptorSets(.graphics, pd.layout, 0, 1, @ptrCast(&descriptor_sets[swapchain.image_index]), 0, null);
 }
 
 fn create_mesh(ctx: *anyopaque, pipeline: Pipeline.Handle) anyerror!u32 {
@@ -546,12 +691,11 @@ fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const zm.Mat, count: usize) v
     _ = ctx;
 
     const m_data = meshes.get_element(handle) orelse return;
-
-    // TODO: Handle push constants
-    _ = model;
+    const p_data = pipelines.get_element(m_data.pipeline) orelse return;
 
     const offset = [_]vk.DeviceSize{0};
     command_buffer.bindVertexBuffers(0, 1, @ptrCast(&m_data.buffer), &offset);
+    command_buffer.pushConstants(p_data.layout, .{ .vertex_bit = true, .fragment_bit = true }, 0, @sizeOf(zm.Mat), model);
     command_buffer.draw(@intCast(count), 1, 0, 0);
 }
 

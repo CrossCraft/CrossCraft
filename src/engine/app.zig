@@ -86,7 +86,8 @@ pub fn main_loop() !void {
             @branchHint(.unpredictable);
             Platform.update();
             Core.input.update();
-            try Core.state_machine.update(dt);
+            const udt = @as(f32, @floatFromInt(update_time + (before_update - next_input_update))) / @as(f32, std.time.us_per_s);
+            try Core.state_machine.update(udt);
             next_input_update = before_update + update_time;
         }
 

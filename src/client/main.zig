@@ -1,4 +1,5 @@
 const std = @import("std");
+const zm = @import("zmath");
 const sp = @import("Spark");
 const Core = sp.Core;
 const Util = sp.Util;
@@ -78,17 +79,24 @@ const MyState = struct {
     }
 
     fn update(ctx: *anyopaque, dt: f32) anyerror!void {
-        _ = ctx;
-        _ = dt;
+        var self = Util.ctx_to_self(MyState, ctx);
+        self.transform.rot[2] += 60.0 * dt; // Rotate around Z axis
     }
 
-    fn draw(ctx: *anyopaque, dt: f32) anyerror!void {
+    fn draw(ctx: *anyopaque, _: f32) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
+
+        Rendering.gfx.api.set_proj_matrix(&zm.orthographicRh(
+            2 * @as(f32, @floatFromInt(Rendering.gfx.surface.get_width())) / @as(f32, @floatFromInt(Rendering.gfx.surface.get_height())),
+            2,
+            0,
+            1,
+        ));
+
         Rendering.Pipeline.bind(pipeline);
         self.texture.bind();
 
         self.mesh.draw(&self.transform.get_matrix());
-        _ = dt;
     }
 
     pub fn state(self: *MyState) State {
