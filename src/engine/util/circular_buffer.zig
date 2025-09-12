@@ -72,6 +72,14 @@ pub fn CircularBuffer(comptime T: type, comptime SIZE: usize) type {
             }
         }
 
+        pub fn update_element(self: *Self, index: usize, value: T) void {
+            if (index == 0 or index >= SIZE) return;
+
+            if (self.buffer[index]) |*v| {
+                v.* = value;
+            }
+        }
+
         /// Removes the element at `index` (handle). Returns true if something was removed.
         pub fn remove_element(self: *Self, index: usize) bool {
             if (index == 0 or index >= SIZE) return false;

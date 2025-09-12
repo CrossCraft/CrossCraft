@@ -811,12 +811,12 @@ fn update_mesh(ctx: *anyopaque, handle: u32, data: []const u8) void {
 
     context.logical_device.freeCommandBuffers(command_pool, 1, @ptrCast(&cmdbuf_handle));
 
-    meshes.buffer[handle].? = MeshData{
+    meshes.update_element(handle, MeshData{
         .buffer = mesh.buffer,
         .memory = mesh.memory,
         .pipeline = m_data.pipeline,
         .built = true,
-    };
+    });
 }
 
 fn draw_mesh(ctx: *anyopaque, handle: u32, model: *const zm.Mat, count: usize) void {
@@ -1050,7 +1050,7 @@ fn destroy_texture(ctx: *anyopaque, handle: u32) void {
             .dst_binding = 0,
             .dst_array_element = handle,
             .descriptor_count = 1,
-            .descriptor_type = .sampled_image,
+            .descriptor_type = .sampler,
             .p_image_info = @ptrCast(&null_img),
             .p_buffer_info = undefined,
             .p_texel_buffer_view = undefined,
@@ -1060,7 +1060,7 @@ fn destroy_texture(ctx: *anyopaque, handle: u32) void {
             .dst_binding = 1,
             .dst_array_element = handle,
             .descriptor_count = 1,
-            .descriptor_type = .sampler,
+            .descriptor_type = .sampled_image,
             .p_image_info = @ptrCast(&null_smp),
             .p_buffer_info = undefined,
             .p_texel_buffer_view = undefined,

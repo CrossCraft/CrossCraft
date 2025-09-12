@@ -7,6 +7,7 @@ const zm = @import("zmath");
 fov: f32,
 yaw: f32,
 pitch: f32,
+target: *const zm.Vec,
 
 const Self = @This();
 
@@ -24,13 +25,13 @@ pub fn get_projection_matrix(self: *Self) zm.Mat {
     return zm.perspectiveFovRhGl(std.math.degreesToRadians(self.fov), width / height, 0.3, 250.0);
 }
 
-/// Computes and returns the camera's view matrix based on its yaw and pitch angles, looking at the specified target position.
-pub fn get_view_matrix(self: *Self, target: *const zm.Vec) zm.Mat {
+/// Computes and returns the camera's view matrix based on its yaw and pitch angles, from the pespective of the target position.
+pub fn get_view_matrix(self: *Self) zm.Mat {
     const yaw = std.math.degreesToRadians(self.yaw);
     const pitch = std.math.degreesToRadians(self.pitch);
 
     // Negative because we want to move the world opposite to the camera
-    const t = zm.translation(-target[0], -target[1], -target[2]);
+    const t = zm.translation(-self.target[0], -self.target[1], -self.target[2]);
 
     // Negative because we want to rotate the world opposite to the camera
     const ry = zm.rotationY(yaw);
