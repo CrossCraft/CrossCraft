@@ -116,11 +116,13 @@ pub fn build(b: *std.Build) void {
             .{ .name = "options", .module = options_module },
         },
     });
-    engine.linkLibrary(glfw.artifact("glfw"));
     engine.linkLibrary(zaudio.artifact("miniaudio"));
 
     if (target.result.os.tag == .macos) {
         engine.linkSystemLibrary("vulkan", .{});
+        engine.linkSystemLibrary("glfw", .{});
+    } else {
+        engine.linkLibrary(glfw.artifact("glfw"));
     }
 
     const net = b.addModule("Net", .{
@@ -154,7 +156,7 @@ pub fn build(b: *std.Build) void {
 
     const vert_cmd = b.addSystemCommand(&.{
         "glslc",
-        "--target-env=vulkan1.4",
+        "--target-env=vulkan1.3",
         "-o",
     });
     const vert_spv = vert_cmd.addOutputFileArg("vert.spv");
@@ -165,7 +167,7 @@ pub fn build(b: *std.Build) void {
 
     const frag_cmd = b.addSystemCommand(&.{
         "glslc",
-        "--target-env=vulkan1.4",
+        "--target-env=vulkan1.3",
         "-o",
     });
     const frag_spv = frag_cmd.addOutputFileArg("frag.spv");

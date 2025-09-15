@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_windows:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2.0.5
+        with:
+          version: "0.15.1"
+
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: glslc
+          version: 1
+
+      - name: Test
+        run: zig build test
+
+      - name: Build
+        run: zig build -Dcpu=x86_64_v3 -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: crosscraft_windows
+          path: |
+            zig-out/bin/CrossCraft-Classic
+            zig-out/bin/CrossCraft-Server
+          if-no-files-found: error
+
+  build_mac:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2.0.5
+        with:
+          version: "0.15.1"
+
+      - name: Cache Homebrew
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /usr/local/Homebrew
+            /usr/local/Cellar
+            /opt/homebrew/Cellar
+          key: ${{ runner.os }}-brew-vulkan-shaderc-glfw-v1
+
+      - name: Install Vulkan SDK bits & glslc via Homebrew
+        run: |
+          set -eux
+          brew update
+          brew install vulkan-loader molten-vk vulkan-headers vulkan-validationlayers shaderc glslang glfw
+          glslc --version
+          BREW_PREFIX="$(brew --prefix)"
+          echo "VK_ICD_FILENAMES=${BREW_PREFIX}/share/vulkan/icd.d/MoltenVK_icd.json" >> $GITHUB_ENV
+          echo "VK_LAYER_PATH=${BREW_PREFIX}/share/vulkan/explicit_layer.d" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=${BREW_PREFIX}/lib:${LIBRARY_PATH:-}" >> $GITHUB_ENV
+          echo "CPATH=${BREW_PREFIX}/include:${CPATH:-}" >> $GITHUB_ENV
+
+      - name: Test
+        run: zig build test
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: crosscraft_mac
+          path: |
+            zig-out/bin/CrossCraft-Classic
+            zig-out/bin/CrossCraft-Server
+          if-no-files-found: error
+
+  build_linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2.0.5
+        with:
+          version: "0.15.1"
+
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: glslc
+          version: 1
+
+      - name: Test
+        run: zig build test
+
+      - name: Build
+        run: zig build -Dcpu=x86_64_v3 -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: crosscraft_linux
+          path: |
+            zig-out/bin/CrossCraft-Classic
+            zig-out/bin/CrossCraft-Server
+          if-no-files-found: error
