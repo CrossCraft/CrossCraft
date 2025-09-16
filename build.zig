@@ -102,6 +102,21 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const zbc = b.dependency("ZeeBuffer", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    var zbc_compile = b.addRunArtifact(zbc.artifact("zbc"));
+    zbc_compile.addFileArg(b.path("protocol.zb"));
+    const protocol_path = zbc_compile.addOutputFileArg("protocol.zig");
+
+    const protocol = b.addModule("protocol", .{
+        .root_source_file = protocol_path,
+        .target = target,
+        .optimize = optimize,
+    });
+
     const engine = b.addModule("Spark", .{
         .root_source_file = b.path("src/engine/root.zig"),
         .target = target,
@@ -114,6 +129,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zaudio", .module = zaudio.module("root") },
             .{ .name = "vulkan", .module = vulkan },
             .{ .name = "options", .module = options_module },
+            .{ .name = "protocol", .module = protocol },
         },
     });
     engine.linkLibrary(zaudio.artifact("miniaudio"));
