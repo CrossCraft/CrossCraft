@@ -54,27 +54,18 @@ jobs:
         with:
           version: "0.15.1"
 
-      - name: Cache Homebrew
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/Library/Caches/Homebrew
-            /usr/local/Homebrew
-            /usr/local/Cellar
-            /opt/homebrew/Cellar
-          key: ${{ runner.os }}-brew-vulkan-shaderc-glfw-v1
-
-      - name: Install Vulkan SDK bits & glslc via Homebrew
+      - name: Install Vulkan SDK bits & tools
         run: |
-          set -eux
+          set -euo pipefail
           brew update
-          brew install vulkan-loader molten-vk vulkan-headers vulkan-validationlayers shaderc glslang glfw
-          glslc --version
+          brew install vulkan-loader molten-vk vulkan-headers vulkan-validationlayers glslang shaderc glfw
           BREW_PREFIX="$(brew --prefix)"
-          echo "VK_ICD_FILENAMES=${BREW_PREFIX}/share/vulkan/icd.d/MoltenVK_icd.json" >> $GITHUB_ENV
-          echo "VK_LAYER_PATH=${BREW_PREFIX}/share/vulkan/explicit_layer.d" >> $GITHUB_ENV
-          echo "LIBRARY_PATH=${BREW_PREFIX}/lib:${LIBRARY_PATH:-}" >> $GITHUB_ENV
-          echo "CPATH=${BREW_PREFIX}/include:${CPATH:-}" >> $GITHUB_ENV
+          echo "${BREW_PREFIX}/bin" >> "$GITHUB_PATH"
+          brew link --overwrite --force glslang shaderc glfw || true
+          echo "VK_ICD_FILENAMES=${BREW_PREFIX}/share/vulkan/icd.d/MoltenVK_icd.json" >> "$GITHUB_ENV"
+          echo "VK_LAYER_PATH=${BREW_PREFIX}/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=${BREW_PREFIX}/lib:${LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "CPATH=${BREW_PREFIX}/include:${CPATH:-}" >> "$GITHUB_ENV"
 
       - name: Test
         run: zig build test
