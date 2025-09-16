@@ -102,10 +102,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const zbc = b.dependency("ZeeBuffer", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    const zbc = b.dependency("ZeeBuffer", .{});
 
     var zbc_compile = b.addRunArtifact(zbc.artifact("zbc"));
     zbc_compile.addFileArg(b.path("protocol.zb"));
