@@ -61,7 +61,6 @@ jobs:
           brew install vulkan-loader molten-vk vulkan-headers vulkan-validationlayers glslang shaderc glfw
           BREW_PREFIX="$(brew --prefix)"
           echo "${BREW_PREFIX}/bin" >> "$GITHUB_PATH"
-          brew link --overwrite --force glslang shaderc glfw || true
           echo "VK_ICD_FILENAMES=${BREW_PREFIX}/share/vulkan/icd.d/MoltenVK_icd.json" >> "$GITHUB_ENV"
           echo "VK_LAYER_PATH=${BREW_PREFIX}/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
           echo "LIBRARY_PATH=${BREW_PREFIX}/lib:${LIBRARY_PATH:-}" >> "$GITHUB_ENV"

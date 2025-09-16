@@ -197,6 +197,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "core", .module = server },
+                .{ .name = "net", .module = net },
             },
         }),
     });
