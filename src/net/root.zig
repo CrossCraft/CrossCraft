@@ -1,33 +1,25 @@
 const std = @import("std");
 
 pub const IO = struct {
-    pub const Connection = struct {
-        reader: *std.io.Reader,
-        writer: *std.io.Writer,
-        connected: *bool,
-    };
-
     pub const Listener = struct {
         pub const ConnectionHandle = struct {
             stream: std.net.Stream,
             address: std.net.Address,
-            reader: std.net.Stream.Reader = undefined,
-            writer: std.net.Stream.Writer = undefined,
+            stream_reader: std.net.Stream.Reader = undefined,
+            stream_writer: std.net.Stream.Writer = undefined,
+
+            // Actual reader and writer interfaces
+            reader: *std.io.Reader = undefined,
+            writer: *std.io.Writer = undefined,
             connected: bool = true,
 
             pub fn close(self: *const ConnectionHandle) void {
                 self.stream.close();
             }
 
-            pub fn to_connection(self: *ConnectionHandle, read_buffer: []u8, write_buffer: []u8) Connection {
-                self.reader = self.stream.reader(read_buffer);
-                self.writer = self.stream.writer(write_buffer);
-
-                return .{
-                    .reader = self.reader.interface(),
-                    .writer = &self.writer.interface,
-                    .connected = &self.connected,
-                };
+            pub fn init_stream(self: *ConnectionHandle, read_buffer: []u8, write_buffer: []u8) void {
+                self.stream_reader = self.stream.reader(read_buffer);
+                self.stream_writer = self.stream.writer(write_buffer);
             }
         };
 

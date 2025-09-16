@@ -1,6 +1,7 @@
 const std = @import("std");
 const net = @import("net");
 const core = @import("core");
+const Consts = core.Consts;
 const Server = core.Server;
 
 const ConnectionData = struct {
@@ -9,7 +10,7 @@ const ConnectionData = struct {
     write_buffer: [4096]u8,
 };
 
-var conn_handles: [Server.consts.MAX_PLAYERS]?ConnectionData = @splat(null);
+var conn_handles: [Consts.MAX_PLAYERS]?ConnectionData = @splat(null);
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -50,7 +51,7 @@ pub fn main() !void {
             std.debug.print("Accepted connection from {f}\n", .{conn.address});
             connection = conn;
 
-            for (0..Server.consts.MAX_PLAYERS) |i| {
+            for (0..Consts.MAX_PLAYERS) |i| {
                 if (conn_handles[i] != null) continue;
 
                 std.debug.print("Assigning connection to slot {d}\n", .{i});
@@ -60,8 +61,8 @@ pub fn main() !void {
                     .write_buffer = undefined,
                 };
 
-                const client_conn = conn_handles[i].?.handle.to_connection(&conn_handles[i].?.read_buffer, &conn_handles[i].?.write_buffer);
-                server.client_join(client_conn);
+                conn_handles[i].?.handle.init_stream(&conn_handles[i].?.read_buffer, &conn_handles[i].?.write_buffer);
+                server.client_join(conn_handles[i].?.handle.reader, conn_handles[i].?.handle.writer, &conn_handles[i].?.handle.connected);
                 break;
             } else {
                 std.debug.print("Server full, rejecting connection from {f}\n", .{conn.address});
@@ -80,7 +81,7 @@ pub fn main() !void {
             tps += 1;
         }
 
-        for (0..Server.consts.MAX_PLAYERS) |i| {
+        for (0..Consts.MAX_PLAYERS) |i| {
             if (conn_handles[i]) |conn| {
                 if (!conn.handle.connected) {
                     std.debug.print("Connection in slot {d} disconnected\n", .{i});

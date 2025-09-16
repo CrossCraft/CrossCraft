@@ -1,6 +1,5 @@
 const std = @import("std");
-const net = @import("net");
-pub const consts = @import("consts.zig");
+const consts = @import("consts.zig");
 
 const Self = @This();
 
@@ -12,12 +11,14 @@ pub fn init(allocator: std.mem.Allocator) !Self {
     return .{};
 }
 
-pub fn client_join(self: *Self, connection: net.IO.Connection) void {
+pub fn client_join(self: *Self, reader: *std.io.Reader, writer: *std.io.Writer, connected: *bool) void {
     _ = self;
+    _ = reader;
+    _ = writer;
 
     // Handle new client connection
     std.debug.print("Client joined the server!\n", .{});
-    connection.connected.* = false; // For now, immediately disconnect
+    connected.* = false;
 }
 
 pub fn tick(self: *Self) void {
