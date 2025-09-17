@@ -18,7 +18,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var server = try Server.init(allocator);
-    defer server.deinit(allocator);
+    defer server.deinit();
 
     const server_address = try std.net.Address.parseIp("0.0.0.0", 25565);
     var listener = try net.IO.Listener.init(server_address);

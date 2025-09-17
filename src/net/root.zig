@@ -20,6 +20,9 @@ pub const IO = struct {
             pub fn init_stream(self: *ConnectionHandle, read_buffer: []u8, write_buffer: []u8) void {
                 self.stream_reader = self.stream.reader(read_buffer);
                 self.stream_writer = self.stream.writer(write_buffer);
+
+                self.reader = self.stream_reader.interface();
+                self.writer = &self.stream_writer.interface;
             }
         };
 
