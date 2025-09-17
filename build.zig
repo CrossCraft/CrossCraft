@@ -126,7 +126,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zaudio", .module = zaudio.module("root") },
             .{ .name = "vulkan", .module = vulkan },
             .{ .name = "options", .module = options_module },
-            .{ .name = "protocol", .module = protocol },
         },
     });
     engine.linkLibrary(zaudio.artifact("miniaudio"));
@@ -148,7 +147,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/core/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{},
+        .imports = &.{
+            .{ .name = "protocol", .module = protocol },
+        },
     });
 
     const client_exe = b.addExecutable(.{
@@ -160,6 +161,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "Spark", .module = engine },
                 .{ .name = "zmath", .module = zmath.module("root") },
+                .{ .name = "core", .module = server },
                 .{ .name = "options", .module = options_module },
             },
         }),
