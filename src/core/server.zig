@@ -3,64 +3,60 @@ const consts = @import("consts.zig");
 const FAB = @import("fa_buffer.zig").FirstAvailableBuffer;
 const Client = @import("client.zig");
 const StaticAllocator = @import("static_allocator.zig");
+const world = @import("world.zig");
 
-const Self = @This();
+var allocator: StaticAllocator = undefined;
+var players: FAB(Client, consts.MAX_PLAYERS) = .init();
+var world_tick: usize = 0;
 
-allocator: StaticAllocator,
-players: FAB(Client, consts.MAX_PLAYERS) = .init(),
-world_tick: usize = 0,
+pub var name: consts.Message = @splat(' ');
+pub var motd: consts.Message = @splat(' ');
 
-pub fn init(allocator: std.mem.Allocator) !Self {
-    var result: Self = .{
-        .allocator = .init(allocator),
-    };
+pub fn init(alloc: std.mem.Allocator) !void {
+    std.mem.copyForwards(u8, &name, "A Classic Server!");
+    std.mem.copyForwards(u8, &motd, "Welcome to CrossCraft! Another adventure awaits!");
 
-    // Allocs
+    allocator = .init(alloc);
 
-    result.allocator.transition_from_init_to_static();
-    return result;
+    try world.init(allocator.allocator());
+
+    allocator.transition_from_init_to_static();
 }
 
-pub fn deinit(self: *Self) void {
-    self.allocator.transition_from_static_to_deinit();
+pub fn deinit() void {
+    world.deinit();
 
-    // Frees
-
-    self.allocator.deinit();
+    allocator.transition_from_static_to_deinit();
+    allocator.deinit();
 }
 
-pub fn client_join(self: *Self, reader: *std.io.Reader, writer: *std.io.Writer, connected: *bool) void {
+pub fn client_join(reader: *std.io.Reader, writer: *std.io.Writer, connected: *bool) void {
     var client: Client = undefined;
     client.connected = connected;
     client.reader = reader;
     client.writer = writer;
 
-    const id = self.players.add(client);
+    const id = players.add(client);
 
     if (id) |i| {
-        self.players.items[i].?.id = @intCast(i);
-        self.players.items[i].?.init();
-
-        // Handle new client connection
-        std.debug.print("Client joined the server!\n", .{});
+        players.items[i].?.id = @intCast(i);
+        players.items[i].?.init();
     } else {
-        // TODO: Actually kick the client
-        std.debug.print("Server is full! Disconnecting client...\n", .{});
-        connected.* = false;
-        return;
+        defer connected.* = false;
+        client.send_disconnect("Server is full!") catch return;
     }
 }
 
-pub fn tick(self: *Self) void {
-    self.world_tick += 1;
+pub fn tick() void {
+    world_tick += 1;
 
     for (0..consts.MAX_PLAYERS) |i| {
-        if (self.players.items[i]) |client| {
-            const stay_connected = self.players.items[i].?.tick();
+        if (players.items[i]) |client| {
+            const stay_connected = players.items[i].?.tick();
 
-            if (!stay_connected or !self.players.items[i].?.connected.*) {
+            if (!stay_connected or !players.items[i].?.connected.*) {
                 const id = client.id;
-                self.players.remove(@intCast(id));
+                players.remove(@intCast(id));
 
                 // TODO: Broadcast to other players that this player has left
             }
@@ -68,4 +64,5 @@ pub fn tick(self: *Self) void {
     }
 
     // TODO: Broadcast world state to all clients
+    world.tick();
 }

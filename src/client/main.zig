@@ -63,12 +63,12 @@ const MyState = struct {
 
         self.conn = FakeConn{};
 
-        self.server = try Server.init(Util.allocator());
+        try Server.init(Util.allocator());
 
         self.connected = true;
 
         const client_conn = self.conn.client_conn(&client_rbuf, &client_wbuf);
-        self.server.client_join(client_conn.reader, client_conn.writer, &self.connected);
+        Server.client_join(client_conn.reader, client_conn.writer, &self.connected);
 
         try self.mesh.vertices.appendSlice(Util.allocator(), &.{
             Vertex{
@@ -97,11 +97,13 @@ const MyState = struct {
         self.mesh.deinit(Util.allocator());
         self.texture.deinit(Util.allocator());
         Rendering.Pipeline.deinit(pipeline);
+
+        Server.deinit();
     }
 
     fn tick(ctx: *anyopaque) anyerror!void {
-        var self = Util.ctx_to_self(MyState, ctx);
-        self.server.tick();
+        _ = ctx;
+        Server.tick();
     }
 
     fn update(ctx: *anyopaque, dt: f32) anyerror!void {

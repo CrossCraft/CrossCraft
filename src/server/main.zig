@@ -17,8 +17,8 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var server = try Server.init(allocator);
-    defer server.deinit();
+    try Server.init(allocator);
+    defer Server.deinit();
 
     const server_address = try std.net.Address.parseIp("0.0.0.0", 25565);
     var listener = try net.IO.Listener.init(server_address);
@@ -62,7 +62,7 @@ pub fn main() !void {
                 };
 
                 conn_handles[i].?.handle.init_stream(&conn_handles[i].?.read_buffer, &conn_handles[i].?.write_buffer);
-                server.client_join(conn_handles[i].?.handle.reader, conn_handles[i].?.handle.writer, &conn_handles[i].?.handle.connected);
+                Server.client_join(conn_handles[i].?.handle.reader, conn_handles[i].?.handle.writer, &conn_handles[i].?.handle.connected);
                 break;
             } else {
                 std.debug.print("Server full, rejecting connection from {f}\n", .{conn.address});
@@ -76,7 +76,7 @@ pub fn main() !void {
         }
 
         while (acc_us >= tick_us) {
-            server.tick();
+            Server.tick();
             acc_us -= tick_us;
             tps += 1;
         }
