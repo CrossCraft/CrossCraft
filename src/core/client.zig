@@ -124,6 +124,46 @@ pub fn send_disconnect(self: *Self, reason: []const u8) !void {
     try self.writer.flush();
 }
 
+pub fn send_player_position(self: *Self, id: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) !void {
+    var position = zb.SetPositionOrientation{
+        .id = 0x08,
+        .pid = id,
+        .x = x,
+        .y = y,
+        .z = z,
+        .yaw = yaw,
+        .pitch = pitch,
+    };
+
+    try position.write(self.writer);
+}
+
+pub fn send_spawn(ctx: *Self, packet: *zb.SpawnPlayer) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    try packet.write(self.writer);
+}
+
+pub fn send_despawn(self: *Self, id: i8) !void {
+    var despawn_packet = zb.DespawnPlayer{
+        .id = 0x0C,
+        .pid = id,
+    };
+
+    try despawn_packet.write(self.writer);
+}
+
+pub fn send_block_change(self: *Self, x: u16, y: u16, z: u16, block: u8) !void {
+    var block_change = zb.SetBlockToClient{
+        .id = 0x06,
+        .x = x,
+        .y = y,
+        .z = z,
+        .block = block,
+    };
+
+    try block_change.write(self.writer);
+}
+
 fn send_world(self: *Self) !void {
     // This is the LevelStart packet, but we don't have a level to send yet
     try self.writer.writeByte(0x02);
@@ -201,8 +241,29 @@ fn handshake(self: *Self) !void {
 
     initial_spawn.pid = self.id;
 
-    // TODO: Broadcast to other players that this player has joined
-    // TODO: Send other players to this player
+    Server.broadcast_spawn_player(&initial_spawn);
+
+    for (0..Server.players.items.len) |i| {
+        if (Server.players.items[i]) |p| {
+            if (p.id == self.id)
+                continue;
+
+            var name_cpy = [_]u8{' '} ** 64;
+            std.mem.copyForwards(u8, &name_cpy, &p.name);
+
+            var player_spawn = zb.SpawnPlayer{
+                .id = 0x07,
+                .pid = p.id,
+                .name = &name_cpy,
+                .x = p.x,
+                .y = p.y,
+                .z = p.z,
+                .yaw = p.yaw,
+                .pitch = p.pitch,
+            };
+            try player_spawn.write(self.writer);
+        }
+    }
 
     var teleport_player = zb.SetPositionOrientation{
         .id = 0x08,
@@ -223,8 +284,8 @@ fn handshake(self: *Self) !void {
     msg_buf = @splat(' ');
     _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
 
-    try self.send_message(self.id, &msg_buf);
-    // TODO: Broadcast to other players that this player has joined
+    self.initialized = true;
+    Server.broadcast_chat_message(self.id, &msg_buf);
     try self.writer.flush();
 }
 
@@ -251,7 +312,6 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     // TODO: Lookup user
 
     try self.handshake();
-    self.initialized = true;
 }
 
 fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void {
@@ -290,9 +350,17 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
         dup_buf[i] = event.message[j];
     }
 
-    try self.send_message(self.id, &dup_buf);
-    try self.writer.flush();
-    // TODO: Broadcast to other players
+    Server.broadcast_chat_message(self.id, &dup_buf);
+}
+
+fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
+    if (event.mode == @intFromEnum(zb.ClickMode.Destroy)) {
+        world.set_block(event.x, event.y, event.z, 0);
+        Server.broadcast_block_change(event.x, event.y, event.z, 0);
+    } else {
+        world.set_block(event.x, event.y, event.z, event.block);
+        Server.broadcast_block_change(event.x, event.y, event.z, event.block);
+    }
 }
 
 pub fn init(self: *Self) void {
@@ -301,6 +369,7 @@ pub fn init(self: *Self) void {
         .handle_PlayerIDToServer = handle_player,
         .handle_PositionAndOrientationToServer = handle_position,
         .handle_Message = handle_message,
+        .handle_SetBlockToServer = handle_set_block,
     };
 }
 

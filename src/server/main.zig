@@ -92,7 +92,6 @@ pub fn main() !void {
         }
 
         if (now >= next_report_time) {
-            std.debug.print("TPS: {d}\n", .{tps});
             tps = 0;
             next_report_time += std.time.us_per_s;
             if (now > next_report_time + (10 * std.time.us_per_ms))

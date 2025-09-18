@@ -19,6 +19,12 @@ pub fn init(allocator: std.mem.Allocator) !void {
     const size: u32 = c.WorldDepth * c.WorldHeight * c.WorldLength;
     std.mem.writeInt(u32, raw_blocks[0..4], size, .big);
 
+    for (0..c.WorldDepth) |z| {
+        for (0..c.WorldLength) |x| {
+            set_block(@intCast(x), 0, @intCast(z), 7); // Bedrock
+        }
+    }
+
     // if (load("world.save")) {} else |_| {
     //     const FInt = fp.Fixed(32, 24, true);
 
@@ -45,18 +51,26 @@ pub fn deinit() void {
     backing_allocator = undefined;
 }
 
+fn get_index(x: usize, y: usize, z: usize) usize {
+    return (y * c.WorldDepth + z) * c.WorldLength + x;
+}
+
 pub fn get_block(x: u16, y: u16, z: u16) u8 {
     assert(x >= 0 and x < c.WorldLength);
     assert(y >= 0 and y < c.WorldHeight);
     assert(z >= 0 and z < c.WorldDepth);
-    return blocks[(y * c.WorldLength * c.WorldDepth) + (z * c.WorldLength) + x];
+
+    const idx = get_index(x, y, z);
+    return blocks[idx];
 }
 
 pub fn set_block(x: u16, y: u16, z: u16, block: u8) void {
     assert(x >= 0 and x < c.WorldLength);
     assert(y >= 0 and y < c.WorldHeight);
     assert(z >= 0 and z < c.WorldDepth);
-    blocks[(y * c.WorldLength * c.WorldDepth) + (z * c.WorldLength) + x] = block;
+
+    const idx = get_index(x, y, z);
+    blocks[idx] = block;
 }
 
 pub fn tick() void {}

@@ -21,7 +21,6 @@ ClickMode: Enum(u8) {
 
 SetBlockToServer: Event(0x05, Connected, Server) {
     id: u8,
-    pid: u8,
     x: u16,
     y: u16,
     z: u16,
