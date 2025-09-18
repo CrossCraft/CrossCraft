@@ -36,6 +36,10 @@
             .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/heads/vulkan-sdk-1.4.304.tar.gz",
             .hash = "N-V-__8AACUYwwHkOfRNOmzhES0A0wAstELzgG-GdNu-uUE5",
         },
+        .ZeeBuffer = .{
+            .url = "git+https://github.com/IridescentRose/ZeeBuffer#8c3ce9d9251170dff8ca416c65929931c8d95862",
+            .hash = "ZeeBuffer-0.2.0-Z1muEI-xAACQkfDNzAXjIema66STzFCNbmY0pexS4JUi",
+        },
     },
     .paths = .{
         "build.zig",
