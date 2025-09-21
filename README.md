@@ -1,5 +1,5 @@
 # CrossCraft
-Making Minecraft Implementations Free and Open Source for all!
+Exploring the History of Minecraft, Free and Open Source, for all!
 
 ## 📜 Legal Notice
 
