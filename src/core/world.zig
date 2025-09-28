@@ -2,10 +2,30 @@ const std = @import("std");
 const c = @import("consts.zig");
 const assert = std.debug.assert;
 
+const FP = @import("fp.zig").FP;
+const perlin = @import("perlin.zig");
+
 pub var backing_allocator: std.mem.Allocator = undefined;
 pub var raw_blocks: []u8 = undefined;
 pub var blocks: []u8 = undefined;
 pub var world_size: [3]u16 = undefined;
+
+pub fn save() !void {
+    var file = try std.fs.cwd().createFile("world.save", .{});
+    defer file.close();
+
+    try file.writeAll(raw_blocks);
+}
+
+pub fn load(path: []const u8) bool {
+    var file = std.fs.cwd().openFile(path, .{}) catch return false;
+    defer file.close();
+
+    const size = file.readAll(raw_blocks) catch return false;
+    assert(size == raw_blocks.len);
+
+    return true;
+}
 
 pub fn init(allocator: std.mem.Allocator) !void {
     backing_allocator = allocator;
@@ -25,22 +45,36 @@ pub fn init(allocator: std.mem.Allocator) !void {
         }
     }
 
-    // if (load("world.save")) {} else |_| {
-    //     const FInt = fp.Fixed(32, 24, true);
+    if (!load("world.save")) {
+        const FInt = FP(32, 24, true);
+        for (0..c.WorldLength) |x| {
+            for (0..c.WorldDepth) |z| {
+                var noise = perlin.noise3(.{ .value = @intCast(x << 19) }, .{ .value = @intCast(z << 19) }, FInt.from(0));
+                noise = noise.add(.{ .value = 0xFFFFFF });
 
-    //     for (0..c.WorldLength) |x| {
-    //         for (0..c.WorldDepth) |z| {
-    //             var noise = perlin.noise3(.{ .value = @intCast(x << 19) }, .{ .value = @intCast(z << 19) }, FInt.from(0));
-    //             noise = noise.add(.{ .value = 0xFFFFFF });
+                const h = @as(usize, @intCast(noise.value >> 20)) + 20;
+                for (0..@max(c.Water_Level, h)) |y| {
+                    if (y >= h and y < c.Water_Level) {
+                        set_block(x, y, z, 8); // Water
+                    } else if (y == h - 1) {
+                        if (y < c.Water_Level - 1) {
+                            set_block(x, y, z, 3); // Dirt
+                        } else {
+                            set_block(x, y, z, 2); // Grass
+                        }
+                    } else if (y > h and y < c.WorldHeight - 1) {
+                        set_block(x, y, z, 0); // Air
+                    } else if (y < h and y > h - 5) {
+                        set_block(x, y, z, 3); // Dirt
+                    } else {
+                        set_block(x, y, z, 1);
+                    }
+                }
+            }
+        }
 
-    //             for (0..@as(usize, @intCast(noise.value >> 19))) |h| {
-    //                 set_block(@intCast(x), @intCast(h), @intCast(z), 1);
-    //             }
-    //         }
-    //     }
-
-    //     try save();
-    // }
+        try save();
+    }
 }
 
 pub fn deinit() void {
@@ -55,7 +89,7 @@ fn get_index(x: usize, y: usize, z: usize) usize {
     return (y * c.WorldDepth + z) * c.WorldLength + x;
 }
 
-pub fn get_block(x: u16, y: u16, z: u16) u8 {
+pub fn get_block(x: usize, y: usize, z: usize) u8 {
     assert(x >= 0 and x < c.WorldLength);
     assert(y >= 0 and y < c.WorldHeight);
     assert(z >= 0 and z < c.WorldDepth);
@@ -64,7 +98,7 @@ pub fn get_block(x: u16, y: u16, z: u16) u8 {
     return blocks[idx];
 }
 
-pub fn set_block(x: u16, y: u16, z: u16, block: u8) void {
+pub fn set_block(x: usize, y: usize, z: usize, block: u8) void {
     assert(x >= 0 and x < c.WorldLength);
     assert(y >= 0 and y < c.WorldHeight);
     assert(z >= 0 and z < c.WorldDepth);
