@@ -10,6 +10,8 @@ pub var raw_blocks: []u8 = undefined;
 pub var blocks: []u8 = undefined;
 pub var world_size: [3]u16 = undefined;
 
+const Block = c.Block;
+
 pub fn save() !void {
     var file = try std.fs.cwd().createFile("world.save", .{});
     defer file.close();
@@ -27,7 +29,7 @@ pub fn load(path: []const u8) bool {
     return true;
 }
 
-pub fn init(allocator: std.mem.Allocator) !void {
+pub fn init(allocator: std.mem.Allocator, seed: u64) !void {
     backing_allocator = allocator;
 
     raw_blocks = try allocator.alloc(u8, c.WorldDepth * c.WorldHeight * c.WorldLength + 4);
@@ -49,25 +51,25 @@ pub fn init(allocator: std.mem.Allocator) !void {
         const FInt = FP(32, 24, true);
         for (0..c.WorldLength) |x| {
             for (0..c.WorldDepth) |z| {
-                var noise = perlin.noise3(.{ .value = @intCast(x << 19) }, .{ .value = @intCast(z << 19) }, FInt.from(0));
+                var noise = perlin.noise3(.{ .value = @intCast(x << 19) }, .{ .value = @intCast(z << 19) }, FInt.from(@bitCast(@as(u32, @truncate(seed)))));
                 noise = noise.add(.{ .value = 0xFFFFFF });
 
                 const h = @as(usize, @intCast(noise.value >> 20)) + 20;
                 for (0..@max(c.Water_Level, h)) |y| {
                     if (y >= h and y < c.Water_Level) {
-                        set_block(x, y, z, 8); // Water
+                        set_block(x, y, z, Block.Flowing_Water); // Water
                     } else if (y == h - 1) {
                         if (y < c.Water_Level - 1) {
-                            set_block(x, y, z, 3); // Dirt
+                            set_block(x, y, z, Block.Dirt); // Dirt
                         } else {
-                            set_block(x, y, z, 2); // Grass
+                            set_block(x, y, z, Block.Grass); // Grass
                         }
                     } else if (y > h and y < c.WorldHeight - 1) {
-                        set_block(x, y, z, 0); // Air
+                        set_block(x, y, z, Block.Air); // Air
                     } else if (y < h and y > h - 5) {
-                        set_block(x, y, z, 3); // Dirt
+                        set_block(x, y, z, Block.Dirt); // Dirt
                     } else {
-                        set_block(x, y, z, 1);
+                        set_block(x, y, z, Block.Stone);
                     }
                 }
             }
@@ -108,5 +110,3 @@ pub fn set_block(x: usize, y: usize, z: usize, block: u8) void {
 }
 
 pub fn tick() void {}
-
-// TODO: Load & Save

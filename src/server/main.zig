@@ -17,7 +17,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    try Server.init(allocator);
+    try Server.init(allocator, @bitCast(std.time.microTimestamp()));
     defer Server.deinit();
 
     const server_address = try std.net.Address.parseIp("0.0.0.0", 25565);

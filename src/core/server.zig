@@ -13,13 +13,13 @@ pub var players: FAB(Client, consts.MAX_PLAYERS) = .init();
 pub var name: consts.Message = @splat(' ');
 pub var motd: consts.Message = @splat(' ');
 
-pub fn init(alloc: std.mem.Allocator) !void {
+pub fn init(alloc: std.mem.Allocator, seed: u64) !void {
     std.mem.copyForwards(u8, &name, "A Classic Server!");
     std.mem.copyForwards(u8, &motd, "Welcome to CrossCraft! Another adventure awaits!");
 
     allocator = .init(alloc);
 
-    try world.init(allocator.allocator());
+    try world.init(allocator.allocator(), seed);
 
     allocator.transition_from_init_to_static();
 }

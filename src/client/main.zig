@@ -63,7 +63,7 @@ const MyState = struct {
 
         self.conn = FakeConn{};
 
-        try Server.init(Util.allocator());
+        try Server.init(Util.allocator(), Util.get_micro_timestamp());
 
         self.connected = true;
 
