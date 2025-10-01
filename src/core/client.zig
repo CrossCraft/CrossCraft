@@ -73,14 +73,19 @@ fn ctx_to_client(ctx: *anyopaque) *Self {
     return @ptrCast(@alignCast(ctx));
 }
 
+const PlayerToServer: u8 = 0x00;
+const SetBlockToServer: u8 = 0x05;
+const PositionAndOrientationToServer: u8 = 0x08;
+const MessageToServer: u8 = 0x0D;
+
 fn read_packet(self: *Self) !bool {
     const packet_id = try self.reader.peekByte();
 
     const len: u8 = switch (packet_id) {
-        0x00 => 131,
-        0x05 => 9,
-        0x08 => 10,
-        0x0D => 66,
+        PlayerToServer => 131,
+        SetBlockToServer => 9,
+        PositionAndOrientationToServer => 10,
+        MessageToServer => 66,
         else => return error.InvalidPacketID,
     };
 

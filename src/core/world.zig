@@ -88,23 +88,18 @@ pub fn deinit() void {
 }
 
 fn get_index(x: usize, y: usize, z: usize) usize {
+    assert(x < c.WorldLength);
+    assert(y < c.WorldHeight);
+    assert(z < c.WorldDepth);
     return (y * c.WorldDepth + z) * c.WorldLength + x;
 }
 
 pub fn get_block(x: usize, y: usize, z: usize) u8 {
-    assert(x >= 0 and x < c.WorldLength);
-    assert(y >= 0 and y < c.WorldHeight);
-    assert(z >= 0 and z < c.WorldDepth);
-
     const idx = get_index(x, y, z);
     return blocks[idx];
 }
 
 pub fn set_block(x: usize, y: usize, z: usize, block: u8) void {
-    assert(x >= 0 and x < c.WorldLength);
-    assert(y >= 0 and y < c.WorldHeight);
-    assert(z >= 0 and z < c.WorldDepth);
-
     const idx = get_index(x, y, z);
     blocks[idx] = block;
 }
