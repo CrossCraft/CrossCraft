@@ -7,6 +7,9 @@ const Rendering = sp.Rendering;
 const Audio = sp.Audio;
 const State = Core.State;
 const Options = @import("options");
+const core = @import("core");
+const Server = core.Server;
+const FakeConn = @import("fake_conn.zig");
 
 pub const std_options = Util.std_options;
 
@@ -29,10 +32,18 @@ const Vertex = struct {
 
 const MyMesh = Rendering.Mesh(Vertex);
 
+var client_rbuf: [4096]u8 = undefined;
+var client_wbuf: [4096]u8 = undefined;
+var server_rbuf: [4096]u8 = undefined;
+var server_wbuf: [4096]u8 = undefined;
+
 const MyState = struct {
     mesh: MyMesh,
     transform: Rendering.Transform,
     texture: Rendering.Texture,
+    server: Server,
+    conn: FakeConn,
+    connected: bool,
 
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
@@ -49,6 +60,15 @@ const MyState = struct {
 
         self.mesh = try MyMesh.new(Util.allocator(), pipeline);
         self.transform = Rendering.Transform.new();
+
+        self.conn = FakeConn{};
+
+        try Server.init(Util.allocator(), Util.get_micro_timestamp());
+
+        self.connected = true;
+
+        const client_conn = self.conn.client_conn(&client_rbuf, &client_wbuf);
+        Server.client_join(client_conn.reader, client_conn.writer, &self.connected);
 
         try self.mesh.vertices.appendSlice(Util.allocator(), &.{
             Vertex{
@@ -77,10 +97,13 @@ const MyState = struct {
         self.mesh.deinit(Util.allocator());
         self.texture.deinit(Util.allocator());
         Rendering.Pipeline.deinit(pipeline);
+
+        Server.deinit();
     }
 
     fn tick(ctx: *anyopaque) anyerror!void {
         _ = ctx;
+        Server.tick();
     }
 
     fn update(ctx: *anyopaque, dt: f32) anyerror!void {

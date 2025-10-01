@@ -1,10 +1,30 @@
 const std = @import("std");
+const net = @import("net");
 const core = @import("core");
+const Consts = core.Consts;
 const Server = core.Server;
 
+const ConnectionData = struct {
+    handle: net.IO.Listener.ConnectionHandle,
+    read_buffer: [4096]u8,
+    write_buffer: [4096]u8,
+};
+
+var conn_handles: [Consts.MAX_PLAYERS]?ConnectionData = @splat(null);
+
 pub fn main() !void {
-    var server = try Server.init(std.heap.page_allocator);
-    defer server.deinit(std.heap.page_allocator);
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    try Server.init(allocator, @bitCast(std.time.microTimestamp()));
+    defer Server.deinit();
+
+    const server_address = try std.net.Address.parseIp("0.0.0.0", 25565);
+    var listener = try net.IO.Listener.init(server_address);
+    defer listener.deinit();
+
+    std.debug.print("Starting server on {f}\n", .{listener.listen_address});
 
     const ticks_per_second: i64 = 20;
     const tick_us: i64 = @intCast(std.time.us_per_s / ticks_per_second);
@@ -26,14 +46,52 @@ pub fn main() !void {
         acc_us += dt;
         if (acc_us > max_acc_us) acc_us = max_acc_us;
 
+        var connection: ?net.IO.Listener.ConnectionHandle = null;
+        if (listener.accept()) |conn| {
+            std.debug.print("Accepted connection from {f}\n", .{conn.address});
+            connection = conn;
+
+            for (0..Consts.MAX_PLAYERS) |i| {
+                if (conn_handles[i] != null) continue;
+
+                std.debug.print("Assigning connection to slot {d}\n", .{i});
+                conn_handles[i] = .{
+                    .handle = conn,
+                    .read_buffer = undefined,
+                    .write_buffer = undefined,
+                };
+
+                conn_handles[i].?.handle.init_stream(&conn_handles[i].?.read_buffer, &conn_handles[i].?.write_buffer);
+                Server.client_join(conn_handles[i].?.handle.reader, conn_handles[i].?.handle.writer, &conn_handles[i].?.handle.connected);
+                break;
+            } else {
+                std.debug.print("Server full, rejecting connection from {f}\n", .{conn.address});
+                conn.close();
+            }
+        } else |err| switch (err) {
+            error.WouldBlock => {},
+            else => {
+                std.debug.print("Error accepting connection: {}\n", .{err});
+            },
+        }
+
         while (acc_us >= tick_us) {
-            server.tick();
+            Server.tick();
             acc_us -= tick_us;
             tps += 1;
         }
 
+        for (0..Consts.MAX_PLAYERS) |i| {
+            if (conn_handles[i]) |conn| {
+                if (!conn.handle.connected) {
+                    std.debug.print("Connection in slot {d} disconnected\n", .{i});
+                    conn.handle.close();
+                    conn_handles[i] = null;
+                }
+            }
+        }
+
         if (now >= next_report_time) {
-            std.debug.print("TPS: {d}\n", .{tps});
             tps = 0;
             next_report_time += std.time.us_per_s;
             if (now > next_report_time + (10 * std.time.us_per_ms))

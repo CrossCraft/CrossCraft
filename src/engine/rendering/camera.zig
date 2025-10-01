@@ -19,8 +19,8 @@ pub fn update(self: *Self) void {
 
 /// Computes and returns the camera's projection matrix based on its field of view and the current aspect ratio.
 pub fn get_projection_matrix(self: *Self) zm.Mat {
-    const width: f32 = gfx.surface.get_width();
-    const height: f32 = gfx.surface.get_height();
+    const width: f32 = @floatFromInt(gfx.surface.get_width());
+    const height: f32 = @floatFromInt(gfx.surface.get_height());
 
     return zm.perspectiveFovRhGl(std.math.degreesToRadians(self.fov), width / height, 0.3, 250.0);
 }
