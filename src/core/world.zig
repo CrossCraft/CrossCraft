@@ -80,6 +80,8 @@ pub fn init(allocator: std.mem.Allocator, seed: u64) !void {
 }
 
 pub fn deinit() void {
+    save() catch unreachable;
+
     backing_allocator.free(raw_blocks);
     raw_blocks = undefined;
     blocks = undefined;

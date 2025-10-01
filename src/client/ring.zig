@@ -115,10 +115,10 @@ pub fn RingBuffer(comptime Size: usize) type {
             while (remaining != 0) {
                 const chunk_cap = @min(scratch.len, remaining);
                 const n = self.readSome(scratch[0..chunk_cap]);
-                if (n == 0) break; // nothing available right now
+                if (n == 0) return error.ReadFailed; // nothing available right now
                 const wrote = try w.write(scratch[0..n]); // may short-write
                 // If destination short-writes, stop here (let caller pull again).
-                if (wrote == 0) break;
+                if (wrote == 0) return error.WriteFailed;
                 // If writer wrote fewer than we pulled, put back the remainder.
                 if (wrote < n) {
                     // roll back unread portion into the ring's read_index
@@ -128,7 +128,7 @@ pub fn RingBuffer(comptime Size: usize) type {
                 }
                 total += wrote;
                 remaining -= wrote;
-                if (wrote < n) break; // don't loop-spin; let caller retry
+                if (wrote < n) return error.ReadFailed; // don't loop-spin; let caller retry
             }
 
             return total;

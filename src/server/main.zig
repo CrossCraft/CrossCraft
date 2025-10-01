@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const net = @import("net");
 const core = @import("core");
 const Consts = core.Consts;
@@ -11,6 +12,11 @@ const ConnectionData = struct {
 };
 
 var conn_handles: [Consts.MAX_PLAYERS]?ConnectionData = @splat(null);
+var running: bool = true;
+
+fn quit(_: i32) callconv(.c) void {
+    running = false;
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -23,6 +29,16 @@ pub fn main() !void {
     const server_address = try std.net.Address.parseIp("0.0.0.0", 25565);
     var listener = try net.IO.Listener.init(server_address);
     defer listener.deinit();
+
+    if (builtin.os.tag != .windows) {
+        std.posix.sigaction(std.posix.SIG.INT, &.{
+            .flags = 0,
+            .handler = .{
+                .handler = quit,
+            },
+            .mask = std.posix.sigemptyset(),
+        }, null);
+    }
 
     std.debug.print("Starting server on {f}\n", .{listener.listen_address});
 
@@ -37,7 +53,7 @@ pub fn main() !void {
 
     const max_acc_us: i64 = std.time.us_per_s;
 
-    while (true) {
+    while (running) {
         const now = std.time.microTimestamp();
         var dt = now - prev_time;
         if (dt < 0) dt = 0;
@@ -98,4 +114,6 @@ pub fn main() !void {
                 next_report_time = now + std.time.us_per_s;
         }
     }
+
+    std.debug.print("\nShutting down server...\n", .{});
 }
