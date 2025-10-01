@@ -40,7 +40,6 @@ var server_wbuf: [4096]u8 = undefined;
 const MyState = struct {
     mesh: MyMesh,
     transform: Rendering.Transform,
-    texture: Rendering.Texture,
     server: Server,
     conn: FakeConn,
     connected: bool,
@@ -88,14 +87,11 @@ const MyState = struct {
             },
         });
         self.mesh.update();
-
-        self.texture = try Rendering.Texture.load(Util.allocator(), "test.png");
     }
 
     fn deinit(ctx: *anyopaque) void {
         var self = Util.ctx_to_self(MyState, ctx);
         self.mesh.deinit(Util.allocator());
-        self.texture.deinit(Util.allocator());
         Rendering.Pipeline.deinit(pipeline);
 
         Server.deinit();
@@ -122,7 +118,6 @@ const MyState = struct {
         ));
 
         Rendering.Pipeline.bind(pipeline);
-        self.texture.bind();
 
         self.mesh.draw(&self.transform.get_matrix());
     }
