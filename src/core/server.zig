@@ -7,7 +7,6 @@ const world = @import("world.zig");
 const zb = @import("protocol");
 
 var allocator: StaticAllocator = undefined;
-var world_tick: usize = 0;
 
 pub var players: FAB(Client, consts.MAX_PLAYERS) = .init();
 pub var name: consts.Message = @splat(' ');
@@ -103,8 +102,6 @@ pub fn broadcast_player_positions() void {
 }
 
 pub fn tick() void {
-    world_tick += 1;
-
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i]) |client| {
             const stay_connected = players.items[i].?.tick();
