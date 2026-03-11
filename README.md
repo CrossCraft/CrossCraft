@@ -3,6 +3,8 @@ Exploring the History of Minecraft, Free and Open Source, for all!
 
 ## 📜 Legal Notice
 
+**NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.**
+
 CrossCraft is an independent, open-source project. It is not affiliated with, endorsed by, or sponsored by Mojang AB, Microsoft, Sony, Nintendo, or any other entity.
 
 Minecraft is a trademark of Mojang Synergies AB.
