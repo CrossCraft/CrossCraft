@@ -24,9 +24,10 @@ pub fn init(alloc: std.mem.Allocator, seed: u64) !void {
 }
 
 pub fn deinit() void {
+    allocator.transition_from_static_to_deinit();
+
     world.deinit();
 
-    allocator.transition_from_static_to_deinit();
     allocator.deinit();
 }
 
