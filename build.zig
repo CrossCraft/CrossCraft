@@ -1,106 +1,15 @@
 const std = @import("std");
-
-pub const Platform = enum {
-    windows,
-    linux,
-    macos,
-    psp,
-};
-
-pub const Gfx = enum {
-    default,
-    opengl,
-    vulkan,
-};
-
-pub const Audio = enum(u8) {
-    default,
-};
-
-pub const Input = enum(u8) {
-    default,
-};
-
-pub const Config = struct {
-    platform: Platform,
-    gfx: Gfx,
-    audio: Audio = Audio.default,
-    input: Input = Input.default,
-
-    pub fn resolve(target: std.Build.ResolvedTarget) Config {
-        const plat: Platform = switch (target.result.os.tag) {
-            .windows => .windows,
-            .macos => .macos,
-            .linux => .linux,
-            else => |t| {
-                std.debug.panic("Unsupported OS! {}\n", .{t});
-            },
-        };
-
-        const gfx: Gfx = switch (target.result.os.tag) {
-            .windows => .vulkan,
-            .macos => .vulkan,
-            .linux => .opengl,
-            else => .default,
-        };
-
-        return .{
-            .platform = plat,
-            .gfx = gfx,
-        };
-    }
-};
+const Aether = @import("engine");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const options = b.addOptions();
-    options.addOption(Config, "config", Config.resolve(target));
-    const options_module = options.createModule();
+    const overrides: Aether.Config.Overrides = .{
+        .gfx = b.option(Aether.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
+    };
 
-    // glfw.zig provides glfw compilation and wrapping
-    const glfw = b.dependency("glfw_zig", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // zglfw provides Zig bindings for GLFW
-    const zglfw = b.dependency("zglfw", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // zmath provides SIMD optimized mathematics
-    const zmath = b.dependency("zmath", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // zigglgen provides Zig bindings for OpenGL
-    const gl_bindings = @import("zigglgen").generateBindingsModule(b, .{
-        .api = .gl,
-        .version = .@"4.5",
-        .profile = .core,
-        .extensions = &.{},
-    });
-
-    // vulkan-zig provides Zig bindings for Vulkan
-    const vulkan = b.dependency("vulkan", .{
-        .registry = b.dependency("vulkan_headers", .{}).path("registry/vk.xml"),
-    }).module("vulkan-zig");
-
-    // zstbi provides image loading capabilities
-    const zstbi = b.dependency("zstbi", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // zaudio provides audio capabilities
-    const zaudio = b.dependency("zaudio", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    const config = Aether.Config.resolve(target, overrides);
 
     const zbc = b.dependency("ZeeBuffer", .{});
 
@@ -114,122 +23,99 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const engine = b.addModule("Spark", .{
-        .root_source_file = b.path("src/engine/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "glfw", .module = zglfw.module("glfw") },
-            .{ .name = "gl", .module = gl_bindings },
-            .{ .name = "zmath", .module = zmath.module("root") },
-            .{ .name = "zstbi", .module = zstbi.module("root") },
-            .{ .name = "zaudio", .module = zaudio.module("root") },
-            .{ .name = "vulkan", .module = vulkan },
-            .{ .name = "options", .module = options_module },
-        },
-    });
-    engine.linkLibrary(zaudio.artifact("miniaudio"));
-
-    if (target.result.os.tag == .macos) {
-        engine.linkSystemLibrary("vulkan", .{});
-        engine.linkSystemLibrary("glfw", .{});
-    } else {
-        engine.linkLibrary(glfw.artifact("glfw"));
-    }
-
-    const net = b.addModule("Net", .{
-        .root_source_file = b.path("src/net/root.zig"),
+    const common = b.addModule("common", .{
+        .root_source_file = b.path("src/common/root.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const server = b.addModule("Server", .{
-        .root_source_file = b.path("src/core/root.zig"),
+    const game = b.addModule("game", .{
+        .root_source_file = b.path("src/game/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "protocol", .module = protocol },
+            .{ .name = "common", .module = common },
         },
     });
 
-    const client_exe = b.addExecutable(.{
+    const ae_dep = b.dependency("engine", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const client_exe = Aether.addGame(ae_dep.builder, b, .{
         .name = "CrossCraft-Classic",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/client/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "Spark", .module = engine },
-                .{ .name = "zmath", .module = zmath.module("root") },
-                .{ .name = "core", .module = server },
-                .{ .name = "options", .module = options_module },
-            },
-        }),
+        .root_source_file = b.path("src/client/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .overrides = overrides,
+    });
+    client_exe.root_module.addImport("game", game);
+    client_exe.root_module.addImport("common", common);
+
+    Aether.addShader(ae_dep.builder, b, client_exe, config, "basic", .{
+        .slang = b.path("src/client/shaders/basic.slang"),
     });
 
-    const vert_cmd = b.addSystemCommand(&.{
-        "glslc",
-        "--target-env=vulkan1.3",
-        "-o",
-    });
-    const vert_spv = vert_cmd.addOutputFileArg("vert.spv");
-    vert_cmd.addFileArg(b.path("src/client/shaders/basic_vk.vert"));
-    client_exe.root_module.addAnonymousImport("vertex_shader", .{
-        .root_source_file = vert_spv,
+    Aether.exportArtifact(ae_dep.builder, b, client_exe, config, .{
+        .title = "CrossCraft Classic",
+        .output_dir = "CrossCraft-Classic-PSP",
     });
 
-    const frag_cmd = b.addSystemCommand(&.{
-        "glslc",
-        "--target-env=vulkan1.3",
-        "-o",
-    });
-    const frag_spv = frag_cmd.addOutputFileArg("frag.spv");
-    frag_cmd.addFileArg(b.path("src/client/shaders/basic_vk.frag"));
-    client_exe.root_module.addAnonymousImport("fragment_shader", .{
-        .root_source_file = frag_spv,
-    });
+    // The server has no graphics — only use Aether.addGame for PSP
+    // (which provides the pspsdk import and linker script). All other
+    // targets build a plain executable with no engine dependency.
+    const is_psp = target.result.os.tag == .psp;
 
-    const server_exe = b.addExecutable(.{
-        .name = "CrossCraft-Server",
-        .root_module = b.createModule(.{
+    const server_exe = if (is_psp)
+        Aether.addGame(ae_dep.builder, b, .{
+            .name = "CrossCraft-Classic-Server",
             .root_source_file = b.path("src/server/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "core", .module = server },
-                .{ .name = "net", .module = net },
-            },
-        }),
-    });
+            .overrides = overrides,
+        })
+    else
+        b.addExecutable(.{
+            .name = "CrossCraft-Classic-Server",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/server/main.zig"),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+    server_exe.root_module.addImport("game", game);
+    server_exe.root_module.addImport("common", common);
 
-    b.installArtifact(client_exe);
-    b.installArtifact(server_exe);
-
-    const run_client_step = b.step("run-game", "Run the app");
-    const run_client_cmd = b.addRunArtifact(client_exe);
-    run_client_step.dependOn(&run_client_cmd.step);
-    run_client_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        run_client_cmd.addArgs(args);
+    if (is_psp) {
+        Aether.exportArtifact(ae_dep.builder, b, server_exe, config, .{
+            .title = "CrossCraft Classic Server",
+            .output_dir = "CrossCraft-Server-PSP",
+            .icon0 = b.path("assets/psp/ICON0.png"),
+            .pic1 = b.path("assets/psp/PIC1.png"),
+        });
     }
+
+    const build_server_step = b.step("server", "Build the server");
+    build_server_step.dependOn(&b.addInstallArtifact(server_exe, .{}).step);
 
     const run_server_step = b.step("run-server", "Run the server");
     const run_server_cmd = b.addRunArtifact(server_exe);
     run_server_step.dependOn(&run_server_cmd.step);
-    run_server_cmd.step.dependOn(b.getInstallStep());
 
     if (b.args) |args| {
         run_server_cmd.addArgs(args);
     }
 
-    const engine_tests = b.addTest(.{
-        .name = "engine_tests",
-        .root_module = engine,
-    });
+    const build_game_step = b.step("game", "Build the game");
+    build_game_step.dependOn(&b.addInstallArtifact(client_exe, .{}).step);
 
-    const run_tests_step = b.step("test", "Run tests");
-    const run_tests_cmd = b.addRunArtifact(engine_tests);
-    run_tests_step.dependOn(&run_tests_cmd.step);
-    run_tests_cmd.step.dependOn(b.getInstallStep());
+    const run_client_step = b.step("run-game", "Run the app");
+    const run_client_cmd = b.addRunArtifact(client_exe);
+    run_client_step.dependOn(&run_client_cmd.step);
+
+    if (b.args) |args| {
+        run_client_cmd.addArgs(args);
+    }
 }

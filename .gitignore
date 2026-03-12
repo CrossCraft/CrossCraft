@@ -1,4 +1,8 @@
 .zig-cache
 zig-out
+zig-pkg
 *.log
 *.save
+.claude
+CLAUDE.md
+*.dat
