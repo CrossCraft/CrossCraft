@@ -88,7 +88,6 @@ pub fn build(b: *std.Build) void {
     const run_client_step = b.step("run-game", "Run the app");
     const run_client_cmd = b.addRunArtifact(client_exe);
     run_client_step.dependOn(&run_client_cmd.step);
-    run_client_cmd.step.dependOn(b.getInstallStep());
 
     if (b.args) |args| {
         run_client_cmd.addArgs(args);
@@ -97,7 +96,6 @@ pub fn build(b: *std.Build) void {
     const run_server_step = b.step("run-server", "Run the server");
     const run_server_cmd = b.addRunArtifact(server_exe);
     run_server_step.dependOn(&run_server_cmd.step);
-    run_server_cmd.step.dependOn(b.getInstallStep());
 
     if (b.args) |args| {
         run_server_cmd.addArgs(args);

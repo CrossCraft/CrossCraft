@@ -97,7 +97,6 @@ fn read_packet(self: *Self) !bool {
 
 pub fn send_message(self: *Self, id: i8, message: []u8) !void {
     var msg = zb.Message{
-        .id = 0x0D,
         .pid = if (id == self.id) -1 else id,
         .message = message,
     };
@@ -130,7 +129,6 @@ pub fn send_disconnect(self: *Self, reason: []const u8) !void {
 
 pub fn send_player_position(self: *Self, id: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) !void {
     var position = zb.SetPositionOrientation{
-        .id = 0x08,
         .pid = id,
         .x = x,
         .y = y,
@@ -149,7 +147,6 @@ pub fn send_spawn(ctx: *Self, packet: *zb.SpawnPlayer) !void {
 
 pub fn send_despawn(self: *Self, id: i8) !void {
     var despawn_packet = zb.DespawnPlayer{
-        .id = 0x0C,
         .pid = id,
     };
 
@@ -158,7 +155,6 @@ pub fn send_despawn(self: *Self, id: i8) !void {
 
 pub fn send_block_change(self: *Self, x: u16, y: u16, z: u16, block: u8) !void {
     var block_change = zb.SetBlockToClient{
-        .id = 0x06,
         .x = x,
         .y = y,
         .z = z,
@@ -182,10 +178,12 @@ fn send_world(self: *Self) !void {
 
     const before = std.time.microTimestamp();
 
-    var wwriter = WorldWriter{
+    const wwriter = WorldWriter{
         .context = self,
     };
-    try gzip.compress(reader, wwriter.any(), .{});
+    // try gzip.compress(reader, wwriter.any(), .{});
+    _ = reader;
+    _ = wwriter;
 
     var level_chunk = zb.LevelDataChunk{
         .id = 0x03,

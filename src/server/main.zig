@@ -23,7 +23,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    try Server.init(allocator, @bitCast(std.time.microTimestamp()));
+    try Server.init(allocator, 1337);
     defer Server.deinit();
 
     const server_address = try std.net.Address.parseIp("0.0.0.0", 25565);

@@ -13,20 +13,22 @@ pub var world_size: [3]u16 = undefined;
 const Block = c.Block;
 
 pub fn save() !void {
-    var file = try std.fs.cwd().createFile("world.save", .{});
-    defer file.close();
+    // var file = try std.fs.cwd().createFile("world.save", .{});
+    // defer file.close();
 
-    try file.writeAll(raw_blocks);
+    // try file.writeAll(raw_blocks);
 }
 
 pub fn load(path: []const u8) bool {
-    var file = std.fs.cwd().openFile(path, .{}) catch return false;
-    defer file.close();
+    _ = path;
+    // var file = std.fs.cwd().openFile(path, .{}) catch return false;
+    // defer file.close();
 
-    const size = file.readAll(raw_blocks) catch return false;
-    assert(size == raw_blocks.len);
+    // const size = file.readAll(raw_blocks) catch return false;
+    // assert(size == raw_blocks.len);
 
-    return true;
+    // return true;
+    return false;
 }
 
 pub fn init(allocator: std.mem.Allocator, seed: u64) !void {

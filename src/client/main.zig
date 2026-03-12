@@ -45,18 +45,18 @@ const MyState = struct {
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
-        const vert_spv align(@alignOf(u32)) = @embedFile("vertex_shader").*;
-        const frag_spv align(@alignOf(u32)) = @embedFile("fragment_shader").*;
-        pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert_spv, &frag_spv);
+        const vert align(@alignOf(u32)) = @embedFile("shaders/basic.vert").*;
+        const frag align(@alignOf(u32)) = @embedFile("shaders/basic.frag").*;
+        pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
-        self.mesh = try MyMesh.new(Util.allocator(), pipeline);
+        self.mesh = try MyMesh.new(pipeline);
         self.transform = Rendering.Transform.new();
 
-        try Server.init(Util.allocator(), Util.get_micro_timestamp());
+        try Server.init(Util.allocator(.user), 1337);
 
         self.connected = true;
 
-        try self.mesh.vertices.appendSlice(Util.allocator(), &.{
+        try self.mesh.append(&.{
             Vertex{
                 .pos = .{ -0.5, -0.5, 0.0 },
                 .color = .{ 255, 0, 0, 255 },
@@ -78,7 +78,7 @@ const MyState = struct {
 
     fn deinit(ctx: *anyopaque) void {
         var self = Util.ctx_to_self(MyState, ctx);
-        self.mesh.deinit(Util.allocator());
+        self.mesh.deinit();
         Rendering.Pipeline.deinit(pipeline);
 
         Server.deinit();
@@ -91,7 +91,7 @@ const MyState = struct {
 
     fn update(ctx: *anyopaque, dt: f32) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
-        self.transform.rot[2] += 60.0 * dt; // Rotate around Z axis
+        self.transform.rot.z += 60.0 * dt; // Rotate around Z axis
     }
 
     fn draw(ctx: *anyopaque, _: f32) anyerror!void {
@@ -133,8 +133,8 @@ pub fn main(init: std.process.Init) !void {
         .render = 8 * 1024 * 1024,
         .scratch = 4 * 1024 * 1024,
         .user = 16 * 1024 * 1024,
-    }, 1280, 720, "CrossCraft Classic-Z", .vulkan, false, false, &state.state());
-    defer ae.App.deinit();
+    }, 1280, 720, "CrossCraft Classic-Z", .opengl, false, false, &state.state());
+    defer ae.App.deinit(init.io);
 
-    try ae.App.main_loop();
+    try ae.App.main_loop(init.io);
 }
