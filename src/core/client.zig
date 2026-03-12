@@ -4,7 +4,6 @@ const Protocol = zb.Protocol;
 const assert = std.debug.assert;
 const c = @import("consts.zig");
 const world = @import("world.zig");
-const gzip = @import("compress/gzip.zig");
 
 const Server = @import("server.zig");
 
@@ -17,8 +16,8 @@ z: u16,
 yaw: u8,
 pitch: u8,
 
-reader: *std.io.Reader,
-writer: *std.io.Writer,
+reader: *std.Io.Reader,
+writer: *std.Io.Writer,
 connected: *bool,
 
 name: [16:0]u8,

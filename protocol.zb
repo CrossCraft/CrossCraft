@@ -1,126 +1,121 @@
-@endian big
-
-@state {
-    Connected: 0,
+# Classic Minecraft Protocol (Classic 0.30)
+protocol ClassicMinecraft {
+    endian: big,
+    version: 7,
 }
 
-# Server received packets
+states {
+    Connected = 0,
+}
 
-PlayerIDToServer: Event(0x00, Connected, Server) {
-    id: u8,
+# ── Enums ─────────────────────────────────────────────────────────────────────
+
+enum ClickMode : u8 {
+    Destroy = 0,
+    Create  = 1,
+}
+
+enum PlayerType : u8 {
+    Normal = 0x00,
+    Op     = 0x64,
+}
+
+# ── Server-bound packets (Client -> Server) ───────────────────────────────────
+
+packet PlayerIDToServer : Connected[0x00] -> Server {
     protocol_version: u8,
-    username: Array(u8, 64),
-    key: Array(u8, 64),
-    extension: u8,
+    username:         [u8; 64],
+    key:              [u8; 64],
+    extension:        u8,
 }
 
-ClickMode: Enum(u8) {
-    Destroy: 0,
-    Create: 1,
-}
-
-SetBlockToServer: Event(0x05, Connected, Server) {
-    id: u8,
-    x: u16,
-    y: u16,
-    z: u16,
-    mode: u8,
+packet SetBlockToServer : Connected[0x05] -> Server {
+    x:     u16,
+    y:     u16,
+    z:     u16,
+    mode:  ClickMode,
     block: u8,
 }
 
-PositionAndOrientationToServer: Event(0x08, Connected, Server) {
-    id: u8,
-    pid: i8,
-    x: u16,
-    y: u16,
-    z: u16,
-    yaw: u8,
+packet PositionAndOrientationToServer : Connected[0x08] -> Server {
+    pid:   i8,
+    x:     u16,
+    y:     u16,
+    z:     u16,
+    yaw:   u8,
     pitch: u8,
 }
 
-Message: Event(0x0D, Connected, Both) {
-    id: u8,
-    pid: i8,
-    message: Array(u8, 64),
-}
+# ── Client-bound packets (Server -> Client) ───────────────────────────────────
 
-PlayerIDToClient: Event(0x00, Connected, Client) {
-    id: u8,
+packet PlayerIDToClient : Connected[0x00] -> Client {
     protocol_version: u8,
-    server_name: Array(u8, 64),
-    server_motd: Array(u8, 64),
-    user_type: u8,
+    server_name:      [u8; 64],
+    server_motd:      [u8; 64],
+    user_type:        PlayerType,
 }
 
-Ping: Event(0x01, Connected, Client) {
-    id: u8,
+packet Ping : Connected[0x01] -> Client {
 }
 
-LevelInitialize: Event(0x02, Connected, Client) {
-    id: u8,
+packet LevelInitialize : Connected[0x02] -> Client {
 }
 
-LevelDataChunk: Event(0x03, Connected, Client) {
-    id: u8,
-    length: u16,
-    data: Array(u8, 1024),
+packet LevelDataChunk : Connected[0x03] -> Client {
+    length:  u16,
+    data:    [u8; 1024],
     percent: u8,
 }
 
-LevelFinalize: Event(0x04, Connected, Client) {
-    id: u8,
+packet LevelFinalize : Connected[0x04] -> Client {
     x: u16,
     y: u16,
     z: u16,
 }
 
-SetBlockToClient: Event(0x06, Connected, Client) {
-    id: u8,
-    x: u16,
-    y: u16,
-    z: u16,
+packet SetBlockToClient : Connected[0x06] -> Client {
+    x:     u16,
+    y:     u16,
+    z:     u16,
     block: u8,
 }
 
-SpawnPlayer: Event(0x07, Connected, Client) {
-    id: u8,
-    pid: i8,
-    name: Array(u8, 64),
-    x: u16,
-    y: u16,
-    z: u16,
-    yaw: u8,
+packet SpawnPlayer : Connected[0x07] -> Client {
+    pid:   i8,
+    name:  [u8; 64],
+    x:     u16,
+    y:     u16,
+    z:     u16,
+    yaw:   u8,
     pitch: u8,
 }
 
-SetPositionOrientation: Event(0x08, Connected, Client) {
-    id: u8,
-    pid: i8,
-    x: u16,
-    y: u16,
-    z: u16,
-    yaw: u8,
+packet SetPositionOrientation : Connected[0x08] -> Client {
+    pid:   i8,
+    x:     u16,
+    y:     u16,
+    z:     u16,
+    yaw:   u8,
     pitch: u8,
 }
 
-# We don't care about the other relative movements
-
-DespawnPlayer: Event(0x0C, Connected, Client) {
-    id: u8,
+packet DespawnPlayer : Connected[0x0C] -> Client {
     pid: i8,
 }
 
-DisconnectPlayer: Event(0x0E, Connected, Client) {
-    id: u8,
-    reason: Array(u8, 64),
+# ── Bidirectional packets ─────────────────────────────────────────────────────
+
+packet Message : Connected[0x0D] -> Both {
+    pid:     i8,
+    message: [u8; 64],
 }
 
-PlayerType: Enum(u8) {
-    Normal: 0x00,
-    Op: 0x64,
+# ── Continued client-bound ────────────────────────────────────────────────────
+
+packet DisconnectPlayer : Connected[0x0E] -> Client {
+    reason: [u8; 64],
 }
 
-UpdatePlayerType: Event(0x0F, Connected, Client) {
-    id: u8,
-    mode: u8,
+packet UpdatePlayerType : Connected[0x0F] -> Client {
+    mode: PlayerType,
 }

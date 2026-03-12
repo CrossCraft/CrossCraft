@@ -1,15 +1,14 @@
 const std = @import("std");
-const zm = @import("zmath");
-const sp = @import("Spark");
-const Core = sp.Core;
-const Util = sp.Util;
-const Rendering = sp.Rendering;
-const Audio = sp.Audio;
+const ae = @import("aether");
+
+const Core = ae.Core;
+const Util = ae.Util;
+const Rendering = ae.Rendering;
+const Math = ae.Math;
+
 const State = Core.State;
-const Options = @import("options");
 const core = @import("core");
 const Server = core.Server;
-const FakeConn = @import("fake_conn.zig");
 
 pub const std_options = Util.std_options;
 
@@ -41,33 +40,21 @@ const MyState = struct {
     mesh: MyMesh,
     transform: Rendering.Transform,
     server: Server,
-    conn: FakeConn,
     connected: bool,
 
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
-        if (Options.config.gfx == .opengl) {
-            const vert align(@alignOf(u32)) = @embedFile("shaders/basic.vert").*;
-            const frag align(@alignOf(u32)) = @embedFile("shaders/basic.frag").*;
-            pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
-        } else {
-            const vert_spv align(@alignOf(u32)) = @embedFile("vertex_shader").*;
-            const frag_spv align(@alignOf(u32)) = @embedFile("fragment_shader").*;
-            pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert_spv, &frag_spv);
-        }
+        const vert_spv align(@alignOf(u32)) = @embedFile("vertex_shader").*;
+        const frag_spv align(@alignOf(u32)) = @embedFile("fragment_shader").*;
+        pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert_spv, &frag_spv);
 
         self.mesh = try MyMesh.new(Util.allocator(), pipeline);
         self.transform = Rendering.Transform.new();
 
-        self.conn = FakeConn{};
-
         try Server.init(Util.allocator(), Util.get_micro_timestamp());
 
         self.connected = true;
-
-        const client_conn = self.conn.client_conn(&client_rbuf, &client_wbuf);
-        Server.client_join(client_conn.reader, client_conn.writer, &self.connected);
 
         try self.mesh.vertices.appendSlice(Util.allocator(), &.{
             Vertex{
@@ -110,7 +97,7 @@ const MyState = struct {
     fn draw(ctx: *anyopaque, _: f32) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
-        Rendering.gfx.api.set_proj_matrix(&zm.orthographicRh(
+        Rendering.gfx.api.set_proj_matrix(&Math.Mat4.orthographicRh(
             2 * @as(f32, @floatFromInt(Rendering.gfx.surface.get_width())) / @as(f32, @floatFromInt(Rendering.gfx.surface.get_height())),
             2,
             0,
@@ -135,11 +122,19 @@ const MyState = struct {
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var state: MyState = undefined;
 
-    try sp.App.init(1280, 720, "CrossCraft Classic-Z", Options.config.gfx, false, false, &state.state());
-    defer sp.App.deinit();
+    const mem = try init.arena.allocator().alloc(u8, 32 * 1024 * 1024);
 
-    try sp.App.main_loop();
+    try ae.App.init(init.io, mem, .{
+        .audio = 2 * 1024 * 1024,
+        .game = 2 * 1024 * 1024,
+        .render = 8 * 1024 * 1024,
+        .scratch = 4 * 1024 * 1024,
+        .user = 16 * 1024 * 1024,
+    }, 1280, 720, "CrossCraft Classic-Z", .vulkan, false, false, &state.state());
+    defer ae.App.deinit();
+
+    try ae.App.main_loop();
 }
