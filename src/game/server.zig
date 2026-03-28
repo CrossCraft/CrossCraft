@@ -51,9 +51,9 @@ pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *b
     }
 }
 
-pub fn broadcast_spawn_player(packet: *zb.SpawnPlayer) void {
+pub fn broadcast_spawn_player(sender_id: i8, packet: *zb.SpawnPlayer) void {
     for (0..consts.MAX_PLAYERS) |i| {
-        if (players.items[i] != null and players.items[i].?.initialized) {
+        if (players.items[i] != null and players.items[i].?.initialized and players.items[i].?.id != sender_id) {
             players.items[i].?.send_spawn(packet) catch continue;
             players.items[i].?.writer.flush() catch continue;
         }

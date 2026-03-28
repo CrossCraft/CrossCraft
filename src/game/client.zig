@@ -168,7 +168,7 @@ fn handshake(self: *Self) !void {
 
     initial_spawn.pid = self.id;
 
-    Server.broadcast_spawn_player(&initial_spawn);
+    Server.broadcast_spawn_player(self.id, &initial_spawn);
 
     for (0..Server.players.items.len) |i| {
         if (Server.players.items[i]) |p| {
