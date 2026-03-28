@@ -28,7 +28,7 @@ pub fn init(alloc: std.mem.Allocator, seed: u64, _io: std.Io) !void {
 
     load_config();
 
-    try world.init(allocator.allocator(), seed);
+    try world.init(allocator.allocator(), io, seed);
 
     allocator.transition_from_init_to_static();
 }

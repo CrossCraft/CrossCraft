@@ -5,3 +5,4 @@ zig-pkg
 *.save
 .claude
 CLAUDE.md
+*.dat

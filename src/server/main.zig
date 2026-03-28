@@ -40,6 +40,53 @@ pub const print = if (builtin.os.tag == .psp) sdk.extra.debug.print else std.deb
 
 var global_io: std.Io = undefined;
 var tasks: std.Io.Group = .init;
+var global_listener: ?*std.Io.net.Server = null;
+
+fn install_signal_handlers() void {
+    if (comptime builtin.os.tag == .psp) {
+        const kernel = sdk.kernel;
+
+        const exit_cb = struct {
+            fn cb(_: c_int, _: c_int, _: ?*anyopaque) callconv(.c) c_int {
+                running = false;
+                return 0;
+            }
+        }.cb;
+
+        const cb_thread = struct {
+            fn entry(_: usize, _: ?*anyopaque) callconv(.c) c_int {
+                const cbid = kernel.create_callback("server_exit_cb", exit_cb, null) catch
+                    @panic("Could not create exit callback!");
+                kernel.register_exit_callback(cbid) catch
+                    @panic("Could not register exit callback!");
+                kernel.sleep_thread_cb() catch {};
+                return 0;
+            }
+        }.entry;
+
+        const tid = kernel.create_thread("server_exit_thread", cb_thread, 0x11, 0xFA0, .{ .user = true }, null) catch
+            @panic("Could not create exit callback thread!");
+        kernel.start_thread(tid, 0, null) catch {};
+    } else {
+        const handler = struct {
+            fn handler(_: std.posix.SIG) callconv(.c) void {
+                running = false;
+                // Shutdown the listener socket to unblock accept().
+                if (global_listener) |l| {
+                    _ = std.os.linux.shutdown(l.socket.handle, 2);
+                }
+            }
+        }.handler;
+
+        const act: std.posix.Sigaction = .{
+            .handler = .{ .handler = handler },
+            .mask = std.mem.zeroes(std.posix.sigset_t),
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.INT, &act, null);
+        std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+    }
+}
 
 fn tick_loop() std.Io.Cancelable!void {
     const tick_duration = std.Io.Duration.fromMilliseconds(50);
@@ -65,57 +112,36 @@ fn client_read_loop(client: *game.Server.Client) std.Io.Cancelable!void {
     client.read_loop();
 }
 
-pub fn main(init: std.process.Init) !void {
-    if (builtin.os.tag == .psp) {
-        sdk.extra.utils.enableHBCB();
-        sdk.extra.debug.screenInit();
-        sdk.extra.net.init() catch |err| {
-            sdk.extra.debug.print("Net init failed: {s}\n", .{@errorName(err)});
-            return;
-        };
-
-        sdk.extra.net.connectToApctl(1, 30_000_000) catch |err| {
-            sdk.extra.debug.print("WiFi connect failed: {s}\n", .{@errorName(err)});
-            return;
-        };
-
-        var ip_buf: [16]u8 = undefined;
-        if (sdk.extra.net.getLocalIp(&ip_buf)) |ip| {
-            sdk.extra.debug.print("Local IP: {s}\n", .{ip});
-        } else {
-            sdk.extra.debug.print("Could not get local IP\n", .{});
-        }
-    }
-
-    defer blk: {
-        if (builtin.os.tag == .psp) {
-            sdk.extra.net.deinit();
-        }
-
-        break :blk;
-    }
-
-    const allocator = init.arena.allocator();
-    const io = init.io;
-
+fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
     try Server.init(allocator, 1337, io);
     defer Server.deinit();
 
     global_io = io;
 
+    install_signal_handlers();
+
     log.info("Starting server on port 25565", .{});
 
     const server_ip = try std.Io.net.IpAddress.parseIp4("0.0.0.0", 25565);
     var listener = try server_ip.listen(io, .{});
-    defer listener.deinit(io);
+    global_listener = &listener;
+    defer {
+        global_listener = null;
+        listener.deinit(io);
+    }
 
     tasks.concurrent(io, tick_loop, .{}) catch unreachable;
 
     while (running) {
         var conn = listener.accept(io) catch |err| {
+            if (!running) break;
             log.err("Error accepting connection: {}", .{err});
             continue;
         };
+        if (!running) {
+            conn.close(io);
+            break;
+        }
         log.info("Client connected: {}", .{conn.socket.address});
 
         var assigned = false;
@@ -153,4 +179,40 @@ pub fn main(init: std.process.Init) !void {
 
     tasks.cancel(io);
     log.info("Shutting down server...", .{});
+}
+
+pub fn main(init: std.process.Init) !void {
+    if (builtin.os.tag == .psp) {
+        sdk.extra.debug.screenInit();
+        sdk.extra.net.init() catch |err| {
+            sdk.extra.debug.print("Net init failed: {s}\n", .{@errorName(err)});
+            return;
+        };
+
+        sdk.extra.net.connectToApctl(1, 30_000_000) catch |err| {
+            sdk.extra.debug.print("WiFi connect failed: {s}\n", .{@errorName(err)});
+            return;
+        };
+
+        var ip_buf: [16]u8 = undefined;
+        if (sdk.extra.net.getLocalIp(&ip_buf)) |ip| {
+            sdk.extra.debug.print("Local IP: {s}\n", .{ip});
+        } else {
+            sdk.extra.debug.print("Could not get local IP\n", .{});
+        }
+    }
+
+    defer blk: {
+        if (builtin.os.tag == .psp) {
+            sdk.extra.net.deinit();
+        }
+
+        break :blk;
+    }
+
+    try run_server(init.arena.allocator(), init.io);
+
+    if (comptime builtin.os.tag == .psp) {
+        sdk.kernel.exit_game();
+    }
 }
