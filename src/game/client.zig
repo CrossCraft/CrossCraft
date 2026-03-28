@@ -10,6 +10,10 @@ const Server = @import("server.zig");
 
 const flate = std.compress.flate;
 
+var shared_compress_buf: [flate.max_window_len]u8 = undefined;
+var shared_compressor: flate.Compress = undefined;
+var compress_in_use: bool = false;
+
 const Self = @This();
 
 id: i8,
@@ -34,8 +38,10 @@ buffer: [1024]u8,
 const ChunkSender = struct {
     interface: std.Io.Writer,
     output: *std.Io.Writer,
+    bytes_sent: u32,
+    total_raw: u32,
 
-    fn init(output: *std.Io.Writer, chunk_buffer: *[1024]u8) ChunkSender {
+    fn init(output: *std.Io.Writer, chunk_buffer: *[1024]u8, total_raw: u32) ChunkSender {
         return .{
             .interface = .{
                 .vtable = &.{
@@ -44,7 +50,15 @@ const ChunkSender = struct {
                 .buffer = chunk_buffer,
             },
             .output = output,
+            .bytes_sent = 0,
+            .total_raw = total_raw,
         };
+    }
+
+    fn percent(cs: *const ChunkSender) u8 {
+        if (cs.total_raw == 0) return 255;
+        const pct = @min((@as(u64, cs.bytes_sent) * 100) / cs.total_raw, 255);
+        return @intCast(pct);
     }
 
     fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
@@ -69,7 +83,7 @@ const ChunkSender = struct {
             filled += n;
         }
 
-        proto.send_level_chunk(cs.output, @intCast(filled), chunk, 0) catch
+        proto.send_level_chunk(cs.output, @intCast(filled), chunk, cs.percent()) catch
             return error.WriteFailed;
 
         return w.consume(filled);
@@ -122,18 +136,22 @@ fn send_world(self: *Self) !void {
 
     @memset(&self.buffer, 0x00);
 
-    var sender = ChunkSender.init(self.writer, &self.buffer);
-    var compress_buf: [flate.max_window_len]u8 = undefined;
-    var compressor = try flate.Compress.init(&sender.interface, &compress_buf, .gzip, .fastest);
+    assert(!compress_in_use);
+    compress_in_use = true;
+    defer compress_in_use = false;
 
-    try compressor.writer.writeAll(world.raw_blocks);
-    try compressor.finish();
+    var sender = ChunkSender.init(self.writer, &self.buffer, @intCast(world.raw_blocks.len));
+    shared_compressor = try flate.Compress.init(&sender.interface, &shared_compress_buf, .gzip, .fastest);
+
+    try shared_compressor.writer.writeAll(world.raw_blocks);
+    try shared_compressor.finish();
 
     // Send any remaining partial chunk as the final packet.
     if (sender.interface.end > 0) {
         var final_chunk: [1024]u8 = @splat(0);
         @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
-        try proto.send_level_chunk(self.writer, @intCast(sender.interface.end), final_chunk, 255);
+        sender.bytes_sent = @intCast(world.raw_blocks.len);
+        try proto.send_level_chunk(self.writer, @intCast(sender.interface.end), final_chunk, sender.percent());
     }
 
     try proto.send_level_finalize(self.writer);
