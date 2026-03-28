@@ -89,6 +89,14 @@ pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *b
     client.connected = connected;
     client.reader = reader;
     client.writer = writer;
+    client.initialized = false;
+    client.name_len = 0;
+    client.id = -1;
+    client.x = 0;
+    client.y = 0;
+    client.z = 0;
+    client.yaw = 0;
+    client.pitch = 0;
 
     const id = players.add(client);
 
@@ -167,9 +175,12 @@ pub fn tick() void {
         if (players.items[i]) |client| {
             if (!client.connected.*) {
                 const id = client.id;
+                players.remove(@intCast(id));
+
+                if (!client.initialized) continue;
+
                 const name = client.name;
                 const name_len = client.name_len;
-                players.remove(@intCast(id));
 
                 broadcast_despawn_player(id);
 

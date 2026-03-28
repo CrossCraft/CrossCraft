@@ -71,13 +71,13 @@ pub fn init(allocator: std.mem.Allocator, _io: std.Io, seed: u64) !void {
     std.mem.writeInt(u32, raw_blocks[0..4], size, .big);
 
     if (!load()) {
-        _ = seed;
-        // No saved world — generate default.
-        for (0..c.WorldDepth) |z| {
-            for (0..c.WorldLength) |x| {
-                set_block(@intCast(x), 0, @intCast(z), 7); // Bedrock
-            }
-        }
+        const worldgen = @import("common").worldgen;
+        const start = std.Io.Clock.Timestamp.now(io, .boot);
+        try worldgen.generate(allocator, blocks, seed);
+        const end = std.Io.Clock.Timestamp.now(io, .boot);
+        const elapsed_ns: i96 = end.raw.nanoseconds - start.raw.nanoseconds;
+        const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
+        log.info("World generation took {d}ms", .{elapsed_ms});
     }
 }
 

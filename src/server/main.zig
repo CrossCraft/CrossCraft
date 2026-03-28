@@ -113,7 +113,9 @@ fn client_read_loop(client: *game.Server.Client) std.Io.Cancelable!void {
 }
 
 fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
-    try Server.init(allocator, 1337, io);
+    const seed: u64 = @truncate(@as(u96, @bitCast(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
+    log.info("World seed: {d}", .{seed});
+    try Server.init(allocator, seed, io);
     defer Server.deinit();
 
     global_io = io;
@@ -153,8 +155,8 @@ fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
                 .stream = conn,
                 .reader = undefined,
                 .writer = undefined,
-                .read_buffer = undefined,
-                .write_buffer = undefined,
+                .read_buffer = @splat(0),
+                .write_buffer = @splat(0),
                 .connected = true,
             };
 
@@ -184,6 +186,7 @@ fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
 pub fn main(init: std.process.Init) !void {
     if (builtin.os.tag == .psp) {
         sdk.extra.debug.screenInit();
+        try sdk.power.set_clock_frequency(333, 333, 166);
         sdk.extra.net.init() catch |err| {
             sdk.extra.debug.print("Net init failed: {s}\n", .{@errorName(err)});
             return;

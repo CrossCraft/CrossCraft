@@ -66,7 +66,6 @@ const ChunkSender = struct {
         const cs: *ChunkSender = @alignCast(@fieldParentPtr("interface", w));
         const CHUNK: usize = 1024;
 
-        // Build a full chunk from buffered data + new data.
         var chunk: [CHUNK]u8 = @splat(0);
         var filled: usize = 0;
 
@@ -83,12 +82,40 @@ const ChunkSender = struct {
             filled += n;
         }
 
+        cs.bytes_sent += @intCast(filled);
+
+        const end_before = cs.output.end;
         proto.send_level_chunk(cs.output, @intCast(filled), chunk, cs.percent()) catch
             return error.WriteFailed;
+        const end_after = cs.output.end;
+        // If the protocol write triggered an auto-drain, end_after < end_before + 1028
+        if (end_before != 0 or end_after != 1028) {
+            log.warn("drain: end before={d} after={d} (expected 0->1028)", .{ end_before, end_after });
+        }
+        cs.output.flush() catch return error.WriteFailed;
+        @memset(cs.output.buffer, 0x00);
 
         return w.consume(filled);
     }
 };
+
+const log = std.log.scoped(.client);
+
+fn safeFlush(writer: *std.Io.Writer) !void {
+    // Debug: log what's about to be flushed
+    if (writer.end > 0) {
+        const data = writer.buffer[0..writer.end];
+        log.info("flush {d} bytes, first=[{x:0>2} {x:0>2} {x:0>2} {x:0>2}]", .{
+            writer.end,
+            if (data.len > 0) data[0] else 0,
+            if (data.len > 1) data[1] else 0,
+            if (data.len > 2) data[2] else 0,
+            if (data.len > 3) data[3] else 0,
+        });
+    }
+    try writer.flush();
+    @memset(writer.buffer, 0x00);
+}
 
 fn ctx_to_client(ctx: *anyopaque) *Self {
     return @ptrCast(@alignCast(ctx));
@@ -133,18 +160,20 @@ pub fn send_block_change(self: *Self, x: u16, y: u16, z: u16, block: u8) !void {
 
 fn send_world(self: *Self) !void {
     try proto.send_level_initialize(self.writer);
+    try safeFlush(self.writer);
 
-    @memset(&self.buffer, 0x00);
+    var chunk_buf: [1024]u8 = @splat(0);
 
     assert(!compress_in_use);
     compress_in_use = true;
     defer compress_in_use = false;
 
-    var sender = ChunkSender.init(self.writer, &self.buffer, @intCast(world.raw_blocks.len));
+    var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.raw_blocks.len));
     shared_compressor = try flate.Compress.init(&sender.interface, &shared_compress_buf, .gzip, .fastest);
 
     try shared_compressor.writer.writeAll(world.raw_blocks);
     try shared_compressor.finish();
+    shared_compressor = undefined;
 
     // Send any remaining partial chunk as the final packet.
     if (sender.interface.end > 0) {
@@ -152,10 +181,11 @@ fn send_world(self: *Self) !void {
         @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
         sender.bytes_sent = @intCast(world.raw_blocks.len);
         try proto.send_level_chunk(self.writer, @intCast(sender.interface.end), final_chunk, sender.percent());
+        try safeFlush(self.writer);
     }
 
     try proto.send_level_finalize(self.writer);
-    try self.writer.flush();
+    try safeFlush(self.writer);
 }
 
 fn handshake(self: *Self) !void {
@@ -183,6 +213,7 @@ fn handshake(self: *Self) !void {
     self.yaw = 0;
     self.pitch = 0;
     try proto.send_spawn(self.writer, &initial_spawn);
+    try safeFlush(self.writer);
 
     // Send existing players to the new joiner before broadcasting the new joiner to others.
     for (0..Server.players.items.len) |i| {
@@ -203,6 +234,7 @@ fn handshake(self: *Self) !void {
                 .pitch = p.pitch,
             };
             try proto.send_spawn(self.writer, &player_spawn);
+            try safeFlush(self.writer);
         }
     }
 
@@ -211,18 +243,20 @@ fn handshake(self: *Self) !void {
     Server.broadcast_spawn_player(self.id, &initial_spawn);
 
     try proto.send_player_position(self.writer, -1, self.x, self.y, self.z, 0, 0);
+    try safeFlush(self.writer);
 
     var msg_buf: c.Message = @splat(' ');
     std.mem.copyForwards(u8, &msg_buf, "&eWelcome to the world!");
 
     try self.send_message(self.id, &msg_buf);
+    try safeFlush(self.writer);
 
     msg_buf = @splat(' ');
     _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
 
     self.initialized = true;
     Server.broadcast_chat_message(self.id, &msg_buf);
-    try self.writer.flush();
+    try safeFlush(self.writer);
 }
 
 fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {

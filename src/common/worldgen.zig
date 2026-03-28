@@ -1,0 +1,706 @@
+const std = @import("std");
+const assert = std.debug.assert;
+const c = @import("consts.zig");
+const FP16 = @import("fp.zig").FP(32, 16, true);
+
+const B = c.Block;
+const W: u32 = c.WorldLength;
+const H: u32 = c.WorldHeight;
+const D: u32 = c.WorldDepth;
+const WATER: i32 = c.Water_Level;
+const MAP_AREA: u32 = W * D;
+const MAP_VOL: u32 = W * H * D;
+
+// FP16 constants (value = round(x * 65536))
+const FP_ONE = FP16.from(1);
+const FP_1_3: FP16 = .{ .value = 85197 };
+const FP_0_8: FP16 = .{ .value = 52429 };
+const FP_0_2: FP16 = .{ .value = 13107 };
+const FP_0_9: FP16 = .{ .value = 58982 };
+const FP_0_75: FP16 = .{ .value = 49152 };
+const FP_0_25: FP16 = .{ .value = 16384 };
+const RCP_5: FP16 = .{ .value = 13107 };
+const RCP_6: FP16 = .{ .value = 10923 };
+const RCP_8: FP16 = .{ .value = 8192 };
+const TWO_PI: i32 = 411775;
+const PI: i32 = 205887;
+
+// -- PRNG ----------------------------------------------------------------
+
+const Xorshift64 = struct {
+    state: u64,
+
+    fn init(seed: u64) Xorshift64 {
+        return .{ .state = if (seed == 0) 1 else seed };
+    }
+
+    fn next(self: *Xorshift64) u64 {
+        var x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        return x;
+    }
+
+    fn nextBounded(self: *Xorshift64, bound: u32) u32 {
+        assert(bound > 0);
+        return @intCast(self.next() % @as(u64, bound));
+    }
+
+    /// Returns FP16 in [0, 1).
+    fn nextFloat(self: *Xorshift64) FP16 {
+        return .{ .value = @intCast(self.next() & 0xFFFF) };
+    }
+};
+
+// -- Trigonometry --------------------------------------------------------
+
+const SIN_TABLE: [1024]i32 = blk: {
+    @setEvalBranchQuota(10000);
+    var table: [1024]i32 = undefined;
+    for (0..1024) |i| {
+        const angle: f64 = @as(f64, @floatFromInt(i)) * (2.0 * std.math.pi / 1024.0);
+        table[i] = @intFromFloat(@round(@sin(angle) * 65536.0));
+    }
+    break :blk table;
+};
+
+fn sinFP16(angle: FP16) FP16 {
+    var a: i64 = angle.value;
+    a = @rem(a, @as(i64, TWO_PI));
+    if (a < 0) a += TWO_PI;
+    const idx: u32 = @intCast(@divTrunc(a * 1024, @as(i64, TWO_PI)));
+    return .{ .value = SIN_TABLE[idx & 1023] };
+}
+
+fn cosFP16(angle: FP16) FP16 {
+    return sinFP16(.{ .value = angle.value + @divTrunc(TWO_PI, 4) });
+}
+
+// -- Noise helpers -------------------------------------------------------
+
+fn fade16(t: FP16) FP16 {
+    // 6t^5 - 15t^4 + 10t^3 = t^3(t(6t - 15) + 10)
+    return t.mul(FP16.from(6)).sub(FP16.from(15)).mul(t).add(FP16.from(10)).mul(t).mul(t).mul(t);
+}
+
+fn lerp16(t: FP16, a: FP16, b: FP16) FP16 {
+    return a.add(t.mul(b.sub(a)));
+}
+
+fn grad2d(hash: u8, x: FP16, z: FP16) FP16 {
+    // Classic improved Perlin gradient set projected to 2D (z_3d = 0).
+    const h = hash & 15;
+    const u = if (h < 8) x else z;
+    const v = if (h < 4) z else if (h == 12 or h == 14) x else FP16{ .value = 0 };
+    const p1 = if (h & 1 == 0) u else u.neg();
+    const p2 = if (h & 2 == 0) v else v.neg();
+    return p1.add(p2);
+}
+
+// -- 2D Perlin noise (seeded) --------------------------------------------
+
+const PerlinNoise2D = struct {
+    perm: [512]u8,
+
+    fn init(seed: u64) PerlinNoise2D {
+        var rng = Xorshift64.init(seed);
+        var result: PerlinNoise2D = undefined;
+        for (0..256) |i| {
+            result.perm[i] = @intCast(i);
+        }
+        // Fisher-Yates shuffle
+        var i: u32 = 255;
+        while (i > 0) : (i -= 1) {
+            const j = rng.nextBounded(i + 1);
+            const tmp = result.perm[i];
+            result.perm[i] = result.perm[j];
+            result.perm[j] = tmp;
+        }
+        // Mirror for wrap-around
+        for (0..256) |k| {
+            result.perm[256 + k] = result.perm[k];
+        }
+        return result;
+    }
+
+    fn noise(self: *const PerlinNoise2D, x: FP16, z: FP16) FP16 {
+        const X: usize = @intCast(@as(u32, @bitCast(x.int())) & 255);
+        const Z: usize = @intCast(@as(u32, @bitCast(z.int())) & 255);
+        const xf: FP16 = .{ .value = x.frac() };
+        const zf: FP16 = .{ .value = z.frac() };
+        const u = fade16(xf);
+        const v = fade16(zf);
+        const A: usize = @as(usize, self.perm[X]) + Z;
+        const Bp: usize = @as(usize, self.perm[X + 1]) + Z;
+        return lerp16(v, lerp16(u, grad2d(self.perm[A], xf, zf), grad2d(self.perm[Bp], xf.sub(FP_ONE), zf)), lerp16(u, grad2d(self.perm[A + 1], xf, zf.sub(FP_ONE)), grad2d(self.perm[Bp + 1], xf.sub(FP_ONE), zf.sub(FP_ONE))));
+    }
+};
+
+// -- Octave noise --------------------------------------------------------
+
+const OctaveNoise = struct {
+    octaves: [8]PerlinNoise2D,
+    count: u32,
+
+    fn init(rng: *Xorshift64, n: u32) OctaveNoise {
+        assert(n >= 1 and n <= 8);
+        var result: OctaveNoise = undefined;
+        result.count = n;
+        for (0..n) |i| {
+            result.octaves[i] = PerlinNoise2D.init(rng.next());
+        }
+        return result;
+    }
+
+    fn compute(self: *const OctaveNoise, x: FP16, z: FP16) FP16 {
+        var acc: i64 = 0;
+        for (0..self.count) |i| {
+            const shift: u5 = @intCast(i);
+            const nx: FP16 = .{ .value = x.value >> shift };
+            const nz: FP16 = .{ .value = z.value >> shift };
+            const val = self.octaves[i].noise(nx, nz);
+            acc += @as(i64, val.value) << shift;
+        }
+        return .{ .value = @intCast(acc) };
+    }
+};
+
+// -- Combined noise ------------------------------------------------------
+
+const CombinedNoise = struct {
+    noise1: OctaveNoise,
+    noise2: OctaveNoise,
+
+    fn init(rng: *Xorshift64, oct1: u32, oct2: u32) CombinedNoise {
+        return .{
+            .noise1 = OctaveNoise.init(rng, oct1),
+            .noise2 = OctaveNoise.init(rng, oct2),
+        };
+    }
+
+    fn compute(self: *const CombinedNoise, x: FP16, z: FP16) FP16 {
+        return self.noise1.compute(x.add(self.noise2.compute(x, z)), z);
+    }
+};
+
+// -- Index / bitmask helpers ---------------------------------------------
+
+fn blockIdx(x: u32, y: u32, z: u32) u32 {
+    assert(x < W and y < H and z < D);
+    return (y * D + z) * W + x;
+}
+
+fn hmIdx(x: u32, z: u32) u32 {
+    return x * D + z;
+}
+
+fn setCaveBit(mask: []u8, idx: u32) void {
+    const b: u3 = @intCast(idx & 7);
+    mask[idx >> 3] |= @as(u8, 1) << b;
+}
+
+fn getCaveBit(mask: []const u8, idx: u32) bool {
+    const b: u3 = @intCast(idx & 7);
+    return (mask[idx >> 3] >> b) & 1 != 0;
+}
+
+fn setOreBits(mask: []u8, idx: u32, ore: u2) void {
+    const off: u3 = @intCast((idx & 3) * 2);
+    mask[idx >> 2] = (mask[idx >> 2] & ~(@as(u8, 3) << off)) | (@as(u8, ore) << off);
+}
+
+fn getOreBits(mask: []const u8, idx: u32) u2 {
+    const off: u3 = @intCast((idx & 3) * 2);
+    return @intCast((mask[idx >> 2] >> off) & 3);
+}
+
+// -- Oblate spheroid carving ---------------------------------------------
+
+const MaskMode = enum { cave, coal, iron, gold };
+
+fn carveSpheroid(mask: []u8, cx: i32, cy: i32, cz: i32, r: i32, mode: MaskMode) void {
+    if (r <= 0) return;
+    const r2 = r * r;
+    var dy: i32 = -r;
+    while (dy <= r) : (dy += 1) {
+        const y = cy + dy;
+        if (y < 1 or y >= H) continue;
+        const slice_r2 = r2 - 2 * dy * dy;
+        if (slice_r2 <= 0) continue;
+        var dx: i32 = -r;
+        while (dx <= r) : (dx += 1) {
+            if (dx * dx > slice_r2) continue;
+            var dz: i32 = -r;
+            while (dz <= r) : (dz += 1) {
+                if (dx * dx + dz * dz > slice_r2) continue;
+                const bx = cx + dx;
+                const bz = cz + dz;
+                if (bx < 0 or bx >= W or bz < 0 or bz >= D) continue;
+                const idx = blockIdx(@intCast(bx), @intCast(y), @intCast(bz));
+                switch (mode) {
+                    .cave => setCaveBit(mask, idx),
+                    .coal => setOreBits(mask, idx, 1),
+                    .iron => setOreBits(mask, idx, 2),
+                    .gold => setOreBits(mask, idx, 3),
+                }
+            }
+        }
+    }
+}
+
+// -- Cave/ore walker -----------------------------------------------------
+
+fn runWalker(mask: []u8, mode: MaskMode, rng: *Xorshift64) void {
+    var pos_x = FP16.from(@as(i32, @intCast(rng.nextBounded(W))));
+    var pos_y = FP16.from(@as(i32, @intCast(rng.nextBounded(H))));
+    var pos_z = FP16.from(@as(i32, @intCast(rng.nextBounded(D))));
+
+    var theta: FP16 = .{ .value = @intCast(rng.next() % @as(u64, @intCast(TWO_PI))) };
+    var phi: FP16 = .{ .value = @divTrunc(@as(i32, @intCast(rng.next() & 0xFFFF)) - 0x8000, 4) };
+    var d_theta: FP16 = .{ .value = 0 };
+    var d_phi: FP16 = .{ .value = 0 };
+
+    const cave_radius: FP16 = switch (mode) {
+        .cave => rng.nextFloat().mul(rng.nextFloat()).mul(FP16.from(3)).add(FP_ONE),
+        else => rng.nextFloat().mul(rng.nextFloat()).add(.{ .value = 32768 }),
+    };
+
+    const len_fp = rng.nextFloat().mul(rng.nextFloat());
+    const cave_len: u32 = @max(1, @as(u32, @intCast(len_fp.value)) * 200 / 65536);
+
+    var step: u32 = 0;
+    while (step < cave_len) : (step += 1) {
+        walkerStep(&pos_x, &pos_y, &pos_z, &theta, &phi, &d_theta, &d_phi, rng);
+        if (rng.nextFloat().value < FP_0_25.value) continue;
+
+        const jx = @as(i32, @intCast(rng.nextBounded(4))) - 2;
+        const jy = @as(i32, @intCast(rng.nextBounded(4))) - 2;
+        const jz = @as(i32, @intCast(rng.nextBounded(4))) - 2;
+        const cx = pos_x.add(.{ .value = jx * 13107 });
+        const cy = pos_y.add(.{ .value = jy * 13107 });
+        const cz = pos_z.add(.{ .value = jz * 13107 });
+
+        const r = walkerRadius(cy, cave_radius, step, cave_len, mode);
+        if (r > 0) carveSpheroid(mask, cx.int(), cy.int(), cz.int(), r, mode);
+    }
+}
+
+fn walkerStep(
+    px: *FP16,
+    py: *FP16,
+    pz: *FP16,
+    theta: *FP16,
+    phi: *FP16,
+    d_theta: *FP16,
+    d_phi: *FP16,
+    rng: *Xorshift64,
+) void {
+    px.* = px.add(sinFP16(theta.*).mul(cosFP16(phi.*)));
+    py.* = py.add(cosFP16(theta.*));
+    pz.* = pz.add(sinFP16(phi.*));
+    theta.* = theta.add(d_theta.mul(FP_0_2));
+    d_theta.* = d_theta.mul(FP_0_9).add(rng.nextFloat()).sub(rng.nextFloat());
+    phi.* = .{ .value = @divTrunc(phi.value, 2) + @divTrunc(d_phi.value, 4) };
+    d_phi.* = d_phi.mul(FP_0_75).add(rng.nextFloat()).sub(rng.nextFloat());
+}
+
+fn walkerRadius(cy: FP16, base: FP16, step: u32, length: u32, mode: MaskMode) i32 {
+    const ht_fp = FP16.from(@as(i32, H));
+    const diff = ht_fp.sub(cy);
+    // height_factor = (H - cy) / H,  scaled by *3+1
+    const hf_raw: i64 = @divTrunc(@as(i64, diff.value) * 3, @as(i64, H)) + 0x10000;
+    const height_factor: FP16 = .{ .value = @intCast(std.math.clamp(hf_raw, 0, 4 * 0x10000)) };
+    // sin envelope over walk length
+    const angle: i32 = @intCast(@divTrunc(@as(i64, step) * @as(i64, PI), @as(i64, length)));
+    const envelope = sinFP16(.{ .value = angle });
+    var r = base.mul(height_factor).mul(envelope);
+    // Ore veins are smaller
+    if (mode != .cave) r = .{ .value = @divTrunc(r.value, 2) };
+    return @max(0, r.int());
+}
+
+// -- Step 1: Raising (heightmap) -----------------------------------------
+
+fn stepRaising(heightmap: []i16, rng: *Xorshift64) void {
+    assert(heightmap.len == MAP_AREA);
+    const cn1 = CombinedNoise.init(rng, 8, 8);
+    const cn2 = CombinedNoise.init(rng, 8, 8);
+    const on = OctaveNoise.init(rng, 6);
+
+    for (0..W) |xi| {
+        for (0..D) |zi| {
+            const xfp = FP16.from(@as(i32, @intCast(xi)));
+            const zfp = FP16.from(@as(i32, @intCast(zi)));
+            const sx = xfp.mul(FP_1_3);
+            const sz = zfp.mul(FP_1_3);
+
+            const low = cn1.compute(sx, sz).mul(RCP_6).sub(FP16.from(4));
+            const high = cn2.compute(sx, sz).mul(RCP_5).add(FP16.from(6));
+            const sel = on.compute(xfp, zfp).mul(RCP_8);
+
+            var result: FP16 = if (sel.value > 0) low else if (low.value > high.value) low else high;
+            result = .{ .value = result.value >> 1 };
+            if (result.value < 0) result = result.mul(FP_0_8);
+
+            const h: i32 = result.int() + WATER;
+            heightmap[hmIdx(@intCast(xi), @intCast(zi))] = @intCast(std.math.clamp(h, 1, @as(i32, H) - 2));
+        }
+    }
+}
+
+// -- Step 2: Erosion -----------------------------------------------------
+
+fn stepErosion(heightmap: []i16, rng: *Xorshift64) void {
+    assert(heightmap.len == MAP_AREA);
+    const en1 = CombinedNoise.init(rng, 8, 8);
+    const en2 = CombinedNoise.init(rng, 8, 8);
+
+    for (0..W) |xi| {
+        for (0..D) |zi| {
+            const xfp = FP16.from(@as(i32, @intCast(xi)) * 2);
+            const zfp = FP16.from(@as(i32, @intCast(zi)) * 2);
+            const a = en1.compute(xfp, zfp).mul(RCP_8);
+            const b: i16 = if (en2.compute(xfp, zfp).value > 0) 1 else 0;
+            if (a.value > 2 * 0x10000) {
+                const idx = hmIdx(@intCast(xi), @intCast(zi));
+                const h = heightmap[idx];
+                heightmap[idx] = @divTrunc(h - b, 2) * 2 + b;
+            }
+        }
+    }
+}
+
+// -- Step 3: Strata ------------------------------------------------------
+
+fn stepStrata(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+    const soil = OctaveNoise.init(rng, 8);
+
+    for (0..W) |xi| {
+        for (0..D) |zi| {
+            const x: u32 = @intCast(xi);
+            const z: u32 = @intCast(zi);
+            const xfp = FP16.from(@as(i32, @intCast(xi)));
+            const zfp = FP16.from(@as(i32, @intCast(zi)));
+
+            // Classic 0.30: negative thickness = dirt layer above stone.
+            const noise_int: i32 = soil.compute(xfp, zfp).int();
+            const dirt_thickness: i32 = @divTrunc(noise_int, 24) - 4;
+            const h: i32 = heightmap[hmIdx(x, z)];
+            const stone_top: i32 = @max(0, h + dirt_thickness);
+
+            for (0..H) |yi| {
+                const y: i32 = @intCast(yi);
+                const blk: u8 = if (y == 0) B.Bedrock else if (y <= stone_top) B.Stone else if (y <= h) B.Dirt else B.Air;
+                blocks[blockIdx(x, @intCast(yi), z)] = blk;
+            }
+        }
+    }
+}
+
+// -- Step 4-5: Caves & Ores ----------------------------------------------
+
+fn stepCaves(cave_mask: []u8, rng: *Xorshift64) void {
+    const count: u32 = MAP_VOL / 8192;
+    for (0..count) |_| {
+        runWalker(cave_mask, .cave, rng);
+    }
+}
+
+fn stepOres(ore_mask: []u8, rng: *Xorshift64) void {
+    const coal_n: u32 = MAP_VOL * 9 / 163840;
+    const iron_n: u32 = MAP_VOL * 7 / 163840;
+    const gold_n: u32 = MAP_VOL * 5 / 163840;
+    for (0..coal_n) |_| runWalker(ore_mask, .coal, rng);
+    for (0..iron_n) |_| runWalker(ore_mask, .iron, rng);
+    for (0..gold_n) |_| runWalker(ore_mask, .gold, rng);
+}
+
+// -- Step 6: Merge -------------------------------------------------------
+
+fn stepMerge(blocks: []u8, cave_mask: []const u8, ore_mask: []const u8) void {
+    for (0..W) |xi| {
+        for (0..H) |yi| {
+            for (0..D) |zi| {
+                const x: u32 = @intCast(xi);
+                const y: u32 = @intCast(yi);
+                const z: u32 = @intCast(zi);
+                const idx = blockIdx(x, y, z);
+                if (getCaveBit(cave_mask, idx) and y > 0) {
+                    blocks[idx] = B.Air;
+                } else if (blocks[idx] == B.Stone) {
+                    const ore = getOreBits(ore_mask, idx);
+                    if (ore != 0) {
+                        blocks[idx] = switch (ore) {
+                            1 => B.Coal_Ore,
+                            2 => B.Iron_Ore,
+                            3 => B.Gold_Ore,
+                            0 => unreachable,
+                        };
+                    }
+                }
+            }
+        }
+    }
+}
+
+// -- Step 7-8: Flood fill ------------------------------------------------
+
+fn packCoord(x: u32, y: u32, z: u32) u32 {
+    return (x << 18) | (y << 9) | z;
+}
+
+fn bfsFill(blocks: []u8, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: u8, max_count: u32) void {
+    const start_idx = blockIdx(sx, sy, sz);
+    if (blocks[start_idx] != B.Air) return;
+    blocks[start_idx] = fluid;
+    const cap: u32 = @intCast(queue.len);
+    var head: u32 = 0;
+    var tail: u32 = 1;
+    var count: u32 = 1;
+    queue[0] = packCoord(sx, sy, sz);
+
+    while (head != tail and count < max_count) {
+        const coord = queue[head];
+        head = (head + 1) % cap;
+        const bx: i32 = @intCast(coord >> 18);
+        const by: i32 = @intCast((coord >> 9) & 0x1FF);
+        const bz: i32 = @intCast(coord & 0x1FF);
+
+        const dirs = [_][3]i32{
+            .{ -1, 0, 0 }, .{ 1, 0, 0 },  .{ 0, -1, 0 },
+            .{ 0, 1, 0 },  .{ 0, 0, -1 }, .{ 0, 0, 1 },
+        };
+        for (&dirs) |d| {
+            const nx = bx + d[0];
+            const ny = by + d[1];
+            const nz = bz + d[2];
+            if (nx < 0 or nx >= W or ny < 1 or ny >= H or nz < 0 or nz >= D) continue;
+            const nidx = blockIdx(@intCast(nx), @intCast(ny), @intCast(nz));
+            if (blocks[nidx] != B.Air) continue;
+            blocks[nidx] = fluid;
+            count += 1;
+            if (count >= max_count) return;
+            const next_tail = (tail + 1) % cap;
+            if (next_tail == head) return;
+            queue[tail] = packCoord(@intCast(nx), @intCast(ny), @intCast(nz));
+            tail = next_tail;
+        }
+    }
+}
+
+fn stepFloodWater(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+    // Ocean: column fill from heightmap+1 to water level
+    for (0..W) |xi| {
+        for (0..D) |zi| {
+            const x: u32 = @intCast(xi);
+            const z: u32 = @intCast(zi);
+            const h: u32 = @intCast(heightmap[hmIdx(x, z)]);
+            var y: u32 = h + 1;
+            while (y < @as(u32, @intCast(WATER)) and y < H) : (y += 1) {
+                const idx = blockIdx(x, y, z);
+                if (blocks[idx] == B.Air) blocks[idx] = B.Still_Water;
+            }
+        }
+    }
+    // Underground water sources
+    var queue: [4096]u32 = undefined;
+    const sources: u32 = MAP_AREA / 8000;
+    for (0..sources) |_| {
+        const sx = rng.nextBounded(W);
+        const sy: u32 = @intCast(WATER - 1 - @as(i32, @intCast(rng.nextBounded(2))));
+        const sz = rng.nextBounded(D);
+        bfsFill(blocks, &queue, sx, sy, sz, B.Still_Water, 512);
+    }
+}
+
+fn stepFloodLava(blocks: []u8, rng: *Xorshift64) void {
+    var queue: [4096]u32 = undefined;
+    const sources: u32 = MAP_VOL / 20000;
+    for (0..sources) |_| {
+        const sx = rng.nextBounded(W);
+        const r1 = rng.nextFloat();
+        const r2 = rng.nextFloat();
+        const sy_fp = r1.mul(r2).mul(FP16.from(WATER - 3));
+        const sy: u32 = @intCast(@max(1, sy_fp.int()));
+        const sz = rng.nextBounded(D);
+        bfsFill(blocks, &queue, sx, sy, sz, B.Still_Lava, 256);
+    }
+}
+
+// -- Step 9: Surface -----------------------------------------------------
+
+fn stepSurface(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+    const sand_noise = OctaveNoise.init(rng, 8);
+    const gravel_noise = OctaveNoise.init(rng, 8);
+
+    for (0..W) |xi| {
+        for (0..D) |zi| {
+            const x: u32 = @intCast(xi);
+            const z: u32 = @intCast(zi);
+            const xfp = FP16.from(@as(i32, @intCast(xi)));
+            const zfp = FP16.from(@as(i32, @intCast(zi)));
+
+            const is_sand = sand_noise.compute(xfp, zfp).value > 8 * 0x10000;
+            const is_gravel = gravel_noise.compute(xfp, zfp).value > 12 * 0x10000;
+
+            const h: i32 = heightmap[hmIdx(x, z)];
+            if (h < 1 or h >= @as(i32, H) - 1) continue;
+            const y: u32 = @intCast(h);
+            const above = blocks[blockIdx(x, y + 1, z)];
+
+            if (above == B.Still_Water and is_gravel) {
+                blocks[blockIdx(x, y, z)] = B.Gravel;
+            } else if (above == B.Air) {
+                if (h <= WATER and is_sand) {
+                    blocks[blockIdx(x, y, z)] = B.Sand;
+                } else {
+                    blocks[blockIdx(x, y, z)] = B.Grass;
+                }
+            }
+        }
+    }
+}
+
+// -- Step 10: Plants -----------------------------------------------------
+
+pub fn placeTree(blocks: []u8, tx: u32, base_y: u32, tz: u32, height: u32, rng: *Xorshift64) void {
+    // Check space
+    var check_y: u32 = base_y + 1;
+    while (check_y <= base_y + height + 2 and check_y < H) : (check_y += 1) {
+        if (blocks[blockIdx(tx, check_y, tz)] != B.Air) return;
+    }
+    if (base_y + height + 2 >= H) return;
+
+    // Trunk
+    for (0..height) |i| {
+        const y: u32 = base_y + 1 + @as(u32, @intCast(i));
+        if (y < H) blocks[blockIdx(tx, y, tz)] = B.Log;
+    }
+    // Leaves: 4 layers
+    for (0..4) |layer| {
+        const y: u32 = base_y + height - 1 + @as(u32, @intCast(layer));
+        if (y >= H) continue;
+        const r: i32 = if (layer < 2) 2 else 1;
+        var dx: i32 = -r;
+        while (dx <= r) : (dx += 1) {
+            var dz: i32 = -r;
+            while (dz <= r) : (dz += 1) {
+                if (dx == 0 and dz == 0) continue;
+                if (@abs(dx) == r and @abs(dz) == r and rng.nextBounded(2) == 0) continue;
+                const lx = @as(i32, @intCast(tx)) + dx;
+                const lz = @as(i32, @intCast(tz)) + dz;
+                if (lx < 0 or lx >= W or lz < 0 or lz >= D) continue;
+                const idx = blockIdx(@intCast(lx), y, @intCast(lz));
+                if (blocks[idx] == B.Air) blocks[idx] = B.Leaves;
+            }
+        }
+    }
+}
+
+fn stepPlants(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+    // Trees
+    const tree_patches: u32 = MAP_AREA / 4000;
+    for (0..tree_patches) |_| {
+        var px: i32 = @intCast(rng.nextBounded(W));
+        var pz: i32 = @intCast(rng.nextBounded(D));
+        for (0..20) |_| {
+            for (0..20) |_| {
+                px += @as(i32, @intCast(rng.nextBounded(6))) - @as(i32, @intCast(rng.nextBounded(6)));
+                pz += @as(i32, @intCast(rng.nextBounded(6))) - @as(i32, @intCast(rng.nextBounded(6)));
+                if (px < 0 or px >= W or pz < 0 or pz >= D) continue;
+                if (rng.nextFloat().value > FP_0_25.value) continue;
+                const ux: u32 = @intCast(px);
+                const uz: u32 = @intCast(pz);
+                const h: i32 = heightmap[hmIdx(ux, uz)];
+                if (h < WATER or h >= @as(i32, H) - 8) continue;
+                const uy: u32 = @intCast(h);
+                if (blocks[blockIdx(ux, uy, uz)] != B.Grass) continue;
+                const th: u32 = rng.nextBounded(3) + 4;
+                placeTree(blocks, ux, uy, uz, th, rng);
+            }
+        }
+    }
+    // Flowers
+    placePatches(blocks, heightmap, rng, B.Flower1, MAP_AREA / 3000);
+    placePatches(blocks, heightmap, rng, B.Flower2, MAP_AREA / 3000);
+    // Mushrooms (underground)
+    placeMushrooms(blocks, heightmap, rng);
+}
+
+fn placePatches(blocks: []u8, heightmap: []const i16, rng: *Xorshift64, flower: u8, count: u32) void {
+    for (0..count) |_| {
+        var px: i32 = @intCast(rng.nextBounded(W));
+        var pz: i32 = @intCast(rng.nextBounded(D));
+        for (0..10) |_| {
+            for (0..5) |_| {
+                px += @as(i32, @intCast(rng.nextBounded(6))) - @as(i32, @intCast(rng.nextBounded(6)));
+                pz += @as(i32, @intCast(rng.nextBounded(6))) - @as(i32, @intCast(rng.nextBounded(6)));
+                if (px < 0 or px >= W or pz < 0 or pz >= D) continue;
+                const ux: u32 = @intCast(px);
+                const uz: u32 = @intCast(pz);
+                const h: i32 = heightmap[hmIdx(ux, uz)];
+                if (h < 1 or h >= @as(i32, H) - 1) continue;
+                const uy: u32 = @intCast(h + 1);
+                if (blocks[blockIdx(ux, uy, uz)] != B.Air) continue;
+                if (blocks[blockIdx(ux, @intCast(h), uz)] != B.Grass) continue;
+                blocks[blockIdx(ux, uy, uz)] = flower;
+            }
+        }
+    }
+}
+
+fn placeMushrooms(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+    const count: u32 = MAP_VOL / 2000;
+    for (0..count) |_| {
+        var px: i32 = @intCast(rng.nextBounded(W));
+        var py: i32 = @intCast(rng.nextBounded(H));
+        var pz: i32 = @intCast(rng.nextBounded(D));
+        const mtype: u8 = if (rng.nextBounded(2) == 0) B.Mushroom1 else B.Mushroom2;
+        for (0..10) |_| {
+            for (0..5) |_| {
+                px += @as(i32, @intCast(rng.nextBounded(6))) - @as(i32, @intCast(rng.nextBounded(6)));
+                py += @as(i32, @intCast(rng.nextBounded(2))) - @as(i32, @intCast(rng.nextBounded(2)));
+                pz += @as(i32, @intCast(rng.nextBounded(6))) - @as(i32, @intCast(rng.nextBounded(6)));
+                if (px < 0 or px >= W or py < 1 or py >= H or pz < 0 or pz >= D) continue;
+                const ux: u32 = @intCast(px);
+                const uy: u32 = @intCast(py);
+                const uz: u32 = @intCast(pz);
+                if (uy >= @as(u32, @intCast(heightmap[hmIdx(ux, uz)]))) continue;
+                if (blocks[blockIdx(ux, uy, uz)] != B.Air) continue;
+                if (uy < 1) continue;
+                if (blocks[blockIdx(ux, uy - 1, uz)] != B.Stone) continue;
+                blocks[blockIdx(ux, uy, uz)] = mtype;
+            }
+        }
+    }
+}
+
+// -- Public entry point --------------------------------------------------
+
+pub fn generate(allocator: std.mem.Allocator, blocks: []u8, seed: u64) !void {
+    assert(blocks.len == MAP_VOL);
+    var rng = Xorshift64.init(seed);
+
+    // StaticAllocator does not permit free during init — scratch lives until deinit.
+    const heightmap = try allocator.alloc(i16, MAP_AREA);
+    const cave_mask = try allocator.alloc(u8, MAP_VOL / 8);
+    const ore_mask = try allocator.alloc(u8, MAP_VOL / 4);
+
+    stepRaising(heightmap, &rng);
+    stepErosion(heightmap, &rng);
+
+    stepStrata(blocks, heightmap, &rng);
+
+    @memset(cave_mask, 0);
+    @memset(ore_mask, 0);
+    stepCaves(cave_mask, &rng);
+    stepOres(ore_mask, &rng);
+    stepMerge(blocks, cave_mask, ore_mask);
+
+    stepFloodWater(blocks, heightmap, &rng);
+    stepFloodLava(blocks, &rng);
+    stepSurface(blocks, heightmap, &rng);
+    stepPlants(blocks, heightmap, &rng);
+}
