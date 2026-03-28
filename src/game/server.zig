@@ -105,6 +105,8 @@ pub fn broadcast_player_positions() void {
     }
 }
 
+var tick_counter: u32 = 0;
+
 pub fn tick() void {
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i]) |client| {
@@ -120,4 +122,19 @@ pub fn tick() void {
     world.tick();
 
     broadcast_player_positions();
+
+    tick_counter += 1;
+    if (tick_counter >= 30) {
+        tick_counter = 0;
+        broadcast_ping();
+    }
+}
+
+fn broadcast_ping() void {
+    for (0..consts.MAX_PLAYERS) |i| {
+        if (players.items[i] != null and players.items[i].?.initialized) {
+            players.items[i].?.writer.writeByte(0x01) catch continue;
+            players.items[i].?.writer.flush() catch continue;
+        }
+    }
 }
