@@ -101,22 +101,6 @@ const ChunkSender = struct {
 
 const log = std.log.scoped(.client);
 
-fn safeFlush(writer: *std.Io.Writer) !void {
-    // Debug: log what's about to be flushed
-    if (writer.end > 0) {
-        const data = writer.buffer[0..writer.end];
-        log.info("flush {d} bytes, first=[{x:0>2} {x:0>2} {x:0>2} {x:0>2}]", .{
-            writer.end,
-            if (data.len > 0) data[0] else 0,
-            if (data.len > 1) data[1] else 0,
-            if (data.len > 2) data[2] else 0,
-            if (data.len > 3) data[3] else 0,
-        });
-    }
-    try writer.flush();
-    @memset(writer.buffer, 0x00);
-}
-
 fn ctx_to_client(ctx: *anyopaque) *Self {
     return @ptrCast(@alignCast(ctx));
 }
@@ -160,7 +144,7 @@ pub fn send_block_change(self: *Self, x: u16, y: u16, z: u16, block: u8) !void {
 
 fn send_world(self: *Self) !void {
     try proto.send_level_initialize(self.writer);
-    try safeFlush(self.writer);
+    try self.writer.flush();
 
     var chunk_buf: [1024]u8 = @splat(0);
 
@@ -181,11 +165,11 @@ fn send_world(self: *Self) !void {
         @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
         sender.bytes_sent = @intCast(world.raw_blocks.len);
         try proto.send_level_chunk(self.writer, @intCast(sender.interface.end), final_chunk, sender.percent());
-        try safeFlush(self.writer);
+        try self.writer.flush();
     }
 
     try proto.send_level_finalize(self.writer);
-    try safeFlush(self.writer);
+    try self.writer.flush();
 }
 
 fn handshake(self: *Self) !void {
@@ -196,14 +180,13 @@ fn handshake(self: *Self) !void {
     var name_buf: c.Message = @splat(' ');
     std.mem.copyForwards(u8, &name_buf, self.name[0..self.name_len]);
 
-    // TODO: Spawn randomization
-
+    const spawn = world.findSpawn();
     var initial_spawn = zb.SpawnPlayer{
         .pid = -1,
         .name = name_buf,
-        .x = @intCast(c.WorldLength << 4),
-        .y = @intCast(c.WorldHeight << 4),
-        .z = @intCast(c.WorldDepth << 4),
+        .x = spawn[0],
+        .y = spawn[1],
+        .z = spawn[2],
         .yaw = 0,
         .pitch = 0,
     };
@@ -213,7 +196,7 @@ fn handshake(self: *Self) !void {
     self.yaw = 0;
     self.pitch = 0;
     try proto.send_spawn(self.writer, &initial_spawn);
-    try safeFlush(self.writer);
+    try self.writer.flush();
 
     // Send existing players to the new joiner before broadcasting the new joiner to others.
     for (0..Server.players.items.len) |i| {
@@ -234,7 +217,7 @@ fn handshake(self: *Self) !void {
                 .pitch = p.pitch,
             };
             try proto.send_spawn(self.writer, &player_spawn);
-            try safeFlush(self.writer);
+            try self.writer.flush();
         }
     }
 
@@ -243,20 +226,20 @@ fn handshake(self: *Self) !void {
     Server.broadcast_spawn_player(self.id, &initial_spawn);
 
     try proto.send_player_position(self.writer, -1, self.x, self.y, self.z, 0, 0);
-    try safeFlush(self.writer);
+    try self.writer.flush();
 
     var msg_buf: c.Message = @splat(' ');
     std.mem.copyForwards(u8, &msg_buf, "&eWelcome to the world!");
 
     try self.send_message(self.id, &msg_buf);
-    try safeFlush(self.writer);
+    try self.writer.flush();
 
     msg_buf = @splat(' ');
     _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
 
     self.initialized = true;
     Server.broadcast_chat_message(self.id, &msg_buf);
-    try safeFlush(self.writer);
+    try self.writer.flush();
 }
 
 fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {

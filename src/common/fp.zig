@@ -36,7 +36,7 @@ pub fn FP(comptime bits: u16, comptime frac_bits: u16, comptime signed: bool) ty
         }
 
         pub fn mul(self: Self, other: Self) Self {
-            return .{ .value = @truncate(@divTrunc(@as(i64, self.value) *% @as(i64, other.value), @as(i64, 1) <<| frac_bits)) };
+            return .{ .value = @truncate(@as(i64, self.value) *% @as(i64, other.value) >> frac_bits) };
         }
 
         pub fn div(self: Self, other: Self) Self {

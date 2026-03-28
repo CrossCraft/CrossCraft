@@ -57,7 +57,7 @@ pub fn load() bool {
     return true;
 }
 
-pub fn init(allocator: std.mem.Allocator, _io: std.Io, seed: u64) !void {
+pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.Io, seed: u64) !void {
     backing_allocator = allocator;
     io = _io;
 
@@ -73,7 +73,7 @@ pub fn init(allocator: std.mem.Allocator, _io: std.Io, seed: u64) !void {
     if (!load()) {
         const worldgen = @import("common").worldgen;
         const start = std.Io.Clock.Timestamp.now(io, .boot);
-        try worldgen.generate(allocator, blocks, seed);
+        try worldgen.generate(scratch, blocks, seed, io);
         const end = std.Io.Clock.Timestamp.now(io, .boot);
         const elapsed_ns: i96 = end.raw.nanoseconds - start.raw.nanoseconds;
         const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
@@ -106,6 +106,56 @@ pub fn get_block(x: usize, y: usize, z: usize) u8 {
 pub fn set_block(x: usize, y: usize, z: usize, block: u8) void {
     const idx = get_index(x, y, z);
     blocks[idx] = block;
+}
+
+pub fn findSpawn() [3]u16 {
+    const B = c.Block;
+    const seed: u64 = @truncate(@as(u96, @bitCast(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
+    var rng = @import("common").worldgen.Xorshift64.init(seed);
+    for (0..10) |attempt| {
+        const bx = rng.nextBounded(c.WorldLength);
+        const bz = rng.nextBounded(c.WorldDepth);
+        // Walk down from top to find surface
+        var by: u32 = c.WorldHeight - 1;
+        while (by > 0) : (by -= 1) {
+            const blk = get_block(bx, by, bz);
+            if (blk != B.Air and blk != B.Flowing_Water and blk != B.Still_Water and
+                blk != B.Flowing_Lava and blk != B.Still_Lava)
+            {
+                // Found solid ground; spawn one block above
+                const is_water = by + 1 < c.WorldHeight and
+                    (get_block(bx, by + 1, bz) == B.Still_Water or
+                    get_block(bx, by + 1, bz) == B.Flowing_Water);
+                if (is_water and attempt < 9) break;
+                return .{
+                    @intCast((bx << 5) + 16),
+                    @intCast(((by + 1) << 5) + 51),
+                    @intCast((bz << 5) + 16),
+                };
+            }
+        }
+    }
+    // Fallback: world center, walk down to find surface
+    const cx = c.WorldLength / 2;
+    const cz = c.WorldDepth / 2;
+    var fy: u32 = c.WorldHeight - 1;
+    while (fy > 0) : (fy -= 1) {
+        const blk = get_block(cx, fy, cz);
+        if (blk != B.Air and blk != B.Flowing_Water and blk != B.Still_Water and
+            blk != B.Flowing_Lava and blk != B.Still_Lava)
+        {
+            return .{
+                @intCast((cx << 5) + 16),
+                @intCast(((fy + 1) << 5) + 51),
+                @intCast((cz << 5) + 16),
+            };
+        }
+    }
+    return .{
+        @intCast((cx << 5) + 16),
+        @intCast((1 << 5) + 51),
+        @intCast((cz << 5) + 16),
+    };
 }
 
 pub fn tick() void {

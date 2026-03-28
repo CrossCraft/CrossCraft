@@ -1,5 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const log = std.log.scoped(.worldgen);
 const c = @import("consts.zig");
 const FP16 = @import("fp.zig").FP(32, 16, true);
 
@@ -24,13 +25,15 @@ const RCP_6: FP16 = .{ .value = 10923 };
 const RCP_8: FP16 = .{ .value = 8192 };
 const TWO_PI: i32 = 411775;
 const PI: i32 = 205887;
+// Precomputed reciprocal: 1024 * (1 << 32) / TWO_PI, for fast angle→table index.
+const SIN_RECIP: i64 = @divTrunc(1024 * (1 << 32), @as(i64, TWO_PI));
 
 // -- PRNG ----------------------------------------------------------------
 
-const Xorshift64 = struct {
+pub const Xorshift64 = struct {
     state: u64,
 
-    fn init(seed: u64) Xorshift64 {
+    pub fn init(seed: u64) Xorshift64 {
         return .{ .state = if (seed == 0) 1 else seed };
     }
 
@@ -43,7 +46,7 @@ const Xorshift64 = struct {
         return x;
     }
 
-    fn nextBounded(self: *Xorshift64, bound: u32) u32 {
+    pub fn nextBounded(self: *Xorshift64, bound: u32) u32 {
         assert(bound > 0);
         return @intCast(self.next() % @as(u64, bound));
     }
@@ -70,7 +73,7 @@ fn sinFP16(angle: FP16) FP16 {
     var a: i64 = angle.value;
     a = @rem(a, @as(i64, TWO_PI));
     if (a < 0) a += TWO_PI;
-    const idx: u32 = @intCast(@divTrunc(a * 1024, @as(i64, TWO_PI)));
+    const idx: u32 = @intCast((a *% SIN_RECIP) >> 32);
     return .{ .value = SIN_TABLE[idx & 1023] };
 }
 
@@ -420,9 +423,9 @@ fn stepOres(ore_mask: []u8, rng: *Xorshift64) void {
 // -- Step 6: Merge -------------------------------------------------------
 
 fn stepMerge(blocks: []u8, cave_mask: []const u8, ore_mask: []const u8) void {
-    for (0..W) |xi| {
-        for (0..H) |yi| {
-            for (0..D) |zi| {
+    for (0..H) |yi| {
+        for (0..D) |zi| {
+            for (0..W) |xi| {
                 const x: u32 = @intCast(xi);
                 const y: u32 = @intCast(yi);
                 const z: u32 = @intCast(zi);
@@ -451,17 +454,16 @@ fn packCoord(x: u32, y: u32, z: u32) u32 {
     return (x << 18) | (y << 9) | z;
 }
 
-fn bfsFill(blocks: []u8, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: u8, max_count: u32) void {
+fn bfsFloodDown(blocks: []u8, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: u8) void {
     const start_idx = blockIdx(sx, sy, sz);
     if (blocks[start_idx] != B.Air) return;
     blocks[start_idx] = fluid;
     const cap: u32 = @intCast(queue.len);
     var head: u32 = 0;
     var tail: u32 = 1;
-    var count: u32 = 1;
     queue[0] = packCoord(sx, sy, sz);
 
-    while (head != tail and count < max_count) {
+    while (head != tail) {
         const coord = queue[head];
         head = (head + 1) % cap;
         const bx: i32 = @intCast(coord >> 18);
@@ -469,8 +471,8 @@ fn bfsFill(blocks: []u8, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: u8, max
         const bz: i32 = @intCast(coord & 0x1FF);
 
         const dirs = [_][3]i32{
-            .{ -1, 0, 0 }, .{ 1, 0, 0 },  .{ 0, -1, 0 },
-            .{ 0, 1, 0 },  .{ 0, 0, -1 }, .{ 0, 0, 1 },
+            .{ -1, 0, 0 }, .{ 1, 0, 0 }, .{ 0, -1, 0 },
+            .{ 0, 0, -1 }, .{ 0, 0, 1 },
         };
         for (&dirs) |d| {
             const nx = bx + d[0];
@@ -480,8 +482,6 @@ fn bfsFill(blocks: []u8, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: u8, max
             const nidx = blockIdx(@intCast(nx), @intCast(ny), @intCast(nz));
             if (blocks[nidx] != B.Air) continue;
             blocks[nidx] = fluid;
-            count += 1;
-            if (count >= max_count) return;
             const next_tail = (tail + 1) % cap;
             if (next_tail == head) return;
             queue[tail] = packCoord(@intCast(nx), @intCast(ny), @intCast(nz));
@@ -490,7 +490,7 @@ fn bfsFill(blocks: []u8, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: u8, max
     }
 }
 
-fn stepFloodWater(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+fn stepFloodWater(blocks: []u8, heightmap: []const i16, rng: *Xorshift64, flood_queue: []u32) void {
     // Ocean: column fill from heightmap+1 to water level
     for (0..W) |xi| {
         for (0..D) |zi| {
@@ -505,18 +505,16 @@ fn stepFloodWater(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
         }
     }
     // Underground water sources
-    var queue: [4096]u32 = undefined;
     const sources: u32 = MAP_AREA / 8000;
     for (0..sources) |_| {
         const sx = rng.nextBounded(W);
         const sy: u32 = @intCast(WATER - 1 - @as(i32, @intCast(rng.nextBounded(2))));
         const sz = rng.nextBounded(D);
-        bfsFill(blocks, &queue, sx, sy, sz, B.Still_Water, 512);
+        bfsFloodDown(blocks, flood_queue, sx, sy, sz, B.Still_Water);
     }
 }
 
-fn stepFloodLava(blocks: []u8, rng: *Xorshift64) void {
-    var queue: [4096]u32 = undefined;
+fn stepFloodLava(blocks: []u8, rng: *Xorshift64, flood_queue: []u32) void {
     const sources: u32 = MAP_VOL / 20000;
     for (0..sources) |_| {
         const sx = rng.nextBounded(W);
@@ -525,7 +523,7 @@ fn stepFloodLava(blocks: []u8, rng: *Xorshift64) void {
         const sy_fp = r1.mul(r2).mul(FP16.from(WATER - 3));
         const sy: u32 = @intCast(@max(1, sy_fp.int()));
         const sz = rng.nextBounded(D);
-        bfsFill(blocks, &queue, sx, sy, sz, B.Still_Lava, 256);
+        bfsFloodDown(blocks, flood_queue, sx, sy, sz, B.Still_Lava);
     }
 }
 
@@ -587,7 +585,7 @@ pub fn placeTree(blocks: []u8, tx: u32, base_y: u32, tz: u32, height: u32, rng: 
         while (dx <= r) : (dx += 1) {
             var dz: i32 = -r;
             while (dz <= r) : (dz += 1) {
-                if (dx == 0 and dz == 0) continue;
+                if (dx == 0 and dz == 0 and layer < 2) continue;
                 if (@abs(dx) == r and @abs(dz) == r and rng.nextBounded(2) == 0) continue;
                 const lx = @as(i32, @intCast(tx)) + dx;
                 const lz = @as(i32, @intCast(tz)) + dz;
@@ -679,28 +677,58 @@ fn placeMushrooms(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
 
 // -- Public entry point --------------------------------------------------
 
-pub fn generate(allocator: std.mem.Allocator, blocks: []u8, seed: u64) !void {
+pub fn generate(scratch: std.mem.Allocator, blocks: []u8, seed: u64, io: std.Io) !void {
     assert(blocks.len == MAP_VOL);
     var rng = Xorshift64.init(seed);
 
-    // StaticAllocator does not permit free during init — scratch lives until deinit.
-    const heightmap = try allocator.alloc(i16, MAP_AREA);
-    const cave_mask = try allocator.alloc(u8, MAP_VOL / 8);
-    const ore_mask = try allocator.alloc(u8, MAP_VOL / 4);
+    const heightmap = try scratch.alloc(i16, MAP_AREA);
+    defer scratch.free(heightmap);
+    const cave_mask = try scratch.alloc(u8, MAP_VOL / 8);
+    defer scratch.free(cave_mask);
+    const ore_mask = try scratch.alloc(u8, MAP_VOL / 4);
+    defer scratch.free(ore_mask);
+    const flood_queue = try scratch.alloc(u32, MAP_AREA);
+    defer scratch.free(flood_queue);
+
+    var t = std.Io.Clock.Timestamp.now(io, .boot);
 
     stepRaising(heightmap, &rng);
+    t = logStep(io, t, "Raising");
+
     stepErosion(heightmap, &rng);
+    t = logStep(io, t, "Erosion");
 
     stepStrata(blocks, heightmap, &rng);
+    t = logStep(io, t, "Strata");
 
     @memset(cave_mask, 0);
     @memset(ore_mask, 0);
     stepCaves(cave_mask, &rng);
-    stepOres(ore_mask, &rng);
-    stepMerge(blocks, cave_mask, ore_mask);
+    t = logStep(io, t, "Caves");
 
-    stepFloodWater(blocks, heightmap, &rng);
-    stepFloodLava(blocks, &rng);
+    stepOres(ore_mask, &rng);
+    t = logStep(io, t, "Ores");
+
+    stepMerge(blocks, cave_mask, ore_mask);
+    t = logStep(io, t, "Merge");
+
+    stepFloodWater(blocks, heightmap, &rng, flood_queue);
+    t = logStep(io, t, "Water");
+
+    stepFloodLava(blocks, &rng, flood_queue);
+    t = logStep(io, t, "Lava");
+
     stepSurface(blocks, heightmap, &rng);
+    t = logStep(io, t, "Surface");
+
     stepPlants(blocks, heightmap, &rng);
+    _ = logStep(io, t, "Plants");
+}
+
+fn logStep(io: std.Io, prev: std.Io.Clock.Timestamp, name: []const u8) std.Io.Clock.Timestamp {
+    const now = std.Io.Clock.Timestamp.now(io, .boot);
+    const elapsed_ns: i96 = now.raw.nanoseconds - prev.raw.nanoseconds;
+    const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
+    log.info("{s}: {d}ms", .{ name, elapsed_ms });
+    return now;
 }
