@@ -301,6 +301,25 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
 }
 
 fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
+    if (event.x >= c.WorldLength or event.y >= c.WorldHeight or event.z >= c.WorldDepth)
+        return;
+
+    // Prevent breaking bedrock layer.
+    if (event.mode == .Destroy and event.y == 0)
+        return;
+
+    // Prevent placement of fluid blocks.
+    if (event.mode == .Create) {
+        switch (event.block) {
+            c.Block.Flowing_Water,
+            c.Block.Still_Water,
+            c.Block.Flowing_Lava,
+            c.Block.Still_Lava,
+            => return,
+            else => {},
+        }
+    }
+
     if (event.mode == .Destroy) {
         world.set_block(event.x, event.y, event.z, 0);
         Server.broadcast_block_change(event.x, event.y, event.z, 0);
