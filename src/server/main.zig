@@ -1,5 +1,4 @@
-// const std = @import("std");
-// const builtin = @import("builtin");
+const std = @import("std");
 // const net = @import("net");
 // const core = @import("core");
 // const Consts = core.Consts;
@@ -17,6 +16,24 @@
 // fn quit(_: i32) callconv(.c) void {
 //     running = false;
 // }
+//
+const builtin = @import("builtin");
+
+const sdk = if (builtin.os.tag == .psp) @import("pspsdk") else void;
+comptime {
+    if (sdk != void)
+        asm (sdk.extra.module.module_info("CrossCraft Classic", .{ .mode = .User }, 1, 0));
+}
+
+pub const psp_stack_size: u32 = 256 * 1024;
+
+pub const panic = if (builtin.os.tag == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
+pub const std_options_debug_threaded_io = if (builtin.os.tag == .psp) null else std.Io.Threaded.global_single_threaded;
+pub const std_options_debug_io = if (builtin.os.tag == .psp) sdk.extra.Io.psp_io else std.Io.Threaded.global_single_threaded.io();
+pub const std_options_cwd = if (builtin.os.tag == .psp) psp_cwd else null;
+fn psp_cwd() std.Io.Dir {
+    return .{ .handle = -1 };
+}
 
 pub fn main() !void {
     // var gpa = std.heap.GeneralPurposeAllocator(.{}){};
