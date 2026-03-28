@@ -3,6 +3,12 @@ const assert = std.debug.assert;
 const log = std.log.scoped(.worldgen);
 const c = @import("consts.zig");
 const FP16 = @import("fp.zig").FP(32, 16, true);
+const Xorshift64 = @import("xorshift64.zig").Xorshift64;
+const noise = @import("noise.zig");
+const OctaveNoise = noise.OctaveNoise;
+const CombinedNoise = noise.CombinedNoise;
+const sinFP16 = noise.sinFP16;
+const cosFP16 = noise.cosFP16;
 
 const B = c.Block;
 const W: u32 = c.WorldLength;
@@ -13,7 +19,7 @@ const MAP_AREA: u32 = W * D;
 const MAP_VOL: u32 = W * H * D;
 
 // FP16 constants (value = round(x * 65536))
-const FP_ONE = FP16.from(1);
+const FP_ONE = noise.FP_ONE;
 const FP_1_3: FP16 = .{ .value = 85197 };
 const FP_0_8: FP16 = .{ .value = 52429 };
 const FP_0_2: FP16 = .{ .value = 13107 };
@@ -23,170 +29,6 @@ const FP_0_25: FP16 = .{ .value = 16384 };
 const RCP_5: FP16 = .{ .value = 13107 };
 const RCP_6: FP16 = .{ .value = 10923 };
 const RCP_8: FP16 = .{ .value = 8192 };
-const TWO_PI: i32 = 411775;
-const PI: i32 = 205887;
-// Precomputed reciprocal: 1024 * (1 << 32) / TWO_PI, for fast angle→table index.
-const SIN_RECIP: i64 = @divTrunc(1024 * (1 << 32), @as(i64, TWO_PI));
-
-// -- PRNG ----------------------------------------------------------------
-
-pub const Xorshift64 = struct {
-    state: u64,
-
-    pub fn init(seed: u64) Xorshift64 {
-        return .{ .state = if (seed == 0) 1 else seed };
-    }
-
-    fn next(self: *Xorshift64) u64 {
-        var x = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        return x;
-    }
-
-    pub fn nextBounded(self: *Xorshift64, bound: u32) u32 {
-        assert(bound > 0);
-        return @intCast(self.next() % @as(u64, bound));
-    }
-
-    /// Returns FP16 in [0, 1).
-    fn nextFloat(self: *Xorshift64) FP16 {
-        return .{ .value = @intCast(self.next() & 0xFFFF) };
-    }
-};
-
-// -- Trigonometry --------------------------------------------------------
-
-const SIN_TABLE: [1024]i32 = blk: {
-    @setEvalBranchQuota(10000);
-    var table: [1024]i32 = undefined;
-    for (0..1024) |i| {
-        const angle: f64 = @as(f64, @floatFromInt(i)) * (2.0 * std.math.pi / 1024.0);
-        table[i] = @intFromFloat(@round(@sin(angle) * 65536.0));
-    }
-    break :blk table;
-};
-
-fn sinFP16(angle: FP16) FP16 {
-    var a: i64 = angle.value;
-    a = @rem(a, @as(i64, TWO_PI));
-    if (a < 0) a += TWO_PI;
-    const idx: u32 = @intCast((a *% SIN_RECIP) >> 32);
-    return .{ .value = SIN_TABLE[idx & 1023] };
-}
-
-fn cosFP16(angle: FP16) FP16 {
-    return sinFP16(.{ .value = angle.value + @divTrunc(TWO_PI, 4) });
-}
-
-// -- Noise helpers -------------------------------------------------------
-
-fn fade16(t: FP16) FP16 {
-    // 6t^5 - 15t^4 + 10t^3 = t^3(t(6t - 15) + 10)
-    return t.mul(FP16.from(6)).sub(FP16.from(15)).mul(t).add(FP16.from(10)).mul(t).mul(t).mul(t);
-}
-
-fn lerp16(t: FP16, a: FP16, b: FP16) FP16 {
-    return a.add(t.mul(b.sub(a)));
-}
-
-fn grad2d(hash: u8, x: FP16, z: FP16) FP16 {
-    // Classic improved Perlin gradient set projected to 2D (z_3d = 0).
-    const h = hash & 15;
-    const u = if (h < 8) x else z;
-    const v = if (h < 4) z else if (h == 12 or h == 14) x else FP16{ .value = 0 };
-    const p1 = if (h & 1 == 0) u else u.neg();
-    const p2 = if (h & 2 == 0) v else v.neg();
-    return p1.add(p2);
-}
-
-// -- 2D Perlin noise (seeded) --------------------------------------------
-
-const PerlinNoise2D = struct {
-    perm: [512]u8,
-
-    fn init(seed: u64) PerlinNoise2D {
-        var rng = Xorshift64.init(seed);
-        var result: PerlinNoise2D = undefined;
-        for (0..256) |i| {
-            result.perm[i] = @intCast(i);
-        }
-        // Fisher-Yates shuffle
-        var i: u32 = 255;
-        while (i > 0) : (i -= 1) {
-            const j = rng.nextBounded(i + 1);
-            const tmp = result.perm[i];
-            result.perm[i] = result.perm[j];
-            result.perm[j] = tmp;
-        }
-        // Mirror for wrap-around
-        for (0..256) |k| {
-            result.perm[256 + k] = result.perm[k];
-        }
-        return result;
-    }
-
-    fn noise(self: *const PerlinNoise2D, x: FP16, z: FP16) FP16 {
-        const X: usize = @intCast(@as(u32, @bitCast(x.int())) & 255);
-        const Z: usize = @intCast(@as(u32, @bitCast(z.int())) & 255);
-        const xf: FP16 = .{ .value = x.frac() };
-        const zf: FP16 = .{ .value = z.frac() };
-        const u = fade16(xf);
-        const v = fade16(zf);
-        const A: usize = @as(usize, self.perm[X]) + Z;
-        const Bp: usize = @as(usize, self.perm[X + 1]) + Z;
-        return lerp16(v, lerp16(u, grad2d(self.perm[A], xf, zf), grad2d(self.perm[Bp], xf.sub(FP_ONE), zf)), lerp16(u, grad2d(self.perm[A + 1], xf, zf.sub(FP_ONE)), grad2d(self.perm[Bp + 1], xf.sub(FP_ONE), zf.sub(FP_ONE))));
-    }
-};
-
-// -- Octave noise --------------------------------------------------------
-
-const OctaveNoise = struct {
-    octaves: [8]PerlinNoise2D,
-    count: u32,
-
-    fn init(rng: *Xorshift64, n: u32) OctaveNoise {
-        assert(n >= 1 and n <= 8);
-        var result: OctaveNoise = undefined;
-        result.count = n;
-        for (0..n) |i| {
-            result.octaves[i] = PerlinNoise2D.init(rng.next());
-        }
-        return result;
-    }
-
-    fn compute(self: *const OctaveNoise, x: FP16, z: FP16) FP16 {
-        var acc: i64 = 0;
-        for (0..self.count) |i| {
-            const shift: u5 = @intCast(i);
-            const nx: FP16 = .{ .value = x.value >> shift };
-            const nz: FP16 = .{ .value = z.value >> shift };
-            const val = self.octaves[i].noise(nx, nz);
-            acc += @as(i64, val.value) << shift;
-        }
-        return .{ .value = @intCast(acc) };
-    }
-};
-
-// -- Combined noise ------------------------------------------------------
-
-const CombinedNoise = struct {
-    noise1: OctaveNoise,
-    noise2: OctaveNoise,
-
-    fn init(rng: *Xorshift64, oct1: u32, oct2: u32) CombinedNoise {
-        return .{
-            .noise1 = OctaveNoise.init(rng, oct1),
-            .noise2 = OctaveNoise.init(rng, oct2),
-        };
-    }
-
-    fn compute(self: *const CombinedNoise, x: FP16, z: FP16) FP16 {
-        return self.noise1.compute(x.add(self.noise2.compute(x, z)), z);
-    }
-};
 
 // -- Index / bitmask helpers ---------------------------------------------
 
@@ -260,7 +102,7 @@ fn runWalker(mask: []u8, mode: MaskMode, rng: *Xorshift64) void {
     var pos_y = FP16.from(@as(i32, @intCast(rng.nextBounded(H))));
     var pos_z = FP16.from(@as(i32, @intCast(rng.nextBounded(D))));
 
-    var theta: FP16 = .{ .value = @intCast(rng.next() % @as(u64, @intCast(TWO_PI))) };
+    var theta: FP16 = .{ .value = @intCast(rng.next() % @as(u64, @intCast(noise.TWO_PI))) };
     var phi: FP16 = .{ .value = @divTrunc(@as(i32, @intCast(rng.next() & 0xFFFF)) - 0x8000, 4) };
     var d_theta: FP16 = .{ .value = 0 };
     var d_phi: FP16 = .{ .value = 0 };
@@ -316,7 +158,7 @@ fn walkerRadius(cy: FP16, base: FP16, step: u32, length: u32, mode: MaskMode) i3
     const hf_raw: i64 = @divTrunc(@as(i64, diff.value) * 3, @as(i64, H)) + 0x10000;
     const height_factor: FP16 = .{ .value = @intCast(std.math.clamp(hf_raw, 0, 4 * 0x10000)) };
     // sin envelope over walk length
-    const angle: i32 = @intCast(@divTrunc(@as(i64, step) * @as(i64, PI), @as(i64, length)));
+    const angle: i32 = @intCast(@divTrunc(@as(i64, step) * @as(i64, noise.PI), @as(i64, length)));
     const envelope = sinFP16(.{ .value = angle });
     var r = base.mul(height_factor).mul(envelope);
     // Ore veins are smaller

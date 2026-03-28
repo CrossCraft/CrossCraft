@@ -1,7 +1,7 @@
 # CrossCraft
 Exploring the History of Minecraft, Free and Open Source, for all!
 
-## 📜 Legal Notice
+## Legal Notice
 
 **NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.**
 
@@ -15,6 +15,6 @@ Network protocol compatibility is based on publicly available documentation and 
 
 Console builds rely on existing homebrew environments. CrossCraft does not distribute or require any proprietary console firmware, BIOS, or copyrighted system software. Users are responsible for compliance with their local laws and device terms of service.
 
-CrossCraft is provided “as-is” without warranty and is intended for educational and non-commercial purposes.
+CrossCraft is provided "as-is" without warranty and is intended for educational and non-commercial purposes.
 
 If you would like to modify or distribute CrossCraft, please refer to the LICENSE file for details on the GPL-3.0 license.

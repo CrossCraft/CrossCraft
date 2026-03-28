@@ -356,7 +356,7 @@ pub fn init(self: *Self) void {
     };
 }
 
-/// Blocking read loop — runs on an Io thread pool thread. Reads and
+/// Blocking read loop -- runs on an Io thread pool thread. Reads and
 /// processes packets until the connection drops, then marks disconnected.
 pub fn read_loop(self: *Self) void {
     while (self.connected.*) {

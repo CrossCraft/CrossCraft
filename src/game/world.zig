@@ -8,10 +8,11 @@ pub var backing_allocator: std.mem.Allocator = undefined;
 pub var raw_blocks: []u8 = undefined;
 pub var blocks: []u8 = undefined;
 pub var world_size: [3]u16 = undefined;
+pub var seed: u64 = undefined;
 pub var io: std.Io = undefined;
 var tick_counter: u32 = 0;
 
-/// File header: 3 little-endian u16 values (x, y, z) followed by raw block data.
+/// File header: 3 little-endian u16 (x, y, z), 1 little-endian u64 (seed), then raw block data.
 pub fn save() !void {
     const file = std.Io.Dir.cwd().createFile(io, "world.dat", .{}) catch |err| {
         log.err("Failed to create world.dat: {}", .{err});
@@ -23,6 +24,8 @@ pub fn save() !void {
     var writer = file.writer(io, &write_buf);
 
     try writer.interface.writeSliceEndian(u16, &world_size, .little);
+    const seed_arr = [1]u64{seed};
+    try writer.interface.writeSliceEndian(u64, &seed_arr, .little);
     try writer.interface.writeAll(raw_blocks);
     try writer.interface.flush();
 
@@ -50,14 +53,17 @@ pub fn load() bool {
         return false;
     }
 
+    var saved_seed: [1]u64 = undefined;
+    reader.interface.readSliceEndian(u64, &saved_seed, .little) catch return false;
     reader.interface.readSliceAll(raw_blocks) catch return false;
 
     world_size = dims;
+    seed = saved_seed[0];
     log.info("Loaded world from world.dat", .{});
     return true;
 }
 
-pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.Io, seed: u64) !void {
+pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.Io, new_seed: u64) !void {
     backing_allocator = allocator;
     io = _io;
 
@@ -71,6 +77,7 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
     std.mem.writeInt(u32, raw_blocks[0..4], size, .big);
 
     if (!load()) {
+        seed = new_seed;
         const worldgen = @import("common").worldgen;
         const start = std.Io.Clock.Timestamp.now(io, .boot);
         try worldgen.generate(scratch, blocks, seed, io);
@@ -79,6 +86,7 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
         const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
         log.info("World generation took {d}ms", .{elapsed_ms});
     }
+    log.info("World seed: {d}", .{seed});
 }
 
 pub fn deinit() void {
@@ -88,6 +96,7 @@ pub fn deinit() void {
     raw_blocks = undefined;
     blocks = undefined;
     world_size = undefined;
+    seed = undefined;
     backing_allocator = undefined;
 }
 
@@ -110,8 +119,8 @@ pub fn set_block(x: usize, y: usize, z: usize, block: u8) void {
 
 pub fn findSpawn() [3]u16 {
     const B = c.Block;
-    const seed: u64 = @truncate(@as(u96, @bitCast(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
-    var rng = @import("common").worldgen.Xorshift64.init(seed);
+    const spawn_seed: u64 = @truncate(@as(u96, @bitCast(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
+    var rng = @import("common").xorshift64.Xorshift64.init(spawn_seed);
     for (0..10) |attempt| {
         const bx = rng.nextBounded(c.WorldLength);
         const bz = rng.nextBounded(c.WorldDepth);

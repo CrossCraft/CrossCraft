@@ -8,7 +8,7 @@ states {
     Connected = 0,
 }
 
-# ── Enums ─────────────────────────────────────────────────────────────────────
+# -- Enums -----------------------------------------------------------------
 
 enum ClickMode : u8 {
     Destroy = 0,
@@ -20,7 +20,7 @@ enum PlayerType : u8 {
     Op     = 0x64,
 }
 
-# ── Server-bound packets (Client -> Server) ───────────────────────────────────
+# -- Server-bound packets (Client -> Server) -------------------------------
 
 packet PlayerIDToServer : Connected[0x00] -> Server {
     protocol_version: u8,
@@ -46,7 +46,7 @@ packet PositionAndOrientationToServer : Connected[0x08] -> Server {
     pitch: u8,
 }
 
-# ── Client-bound packets (Server -> Client) ───────────────────────────────────
+# -- Client-bound packets (Server -> Client) -------------------------------
 
 packet PlayerIDToClient : Connected[0x00] -> Client {
     protocol_version: u8,
@@ -103,14 +103,14 @@ packet DespawnPlayer : Connected[0x0C] -> Client {
     pid: i8,
 }
 
-# ── Bidirectional packets ─────────────────────────────────────────────────────
+# -- Bidirectional packets -------------------------------------------------
 
 packet Message : Connected[0x0D] -> Both {
     pid:     i8,
     message: [u8; 64],
 }
 
-# ── Continued client-bound ────────────────────────────────────────────────────
+# -- Continued client-bound ------------------------------------------------
 
 packet DisconnectPlayer : Connected[0x0E] -> Client {
     reason: [u8; 64],

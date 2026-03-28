@@ -114,7 +114,6 @@ fn client_read_loop(client: *game.Server.Client) std.Io.Cancelable!void {
 
 fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
     const seed: u64 = @truncate(@as(u96, @bitCast(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
-    log.info("World seed: {d}", .{seed});
     try Server.init(allocator, seed, io);
     defer Server.deinit();
 
