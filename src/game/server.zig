@@ -167,9 +167,15 @@ pub fn tick() void {
         if (players.items[i]) |client| {
             if (!client.connected.*) {
                 const id = client.id;
+                const name = client.name;
+                const name_len = client.name_len;
                 players.remove(@intCast(id));
 
                 broadcast_despawn_player(id);
+
+                var msg_buf: consts.Message = @splat(' ');
+                _ = std.fmt.bufPrint(&msg_buf, "&e{s} left the game", .{name[0..name_len]}) catch unreachable;
+                broadcast_chat_message(id, &msg_buf);
             }
         }
     }
