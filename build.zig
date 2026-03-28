@@ -23,12 +23,19 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const server = b.addModule("Server", .{
-        .root_source_file = b.path("src/core/root.zig"),
+    const common = b.addModule("common", .{
+        .root_source_file = b.path("src/common/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const game = b.addModule("game", .{
+        .root_source_file = b.path("src/game/root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "protocol", .module = protocol },
+            .{ .name = "common", .module = common },
         },
     });
 
@@ -44,7 +51,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .overrides = overrides,
     });
-    client_exe.root_module.addImport("core", server);
+    client_exe.root_module.addImport("game", game);
+    client_exe.root_module.addImport("common", common);
 
     Aether.addShader(ae_dep.builder, b, client_exe, config, "basic", .{
         .slang = b.path("src/client/shaders/basic.slang"),
@@ -62,7 +70,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .overrides = overrides,
     });
-    server_exe.root_module.addImport("core", server);
+    server_exe.root_module.addImport("game", game);
+    server_exe.root_module.addImport("common", common);
 
     Aether.exportArtifact(ae_dep.builder, b, server_exe, config, .{
         .title = "CrossCraft Classic Server",

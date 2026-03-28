@@ -1,21 +1,16 @@
 const std = @import("std");
-const consts = @import("consts.zig");
-const FAB = @import("fa_buffer.zig").FirstAvailableBuffer;
-const Client = @import("client.zig");
-const StaticAllocator = @import("static_allocator.zig");
+const consts = @import("common").consts;
+const FAB = @import("common").fa_buffer.FirstAvailableBuffer;
+pub const Client = @import("client.zig");
+const StaticAllocator = @import("common").static_allocator;
 const world = @import("world.zig");
 const zb = @import("protocol");
 
 var allocator: StaticAllocator = undefined;
 
 pub var players: FAB(Client, consts.MAX_PLAYERS) = .init();
-pub var name: consts.Message = @splat(' ');
-pub var motd: consts.Message = @splat(' ');
 
 pub fn init(alloc: std.mem.Allocator, seed: u64) !void {
-    std.mem.copyForwards(u8, &name, "A Classic Server!");
-    std.mem.copyForwards(u8, &motd, "Welcome to CrossCraft! Another adventure awaits!");
-
     allocator = .init(alloc);
 
     try world.init(allocator.allocator(), seed);
@@ -31,7 +26,7 @@ pub fn deinit() void {
     allocator.deinit();
 }
 
-pub fn client_join(reader: *std.io.Reader, writer: *std.io.Writer, connected: *bool) void {
+pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bool) ?*Client {
     var client: Client = undefined;
     client.connected = connected;
     client.reader = reader;
@@ -42,9 +37,11 @@ pub fn client_join(reader: *std.io.Reader, writer: *std.io.Writer, connected: *b
     if (id) |i| {
         players.items[i].?.id = @intCast(i);
         players.items[i].?.init();
+        return &(players.items[i].?);
     } else {
         defer connected.* = false;
-        client.send_disconnect("Server is full!") catch return;
+        client.send_disconnect("Server is full!") catch return null;
+        return null;
     }
 }
 
@@ -105,9 +102,7 @@ pub fn broadcast_player_positions() void {
 pub fn tick() void {
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i]) |client| {
-            const stay_connected = players.items[i].?.tick();
-
-            if (!stay_connected or !players.items[i].?.connected.*) {
+            if (!client.connected.*) {
                 const id = client.id;
                 players.remove(@intCast(id));
 

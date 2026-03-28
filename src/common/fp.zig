@@ -20,7 +20,7 @@ pub fn FP(comptime bits: u16, comptime frac_bits: u16, comptime signed: bool) ty
         value: IntType,
 
         pub fn from(value: IntType) Self {
-            return .{ .value = value << frac_bits };
+            return .{ .value = value <<| frac_bits };
         }
 
         pub fn neg(self: Self) Self {
@@ -36,11 +36,11 @@ pub fn FP(comptime bits: u16, comptime frac_bits: u16, comptime signed: bool) ty
         }
 
         pub fn mul(self: Self, other: Self) Self {
-            return .{ .value = @truncate(@divTrunc(@as(isize, self.value) * @as(isize, other.value), @as(isize, 1) << frac_bits)) };
+            return .{ .value = @truncate(@divTrunc(@as(isize, self.value) *% @as(isize, other.value), @as(isize, 1) <<| frac_bits)) };
         }
 
         pub fn div(self: Self, other: Self) Self {
-            return .{ .value = @divTrunc(self.value << frac_bits, other.value) };
+            return .{ .value = @divTrunc(self.value <<| frac_bits, other.value) };
         }
 
         pub fn int(self: Self) IntType {
@@ -52,7 +52,7 @@ pub fn FP(comptime bits: u16, comptime frac_bits: u16, comptime signed: bool) ty
         }
 
         pub fn toFloat(self: Self) f64 {
-            return @as(f64, @floatFromInt(self.value)) / @as(f64, 1 << frac_bits);
+            return @as(f64, @floatFromInt(self.value)) / @as(f64, 1 <<| frac_bits);
         }
     };
 }

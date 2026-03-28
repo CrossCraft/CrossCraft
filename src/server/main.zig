@@ -1,22 +1,23 @@
 const std = @import("std");
-// const net = @import("net");
-// const core = @import("core");
-// const Consts = core.Consts;
-// const Server = core.Server;
+const game = @import("game");
+const common = @import("common");
 
-// const ConnectionData = struct {
-//     handle: net.IO.Listener.ConnectionHandle,
-//     read_buffer: [4096]u8,
-//     write_buffer: [4096]u8,
-// };
+const Server = game.Server;
+const Consts = common.consts;
+const log = std.log.scoped(.server);
 
-// var conn_handles: [Consts.MAX_PLAYERS]?ConnectionData = @splat(null);
-// var running: bool = true;
+const ConnectionData = struct {
+    stream: std.Io.net.Stream,
+    reader: std.Io.net.Stream.Reader,
+    writer: std.Io.net.Stream.Writer,
+    read_buffer: [4096]u8,
+    write_buffer: [4096]u8,
+    connected: bool,
+};
 
-// fn quit(_: i32) callconv(.c) void {
-//     running = false;
-// }
-//
+var conn_handles: [Consts.MAX_PLAYERS]?ConnectionData = @splat(null);
+var running: bool = true;
+
 const builtin = @import("builtin");
 
 const sdk = if (builtin.os.tag == .psp) @import("pspsdk") else void;
@@ -25,7 +26,7 @@ comptime {
         asm (sdk.extra.module.module_info("CrossCraft Classic", .{ .mode = .User }, 1, 0));
 }
 
-pub const psp_stack_size: u32 = 256 * 1024;
+pub const psp_stack_size: u32 = 1024 * 1024;
 
 pub const panic = if (builtin.os.tag == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
 pub const std_options_debug_threaded_io = if (builtin.os.tag == .psp) null else std.Io.Threaded.global_single_threaded;
@@ -35,102 +36,121 @@ fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
 }
 
-pub fn main() !void {
-    // var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    // defer _ = gpa.deinit();
-    // const allocator = gpa.allocator();
+pub const print = if (builtin.os.tag == .psp) sdk.extra.debug.print else std.debug.print;
 
-    // try Server.init(allocator, 1337);
-    // defer Server.deinit();
+var global_io: std.Io = undefined;
+var tasks: std.Io.Group = .init;
 
-    // const server_address = try std.net.Address.parseIp("0.0.0.0", 25565);
-    // var listener = try net.IO.Listener.init(server_address);
-    // defer listener.deinit();
+fn tick_loop() std.Io.Cancelable!void {
+    const tick_duration = std.Io.Duration.fromMilliseconds(50);
 
-    // if (builtin.os.tag != .windows) {
-    //     std.posix.sigaction(std.posix.SIG.INT, &.{
-    //         .flags = 0,
-    //         .handler = .{
-    //             .handler = quit,
-    //         },
-    //         .mask = std.posix.sigemptyset(),
-    //     }, null);
-    // }
+    while (running) {
+        Server.tick();
 
-    // std.debug.print("Starting server on {f}\n", .{listener.listen_address});
+        for (0..Consts.MAX_PLAYERS) |i| {
+            if (conn_handles[i]) |*data| {
+                if (!data.connected) {
+                    log.info("Connection in slot {d} disconnected", .{i});
+                    data.stream.close(global_io);
+                    conn_handles[i] = null;
+                }
+            }
+        }
 
-    // const ticks_per_second: i64 = 20;
-    // const tick_us: i64 = @intCast(std.time.us_per_s / ticks_per_second);
+        global_io.sleep(tick_duration, .boot) catch {};
+    }
+}
 
-    // var prev_time: i64 = std.time.microTimestamp();
-    // var acc_us: i64 = 0;
+fn client_read_loop(client: *game.Server.Client) std.Io.Cancelable!void {
+    client.read_loop();
+}
 
-    // var tps: usize = 0;
-    // var next_report_time: i64 = prev_time + std.time.us_per_s;
+pub fn main(init: std.process.Init) !void {
+    if (builtin.os.tag == .psp) {
+        sdk.extra.utils.enableHBCB();
+        sdk.extra.debug.screenInit();
+        sdk.extra.net.init() catch |err| {
+            sdk.extra.debug.print("Net init failed: {s}\n", .{@errorName(err)});
+            return;
+        };
 
-    // const max_acc_us: i64 = std.time.us_per_s;
+        sdk.extra.net.connectToApctl(1, 30_000_000) catch |err| {
+            sdk.extra.debug.print("WiFi connect failed: {s}\n", .{@errorName(err)});
+            return;
+        };
 
-    // while (running) {
-    //     const now = std.time.microTimestamp();
-    //     var dt = now - prev_time;
-    //     if (dt < 0) dt = 0;
-    //     prev_time = now;
+        var ip_buf: [16]u8 = undefined;
+        if (sdk.extra.net.getLocalIp(&ip_buf)) |ip| {
+            sdk.extra.debug.print("Local IP: {s}\n", .{ip});
+        } else {
+            sdk.extra.debug.print("Could not get local IP\n", .{});
+        }
+    }
 
-    //     acc_us += dt;
-    //     if (acc_us > max_acc_us) acc_us = max_acc_us;
+    defer blk: {
+        if (builtin.os.tag == .psp) {
+            sdk.extra.net.deinit();
+        }
 
-    //     var connection: ?net.IO.Listener.ConnectionHandle = null;
-    //     if (listener.accept()) |conn| {
-    //         std.debug.print("Accepted connection from {f}\n", .{conn.address});
-    //         connection = conn;
+        break :blk;
+    }
 
-    //         for (0..Consts.MAX_PLAYERS) |i| {
-    //             if (conn_handles[i] != null) continue;
+    const allocator = init.arena.allocator();
+    const io = init.io;
 
-    //             std.debug.print("Assigning connection to slot {d}\n", .{i});
-    //             conn_handles[i] = .{
-    //                 .handle = conn,
-    //                 .read_buffer = undefined,
-    //                 .write_buffer = undefined,
-    //             };
+    try Server.init(allocator, 1337);
+    defer Server.deinit();
 
-    //             conn_handles[i].?.handle.init_stream(&conn_handles[i].?.read_buffer, &conn_handles[i].?.write_buffer);
-    //             Server.client_join(conn_handles[i].?.handle.reader, conn_handles[i].?.handle.writer, &conn_handles[i].?.handle.connected);
-    //             break;
-    //         } else {
-    //             std.debug.print("Server full, rejecting connection from {f}\n", .{conn.address});
-    //             conn.close();
-    //         }
-    //     } else |err| switch (err) {
-    //         error.WouldBlock => {},
-    //         else => {
-    //             std.debug.print("Error accepting connection: {}\n", .{err});
-    //         },
-    //     }
+    global_io = io;
 
-    //     while (acc_us >= tick_us) {
-    //         Server.tick();
-    //         acc_us -= tick_us;
-    //         tps += 1;
-    //     }
+    log.info("Starting server on port 25565", .{});
 
-    //     for (0..Consts.MAX_PLAYERS) |i| {
-    //         if (conn_handles[i]) |conn| {
-    //             if (!conn.handle.connected) {
-    //                 std.debug.print("Connection in slot {d} disconnected\n", .{i});
-    //                 conn.handle.close();
-    //                 conn_handles[i] = null;
-    //             }
-    //         }
-    //     }
+    const server_ip = try std.Io.net.IpAddress.parseIp4("0.0.0.0", 25565);
+    var listener = try server_ip.listen(io, .{});
+    defer listener.deinit(io);
 
-    //     if (now >= next_report_time) {
-    //         tps = 0;
-    //         next_report_time += std.time.us_per_s;
-    //         if (now > next_report_time + (10 * std.time.us_per_ms))
-    //             next_report_time = now + std.time.us_per_s;
-    //     }
-    // }
+    tasks.concurrent(io, tick_loop, .{}) catch unreachable;
 
-    // std.debug.print("\nShutting down server...\n", .{});
+    while (running) {
+        var conn = listener.accept(io) catch |err| {
+            log.err("Error accepting connection: {}", .{err});
+            continue;
+        };
+        log.info("Client connected: {}", .{conn.socket.address});
+
+        var assigned = false;
+        for (0..Consts.MAX_PLAYERS) |i| {
+            if (conn_handles[i] != null) continue;
+
+            log.info("Assigning connection to slot {d}", .{i});
+            conn_handles[i] = .{
+                .stream = conn,
+                .reader = undefined,
+                .writer = undefined,
+                .read_buffer = undefined,
+                .write_buffer = undefined,
+                .connected = true,
+            };
+
+            conn_handles[i].?.reader = std.Io.net.Stream.Reader.init(conn, io, &conn_handles[i].?.read_buffer);
+            conn_handles[i].?.writer = std.Io.net.Stream.Writer.init(conn, io, &conn_handles[i].?.write_buffer);
+
+            if (Server.client_join(&conn_handles[i].?.reader.interface, &conn_handles[i].?.writer.interface, &conn_handles[i].?.connected)) |client| {
+                tasks.concurrent(io, client_read_loop, .{client}) catch {
+                    log.err("Failed to spawn read task for slot {d}", .{i});
+                    conn_handles[i].?.connected = false;
+                };
+            }
+            assigned = true;
+            break;
+        }
+
+        if (!assigned) {
+            log.info("Server full, rejecting connection", .{});
+            conn.close(io);
+        }
+    }
+
+    tasks.cancel(io);
+    log.info("Shutting down server...", .{});
 }

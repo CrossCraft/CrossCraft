@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0-dev.2682+02142a54d",
     .dependencies = .{
         .ZeeBuffer = .{
-            .url = "git+https://github.com/IridescentRose/ZeeBuffer#963b272f4773249b1de21297104a0f687bc89e4f",
-            .hash = "ZeeBuffer-0.2.0-RVIQu879AQCIfmBx3U6x-HzPfiYvoUubPbh5_fV5OsXu",
+            .url = "git+https://github.com/IridescentRose/ZeeBuffer#8e1b2d03a905c2a70d4b0430f9a651e31027b181",
+            .hash = "ZeeBuffer-0.2.0-RVIQu-7-AQC_98ycQNuJ4hxVxLDGMQkPAvLVvP4DsHz2",
         },
         .engine = .{
             .url = "git+https://github.com/AetherEngine/Aether#83a3a40771e1599b8524230fb8879a38f254a294",
