@@ -159,7 +159,7 @@ fn send_world(self: *Self) !void {
 }
 
 fn handshake(self: *Self) !void {
-    try proto.send_player_id(self.writer, @splat(' '), @splat(' '));
+    try proto.send_player_id(self.writer, Server.server_name, Server.server_motd);
 
     try self.send_world();
 

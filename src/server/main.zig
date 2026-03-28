@@ -98,7 +98,7 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const io = init.io;
 
-    try Server.init(allocator, 1337);
+    try Server.init(allocator, 1337, io);
     defer Server.deinit();
 
     global_io = io;

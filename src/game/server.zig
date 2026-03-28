@@ -9,15 +9,70 @@ const zb = @import("protocol");
 const log = std.log.scoped(.server);
 
 var allocator: StaticAllocator = undefined;
+pub var io: std.Io = undefined;
+
+pub var server_name: [64]u8 = pad("CrossCraft Server");
+pub var server_motd: [64]u8 = pad("Welcome to CrossCraft!");
 
 pub var players: FAB(Client, consts.MAX_PLAYERS) = .init();
 
-pub fn init(alloc: std.mem.Allocator, seed: u64) !void {
+fn pad(comptime s: []const u8) [64]u8 {
+    var buf: [64]u8 = @splat(' ');
+    @memcpy(buf[0..s.len], s);
+    return buf;
+}
+
+pub fn init(alloc: std.mem.Allocator, seed: u64, _io: std.Io) !void {
     allocator = .init(alloc);
+    io = _io;
+
+    load_config();
 
     try world.init(allocator.allocator(), seed);
 
     allocator.transition_from_init_to_static();
+}
+
+fn load_config() void {
+    const file = std.Io.Dir.cwd().openFile(io, "server.properties", .{}) catch {
+        log.info("No server.properties found, using defaults", .{});
+        return;
+    };
+    defer file.close(io);
+
+    var buf: [512]u8 = undefined;
+    const len = file.readPositionalAll(io, &buf, 0) catch {
+        log.info("Failed to read server.properties, using defaults", .{});
+        return;
+    };
+
+    const data = buf[0..len];
+    var start: u32 = 0;
+
+    for (0..32) |_| {
+        if (start >= data.len) break;
+
+        const end = std.mem.indexOfScalarPos(u8, data, start, '\n') orelse data.len;
+        const line = data[start..end];
+        start = @intCast(end + 1);
+
+        if (std.mem.indexOfScalar(u8, line, ':')) |sep| {
+            const key = line[0..sep];
+            const value = line[sep + 1 ..];
+
+            if (std.mem.eql(u8, key, "server-name")) {
+                server_name = @splat(' ');
+                const vlen = @min(value.len, 64);
+                @memcpy(server_name[0..vlen], value[0..vlen]);
+            } else if (std.mem.eql(u8, key, "motd")) {
+                server_motd = @splat(' ');
+                const vlen = @min(value.len, 64);
+                @memcpy(server_motd[0..vlen], value[0..vlen]);
+            }
+        }
+    }
+
+    log.info("Loaded server.properties", .{});
 }
 
 pub fn deinit() void {
