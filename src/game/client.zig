@@ -227,7 +227,18 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
         self.name[i] = event.username[i];
     }
     // TODO: Verify key for login... maybe
-    // TODO: Lookup user
+
+    // Reject duplicate usernames.
+    for (0..Server.players.items.len) |i| {
+        if (Server.players.items[i]) |p| {
+            if (p.id == self.id or !p.initialized)
+                continue;
+            if (std.mem.eql(u8, p.name[0..p.name_len], self.name[0..self.name_len])) {
+                self.send_disconnect("A player with that name is already connected!") catch {};
+                return;
+            }
+        }
+    }
 
     try self.handshake();
 }
