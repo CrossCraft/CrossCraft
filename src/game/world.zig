@@ -1,10 +1,6 @@
 const std = @import("std");
 const c = @import("common").consts;
 const assert = std.debug.assert;
-const flate = std.compress.flate;
-
-const FP = @import("common").fp.FP;
-const perlin = @import("common").perlin;
 
 const log = std.log.scoped(.world);
 
@@ -13,10 +9,9 @@ pub var raw_blocks: []u8 = undefined;
 pub var blocks: []u8 = undefined;
 pub var world_size: [3]u16 = undefined;
 pub var io: std.Io = undefined;
+var tick_counter: u32 = 0;
 
-const Block = c.Block;
-
-/// File header: 3 little-endian u16 values (x, y, z) followed by gzip-compressed block data.
+/// File header: 3 little-endian u16 values (x, y, z) followed by raw block data.
 pub fn save() !void {
     const file = std.Io.Dir.cwd().createFile(io, "world.dat", .{}) catch |err| {
         log.err("Failed to create world.dat: {}", .{err});
@@ -27,14 +22,8 @@ pub fn save() !void {
     var write_buf: [4096]u8 = undefined;
     var writer = file.writer(io, &write_buf);
 
-    // Header: world dimensions.
     try writer.interface.writeSliceEndian(u16, &world_size, .little);
-
-    // Gzip-compressed raw block data.
-    var compress_buf: [flate.max_window_len]u8 = undefined;
-    var compressor = try flate.Compress.init(&writer.interface, &compress_buf, .gzip, .fastest);
-    try compressor.writer.writeAll(raw_blocks);
-    try compressor.finish();
+    try writer.interface.writeAll(raw_blocks);
     try writer.interface.flush();
 
     log.info("Saved world to world.dat", .{});
@@ -61,10 +50,7 @@ pub fn load() bool {
         return false;
     }
 
-    // Gzip-compressed raw block data.
-    var decompress_buf: [flate.max_window_len]u8 = undefined;
-    var decompressor = flate.Decompress.init(&reader.interface, .gzip, &decompress_buf);
-    decompressor.reader.readSliceAll(raw_blocks) catch return false;
+    reader.interface.readSliceAll(raw_blocks) catch return false;
 
     world_size = dims;
     log.info("Loaded world from world.dat", .{});
@@ -92,8 +78,6 @@ pub fn init(allocator: std.mem.Allocator, _io: std.Io, seed: u64) !void {
                 set_block(@intCast(x), 0, @intCast(z), 7); // Bedrock
             }
         }
-
-        try save();
     }
 }
 
@@ -124,4 +108,10 @@ pub fn set_block(x: usize, y: usize, z: usize, block: u8) void {
     blocks[idx] = block;
 }
 
-pub fn tick() void {}
+pub fn tick() void {
+    tick_counter += 1;
+    if (tick_counter >= 200) {
+        tick_counter = 0;
+        save() catch {};
+    }
+}

@@ -26,7 +26,7 @@ comptime {
         asm (sdk.extra.module.module_info("CrossCraft Classic", .{ .mode = .User }, 1, 0));
 }
 
-pub const psp_stack_size: u32 = 512 * 1024;
+pub const psp_stack_size: u32 = 1024 * 1024;
 
 pub const panic = if (builtin.os.tag == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
 pub const std_options_debug_threaded_io = if (builtin.os.tag == .psp) null else std.Io.Threaded.global_single_threaded;
