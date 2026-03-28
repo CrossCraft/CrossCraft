@@ -166,10 +166,7 @@ fn handshake(self: *Self) !void {
     self.pitch = 0;
     try proto.send_spawn(self.writer, &initial_spawn);
 
-    initial_spawn.pid = self.id;
-
-    Server.broadcast_spawn_player(self.id, &initial_spawn);
-
+    // Send existing players to the new joiner before broadcasting the new joiner to others.
     for (0..Server.players.items.len) |i| {
         if (Server.players.items[i]) |p| {
             if (p.id == self.id)
@@ -190,6 +187,10 @@ fn handshake(self: *Self) !void {
             try proto.send_spawn(self.writer, &player_spawn);
         }
     }
+
+    initial_spawn.pid = self.id;
+
+    Server.broadcast_spawn_player(self.id, &initial_spawn);
 
     try proto.send_player_position(self.writer, -1, self.x, self.y, self.z, 0, 0);
 
