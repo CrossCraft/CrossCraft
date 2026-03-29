@@ -88,7 +88,7 @@ fn install_signal_handlers() void {
     }
 }
 
-fn tick_loop() std.Io.Cancelable!void {
+fn tick_loop() void {
     const tick_ns: i64 = 50 * std.time.ns_per_ms;
 
     var deadline: i64 = @truncate(std.Io.Clock.Timestamp.now(global_io, .boot).raw.nanoseconds);
@@ -161,40 +161,16 @@ fn client_read_loop(client: *game.Server.Client) std.Io.Cancelable!void {
     client.read_loop();
 }
 
-fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
-    conn_handles = try allocator.alloc(?ConnectionData, Consts.MAX_PLAYERS);
-    @memset(conn_handles, null);
-    defer allocator.free(conn_handles);
-
-    const seed: u64 = @truncate(@as(u96, @bitCast(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
-    try Server.init(allocator, seed, io);
-    defer Server.deinit();
-
-    global_io = io;
-
-    install_signal_handlers();
-
-    log.info("Starting server on port 25565", .{});
-
-    const server_ip = try std.Io.net.IpAddress.parseIp4("0.0.0.0", 25565);
-    var listener = try server_ip.listen(io, .{});
-    global_listener = &listener;
-    defer {
-        global_listener = null;
-        listener.deinit(io);
-    }
-
-    tasks.concurrent(io, tick_loop, .{}) catch unreachable;
-
+fn accept_loop(listener: *std.Io.net.Server) std.Io.Cancelable!void {
     while (running) {
-        var conn = listener.accept(io) catch |err| {
-            if (!running) break;
+        var conn = listener.accept(global_io) catch |err| {
+            if (!running) return;
             log.err("Error accepting connection: {}", .{err});
             continue;
         };
         if (!running) {
-            conn.close(io);
-            break;
+            conn.close(global_io);
+            return;
         }
         log.info("Client connected: {}", .{conn.socket.address});
 
@@ -212,11 +188,11 @@ fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
                 .connected = true,
             };
 
-            conn_handles[i].?.reader = std.Io.net.Stream.Reader.init(conn, io, &conn_handles[i].?.read_buffer);
-            conn_handles[i].?.writer = std.Io.net.Stream.Writer.init(conn, io, &conn_handles[i].?.write_buffer);
+            conn_handles[i].?.reader = std.Io.net.Stream.Reader.init(conn, global_io, &conn_handles[i].?.read_buffer);
+            conn_handles[i].?.writer = std.Io.net.Stream.Writer.init(conn, global_io, &conn_handles[i].?.write_buffer);
 
             if (Server.client_join(&conn_handles[i].?.reader.interface, &conn_handles[i].?.writer.interface, &conn_handles[i].?.connected)) |client| {
-                tasks.concurrent(io, client_read_loop, .{client}) catch {
+                tasks.concurrent(global_io, client_read_loop, .{client}) catch {
                     log.err("Failed to spawn read task for slot {d}", .{i});
                     conn_handles[i].?.connected = false;
                 };
@@ -227,9 +203,37 @@ fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
 
         if (!assigned) {
             log.info("Server full, rejecting connection", .{});
-            conn.close(io);
+            conn.close(global_io);
         }
     }
+}
+
+fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
+    conn_handles = try allocator.alloc(?ConnectionData, Consts.MAX_PLAYERS);
+    @memset(conn_handles, null);
+    defer allocator.free(conn_handles);
+
+    const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
+    try Server.init(allocator, seed, io);
+    defer Server.deinit();
+
+    global_io = io;
+
+    install_signal_handlers();
+
+    log.info("Starting server on port 25565", .{});
+
+    const server_ip = try std.Io.net.IpAddress.parseIp4("0.0.0.0", 25565);
+    var listener = try server_ip.listen(io, .{});
+    global_listener = &listener;
+    defer {
+        global_listener = null;
+        listener.deinit(io);
+    }
+
+    tasks.concurrent(io, accept_loop, .{&listener}) catch unreachable;
+
+    tick_loop();
 
     tasks.cancel(io);
     log.info("Shutting down server...", .{});
