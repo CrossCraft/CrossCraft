@@ -349,53 +349,10 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     world.enqueue_neighbors_of(event.x, event.y, event.z);
 
     if (event.mode == .Create and event.block == c.Block.Sponge) {
-        absorb_water(event.x, event.y, event.z);
+        world.sponge_absorb(event.x, event.y, event.z);
     }
     if (event.mode == .Destroy and old_block == c.Block.Sponge) {
-        tick_radius(event.x, event.y, event.z, 2);
-    }
-}
-
-fn tick_radius(cx: u16, cy: u16, cz: u16, radius: i32) void {
-    var dx: i32 = -radius;
-    while (dx <= radius) : (dx += 1) {
-        var dy: i32 = -radius;
-        while (dy <= radius) : (dy += 1) {
-            var dz: i32 = -radius;
-            while (dz <= radius) : (dz += 1) {
-                const nx = @as(i32, cx) + dx;
-                const ny = @as(i32, cy) + dy;
-                const nz = @as(i32, cz) + dz;
-                if (nx < 0 or nx >= c.WorldLength or ny < 0 or ny >= c.WorldHeight or nz < 0 or nz >= c.WorldDepth) continue;
-                world.enqueue_neighbors_of(@intCast(nx), @intCast(ny), @intCast(nz));
-            }
-        }
-    }
-}
-
-fn absorb_water(cx: u16, cy: u16, cz: u16) void {
-    const B = c.Block;
-    var dx: i32 = -2;
-    while (dx <= 2) : (dx += 1) {
-        var dy: i32 = -2;
-        while (dy <= 2) : (dy += 1) {
-            var dz: i32 = -2;
-            while (dz <= 2) : (dz += 1) {
-                const nx = @as(i32, cx) + dx;
-                const ny = @as(i32, cy) + dy;
-                const nz = @as(i32, cz) + dz;
-                if (nx < 0 or nx >= c.WorldLength or ny < 0 or ny >= c.WorldHeight or nz < 0 or nz >= c.WorldDepth) continue;
-                const ux: u16 = @intCast(nx);
-                const uy: u16 = @intCast(ny);
-                const uz: u16 = @intCast(nz);
-                const blk = world.get_block(ux, uy, uz);
-                if (blk == B.Flowing_Water or blk == B.Still_Water) {
-                    world.set_block(ux, uy, uz, B.Air);
-                    Server.broadcast_block_change(ux, uy, uz, B.Air);
-                    world.enqueue_neighbors_of(ux, uy, uz);
-                }
-            }
-        }
+        world.sponge_release(event.x, event.y, event.z);
     }
 }
 

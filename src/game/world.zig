@@ -3,6 +3,7 @@ const c = @import("common").consts;
 const Xorshift64 = @import("common").xorshift64.Xorshift64;
 const assert = std.debug.assert;
 
+const Server = @import("server.zig");
 const log = std.log.scoped(.world);
 
 const B = c.Block;
@@ -128,7 +129,7 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
 
     if (!load()) {
         seed = new_seed;
-        const worldgen = @import("common").worldgen;
+        const worldgen = @import("worldgen.zig");
         const start = std.Io.Clock.Timestamp.now(io, .boot);
         try worldgen.generate(scratch, blocks, seed, io);
         const end = std.Io.Clock.Timestamp.now(io, .boot);
@@ -429,6 +430,52 @@ fn spread_horizontal(x: u16, y: u16, z: u16, flow: u8, water: bool) void {
         queue_block_change(x, y, z - 1, flow);
     if (z + 1 < c.WorldDepth and get_block(x, y, z + 1) == B.Air and (!water or !is_near_sponge(x, y, z + 1)))
         queue_block_change(x, y, z + 1, flow);
+}
+
+/// Called when a sponge is placed: absorb all water in a 5x5x5 cube.
+pub fn sponge_absorb(cx: u16, cy: u16, cz: u16) void {
+    var dx: i32 = -2;
+    while (dx <= 2) : (dx += 1) {
+        var dy: i32 = -2;
+        while (dy <= 2) : (dy += 1) {
+            var dz: i32 = -2;
+            while (dz <= 2) : (dz += 1) {
+                const nx = @as(i32, cx) + dx;
+                const ny = @as(i32, cy) + dy;
+                const nz = @as(i32, cz) + dz;
+                if (nx < 0 or nx >= c.WorldLength or ny < 0 or ny >= c.WorldHeight or nz < 0 or nz >= c.WorldDepth) continue;
+                const ux: u16 = @intCast(nx);
+                const uy: u16 = @intCast(ny);
+                const uz: u16 = @intCast(nz);
+                const blk = get_block(ux, uy, uz);
+                if (blk == B.Flowing_Water or blk == B.Still_Water) {
+                    set_block(ux, uy, uz, B.Air);
+                    Server.broadcast_block_change(ux, uy, uz, B.Air);
+                    enqueue_neighbors_of(ux, uy, uz);
+                }
+            }
+        }
+    }
+}
+
+const SPONGE_RADIUS: i32 = 2;
+
+/// Called when a sponge is destroyed: enqueue neighbors in a radius to re-evaluate water flow.
+pub fn sponge_release(cx: u16, cy: u16, cz: u16) void {
+    var dx: i32 = -SPONGE_RADIUS;
+    while (dx <= SPONGE_RADIUS) : (dx += 1) {
+        var dy: i32 = -SPONGE_RADIUS;
+        while (dy <= SPONGE_RADIUS) : (dy += 1) {
+            var dz: i32 = -SPONGE_RADIUS;
+            while (dz <= SPONGE_RADIUS) : (dz += 1) {
+                const nx = @as(i32, cx) + dx;
+                const ny = @as(i32, cy) + dy;
+                const nz = @as(i32, cz) + dz;
+                if (nx < 0 or nx >= c.WorldLength or ny < 0 or ny >= c.WorldHeight or nz < 0 or nz >= c.WorldDepth) continue;
+                enqueue_neighbors_of(@intCast(nx), @intCast(ny), @intCast(nz));
+            }
+        }
+    }
 }
 
 fn is_near_sponge(x: u16, y: u16, z: u16) bool {

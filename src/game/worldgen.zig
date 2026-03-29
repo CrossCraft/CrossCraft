@@ -28,10 +28,11 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const log = std.log.scoped(.worldgen);
-const c = @import("consts.zig");
-const FP16 = @import("fp.zig").FP(32, 16, true);
-const Xorshift64 = @import("xorshift64.zig").Xorshift64;
-const noise = @import("noise.zig");
+const common = @import("common");
+const c = common.consts;
+const FP16 = common.fp.FP(32, 16, true);
+const Xorshift64 = common.xorshift64.Xorshift64;
+const noise = common.noise;
 const OctaveNoise = noise.OctaveNoise;
 const CombinedNoise = noise.CombinedNoise;
 const sin_fp16 = noise.sin_fp16;

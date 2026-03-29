@@ -39,6 +39,10 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 * #### Keep Functions Readable
 	* Each function should have a clear purpose
 	* Each function can be up to approximately 70 lines
+* #### Keep Modules Focused
+	* Each file should have a single, well-defined responsibility
+	* If a function doesn't relate to the file's core purpose, it belongs elsewhere
+	* Group related functionality — physics with physics, protocol with protocol
 * #### Restrict Data Scope
 	* Use global variables sparingly
 	* Use the least number of variables in the scope to reduce the likelihood of misusing a variable.
