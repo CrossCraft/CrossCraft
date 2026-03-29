@@ -38,6 +38,21 @@ fn psp_cwd() std.Io.Dir {
 
 pub const print = if (builtin.os.tag == .psp) sdk.extra.debug.print else std.debug.print;
 
+pub const std_options: std.Options = .{
+    .log_level = if (builtin.mode == .Debug) .debug else .info,
+    .logFn = server_log,
+};
+
+fn server_log(
+    comptime level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    const prefix = "(" ++ @tagName(scope) ++ ") [" ++ comptime level.asText() ++ "]: ";
+    print(prefix ++ format ++ "\n", args);
+}
+
 var global_io: std.Io = undefined;
 var tasks: std.Io.Group = .init;
 var global_listener: ?*std.Io.net.Server = null;
