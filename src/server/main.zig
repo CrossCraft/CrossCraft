@@ -15,7 +15,7 @@ const ConnectionData = struct {
     connected: bool,
 };
 
-var conn_handles: [Consts.MAX_PLAYERS]?ConnectionData = @splat(null);
+var conn_handles: []?ConnectionData = undefined;
 var running: bool = true;
 
 const builtin = @import("builtin");
@@ -26,7 +26,7 @@ comptime {
         asm (sdk.extra.module.module_info("CrossCraft Classic", .{ .mode = .User }, 1, 0));
 }
 
-pub const psp_stack_size: u32 = 1024 * 1024;
+pub const psp_stack_size: u32 = 256 * 1024;
 
 pub const panic = if (builtin.os.tag == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
 pub const std_options_debug_threaded_io = if (builtin.os.tag == .psp) null else std.Io.Threaded.global_single_threaded;
@@ -113,6 +113,10 @@ fn client_read_loop(client: *game.Server.Client) std.Io.Cancelable!void {
 }
 
 fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
+    conn_handles = try allocator.alloc(?ConnectionData, Consts.MAX_PLAYERS);
+    @memset(conn_handles, null);
+    defer allocator.free(conn_handles);
+
     const seed: u64 = @truncate(@as(u96, @bitCast(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
     try Server.init(allocator, seed, io);
     defer Server.deinit();

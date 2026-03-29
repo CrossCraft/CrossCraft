@@ -37,7 +37,7 @@ pub var pending_count: u32 = 0;
 // -- Update queue (circular buffer) ----------------------------------------
 const QUEUE_CAPACITY: u32 = 1 << 18; // 262144 entries = 1 MiB
 const QUEUE_MASK: u32 = QUEUE_CAPACITY - 1;
-var update_queue: [QUEUE_CAPACITY]Location = @splat(.{ .x = 0, .z = 0, .y = 0, .deferred = 0 });
+var update_queue: []Location = undefined;
 var queue_head: u32 = 0;
 var queue_tail: u32 = 0;
 var queue_count: u32 = 0;
@@ -45,7 +45,7 @@ var rng: Xorshift64 = .{ .state = 1 };
 
 // -- Deduplication bitmap (1 bit per block = 512 KiB) ----------------------
 const BLOCK_COUNT: u32 = c.WorldLength * c.WorldHeight * c.WorldDepth;
-var enqueued_bitmap: [BLOCK_COUNT / 8]u8 = @splat(0);
+var enqueued_bitmap: []u8 = undefined;
 
 pub var backing_allocator: std.mem.Allocator = undefined;
 pub var raw_blocks: []u8 = undefined;
@@ -116,6 +116,11 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
     backing_allocator = allocator;
     io = _io;
 
+    update_queue = try allocator.alloc(Location, QUEUE_CAPACITY);
+    @memset(update_queue, .{ .x = 0, .z = 0, .y = 0, .deferred = 0 });
+    enqueued_bitmap = try allocator.alloc(u8, BLOCK_COUNT / 8);
+    @memset(enqueued_bitmap, 0);
+
     raw_blocks = try allocator.alloc(u8, c.WorldDepth * c.WorldHeight * c.WorldLength + 4);
     blocks = raw_blocks[4..];
 
@@ -144,7 +149,11 @@ pub fn deinit() void {
     save() catch {};
 
     backing_allocator.free(raw_blocks);
+    backing_allocator.free(update_queue);
+    backing_allocator.free(enqueued_bitmap);
     raw_blocks = undefined;
+    update_queue = undefined;
+    enqueued_bitmap = undefined;
     blocks = undefined;
     world_size = undefined;
     seed = undefined;
