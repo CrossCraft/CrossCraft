@@ -33,6 +33,7 @@ pub fn init(alloc: std.mem.Allocator, seed: u64, _io: std.Io) !void {
     defer scratch.deinit();
 
     try world.init(allocator.allocator(), scratch.allocator(), io, seed);
+    try Client.init_compressor(allocator.allocator());
 
     allocator.transition_from_init_to_static();
 }
@@ -82,6 +83,7 @@ fn load_config() void {
 pub fn deinit() void {
     allocator.transition_from_static_to_deinit();
 
+    Client.deinit_compressor();
     world.deinit();
 
     allocator.deinit();

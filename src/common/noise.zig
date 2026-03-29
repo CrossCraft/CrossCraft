@@ -60,7 +60,7 @@ fn grad_2d(hash: u8, x: FP16, z: FP16) FP16 {
 pub const PerlinNoise2D = struct {
     perm: [512]u8,
 
-    pub fn init(seed: u64) PerlinNoise2D {
+    pub noinline fn init(seed: u64) PerlinNoise2D {
         var rng = Xorshift64.init(seed);
         var result: PerlinNoise2D = undefined;
         for (0..256) |i| {
@@ -100,7 +100,7 @@ pub const OctaveNoise = struct {
     octaves: [8]PerlinNoise2D,
     count: u32,
 
-    pub fn init(rng: *Xorshift64, n: u32) OctaveNoise {
+    pub noinline fn init(rng: *Xorshift64, n: u32) OctaveNoise {
         assert(n >= 1 and n <= 8);
         var result: OctaveNoise = undefined;
         result.count = n;
@@ -129,7 +129,7 @@ pub const CombinedNoise = struct {
     noise1: OctaveNoise,
     noise2: OctaveNoise,
 
-    pub fn init(rng: *Xorshift64, oct1: u32, oct2: u32) CombinedNoise {
+    pub noinline fn init(rng: *Xorshift64, oct1: u32, oct2: u32) CombinedNoise {
         return .{
             .noise1 = OctaveNoise.init(rng, oct1),
             .noise2 = OctaveNoise.init(rng, oct2),

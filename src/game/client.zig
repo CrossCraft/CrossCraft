@@ -10,9 +10,19 @@ const Server = @import("server.zig");
 
 const flate = std.compress.flate;
 
-var shared_compress_buf: [flate.max_window_len]u8 = undefined;
-var shared_compressor: flate.Compress = undefined;
+var backing_allocator: std.mem.Allocator = undefined;
+var compress_buf: *[flate.max_window_len]u8 = undefined;
+var compressor: *flate.Compress = undefined;
 var compress_in_use: bool = false;
+
+/// Compress Writer vtable resolved at comptime to avoid referencing private fns.
+const compress_writer_vtable: *const std.Io.Writer.VTable = blk: {
+    var dummy_buf: [16]u8 = undefined;
+    var dummy = std.Io.Writer.fixed(&dummy_buf);
+    var buf: [flate.max_window_len]u8 = undefined;
+    const comp = flate.Compress.init(&dummy, &buf, .gzip, .fastest) catch unreachable;
+    break :blk comp.writer.vtable;
+};
 
 const Self = @This();
 
@@ -153,11 +163,10 @@ fn send_world(self: *Self) !void {
     defer compress_in_use = false;
 
     var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.raw_blocks.len));
-    shared_compressor = try flate.Compress.init(&sender.interface, &shared_compress_buf, .gzip, .fastest);
+    try reset_compressor(&sender.interface);
 
-    try shared_compressor.writer.writeAll(world.raw_blocks);
-    try shared_compressor.finish();
-    shared_compressor = undefined;
+    try compressor.writer.writeAll(world.raw_blocks);
+    try compressor.finish();
 
     // Send any remaining partial chunk as the final packet.
     if (sender.interface.end > 0) {
@@ -354,6 +363,49 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     if (event.mode == .Destroy and old_block == c.Block.Sponge) {
         world.sponge_release(event.x, event.y, event.z);
     }
+}
+
+pub fn init_compressor(alloc: std.mem.Allocator) !void {
+    backing_allocator = alloc;
+    compress_buf = try alloc.create([flate.max_window_len]u8);
+    compressor = try alloc.create(flate.Compress);
+    compressor.* = undefined;
+}
+
+/// Resets the compressor for a new gzip stream directed at `output`.
+fn reset_compressor(output: *std.Io.Writer) !void {
+    try output.writeAll(flate.Container.gzip.header());
+    compressor.writer = .{
+        .vtable = compress_writer_vtable,
+        .buffer = compress_buf,
+    };
+    compressor.history_len = 0;
+    compressor.history_end_unhashed = false;
+    compressor.bit_writer = .{
+        .output = output,
+        .buffered = 0,
+        .buffered_n = 0,
+    };
+    compressor.buffered_tokens = .{
+        .list = undefined,
+        .pos = 0,
+        .n = 0,
+        .lit_freqs = @splat(0),
+        .dist_freqs = @splat(0),
+    };
+    compressor.lookup = .{
+        .head = @splat(.{ .value = std.math.maxInt(u15), .is_null = true }),
+        .chain = undefined,
+        .chain_pos = std.math.maxInt(u15),
+    };
+    compressor.container = .gzip;
+    compressor.hasher = .init(.gzip);
+    compressor.opts = .fastest;
+}
+
+pub fn deinit_compressor() void {
+    backing_allocator.destroy(compressor);
+    backing_allocator.destroy(compress_buf);
 }
 
 pub fn init(self: *Self) void {

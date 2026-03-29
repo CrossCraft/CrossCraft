@@ -158,21 +158,22 @@ const MaskMode = enum { cave, coal, iron, gold };
 /// This function is a critical part of Minecraft-esque world generation
 /// The oblate spheroid is either subtracted or added to the world and results in the shape of caves and ore veins
 /// In our use we take a mode parameter which is useful for different types of masks we'd like to be carving in
-fn carveSpheroid(mask: []u8, cx: i32, cy: i32, cz: i32, r: i32, mode: MaskMode) void {
-    if (r <= 0) return;
-    const r2 = r * r;
+fn carveSpheroid(mask: []u8, cx: i32, cy: i32, cz: i32, raw_r: i32, mode: MaskMode) void {
+    if (raw_r <= 0) return;
+    const r = @min(raw_r, 20); // Cave radius should never exceed ~16
+    const r2 = r *% r;
     var dy: i32 = -r;
     while (dy <= r) : (dy += 1) {
         const y = cy + dy;
         if (y < 1 or y >= H) continue;
-        const slice_r2 = r2 - 2 * dy * dy;
+        const slice_r2 = r2 -% 2 *% dy *% dy;
         if (slice_r2 <= 0) continue;
         var dx: i32 = -r;
         while (dx <= r) : (dx += 1) {
-            if (dx * dx > slice_r2) continue;
+            if (dx *% dx > slice_r2) continue;
             var dz: i32 = -r;
             while (dz <= r) : (dz += 1) {
-                if (dx * dx + dz * dz > slice_r2) continue;
+                if (dx *% dx +% dz *% dz > slice_r2) continue;
                 const bx = cx + dx;
                 const bz = cz + dz;
                 if (bx < 0 or bx >= W or bz < 0 or bz >= D) continue;
@@ -193,7 +194,7 @@ fn carveSpheroid(mask: []u8, cx: i32, cy: i32, cz: i32, r: i32, mode: MaskMode) 
 // Walkers are essentially what may be described as "perlin worms" (which is a bit inaccurate because we don't use perlin noise for this, but rather random noise here which is similarly deterministic but CHEAP)
 // These are used for any generation that needs this shape, which is why mask mode is accepted here.
 // This function manages the initialization and step loop of the walker
-fn runWalker(mask: []u8, mode: MaskMode, rng: *Xorshift64) void {
+noinline fn runWalker(mask: []u8, mode: MaskMode, rng: *Xorshift64) void {
     var pos_x = FP16.from(@as(i32, @intCast(rng.next_bounded(W))));
     var pos_y = FP16.from(@as(i32, @intCast(rng.next_bounded(H))));
     var pos_z = FP16.from(@as(i32, @intCast(rng.next_bounded(D))));
@@ -266,7 +267,7 @@ fn walkerRadius(cy: FP16, base: FP16, step: u32, length: u32, mode: MaskMode) i3
 
 // -- Step 1: Raising (heightmap) -----------------------------------------
 
-fn stepRaising(heightmap: []i16, rng: *Xorshift64) void {
+noinline fn stepRaising(heightmap: []i16, rng: *Xorshift64) void {
     assert(heightmap.len == MAP_AREA);
     const cn1 = CombinedNoise.init(rng, 8, 8);
     const cn2 = CombinedNoise.init(rng, 8, 8);
@@ -295,7 +296,7 @@ fn stepRaising(heightmap: []i16, rng: *Xorshift64) void {
 
 // -- Step 2: Erosion -----------------------------------------------------
 
-fn stepErosion(heightmap: []i16, rng: *Xorshift64) void {
+noinline fn stepErosion(heightmap: []i16, rng: *Xorshift64) void {
     assert(heightmap.len == MAP_AREA);
     const en1 = CombinedNoise.init(rng, 8, 8);
     const en2 = CombinedNoise.init(rng, 8, 8);
@@ -317,7 +318,7 @@ fn stepErosion(heightmap: []i16, rng: *Xorshift64) void {
 
 // -- Step 3: Strata ------------------------------------------------------
 
-fn stepStrata(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+noinline fn stepStrata(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
     const soil = OctaveNoise.init(rng, 8);
 
     for (0..W) |xi| {
@@ -344,14 +345,14 @@ fn stepStrata(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
 
 // -- Step 4-5: Caves & Ores ----------------------------------------------
 
-fn stepCaves(cave_mask: []u8, rng: *Xorshift64) void {
+noinline fn stepCaves(cave_mask: []u8, rng: *Xorshift64) void {
     const count: u32 = MAP_VOL / CAVE_COUNT_DIVISOR;
     for (0..count) |_| {
         runWalker(cave_mask, .cave, rng);
     }
 }
 
-fn stepOres(ore_mask: []u8, rng: *Xorshift64) void {
+noinline fn stepOres(ore_mask: []u8, rng: *Xorshift64) void {
     const coal_n: u32 = MAP_VOL * COAL_ABUNDANCE_X10 / ORE_VEIN_DIVISOR;
     const iron_n: u32 = MAP_VOL * IRON_ABUNDANCE_X10 / ORE_VEIN_DIVISOR;
     const gold_n: u32 = MAP_VOL * GOLD_ABUNDANCE_X10 / ORE_VEIN_DIVISOR;
@@ -362,7 +363,7 @@ fn stepOres(ore_mask: []u8, rng: *Xorshift64) void {
 
 // -- Step 6: Merge -------------------------------------------------------
 
-fn stepMerge(blocks: []u8, cave_mask: []const u8, ore_mask: []const u8) void {
+noinline fn stepMerge(blocks: []u8, cave_mask: []const u8, ore_mask: []const u8) void {
     for (0..H) |yi| {
         for (0..D) |zi| {
             for (0..W) |xi| {
@@ -430,7 +431,7 @@ fn bfsFloodDown(blocks: []u8, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: u8
     }
 }
 
-fn stepFloodWater(blocks: []u8, heightmap: []const i16, rng: *Xorshift64, flood_queue: []u32) void {
+noinline fn stepFloodWater(blocks: []u8, heightmap: []const i16, rng: *Xorshift64, flood_queue: []u32) void {
     // Ocean: column fill from heightmap+1 to water level
     for (0..W) |xi| {
         for (0..D) |zi| {
@@ -454,7 +455,7 @@ fn stepFloodWater(blocks: []u8, heightmap: []const i16, rng: *Xorshift64, flood_
     }
 }
 
-fn stepFloodLava(blocks: []u8, rng: *Xorshift64, flood_queue: []u32) void {
+noinline fn stepFloodLava(blocks: []u8, rng: *Xorshift64, flood_queue: []u32) void {
     const sources: u32 = MAP_VOL / LAVA_SOURCE_DIVISOR;
     for (0..sources) |_| {
         const sx = rng.next_bounded(W);
@@ -469,7 +470,7 @@ fn stepFloodLava(blocks: []u8, rng: *Xorshift64, flood_queue: []u32) void {
 
 // -- Step 9: Surface -----------------------------------------------------
 
-fn stepSurface(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+noinline fn stepSurface(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
     const sand_noise = OctaveNoise.init(rng, 8);
     const gravel_noise = OctaveNoise.init(rng, 8);
 
@@ -542,7 +543,7 @@ pub fn placeTree(blocks: []u8, tx: u32, base_y: u32, tz: u32, height: u32, rng: 
     }
 }
 
-fn stepPlants(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+noinline fn stepPlants(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
     // Trees
     const tree_patches: u32 = MAP_AREA / TREE_PATCH_DIVISOR;
     for (0..tree_patches) |_| {
@@ -670,9 +671,9 @@ pub fn generate(scratch: std.mem.Allocator, blocks: []u8, seed: u64, io: std.Io)
     _ = logStep(io, t, "Plants");
 }
 
-fn logStep(io: std.Io, prev: std.Io.Clock.Timestamp, name: []const u8) std.Io.Clock.Timestamp {
+noinline fn logStep(io: std.Io, prev: std.Io.Clock.Timestamp, name: []const u8) std.Io.Clock.Timestamp {
     const now = std.Io.Clock.Timestamp.now(io, .boot);
-    const elapsed_ns: i96 = now.raw.nanoseconds - prev.raw.nanoseconds;
+    const elapsed_ns: i64 = @truncate(now.raw.nanoseconds - prev.raw.nanoseconds);
     const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
     log.info("{s}: {d}ms", .{ name, elapsed_ms });
     return now;

@@ -138,7 +138,7 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
         const start = std.Io.Clock.Timestamp.now(io, .boot);
         try worldgen.generate(scratch, blocks, seed, io);
         const end = std.Io.Clock.Timestamp.now(io, .boot);
-        const elapsed_ns: i96 = end.raw.nanoseconds - start.raw.nanoseconds;
+        const elapsed_ns: i64 = @truncate(end.raw.nanoseconds - start.raw.nanoseconds);
         const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
         log.info("World generation took {d}ms", .{elapsed_ms});
     }
@@ -242,7 +242,7 @@ pub fn tick() void {
 
     tick_count +%= 1;
     save_counter += 1;
-    if (save_counter >= 200) {
+    if (save_counter >= 6000) {
         save_counter = 0;
         save() catch {};
     }

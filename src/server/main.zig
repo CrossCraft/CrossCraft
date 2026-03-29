@@ -89,9 +89,20 @@ fn install_signal_handlers() void {
 }
 
 fn tick_loop() std.Io.Cancelable!void {
-    const tick_duration = std.Io.Duration.fromMilliseconds(50);
+    const tick_ns: i64 = 50 * std.time.ns_per_ms;
+
+    var deadline: i64 = @truncate(std.Io.Clock.Timestamp.now(global_io, .boot).raw.nanoseconds);
+    deadline += tick_ns;
+
+    var window_start: i64 = deadline - tick_ns;
+    var window_tick_count: u32 = 0;
+    var window_total_ns: i64 = 0;
+    var window_max_ns: i64 = 0;
+    var window_overages: u32 = 0;
 
     while (running) {
+        const before: i64 = @truncate(std.Io.Clock.Timestamp.now(global_io, .boot).raw.nanoseconds);
+
         Server.tick();
 
         for (0..Consts.MAX_PLAYERS) |i| {
@@ -104,7 +115,45 @@ fn tick_loop() std.Io.Cancelable!void {
             }
         }
 
-        global_io.sleep(tick_duration, .boot) catch {};
+        const after: i64 = @truncate(std.Io.Clock.Timestamp.now(global_io, .boot).raw.nanoseconds);
+        const elapsed_ns = after - before;
+
+        window_tick_count += 1;
+        window_total_ns += elapsed_ns;
+        window_max_ns = @max(window_max_ns, elapsed_ns);
+
+        const remaining_ns = deadline - after;
+        if (remaining_ns <= 0) {
+            window_overages += 1;
+            log.warn("Tick overage: {d}ms over budget ({d}ms elapsed)", .{
+                @divTrunc(-remaining_ns, std.time.ns_per_ms),
+                @divTrunc(elapsed_ns, std.time.ns_per_ms),
+            });
+        } else {
+            const sleep_ms: u32 = @intCast(@divTrunc(remaining_ns, std.time.ns_per_ms));
+            if (sleep_ms > 0) {
+                global_io.sleep(std.Io.Duration.fromMilliseconds(sleep_ms), .boot) catch {};
+            }
+        }
+
+        deadline += tick_ns;
+
+        // Log tick processing stats every 1s window
+        const now: i64 = @truncate(std.Io.Clock.Timestamp.now(global_io, .boot).raw.nanoseconds);
+        if (now - window_start >= std.time.ns_per_s) {
+            const avg_ns = @divTrunc(window_total_ns, @as(i64, window_tick_count));
+            log.info("Tick stats (1s): count={d}, avg={d}ms, max={d}ms, overages={d}", .{
+                window_tick_count,
+                @divTrunc(avg_ns, std.time.ns_per_ms),
+                @divTrunc(window_max_ns, std.time.ns_per_ms),
+                window_overages,
+            });
+            window_start = now;
+            window_tick_count = 0;
+            window_total_ns = 0;
+            window_max_ns = 0;
+            window_overages = 0;
+        }
     }
 }
 
@@ -192,12 +241,12 @@ pub fn main(init: std.process.Init) !void {
         try sdk.power.set_clock_frequency(333, 333, 166);
         sdk.extra.net.init() catch |err| {
             sdk.extra.debug.print("Net init failed: {s}\n", .{@errorName(err)});
-            return;
+            sdk.kernel.exit_game();
         };
 
         sdk.extra.net.connectToApctl(1, 30_000_000) catch |err| {
             sdk.extra.debug.print("WiFi connect failed: {s}\n", .{@errorName(err)});
-            return;
+            sdk.kernel.exit_game();
         };
 
         var ip_buf: [16]u8 = undefined;

@@ -36,7 +36,11 @@ pub fn FP(comptime bits: u16, comptime frac_bits: u16, comptime signed: bool) ty
         }
 
         pub fn mul(self: Self, other: Self) Self {
-            return .{ .value = @truncate(@as(i64, self.value) *% @as(i64, other.value) >> frac_bits) };
+            // Use unsigned shift to avoid MIPS signed multi-word shift codegen issues.
+            // Lower `bits` bits are identical for signed vs unsigned right shift when frac_bits < bits.
+            const product: i64 = @as(i64, self.value) *% @as(i64, other.value);
+            const shifted: u64 = @as(u64, @bitCast(product)) >> frac_bits;
+            return .{ .value = @truncate(@as(i64, @bitCast(shifted))) };
         }
 
         pub fn div(self: Self, other: Self) Self {
