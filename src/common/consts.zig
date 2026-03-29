@@ -1,4 +1,6 @@
-pub const MAX_PLAYERS = 128;
+const builtin = @import("builtin");
+
+pub const MAX_PLAYERS = if (builtin.os.tag == .psp) 4 else 128;
 
 pub const WorldLength = 256;
 pub const WorldHeight = 64;

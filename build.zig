@@ -76,6 +76,8 @@ pub fn build(b: *std.Build) void {
     Aether.exportArtifact(ae_dep.builder, b, server_exe, config, .{
         .title = "CrossCraft Classic Server",
         .output_dir = "CrossCraft-Server-PSP",
+        .icon0 = b.path("assets/psp/ICON0.png"),
+        .pic1 = b.path("assets/psp/PIC1.png"),
     });
 
     const run_server_step = b.step("run-server", "Run the server");

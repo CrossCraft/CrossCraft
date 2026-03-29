@@ -4,6 +4,7 @@ const common = @import("common");
 
 const Server = game.Server;
 const Consts = common.consts;
+const CountingAllocator = common.counting_allocator;
 const log = std.log.scoped(.server);
 
 const ConnectionData = struct {
@@ -198,7 +199,51 @@ fn accept_loop(listener: *std.Io.net.Server) std.Io.Cancelable!void {
     }
 }
 
-fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
+/// Binary search for the largest single contiguous allocation the allocator
+/// can satisfy right now. Halves the probe size down to 256 bytes (PSP
+/// minimum block size).
+fn psp_max_linear_alloc(alloc: std.mem.Allocator) u32 {
+    var size: u32 = 0;
+    var probe: u32 = 1024 * 1024;
+
+    while (probe >= 256) : (probe >>= 1) {
+        size += probe;
+        if (alloc.alloc(u8, size)) |buf| {
+            alloc.free(buf);
+        } else |_| {
+            size -= probe;
+        }
+    }
+    return size;
+}
+
+/// Measure total free memory by repeatedly grabbing the largest possible
+/// block until nothing remains, then freeing everything.
+fn psp_measure_free_memory(alloc: std.mem.Allocator) u32 {
+    const MAX_BLOCKS = 128;
+    var blocks: [MAX_BLOCKS][]u8 = undefined;
+    var count: u32 = 0;
+    var total: u32 = 0;
+
+    defer for (0..count) |i| {
+        alloc.free(blocks[i]);
+    };
+
+    while (count < MAX_BLOCKS) {
+        const size = psp_max_linear_alloc(alloc);
+        if (size == 0) break;
+        blocks[count] = alloc.alloc(u8, size) catch break;
+        total += size;
+        count += 1;
+    }
+
+    return total;
+}
+
+fn run_server(backing_allocator: std.mem.Allocator, io: std.Io) !void {
+    var counting = CountingAllocator.init(backing_allocator);
+    const allocator = counting.allocator();
+
     conn_handles = try allocator.alloc(?ConnectionData, Consts.MAX_PLAYERS);
     @memset(conn_handles, null);
     defer allocator.free(conn_handles);
@@ -206,6 +251,13 @@ fn run_server(allocator: std.mem.Allocator, io: std.Io) !void {
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
     try Server.init(allocator, seed, io);
     defer Server.deinit();
+
+    counting.print();
+
+    if (comptime builtin.os.tag == .psp) {
+        const free_bytes = psp_measure_free_memory(backing_allocator);
+        print("Memory after init: free={d} KiB\n", .{free_bytes / 1024});
+    }
 
     global_io = io;
 
@@ -259,7 +311,7 @@ pub fn main(init: std.process.Init) !void {
         break :blk;
     }
 
-    try run_server(init.arena.allocator(), init.io);
+    try run_server(init.gpa, init.io);
 
     if (comptime builtin.os.tag == .psp) {
         sdk.kernel.exit_game();
