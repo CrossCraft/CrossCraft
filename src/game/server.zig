@@ -88,7 +88,6 @@ pub fn deinit() void {
 }
 
 pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bool) ?*Client {
-    log.info("client_join: new client joining", .{});
     var client: Client = undefined;
     client.connected = connected;
     client.reader = reader;
@@ -105,13 +104,10 @@ pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *b
     const id = players.add(client);
 
     if (id) |i| {
-        log.info("client_join: assigned slot {d}", .{i});
         players.items[i].?.id = @intCast(i);
         players.items[i].?.init();
-        log.info("client_join: client initialized, returning", .{});
         return &(players.items[i].?);
     } else {
-        log.info("client_join: server full, rejecting", .{});
         defer connected.* = false;
         client.send_disconnect("Server is full!") catch return null;
         return null;

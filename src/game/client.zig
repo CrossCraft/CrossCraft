@@ -28,7 +28,7 @@ writer: *std.Io.Writer,
 connected: *bool,
 
 name: [16:0]u8,
-name_len: usize,
+name_len: u8,
 initialized: bool,
 protocol: Protocol,
 
@@ -85,7 +85,7 @@ const ChunkSender = struct {
         cs.bytes_sent += @intCast(filled);
 
         const end_before = cs.output.end;
-        proto.send_level_chunk(cs.output, @intCast(filled), chunk, cs.percent()) catch
+        proto.send_level_chunk(cs.output, @intCast(filled), &chunk, cs.percent()) catch
             return error.WriteFailed;
         const end_after = cs.output.end;
         // If the protocol write triggered an auto-drain, end_after < end_before + 1028
@@ -164,7 +164,7 @@ fn send_world(self: *Self) !void {
         var final_chunk: [1024]u8 = @splat(0);
         @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
         sender.bytes_sent = @intCast(world.raw_blocks.len);
-        try proto.send_level_chunk(self.writer, @intCast(sender.interface.end), final_chunk, sender.percent());
+        try proto.send_level_chunk(self.writer, @intCast(sender.interface.end), &final_chunk, sender.percent());
         try self.writer.flush();
     }
 
@@ -173,14 +173,14 @@ fn send_world(self: *Self) !void {
 }
 
 fn handshake(self: *Self) !void {
-    try proto.send_player_id(self.writer, Server.server_name, Server.server_motd);
+    try proto.send_player_id(self.writer, &Server.server_name, &Server.server_motd);
 
     try self.send_world();
 
     var name_buf: c.Message = @splat(' ');
     std.mem.copyForwards(u8, &name_buf, self.name[0..self.name_len]);
 
-    const spawn = world.findSpawn();
+    const spawn = world.find_spawn();
     var initial_spawn = zb.SpawnPlayer{
         .pid = -1,
         .name = name_buf,
@@ -255,7 +255,7 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     self.name = @splat(' ');
     for (0..self.name.len) |i| {
         if (event.username[i] == ' ') {
-            self.name_len = i;
+            self.name_len = @intCast(i);
             break;
         }
 
@@ -295,7 +295,7 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
     dup_buf[0] = '&';
     dup_buf[1] = 'f';
 
-    var curr_idx: usize = 2;
+    var curr_idx: u8 = 2;
     for (0..self.name.len) |i| {
         if (self.name[i] != ' ') {
             dup_buf[i + 2] = self.name[i];

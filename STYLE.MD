@@ -78,3 +78,6 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 * #### Explain Why
 	* Explain why a decision was made over another
 	* Always reach to explain why something is done, rather than how it is done
+
+## Code Style
+* Use snake_case for function and variable names. The `_` is the closest you can get to a space and helps with understanding

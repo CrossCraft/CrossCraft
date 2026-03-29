@@ -85,10 +85,10 @@ pub fn send_level_initialize(writer: *Writer) !void {
     try writer.writeByte(0x02);
 }
 
-pub fn send_level_chunk(writer: *Writer, length: u16, data: [1024]u8, percent: u8) !void {
+pub fn send_level_chunk(writer: *Writer, length: u16, data: *const [1024]u8, percent: u8) !void {
     var level_chunk = zb.LevelDataChunk{
         .length = length,
-        .data = data,
+        .data = data.*,
         .percent = percent,
     };
     try level_chunk.write(writer);
@@ -103,11 +103,11 @@ pub fn send_level_finalize(writer: *Writer) !void {
     try level_finalize.write(writer);
 }
 
-pub fn send_player_id(writer: *Writer, server_name: [64]u8, server_motd: [64]u8) !void {
+pub fn send_player_id(writer: *Writer, server_name: *const [64]u8, server_motd: *const [64]u8) !void {
     var server_data = zb.PlayerIDToClient{
         .protocol_version = 0x07,
-        .server_name = server_name,
-        .server_motd = server_motd,
+        .server_name = server_name.*,
+        .server_motd = server_motd.*,
         .user_type = .Normal,
     };
     try server_data.write(writer);

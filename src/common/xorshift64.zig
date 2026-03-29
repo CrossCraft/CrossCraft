@@ -18,13 +18,13 @@ pub const Xorshift64 = struct {
         return x;
     }
 
-    pub fn nextBounded(self: *Xorshift64, bound: u32) u32 {
+    pub fn next_bounded(self: *Xorshift64, bound: u32) u32 {
         assert(bound > 0);
         return @intCast(self.next() % @as(u64, bound));
     }
 
     /// Returns FP16 in [0, 1).
-    pub fn nextFloat(self: *Xorshift64) FP16 {
+    pub fn next_float(self: *Xorshift64) FP16 {
         return .{ .value = @intCast(self.next() & 0xFFFF) };
     }
 };

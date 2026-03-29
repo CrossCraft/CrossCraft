@@ -22,7 +22,7 @@ const SIN_TABLE: [1024]i32 = blk: {
     break :blk table;
 };
 
-pub fn sinFP16(angle: FP16) FP16 {
+pub fn sin_fp16(angle: FP16) FP16 {
     var a: i64 = angle.value;
     a = @rem(a, @as(i64, TWO_PI));
     if (a < 0) a += TWO_PI;
@@ -30,22 +30,22 @@ pub fn sinFP16(angle: FP16) FP16 {
     return .{ .value = SIN_TABLE[idx & 1023] };
 }
 
-pub fn cosFP16(angle: FP16) FP16 {
-    return sinFP16(.{ .value = angle.value + @divTrunc(TWO_PI, 4) });
+pub fn cos_fp16(angle: FP16) FP16 {
+    return sin_fp16(.{ .value = angle.value + @divTrunc(TWO_PI, 4) });
 }
 
 // -- Noise helpers -------------------------------------------------------
 
-fn fade16(t: FP16) FP16 {
+fn fade_16(t: FP16) FP16 {
     // 6t^5 - 15t^4 + 10t^3 = t^3(t(6t - 15) + 10)
     return t.mul(FP16.from(6)).sub(FP16.from(15)).mul(t).add(FP16.from(10)).mul(t).mul(t).mul(t);
 }
 
-fn lerp16(t: FP16, a: FP16, b: FP16) FP16 {
+fn lerp_16(t: FP16, a: FP16, b: FP16) FP16 {
     return a.add(t.mul(b.sub(a)));
 }
 
-fn grad2d(hash: u8, x: FP16, z: FP16) FP16 {
+fn grad_2d(hash: u8, x: FP16, z: FP16) FP16 {
     // Classic improved Perlin gradient set projected to 2D (z_3d = 0).
     const h = hash & 15;
     const u = if (h < 8) x else z;
@@ -69,7 +69,7 @@ pub const PerlinNoise2D = struct {
         // Fisher-Yates shuffle
         var i: u32 = 255;
         while (i > 0) : (i -= 1) {
-            const j = rng.nextBounded(i + 1);
+            const j = rng.next_bounded(i + 1);
             const tmp = result.perm[i];
             result.perm[i] = result.perm[j];
             result.perm[j] = tmp;
@@ -86,11 +86,11 @@ pub const PerlinNoise2D = struct {
         const Z: usize = @intCast(@as(u32, @bitCast(z.int())) & 255);
         const xf: FP16 = .{ .value = x.frac() };
         const zf: FP16 = .{ .value = z.frac() };
-        const u = fade16(xf);
-        const v = fade16(zf);
+        const u = fade_16(xf);
+        const v = fade_16(zf);
         const A: usize = @as(usize, self.perm[X]) + Z;
         const Bp: usize = @as(usize, self.perm[X + 1]) + Z;
-        return lerp16(v, lerp16(u, grad2d(self.perm[A], xf, zf), grad2d(self.perm[Bp], xf.sub(FP_ONE), zf)), lerp16(u, grad2d(self.perm[A + 1], xf, zf.sub(FP_ONE)), grad2d(self.perm[Bp + 1], xf.sub(FP_ONE), zf.sub(FP_ONE))));
+        return lerp_16(v, lerp_16(u, grad_2d(self.perm[A], xf, zf), grad_2d(self.perm[Bp], xf.sub(FP_ONE), zf)), lerp_16(u, grad_2d(self.perm[A + 1], xf, zf.sub(FP_ONE)), grad_2d(self.perm[Bp + 1], xf.sub(FP_ONE), zf.sub(FP_ONE))));
     }
 };
 

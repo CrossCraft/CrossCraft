@@ -100,70 +100,70 @@ pub fn deinit() void {
     backing_allocator = undefined;
 }
 
-fn get_index(x: usize, y: usize, z: usize) usize {
+fn get_index(x: u16, y: u16, z: u16) u32 {
     assert(x < c.WorldLength);
     assert(y < c.WorldHeight);
     assert(z < c.WorldDepth);
-    return (y * c.WorldDepth + z) * c.WorldLength + x;
+    return (@as(u32, y) * c.WorldDepth + z) * c.WorldLength + x;
 }
 
-pub fn get_block(x: usize, y: usize, z: usize) u8 {
+pub fn get_block(x: u16, y: u16, z: u16) u8 {
     const idx = get_index(x, y, z);
     return blocks[idx];
 }
 
-pub fn set_block(x: usize, y: usize, z: usize, block: u8) void {
+pub fn set_block(x: u16, y: u16, z: u16, block: u8) void {
     const idx = get_index(x, y, z);
     blocks[idx] = block;
 }
 
-pub fn findSpawn() [3]u16 {
+pub fn find_spawn() [3]u16 {
     const B = c.Block;
     const spawn_seed: u64 = @truncate(@as(u96, @bitCast(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
     var rng = @import("common").xorshift64.Xorshift64.init(spawn_seed);
     for (0..10) |attempt| {
-        const bx = rng.nextBounded(c.WorldLength);
-        const bz = rng.nextBounded(c.WorldDepth);
+        const bx: u16 = @intCast(rng.next_bounded(c.WorldLength));
+        const bz: u16 = @intCast(rng.next_bounded(c.WorldDepth));
         // Walk down from top to find surface
-        var by: u32 = c.WorldHeight - 1;
+        var by: u16 = c.WorldHeight - 1;
         while (by > 0) : (by -= 1) {
             const blk = get_block(bx, by, bz);
             if (blk != B.Air and blk != B.Flowing_Water and blk != B.Still_Water and
                 blk != B.Flowing_Lava and blk != B.Still_Lava)
             {
                 // Found solid ground; spawn one block above
-                const is_water = by + 1 < c.WorldHeight and
-                    (get_block(bx, by + 1, bz) == B.Still_Water or
-                    get_block(bx, by + 1, bz) == B.Flowing_Water);
-                if (is_water and attempt < 9) break;
+                const above = if (by + 1 < c.WorldHeight) get_block(bx, by + 1, bz) else B.Air;
+                const in_fluid = above == B.Still_Water or above == B.Flowing_Water or
+                    above == B.Still_Lava or above == B.Flowing_Lava;
+                if (in_fluid and attempt < 9) break;
                 return .{
-                    @intCast((bx << 5) + 16),
-                    @intCast(((by + 1) << 5) + 51),
-                    @intCast((bz << 5) + 16),
+                    @intCast(@as(u32, bx) * 32 + 16),
+                    @intCast(@as(u32, by + 1) * 32 + 51),
+                    @intCast(@as(u32, bz) * 32 + 16),
                 };
             }
         }
     }
     // Fallback: world center, walk down to find surface
-    const cx = c.WorldLength / 2;
-    const cz = c.WorldDepth / 2;
-    var fy: u32 = c.WorldHeight - 1;
+    const cx: u16 = c.WorldLength / 2;
+    const cz: u16 = c.WorldDepth / 2;
+    var fy: u16 = c.WorldHeight - 1;
     while (fy > 0) : (fy -= 1) {
         const blk = get_block(cx, fy, cz);
         if (blk != B.Air and blk != B.Flowing_Water and blk != B.Still_Water and
             blk != B.Flowing_Lava and blk != B.Still_Lava)
         {
             return .{
-                @intCast((cx << 5) + 16),
-                @intCast(((fy + 1) << 5) + 51),
-                @intCast((cz << 5) + 16),
+                @intCast(@as(u32, cx) * 32 + 16),
+                @intCast(@as(u32, fy + 1) * 32 + 51),
+                @intCast(@as(u32, cz) * 32 + 16),
             };
         }
     }
     return .{
-        @intCast((cx << 5) + 16),
-        @intCast((1 << 5) + 51),
-        @intCast((cz << 5) + 16),
+        @intCast(@as(u32, cx) * 32 + 16),
+        @intCast(@as(u32, 1) * 32 + 51),
+        @intCast(@as(u32, cz) * 32 + 16),
     };
 }
 
