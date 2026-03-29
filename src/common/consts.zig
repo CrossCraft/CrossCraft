@@ -11,8 +11,8 @@ pub const Water_Level = 32;
 pub const Location = packed struct(u32) {
     x: u8,
     z: u8,
-    y: u6,
-    deferred: u10 = 0,
+    y: u8,
+    _reserved: u8 = 0,
 
     pub fn to_index(self: Location) u32 {
         return (@as(u32, self.y) * WorldDepth + @as(u32, self.z)) * WorldLength + self.x;

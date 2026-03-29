@@ -34,13 +34,26 @@ const MAX_PENDING_CHANGES: u32 = 512;
 pub var pending_changes: [MAX_PENDING_CHANGES]BlockChange = undefined;
 pub var pending_count: u32 = 0;
 
-// -- Update queue (circular buffer) ----------------------------------------
-const QUEUE_CAPACITY: u32 = 1 << 18; // 262144 entries = 1 MiB
-const QUEUE_MASK: u32 = QUEUE_CAPACITY - 1;
-var update_queue: []Location = undefined;
-var queue_head: u32 = 0;
-var queue_tail: u32 = 0;
-var queue_count: u32 = 0;
+// -- Timer wheel -----------------------------------------------------------
+// 1024 buckets (one per tick modulo WHEEL_SIZE). Each bucket is a singly-
+// linked list threaded through a pool of fixed-size nodes. Entries land in
+// bucket[ready_tick % WHEEL_SIZE] so only the current tick's bucket is
+// drained each tick — no dequeue-decrement-reenqueue of deferred entries.
+const WHEEL_SIZE: u32 = 1024;
+const WHEEL_MASK: u32 = WHEEL_SIZE - 1;
+const POOL_CAPACITY: u32 = 1 << 18; // 262144 nodes
+
+const SENTINEL: u32 = std.math.maxInt(u32);
+
+const WheelNode = packed struct(u64) {
+    loc: Location,
+    next: u32, // index into node pool, SENTINEL = end-of-list
+};
+
+var wheel_buckets: [WHEEL_SIZE]u32 = @splat(SENTINEL); // head index per bucket
+var node_pool: []WheelNode = undefined;
+var free_head: u32 = 0; // head of the free list
+var pool_used: u32 = 0; // high-water count for diagnostics
 var rng: Xorshift64 = .{ .state = 1 };
 
 // -- Deduplication bitmap (1 bit per block = 512 KiB) ----------------------
@@ -116,8 +129,17 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
     backing_allocator = allocator;
     io = _io;
 
-    update_queue = try allocator.alloc(Location, QUEUE_CAPACITY);
-    @memset(update_queue, .{ .x = 0, .z = 0, .y = 0, .deferred = 0 });
+    node_pool = try allocator.alloc(WheelNode, POOL_CAPACITY);
+    // Build free list: each node points to the next, last points to SENTINEL
+    for (0..POOL_CAPACITY) |i| {
+        node_pool[i] = .{
+            .loc = .{ .x = 0, .z = 0, .y = 0 },
+            .next = if (i + 1 < POOL_CAPACITY) @intCast(i + 1) else SENTINEL,
+        };
+    }
+    free_head = 0;
+    pool_used = 0;
+    @memset(&wheel_buckets, SENTINEL);
     enqueued_bitmap = try allocator.alloc(u8, BLOCK_COUNT / 8);
     @memset(enqueued_bitmap, 0);
 
@@ -149,10 +171,10 @@ pub fn deinit() void {
     save() catch {};
 
     backing_allocator.free(raw_blocks);
-    backing_allocator.free(update_queue);
+    backing_allocator.free(node_pool);
     backing_allocator.free(enqueued_bitmap);
     raw_blocks = undefined;
-    update_queue = undefined;
+    node_pool = undefined;
     enqueued_bitmap = undefined;
     blocks = undefined;
     world_size = undefined;
@@ -229,15 +251,20 @@ pub fn find_spawn() [3]u16 {
 pub fn tick() void {
     pending_count = 0;
 
-    const count = queue_count;
-    for (0..count) |_| {
-        var loc = dequeue();
-        if (loc.deferred > 0) {
-            loc.deferred -= 1;
-            enqueue(loc);
-        } else {
-            process_block_update(loc);
-        }
+    const slot = @as(u32, @intCast(tick_count & WHEEL_MASK));
+    var node_idx = wheel_buckets[slot];
+    wheel_buckets[slot] = SENTINEL;
+
+    while (node_idx != SENTINEL) {
+        const node = node_pool[node_idx];
+        const next = node.next;
+        // Return node to free list
+        node_pool[node_idx].next = free_head;
+        free_head = node_idx;
+        pool_used -= 1;
+
+        process_block_update(node.loc);
+        node_idx = next;
     }
 
     tick_count +%= 1;
@@ -275,21 +302,18 @@ fn process_block_update(loc: Location) void {
     }
 }
 
-// -- Queue operations ------------------------------------------------------
+// -- Timer wheel operations ------------------------------------------------
 
-fn enqueue(loc: Location) void {
-    assert(queue_count < QUEUE_CAPACITY);
-    update_queue[queue_tail] = loc;
-    queue_tail = (queue_tail + 1) & QUEUE_MASK;
-    queue_count += 1;
-}
+fn wheel_insert(loc: Location, delay: u32) void {
+    assert(delay < WHEEL_SIZE);
+    assert(free_head != SENTINEL); // pool not exhausted
+    const node_idx = free_head;
+    free_head = node_pool[node_idx].next;
+    pool_used += 1;
 
-fn dequeue() Location {
-    assert(queue_count > 0);
-    const loc = update_queue[queue_head];
-    queue_head = (queue_head + 1) & QUEUE_MASK;
-    queue_count -= 1;
-    return loc;
+    const slot = @as(u32, @intCast((tick_count +% delay) & WHEEL_MASK));
+    node_pool[node_idx] = .{ .loc = loc, .next = wheel_buckets[slot] };
+    wheel_buckets[slot] = node_idx;
 }
 
 /// Enqueue a block and its 6 face neighbors for deferred update.
@@ -319,9 +343,9 @@ const has_behavior = blk: {
 };
 
 /// Tick delay per block type: fluids and gravity use 4 ticks, vegetation is random.
-fn tick_delay(block: u8) u10 {
+fn tick_delay(block: u8) u32 {
     if (block == B.Sand or block == B.Gravel or is_water(block) or is_lava(block)) return 4;
-    return @intCast(rng.next_bounded(900) + 100);
+    return rng.next_bounded(900) + 100;
 }
 
 fn try_enqueue(x: u16, y: u16, z: u16) void {
@@ -329,8 +353,10 @@ fn try_enqueue(x: u16, y: u16, z: u16) void {
     if (block >= has_behavior.len or !has_behavior[block]) return;
     const idx = get_index(x, y, z);
     if (bitmap_test(idx)) return;
+    if (free_head == SENTINEL) return; // pool exhausted, drop update
     bitmap_set(idx);
-    enqueue(.{ .x = @intCast(x), .z = @intCast(z), .y = @intCast(y), .deferred = tick_delay(block) });
+    const loc: Location = .{ .x = @intCast(x), .z = @intCast(z), .y = @intCast(y) };
+    wheel_insert(loc, tick_delay(block));
 }
 
 fn bitmap_test(idx: u32) bool {

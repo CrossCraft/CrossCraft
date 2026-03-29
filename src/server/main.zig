@@ -90,19 +90,14 @@ fn install_signal_handlers() void {
 
 fn tick_loop() void {
     const tick_ns: i64 = 50 * std.time.ns_per_ms;
+    // If the server falls more than max_catchup behind, skip ticks instead
+    // of trying to run them all back-to-back (which cascades the overload).
+    const max_catchup_ns: i64 = 10 * tick_ns;
 
     var deadline: i64 = @truncate(std.Io.Clock.Timestamp.now(global_io, .boot).raw.nanoseconds);
     deadline += tick_ns;
 
-    var window_start: i64 = deadline - tick_ns;
-    var window_tick_count: u32 = 0;
-    var window_total_ns: i64 = 0;
-    var window_max_ns: i64 = 0;
-    var window_overages: u32 = 0;
-
     while (running) {
-        const before: i64 = @truncate(std.Io.Clock.Timestamp.now(global_io, .boot).raw.nanoseconds);
-
         Server.tick();
 
         for (0..Consts.MAX_PLAYERS) |i| {
@@ -116,20 +111,9 @@ fn tick_loop() void {
         }
 
         const after: i64 = @truncate(std.Io.Clock.Timestamp.now(global_io, .boot).raw.nanoseconds);
-        const elapsed_ns = after - before;
-
-        window_tick_count += 1;
-        window_total_ns += elapsed_ns;
-        window_max_ns = @max(window_max_ns, elapsed_ns);
-
         const remaining_ns = deadline - after;
-        if (remaining_ns <= 0) {
-            window_overages += 1;
-            log.warn("Tick overage: {d}ms over budget ({d}ms elapsed)", .{
-                @divTrunc(-remaining_ns, std.time.ns_per_ms),
-                @divTrunc(elapsed_ns, std.time.ns_per_ms),
-            });
-        } else {
+
+        if (remaining_ns > 0) {
             const sleep_ms: u32 = @intCast(@divTrunc(remaining_ns, std.time.ns_per_ms));
             if (sleep_ms > 0) {
                 global_io.sleep(std.Io.Duration.fromMilliseconds(sleep_ms), .boot) catch {};
@@ -138,21 +122,12 @@ fn tick_loop() void {
 
         deadline += tick_ns;
 
-        // Log tick processing stats every 1s window
+        // Cap catch-up: if we've fallen too far behind, accept the loss
         const now: i64 = @truncate(std.Io.Clock.Timestamp.now(global_io, .boot).raw.nanoseconds);
-        if (now - window_start >= std.time.ns_per_s) {
-            const avg_ns = @divTrunc(window_total_ns, @as(i64, window_tick_count));
-            log.info("Tick stats (1s): count={d}, avg={d}ms, max={d}ms, overages={d}", .{
-                window_tick_count,
-                @divTrunc(avg_ns, std.time.ns_per_ms),
-                @divTrunc(window_max_ns, std.time.ns_per_ms),
-                window_overages,
-            });
-            window_start = now;
-            window_tick_count = 0;
-            window_total_ns = 0;
-            window_max_ns = 0;
-            window_overages = 0;
+        if (deadline < now - max_catchup_ns) {
+            const skipped = @divTrunc(now - deadline, tick_ns);
+            log.warn("Skipping {d} ticks to recover from overload", .{skipped});
+            deadline = now;
         }
     }
 }
