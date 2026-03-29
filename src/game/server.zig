@@ -193,6 +193,12 @@ pub fn tick() void {
 
     world.tick();
 
+    for (0..world.pending_count) |i| {
+        const change = world.pending_changes[i];
+        broadcast_block_change(change.x, change.y, change.z, change.block);
+    }
+    world.pending_count = 0;
+
     broadcast_player_positions();
 
     tick_counter += 1;

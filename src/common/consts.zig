@@ -8,6 +8,17 @@ pub const Message = [64]u8;
 
 pub const Water_Level = 32;
 
+pub const Location = packed struct(u32) {
+    x: u8,
+    z: u8,
+    y: u6,
+    deferred: u10 = 0,
+
+    pub fn to_index(self: Location) u32 {
+        return (@as(u32, self.y) * WorldDepth + @as(u32, self.z)) * WorldLength + self.x;
+    }
+};
+
 pub const Block = struct {
     pub const Air = 0;
     pub const Stone = 1;

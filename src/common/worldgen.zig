@@ -517,7 +517,7 @@ pub fn placeTree(blocks: []u8, tx: u32, base_y: u32, tz: u32, height: u32, rng: 
     }
     // Leaves: 4 layers
     for (0..4) |layer| {
-        const y: u32 = base_y + height - 1 + @as(u32, @intCast(layer));
+        const y: u32 = base_y + height - 2 + @as(u32, @intCast(layer));
         if (y >= H) continue;
         const r: i32 = if (layer < 2) 2 else 1;
         var dx: i32 = -r;
