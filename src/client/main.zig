@@ -27,14 +27,14 @@ fn psp_cwd() std.Io.Dir {
 }
 
 const Vertex = extern struct {
-    uv: [2]f32,
-    color: [4]u8,
-    pos: [3]f32,
+    uv: [2]i16,
+    color: u32,
+    pos: [3]i16,
 
     pub const Attributes = Rendering.Pipeline.attributes_from_struct(@This(), &[_]Rendering.Pipeline.AttributeSpec{
-        .{ .field = "pos", .location = 0 },
-        .{ .field = "color", .location = 1 },
-        .{ .field = "uv", .location = 2 },
+        .{ .field = "pos", .location = 0, .usage = .position },
+        .{ .field = "color", .location = 1, .usage = .color },
+        .{ .field = "uv", .location = 2, .usage = .uv },
     });
     pub const Layout = Rendering.Pipeline.layout_from_struct(@This(), &Attributes);
 };
@@ -64,13 +64,13 @@ const MyState = struct {
         self.texture = try Rendering.Texture.load_from_reader(stream.reader);
         try self.mesh.append(&.{
             // First triangle
-            Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.0, 1.0 } },
-            Vertex{ .pos = .{ 0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 1.0, 1.0 } },
-            Vertex{ .pos = .{ 0.5, 0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 1.0, 0.0 } },
+            Vertex{ .pos = .{ -16384, -16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 0, 32767 } },
+            Vertex{ .pos = .{ 16384, -16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 32767, 32767 } },
+            Vertex{ .pos = .{ 16384, 16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 32767, 0 } },
             // Second triangle
-            Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.0, 1.0 } },
-            Vertex{ .pos = .{ 0.5, 0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 1.0, 0.0 } },
-            Vertex{ .pos = .{ -0.5, 0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.0, 0.0 } },
+            Vertex{ .pos = .{ -16384, -16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 0, 32767 } },
+            Vertex{ .pos = .{ 16384, 16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 32767, 0 } },
+            Vertex{ .pos = .{ -16384, 16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 0, 0 } },
         });
         self.mesh.update();
 
@@ -133,7 +133,7 @@ pub fn main(init: std.process.Init) !void {
         .scratch = 4 * 1024 * 1024,
     };
     var state: MyState = undefined;
-    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, true, &state.state());
+    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, false, &state.state());
     defer ae.App.deinit();
     try ae.App.main_loop();
 }
