@@ -59,13 +59,18 @@ const MyState = struct {
         self.transform = Rendering.Transform.new();
 
         self.pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
-        var stream = try self.pack.open("assets/minecraft/textures/clouds.png");
+        var stream = try self.pack.open("assets/minecraft/textures/dirt.png");
         defer self.pack.closeStream(&stream);
         self.texture = try Rendering.Texture.load_from_reader(stream.reader);
         try self.mesh.append(&.{
-            Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 0, 0, 255 }, .uv = .{ 0.0, 1.0 } },
-            Vertex{ .pos = .{ 0.5, -0.5, 0.0 }, .color = .{ 0, 255, 0, 255 }, .uv = .{ 1.0, 1.0 } },
-            Vertex{ .pos = .{ 0.0, 0.5, 0.0 }, .color = .{ 0, 0, 255, 255 }, .uv = .{ 0.5, 0.0 } },
+            // First triangle
+            Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.0, 1.0 } },
+            Vertex{ .pos = .{ 0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 1.0, 1.0 } },
+            Vertex{ .pos = .{ 0.5, 0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 1.0, 0.0 } },
+            // Second triangle
+            Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.0, 1.0 } },
+            Vertex{ .pos = .{ 0.5, 0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 1.0, 0.0 } },
+            Vertex{ .pos = .{ -0.5, 0.5, 0.0 }, .color = .{ 255, 255, 255, 255 }, .uv = .{ 0.0, 0.0 } },
         });
         self.mesh.update();
 

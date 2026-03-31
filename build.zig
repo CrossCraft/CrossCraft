@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) void {
 
     const overrides: Aether.Config.Overrides = .{
         .gfx = b.option(Aether.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
+        .psp_display_mode = b.option(Aether.PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
     };
 
     const config = Aether.Config.resolve(target, overrides);
@@ -54,7 +55,13 @@ pub fn build(b: *std.Build) void {
     pack_cmd.addDirectoryArg(resources.path("default"));
     const pack_zip = pack_cmd.addOutputFileArg("pack.zip");
 
-    const install_pack = b.addInstallFile(pack_zip, "bin/pack.zip");
+    const psp_client_dir = "CrossCraft-Classic-PSP";
+    const is_psp = target.result.os.tag == .psp;
+
+    const install_pack = b.addInstallFile(
+        pack_zip,
+        if (is_psp) "bin/" ++ psp_client_dir ++ "/pack.zip" else "bin/pack.zip",
+    );
 
     const ae_dep = b.dependency("engine", .{
         .target = target,
@@ -77,13 +84,12 @@ pub fn build(b: *std.Build) void {
 
     Aether.exportArtifact(ae_dep.builder, b, client_exe, config, .{
         .title = "CrossCraft Classic",
-        .output_dir = "CrossCraft-Classic-PSP",
+        .output_dir = psp_client_dir,
     });
 
     // The server has no graphics — only use Aether.addGame for PSP
     // (which provides the pspsdk import and linker script). All other
     // targets build a plain executable with no engine dependency.
-    const is_psp = target.result.os.tag == .psp;
 
     const server_exe = if (is_psp)
         Aether.addGame(ae_dep.builder, b, .{
@@ -128,6 +134,12 @@ pub fn build(b: *std.Build) void {
     const build_game_step = b.step("game", "Build the game");
     build_game_step.dependOn(&b.addInstallArtifact(client_exe, .{}).step);
     build_game_step.dependOn(&install_pack.step);
+    if (is_psp) {
+        // exportArtifact registers PSP pipeline steps (ELF→PRX→EBOOT.PBP)
+        // on b.getInstallStep(); wire them into the game step so that
+        // `zig build game -Dtarget=mipsel-psp` produces the EBOOT.
+        build_game_step.dependOn(b.getInstallStep());
+    }
 
     const run_client_step = b.step("run-game", "Run the app");
     const run_client_cmd = b.addRunArtifact(client_exe);
