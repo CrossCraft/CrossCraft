@@ -17,4 +17,4 @@ Console builds rely on existing homebrew environments. CrossCraft does not distr
 
 CrossCraft is provided "as-is" without warranty and is intended for educational and non-commercial purposes.
 
-If you would like to modify or distribute CrossCraft, please refer to the LICENSE file for details on the GPL-3.0 license.
+If you would like to modify or distribute CrossCraft, please refer to the LICENSE file for details on the LGPL-2.1 license.
