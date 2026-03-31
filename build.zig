@@ -39,6 +39,23 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Resource packing: ZIP the default resource pack at build time
+    const resources = b.dependency("resources", .{});
+
+    const pack_tool = b.addExecutable(.{
+        .name = "pack_zip",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/pack_zip.zig"),
+            .target = b.graph.host,
+        }),
+    });
+
+    var pack_cmd = b.addRunArtifact(pack_tool);
+    pack_cmd.addDirectoryArg(resources.path("default"));
+    const pack_zip = pack_cmd.addOutputFileArg("pack.zip");
+
+    const install_pack = b.addInstallFile(pack_zip, "bin/pack.zip");
+
     const ae_dep = b.dependency("engine", .{
         .target = target,
         .optimize = optimize,
@@ -110,12 +127,25 @@ pub fn build(b: *std.Build) void {
 
     const build_game_step = b.step("game", "Build the game");
     build_game_step.dependOn(&b.addInstallArtifact(client_exe, .{}).step);
+    build_game_step.dependOn(&install_pack.step);
 
     const run_client_step = b.step("run-game", "Run the app");
     const run_client_cmd = b.addRunArtifact(client_exe);
+    run_client_cmd.step.dependOn(&install_pack.step);
     run_client_step.dependOn(&run_client_cmd.step);
 
     if (b.args) |args| {
         run_client_cmd.addArgs(args);
     }
+
+    const test_step = b.step("test", "Run unit tests");
+
+    const zip_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/client/util/Zip.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(zip_tests).step);
 }

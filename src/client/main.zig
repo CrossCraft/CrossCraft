@@ -41,10 +41,13 @@ const Vertex = extern struct {
 
 const MyMesh = Rendering.Mesh(Vertex);
 
+const Zip = @import("util/Zip.zig");
+
 const MyState = struct {
     mesh: MyMesh,
     transform: Rendering.Transform,
     texture: Rendering.Texture,
+    pack: *Zip,
 
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
@@ -55,7 +58,10 @@ const MyState = struct {
         self.mesh = try MyMesh.new(pipeline);
         self.transform = Rendering.Transform.new();
 
-        self.texture = try Rendering.Texture.load("test.png");
+        self.pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
+        var stream = try self.pack.open("assets/minecraft/textures/clouds.png");
+        defer self.pack.closeStream(&stream);
+        self.texture = try Rendering.Texture.load_from_reader(stream.reader);
         try self.mesh.append(&.{
             Vertex{ .pos = .{ -0.5, -0.5, 0.0 }, .color = .{ 255, 0, 0, 255 }, .uv = .{ 0.0, 1.0 } },
             Vertex{ .pos = .{ 0.5, -0.5, 0.0 }, .color = .{ 0, 255, 0, 255 }, .uv = .{ 1.0, 1.0 } },
@@ -69,6 +75,7 @@ const MyState = struct {
     fn deinit(ctx: *anyopaque) void {
         var self = Util.ctx_to_self(MyState, ctx);
         self.texture.deinit();
+        self.pack.deinit();
         self.mesh.deinit();
         Rendering.Pipeline.deinit(pipeline);
     }

@@ -12,11 +12,16 @@
             .url = "git+https://github.com/AetherEngine/Aether#c9a66b02e4c251bf4fb71eb820d2c1a1c157316d",
             .hash = "Aether-0.0.0-cjG28vyNDAAOAncNYs80GH_WELe6xesoVmfq6awC5JjQ",
         },
+        .resources = .{
+            .url = "git+https://github.com/CrossCraft/CrossCraft-Resources#ee4a11a7f21758ee887002fef0ca5628a2f80b31",
+            .hash = "N-V-__8AAJr6gQDhnwZy5Wek82wlvjCytNhgJTKOeCtSLdWl",
+        },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        "tools",
         "LICENSE",
         "README.md",
     },
