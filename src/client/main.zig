@@ -26,28 +26,15 @@ fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
 }
 
-const Vertex = extern struct {
-    uv: [2]i16,
-    color: u32,
-    pos: [3]i16,
-
-    pub const Attributes = Rendering.Pipeline.attributes_from_struct(@This(), &[_]Rendering.Pipeline.AttributeSpec{
-        .{ .field = "pos", .location = 0, .usage = .position },
-        .{ .field = "color", .location = 1, .usage = .color },
-        .{ .field = "uv", .location = 2, .usage = .uv },
-    });
-    pub const Layout = Rendering.Pipeline.layout_from_struct(@This(), &Attributes);
-};
-
-const MyMesh = Rendering.Mesh(Vertex);
+const SpriteBatcher = @import("ui/SpriteBatcher.zig");
+const Vertex = @import("vertex.zig").Vertex;
 
 const Zip = @import("util/Zip.zig");
 
 const MyState = struct {
-    mesh: MyMesh,
-    transform: Rendering.Transform,
     texture: Rendering.Texture,
     pack: *Zip,
+    batcher: SpriteBatcher,
 
     fn init(ctx: *anyopaque) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
@@ -55,33 +42,20 @@ const MyState = struct {
         const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
         pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
-        self.mesh = try MyMesh.new(pipeline);
-        self.transform = Rendering.Transform.new();
-
         self.pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
         var stream = try self.pack.open("assets/minecraft/textures/dirt.png");
         defer self.pack.closeStream(&stream);
         self.texture = try Rendering.Texture.load_from_reader(stream.reader);
-        try self.mesh.append(&.{
-            // First triangle
-            Vertex{ .pos = .{ -16384, -16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 0, 32767 } },
-            Vertex{ .pos = .{ 16384, -16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 32767, 32767 } },
-            Vertex{ .pos = .{ 16384, 16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 32767, 0 } },
-            // Second triangle
-            Vertex{ .pos = .{ -16384, -16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 0, 32767 } },
-            Vertex{ .pos = .{ 16384, 16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 32767, 0 } },
-            Vertex{ .pos = .{ -16384, 16384, 0 }, .color = 0xFFFFFFFF, .uv = .{ 0, 0 } },
-        });
-        self.mesh.update();
+        self.batcher = try SpriteBatcher.init(pipeline);
 
         Util.report();
     }
 
     fn deinit(ctx: *anyopaque) void {
         var self = Util.ctx_to_self(MyState, ctx);
+        self.batcher.deinit();
         self.texture.deinit();
         self.pack.deinit();
-        self.mesh.deinit();
         Rendering.Pipeline.deinit(pipeline);
     }
 
@@ -90,23 +64,26 @@ const MyState = struct {
     }
 
     fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void {
-        var self = Util.ctx_to_self(MyState, ctx);
-        self.transform.rot.z += 60.0 * dt;
+        const self = Util.ctx_to_self(MyState, ctx);
+        _ = self;
+        _ = dt;
     }
 
     fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
-        Rendering.gfx.api.set_proj_matrix(&Math.Mat4.orthographicRh(
-            2 * @as(f32, @floatFromInt(Rendering.gfx.surface.get_width())) / @as(f32, @floatFromInt(Rendering.gfx.surface.get_height())),
-            2,
-            0,
-            1,
-        ));
-
-        Rendering.Pipeline.bind(pipeline);
-        self.texture.bind();
-        self.mesh.draw(&self.transform.get_matrix());
+        // 2D UI pass
+        self.batcher.clear();
+        self.batcher.add_sprite(&.{
+            .texture = &self.texture,
+            .pos_offset = .{ .x = 0, .y = 0 },
+            .pos_extent = .{ .x = 64, .y = 64 },
+            .tex_offset = .{ .x = 0, .y = 0 },
+            .tex_extent = .{ .x = @intCast(self.texture.width), .y = @intCast(self.texture.height) },
+            .color = SpriteBatcher.Sprite.Color.white(),
+            .layer = 0,
+        });
+        try self.batcher.flush();
     }
 
     pub fn state(self: *MyState) State {
