@@ -12,6 +12,18 @@ pub const BatchMesh = Rendering.Mesh(Vertex);
 
 const Self = @This();
 
+pub const Anchor = enum(u8) {
+    top_left,
+    top_center,
+    top_right,
+    middle_left,
+    middle_center,
+    middle_right,
+    bottom_left,
+    bottom_center,
+    bottom_right,
+};
+
 pub const Sprite = extern struct {
     pub const Range = extern struct { x: i16, y: i16 };
 
@@ -22,7 +34,9 @@ pub const Sprite = extern struct {
     tex_extent: Range,
     color: Color,
     layer: u8,
-    _pad: [3]u8 = .{ 0, 0, 0 },
+    reference: Anchor = .top_left,
+    origin: Anchor = .top_left,
+    _pad: u8 = 0,
 };
 
 const TextureBatch = struct {
@@ -147,10 +161,16 @@ fn emit_sprite_vertices(mesh: *BatchMesh, sprite: *const Sprite, screen_w: u32, 
     const max_lx: i16 = @intCast(screen_w / scale);
     const max_ly: i16 = @intCast(screen_h / scale);
 
-    const x0 = sprite.pos_offset.x;
-    const y0 = sprite.pos_offset.y;
-    const x1 = @min(x0 + sprite.pos_extent.x, max_lx);
-    const y1 = @min(y0 + sprite.pos_extent.y, max_ly);
+    const ref = anchor_point(sprite.reference, max_lx, max_ly);
+    const orig = anchor_point(sprite.origin, sprite.pos_extent.x, sprite.pos_extent.y);
+    const raw_x0: i16 = ref.x + sprite.pos_offset.x - orig.x;
+    const raw_y0: i16 = ref.y + sprite.pos_offset.y - orig.y;
+    // Clip all four edges to [0, max_l*] so snorm conversion stays in i16 range.
+    // Sprites partially or fully outside the viewport are trimmed correctly.
+    const x0: i16 = @max(raw_x0, 0);
+    const y0: i16 = @max(raw_y0, 0);
+    const x1: i16 = @intCast(@min(@as(i32, raw_x0) + @as(i32, sprite.pos_extent.x), @as(i32, max_lx)));
+    const y1: i16 = @intCast(@min(@as(i32, raw_y0) + @as(i32, sprite.pos_extent.y), @as(i32, max_ly)));
 
     if (x0 >= x1 or y0 >= y1) return;
 
@@ -158,18 +178,20 @@ fn emit_sprite_vertices(mesh: *BatchMesh, sprite: *const Sprite, screen_w: u32, 
     const sy0 = logical_to_snorm_y(y0, screen_h, scale);
     const sx1 = logical_to_snorm_x(x1, screen_w, scale);
     const sy1 = logical_to_snorm_y(y1, screen_h, scale);
-    const z: i16 = @intCast(sprite.layer);
+    // Layer 0 maps to z just below the far plane (1.0); each higher layer gets a
+    // smaller z so it passes GL_LESS after the previous layer has written its z.
+    const z: i16 = 32766 - @as(i16, sprite.layer);
 
-    const uv_l = texel_to_snorm(sprite.tex_offset.x, sprite.texture.width);
-    const uv_t = texel_to_snorm(sprite.tex_offset.y, sprite.texture.height);
-    const uv_r = texel_to_snorm(
-        sprite.tex_offset.x + @divTrunc(sprite.tex_extent.x * (x1 - x0), sprite.pos_extent.x),
-        sprite.texture.width,
-    );
-    const uv_b = texel_to_snorm(
-        sprite.tex_offset.y + @divTrunc(sprite.tex_extent.y * (y1 - y0), sprite.pos_extent.y),
-        sprite.texture.height,
-    );
+    // All four UV edges use raw_x0/raw_y0 as the unclipped origin so left/top
+    // clipping maps into the correct texel region, matching the right/bottom logic.
+    const irx: i32 = raw_x0;
+    const iry: i32 = raw_y0;
+    const iw: i32 = sprite.pos_extent.x;
+    const ih: i32 = sprite.pos_extent.y;
+    const uv_l = texel_to_snorm(@as(i32, sprite.tex_offset.x) + @divTrunc(@as(i32, sprite.tex_extent.x) * (@as(i32, x0) - irx), iw), sprite.texture.width);
+    const uv_t = texel_to_snorm(@as(i32, sprite.tex_offset.y) + @divTrunc(@as(i32, sprite.tex_extent.y) * (@as(i32, y0) - iry), ih), sprite.texture.height);
+    const uv_r = texel_to_snorm(@as(i32, sprite.tex_offset.x) + @divTrunc(@as(i32, sprite.tex_extent.x) * (@as(i32, x1) - irx), iw), sprite.texture.width);
+    const uv_b = texel_to_snorm(@as(i32, sprite.tex_offset.y) + @divTrunc(@as(i32, sprite.tex_extent.y) * (@as(i32, y1) - iry), ih), sprite.texture.height);
 
     const color: u32 = @bitCast(sprite.color);
 
@@ -181,6 +203,20 @@ fn emit_sprite_vertices(mesh: *BatchMesh, sprite: *const Sprite, screen_w: u32, 
         Vertex{ .pos = .{ sx0, sy1, z }, .uv = .{ uv_l, uv_b }, .color = color },
         Vertex{ .pos = .{ sx1, sy1, z }, .uv = .{ uv_r, uv_b }, .color = color },
     });
+}
+
+fn anchor_point(anchor: Anchor, ex: i16, ey: i16) Sprite.Range {
+    return switch (anchor) {
+        .top_left => .{ .x = 0, .y = 0 },
+        .top_center => .{ .x = @divTrunc(ex, 2), .y = 0 },
+        .top_right => .{ .x = ex, .y = 0 },
+        .middle_left => .{ .x = 0, .y = @divTrunc(ey, 2) },
+        .middle_center => .{ .x = @divTrunc(ex, 2), .y = @divTrunc(ey, 2) },
+        .middle_right => .{ .x = ex, .y = @divTrunc(ey, 2) },
+        .bottom_left => .{ .x = 0, .y = ey },
+        .bottom_center => .{ .x = @divTrunc(ex, 2), .y = ey },
+        .bottom_right => .{ .x = ex, .y = ey },
+    };
 }
 
 /// Converts a logical X pixel to snorm NDC.
@@ -199,19 +235,25 @@ fn logical_to_snorm_y(y: i16, screen_h: u32, scale: u32) i16 {
     return @intCast(@divTrunc((sh - 2 * @as(i32, y) * s) * 32767, sh));
 }
 
-fn texel_to_snorm(texel: i16, dim: u32) i16 {
-    return @intCast(@divTrunc(@as(i32, texel) * 32767, @as(i32, @intCast(dim))));
+fn texel_to_snorm(texel: i32, dim: u32) i16 {
+    return @intCast(@divTrunc(texel * 32767, @as(i32, @intCast(dim))));
 }
 
-/// Sorts by texture pointer for batching.
+/// Sorts by layer (primary) then texture pointer (secondary) for correct draw
+/// order and texture batching.
 fn sort_sprites(sprites: []Sprite) void {
     var i: u16 = 1;
     while (i < @as(u16, @intCast(sprites.len))) : (i += 1) {
         const key = sprites[i];
         var j: u16 = i;
-        while (j > 0 and @intFromPtr(sprites[j - 1].texture) > @intFromPtr(key.texture)) : (j -= 1) {
+        while (j > 0 and sprite_before(&key, &sprites[j - 1])) : (j -= 1) {
             sprites[j] = sprites[j - 1];
         }
         sprites[j] = key;
     }
+}
+
+fn sprite_before(a: *const Sprite, b: *const Sprite) bool {
+    if (a.layer != b.layer) return a.layer < b.layer;
+    return @intFromPtr(a.texture) < @intFromPtr(b.texture);
 }

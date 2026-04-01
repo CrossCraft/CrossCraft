@@ -1,10 +1,6 @@
 const std = @import("std");
 const ae = @import("aether");
-const Math = ae.Math;
-const Core = ae.Core;
 const Util = ae.Util;
-const Rendering = ae.Rendering;
-const State = Core.State;
 
 // TODO: Make these options stuff nice
 pub const std_options = Util.std_options;
@@ -26,96 +22,13 @@ fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
 }
 
-const SpriteBatcher = @import("ui/SpriteBatcher.zig");
-const Scaling = @import("ui/Scaling.zig");
-const Vertex = @import("vertex.zig").Vertex;
-
-const Zip = @import("util/Zip.zig");
-
-const MyState = struct {
-    texture: Rendering.Texture,
-    pack: *Zip,
-    batcher: SpriteBatcher,
-
-    fn init(ctx: *anyopaque) anyerror!void {
-        var self = Util.ctx_to_self(MyState, ctx);
-        const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
-        const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
-        pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
-
-        self.pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
-        var stream = try self.pack.open("assets/minecraft/textures/dirt.png");
-        defer self.pack.closeStream(&stream);
-        self.texture = try Rendering.Texture.load_from_reader(stream.reader);
-        self.batcher = try SpriteBatcher.init(pipeline);
-
-        Util.report();
-    }
-
-    fn deinit(ctx: *anyopaque) void {
-        var self = Util.ctx_to_self(MyState, ctx);
-        self.batcher.deinit();
-        self.texture.deinit();
-        self.pack.deinit();
-        Rendering.Pipeline.deinit(pipeline);
-    }
-
-    fn tick(ctx: *anyopaque) anyerror!void {
-        _ = ctx;
-    }
-
-    fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void {
-        const self = Util.ctx_to_self(MyState, ctx);
-        _ = self;
-        _ = dt;
-    }
-
-    fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
-        var self = Util.ctx_to_self(MyState, ctx);
-
-        const screen_w = Rendering.gfx.surface.get_width();
-        const screen_h = Rendering.gfx.surface.get_height();
-        const scale = Scaling.compute(screen_w, screen_h);
-        const extent_x: i16 = @intCast((screen_w + scale - 1) / scale);
-        const extent_y: i16 = @intCast((screen_h + scale - 1) / scale);
-
-        self.batcher.clear();
-        var y: i16 = 0;
-        while (y < extent_y) : (y += 32) {
-            var x: i16 = 0;
-            while (x < extent_x) : (x += 32) {
-                self.batcher.add_sprite(&.{
-                    .texture = &self.texture,
-                    .pos_offset = .{ .x = x, .y = y },
-                    .pos_extent = .{ .x = 32, .y = 32 },
-                    .tex_offset = .{ .x = 0, .y = 0 },
-                    .tex_extent = .{ .x = @intCast(self.texture.width), .y = @intCast(self.texture.height) },
-                    .color = .dark_gray,
-                    .layer = 0,
-                });
-            }
-        }
-        try self.batcher.flush();
-    }
-
-    pub fn state(self: *MyState) State {
-        return .{ .ptr = self, .tab = &.{
-            .init = init,
-            .deinit = deinit,
-            .tick = tick,
-            .update = update,
-            .draw = draw,
-        } };
-    }
-};
-
-var pipeline: Rendering.Pipeline.Handle = undefined;
+const MenuState = @import("state/MenuState.zig");
 
 pub fn main(init: std.process.Init) !void {
     const memory = try init.gpa.alloc(u8, 20 * 1024 * 1024);
     defer init.gpa.free(memory);
 
-    var state: MyState = undefined;
+    var state: MenuState = undefined;
     try ae.App.init(init.io, memory, .{
         .memory = .{
             .render = 4 * 1024 * 1024,
@@ -124,6 +37,7 @@ pub fn main(init: std.process.Init) !void {
             .user = 8 * 1024 * 1024,
             .scratch = 4 * 1024 * 1024,
         },
+        .vsync = false,
         .resizable = if (ae.gfx == .vulkan) false else true,
     }, &state.state());
     defer ae.App.deinit();
