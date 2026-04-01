@@ -25,8 +25,14 @@ pub const Color = packed struct(u32) {
     pub const yellow = rgba(255, 255, 85, 255);
     pub const white = rgba(255, 255, 255, 255);
     pub const be_mtx_gold = rgba(221, 214, 5, 255);
-    pub const select = rgba(255, 255, 160, 255);
-    pub const splash = rgba(63, 63, 0, 255);
+    pub const select_front = rgba(255, 255, 160, 255);
+    pub const select_back = rgba(63, 63, 40, 255);
+    pub const splash_front = rgba(255, 255, 0, 255);
+    pub const splash_back = rgba(62, 62, 0, 255);
+    pub const menu_version = rgba(22, 22, 21, 255);
+    pub const menu_copyright = rgba(62, 62, 62, 255);
+    pub const menu_tiles = rgba(70, 70, 70, 255);
+    pub const menu_gray = rgba(50, 50, 50, 255);
 };
 
 comptime {

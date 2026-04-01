@@ -6,8 +6,8 @@ const Rendering = ae.Rendering;
 
 const Scaling = @import("Scaling.zig");
 
-pub const Color = @import("Color.zig").Color;
-pub const Vertex = @import("../vertex.zig").Vertex;
+pub const Color = @import("../Color.zig").Color;
+pub const Vertex = @import("../Vertex.zig").Vertex;
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
 const Self = @This();

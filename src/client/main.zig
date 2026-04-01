@@ -25,6 +25,11 @@ fn psp_cwd() std.Io.Dir {
 const MenuState = @import("state/MenuState.zig");
 
 pub fn main(init: std.process.Init) !void {
+    if (ae.platform == .psp) {
+        sdk.extra.utils.enableHBCB();
+        try sdk.power.set_clock_frequency(333, 333, 166);
+    }
+
     const memory = try init.gpa.alloc(u8, 20 * 1024 * 1024);
     defer init.gpa.free(memory);
 
@@ -37,6 +42,9 @@ pub fn main(init: std.process.Init) !void {
             .user = 8 * 1024 * 1024,
             .scratch = 4 * 1024 * 1024,
         },
+        .width = 960,
+        .height = 544,
+        .title = "CrossCraft Classic",
         .vsync = false,
         .resizable = if (ae.gfx == .vulkan) false else true,
     }, &state.state());
