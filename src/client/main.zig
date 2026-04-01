@@ -23,6 +23,7 @@ fn psp_cwd() std.Io.Dir {
 }
 
 const MenuState = @import("state/MenuState.zig");
+const LoadState = @import("state/LoadState.zig");
 
 pub fn main(init: std.process.Init) !void {
     if (ae.platform == .psp) {
@@ -33,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
     const memory = try init.gpa.alloc(u8, 20 * 1024 * 1024);
     defer init.gpa.free(memory);
 
-    var state: MenuState = undefined;
+    var state: if (true) LoadState else MenuState = undefined;
     try ae.App.init(init.io, memory, .{
         .memory = .{
             .render = 4 * 1024 * 1024,

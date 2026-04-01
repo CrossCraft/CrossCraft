@@ -11,13 +11,11 @@ const Scaling = @import("../ui/Scaling.zig");
 const Vertex = @import("../Vertex.zig").Vertex;
 const Zip = @import("../util/Zip.zig");
 
-const MenuTextures = struct {
+const LoadTextures = struct {
     dirt: Rendering.Texture,
-    logo: Rendering.Texture,
     font: Rendering.Texture,
-    gui: Rendering.Texture,
 
-    var inst: MenuTextures = undefined;
+    var inst: LoadTextures = undefined;
 
     fn load_from_pack(pack: *Zip, file: []const u8) !Rendering.Texture {
         var buf: [256]u8 = undefined;
@@ -31,16 +29,11 @@ const MenuTextures = struct {
 
     pub fn init(pack: *Zip) !void {
         inst.dirt = try load_from_pack(pack, "minecraft/textures/dirt");
-        inst.logo = try load_from_pack(pack, "crosscraft/textures/menu/logo");
-        inst.logo.force_resident();
         inst.font = try load_from_pack(pack, "minecraft/textures/default");
-        inst.gui = try load_from_pack(pack, "minecraft/textures/gui/gui");
     }
 
     pub fn deinit() void {
-        inst.gui.deinit();
         inst.font.deinit();
-        inst.logo.deinit();
         inst.dirt.deinit();
     }
 };
@@ -48,7 +41,6 @@ const MenuTextures = struct {
 pack: *Zip,
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
-splash_mesh: FontBatcher.BatchMesh,
 time: f32,
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
@@ -60,11 +52,10 @@ fn init(ctx: *anyopaque) anyerror!void {
     pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
     self.pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
-    try MenuTextures.init(self.pack);
+    try LoadTextures.init(self.pack);
 
     self.batcher = try SpriteBatcher.init(pipeline);
-    self.font_batcher = try FontBatcher.init(pipeline, &MenuTextures.inst.font);
-    self.splash_mesh = try self.font_batcher.build_mesh("Classic!", .splash_front, .splash_back, 0, 1);
+    self.font_batcher = try FontBatcher.init(pipeline, &LoadTextures.inst.font);
     self.time = 0;
 
     Util.report();
@@ -72,11 +63,10 @@ fn init(ctx: *anyopaque) anyerror!void {
 
 fn deinit(ctx: *anyopaque) void {
     var self = Util.ctx_to_self(@This(), ctx);
-    self.splash_mesh.deinit();
     self.font_batcher.deinit();
     self.batcher.deinit();
 
-    MenuTextures.deinit();
+    LoadTextures.deinit();
     self.pack.deinit();
     Rendering.Pipeline.deinit(pipeline);
 }
@@ -105,7 +95,7 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     while (y < extent_y) : (y += tile_size) {
         var x: i16 = 0;
         while (x < extent_x) : (x += tile_size) {
-            const dirt = &MenuTextures.inst.dirt;
+            const dirt = &LoadTextures.inst.dirt;
             self.batcher.add_sprite(&.{
                 .texture = dirt,
                 .pos_offset = .{ .x = x, .y = y },
@@ -117,91 +107,74 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
             });
         }
     }
-    const logo = &MenuTextures.inst.logo;
+
+    // Loading bar
+    const bar_width: i16 = 100;
+    const bar_height: i16 = 2;
+    const bar_y: i16 = 16;
+    const progress = @min(self.time / 3.0, 1.0);
+    const default_tex = &Rendering.Texture.Default;
+
     self.batcher.add_sprite(&.{
-        .texture = logo,
-        .pos_offset = .{ .x = 0, .y = 24 },
-        .pos_extent = .{ .x = 512, .y = 64 },
+        .texture = default_tex,
+        .pos_offset = .{ .x = 0, .y = bar_y },
+        .pos_extent = .{ .x = bar_width, .y = bar_height },
         .tex_offset = .{ .x = 0, .y = 0 },
-        .tex_extent = .{ .x = @intCast(logo.width), .y = @intCast(logo.height) },
-        .color = .white,
+        .tex_extent = .{ .x = @intCast(default_tex.width), .y = @intCast(default_tex.height) },
+        .color = .progress_bg,
         .layer = 1,
-        .reference = .top_center,
-        .origin = .top_center,
+        .reference = .middle_center,
+        .origin = .middle_center,
     });
 
-    // Button sprites: disabled, normal, highlight, and a second normal.
-    const gui = &MenuTextures.inst.gui;
-    const btn_uv = [_]SpriteBatcher.Sprite.Range{
-        .{ .x = 0, .y = 46 }, // disabled
-        .{ .x = 0, .y = 66 }, // normal
-        .{ .x = 0, .y = 86 }, // highlight
-    };
-    const btn_y = [_]i16{ 120, 144, 168, 202 };
-    for (0..4) |i| {
+    const progress_w: i16 = @intFromFloat(@as(f32, @floatFromInt(bar_width)) * progress);
+    if (progress_w > 0) {
         self.batcher.add_sprite(&.{
-            .texture = gui,
-            .pos_offset = .{ .x = 0, .y = btn_y[i] },
-            .pos_extent = .{ .x = 200, .y = 20 },
-            .tex_offset = btn_uv[1],
-            .tex_extent = .{ .x = 200, .y = 20 },
-            .color = .white,
+            .texture = default_tex,
+            .pos_offset = .{ .x = -@divTrunc(bar_width, 2), .y = bar_y },
+            .pos_extent = .{ .x = progress_w, .y = bar_height },
+            .tex_offset = .{ .x = 0, .y = 0 },
+            .tex_extent = .{ .x = @intCast(default_tex.width), .y = @intCast(default_tex.height) },
+            .color = .progress_bar,
             .layer = 2,
-            .reference = .top_center,
-            .origin = .top_center,
+            .reference = .middle_center,
+            .origin = .middle_left,
         });
     }
 
     try self.batcher.flush();
 
     self.font_batcher.clear();
-    const btn_labels = [_][]const u8{ "Singleplayer", "Multiplayer", "Mods and Texture Packs", "Options..." };
-    for (btn_labels, 0..) |label, i| {
-        self.font_batcher.add_text(&.{
-            .str = label,
-            .pos_x = 0,
-            .pos_y = btn_y[i] + 6,
-            .color = .white,
-            .shadow_color = .menu_gray,
-            .spacing = 0,
-            .layer = 3,
-            .reference = .top_center,
-            .origin = .top_center,
-        });
-    }
-    const version: []const u8 = "CrossCraft Classic v0.1.0";
+
+    const loading: []const u8 = "Generating level";
     self.font_batcher.add_text(&.{
-        .str = version,
-        .pos_x = 2,
-        .pos_y = 2,
-        .color = .dark_gray,
-        .shadow_color = .menu_version,
-        .spacing = 0,
-        .layer = 2,
-        .reference = .top_left,
-        .origin = .top_left,
-    });
-    const copyleft: []const u8 = "Copyleft CrossCraft Team. Distribute!";
-    self.font_batcher.add_text(&.{
-        .str = copyleft,
-        .pos_x = -2,
-        .pos_y = -2,
+        .str = loading,
+        .pos_x = 0,
+        .pos_y = -16,
         .color = .white,
-        .shadow_color = .menu_copyright,
+        .shadow_color = .menu_gray,
         .spacing = 0,
         .layer = 2,
-        .reference = .bottom_right,
-        .origin = .bottom_right,
+        .reference = .middle_center,
+        .origin = .middle_center,
     });
+
+    // TODO: Status change based on world
+    // TODO: Change both text in multiplayer load
+    const status: []const u8 = "Building terrain";
+    self.font_batcher.add_text(&.{
+        .str = status,
+        .pos_x = 0,
+        .pos_y = 7,
+        .color = .white,
+        .shadow_color = .menu_gray,
+        .spacing = 0,
+        .layer = 2,
+        .reference = .middle_center,
+        .origin = .middle_center,
+    });
+
     try self.font_batcher.flush();
-
-    // Draw "Classic!" splash text as an independent transformed mesh.
-    const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;
-    const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 80, .top_center, .top_center, 25, pulse, 2);
-
-    Rendering.Pipeline.bind(pipeline);
-    MenuTextures.inst.font.bind();
-    self.splash_mesh.draw(&model);
 }
 
 pub fn state(self: *@This()) State {

@@ -33,6 +33,8 @@ pub const Color = packed struct(u32) {
     pub const menu_copyright = rgba(62, 62, 62, 255);
     pub const menu_tiles = rgba(70, 70, 70, 255);
     pub const menu_gray = rgba(50, 50, 50, 255);
+    pub const progress_bar = rgba(0x80, 0xFF, 0x80, 0xFF);
+    pub const progress_bg = rgba(0x80, 0x80, 0x80, 0xFF);
 };
 
 comptime {

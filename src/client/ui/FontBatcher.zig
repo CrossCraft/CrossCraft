@@ -27,32 +27,18 @@ const MAX_ENTRIES: u16 = if (ae.platform == .psp) 64 else 128;
 
 // --- Input Primitive ---
 
-pub const TextEntry = extern struct {
-    str_ptr: [*]const u8,
+pub const TextEntry = struct {
+    str: []const u8,
     color: Color,
     shadow_color: Color,
     pos_x: i16,
     pos_y: i16,
-    str_len: u16,
     spacing: i8,
     layer: u8,
     scale: u8 = 1,
     reference: Anchor,
     origin: Anchor,
-    // Explicit trailing pad prevents implicit padding containing garbage for memcmp.
-    _pad: [5]u8 = [1]u8{0} ** 5,
 };
-
-comptime {
-    // Lock extern struct layout — any implicit padding would break dirty checking.
-    if (@sizeOf(usize) == 8) {
-        std.debug.assert(@sizeOf(TextEntry) == 32);
-    } else if (@sizeOf(usize) == 4) {
-        std.debug.assert(@sizeOf(TextEntry) == 28);
-    } else {
-        @compileError("unsupported pointer size");
-    }
-}
 
 // --- Fields ---
 
@@ -100,7 +86,7 @@ pub fn clear(self: *Self) void {
 
 pub fn add_text(self: *Self, entry: *const TextEntry) void {
     std.debug.assert(self.count < MAX_ENTRIES);
-    std.debug.assert(entry.str_len > 0);
+    std.debug.assert(entry.str.len > 0);
     self.entries[self.current][self.count] = entry.*;
     self.count += 1;
 }
@@ -111,9 +97,9 @@ pub fn flush(self: *Self) !void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
 
-    const curr = std.mem.sliceAsBytes(self.entries[self.current][0..self.count]);
-    const prev = std.mem.sliceAsBytes(self.entries[self.current ^ 1][0..self.prev_count]);
-    const changed = curr.len != prev.len or !std.mem.eql(u8, curr, prev);
+    const curr = self.entries[self.current][0..self.count];
+    const prev = self.entries[self.current ^ 1][0..self.prev_count];
+    const changed = !entries_equal(curr, prev);
     const resized = screen_w != self.last_screen_w or screen_h != self.last_screen_h;
 
     if (changed or resized) {
@@ -242,6 +228,14 @@ pub fn mesh_matrix(
 
 // --- Private ---
 
+fn entries_equal(a: []const TextEntry, b: []const TextEntry) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |*x, *y| {
+        if (!std.meta.eql(x.*, y.*)) return false;
+    }
+    return true;
+}
+
 fn rebuild(self: *Self, screen_w: u32, screen_h: u32) !void {
     const scale = Scaling.compute(screen_w, screen_h);
     const entries = self.entries[self.current][0..self.count];
@@ -249,7 +243,7 @@ fn rebuild(self: *Self, screen_w: u32, screen_h: u32) !void {
     var total_verts: u32 = 0;
     for (entries) |*e| {
         const mult: u32 = if (e.shadow_color.a > 0) 2 else 1;
-        total_verts += @as(u32, e.str_len) * VERTS_PER_CHAR * mult;
+        total_verts += @as(u32, @intCast(e.str.len)) * VERTS_PER_CHAR * mult;
     }
 
     self.mesh.vertices.clearRetainingCapacity();
@@ -270,7 +264,7 @@ fn emit_text(
     ui_scale: u32,
 ) void {
     std.debug.assert(entry.scale > 0);
-    const str = entry.str_ptr[0..entry.str_len];
+    const str = entry.str;
     const ts: i16 = entry.scale;
     const text_w = self.string_width(str, entry.spacing, entry.scale);
     const text_h: i16 = @as(i16, GLYPH_SIZE) * ts;
