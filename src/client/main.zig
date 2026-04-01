@@ -27,6 +27,7 @@ fn psp_cwd() std.Io.Dir {
 }
 
 const SpriteBatcher = @import("ui/SpriteBatcher.zig");
+const Scaling = @import("ui/Scaling.zig");
 const Vertex = @import("vertex.zig").Vertex;
 
 const Zip = @import("util/Zip.zig");
@@ -72,17 +73,28 @@ const MyState = struct {
     fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
         var self = Util.ctx_to_self(MyState, ctx);
 
-        // 2D UI pass
+        const screen_w = Rendering.gfx.surface.get_width();
+        const screen_h = Rendering.gfx.surface.get_height();
+        const scale = Scaling.compute(screen_w, screen_h);
+        const extent_x: i16 = @intCast((screen_w + scale - 1) / scale);
+        const extent_y: i16 = @intCast((screen_h + scale - 1) / scale);
+
         self.batcher.clear();
-        self.batcher.add_sprite(&.{
-            .texture = &self.texture,
-            .pos_offset = .{ .x = 0, .y = 0 },
-            .pos_extent = .{ .x = 64, .y = 64 },
-            .tex_offset = .{ .x = 0, .y = 0 },
-            .tex_extent = .{ .x = @intCast(self.texture.width), .y = @intCast(self.texture.height) },
-            .color = SpriteBatcher.Sprite.Color.white(),
-            .layer = 0,
-        });
+        var y: i16 = 0;
+        while (y < extent_y) : (y += 32) {
+            var x: i16 = 0;
+            while (x < extent_x) : (x += 32) {
+                self.batcher.add_sprite(&.{
+                    .texture = &self.texture,
+                    .pos_offset = .{ .x = x, .y = y },
+                    .pos_extent = .{ .x = 32, .y = 32 },
+                    .tex_offset = .{ .x = 0, .y = 0 },
+                    .tex_extent = .{ .x = @intCast(self.texture.width), .y = @intCast(self.texture.height) },
+                    .color = .dark_gray,
+                    .layer = 0,
+                });
+            }
+        }
         try self.batcher.flush();
     }
 
@@ -100,17 +112,20 @@ const MyState = struct {
 var pipeline: Rendering.Pipeline.Handle = undefined;
 
 pub fn main(init: std.process.Init) !void {
-    const memory = try init.arena.allocator().alloc(u8, 32 * 1024 * 1024);
+    const memory = try init.gpa.alloc(u8, 20 * 1024 * 1024);
+    defer init.gpa.free(memory);
 
-    const config = Util.MemoryConfig{
-        .render = 8 * 1024 * 1024,
-        .audio = 2 * 1024 * 1024,
-        .game = 2 * 1024 * 1024,
-        .user = 16 * 1024 * 1024,
-        .scratch = 4 * 1024 * 1024,
-    };
     var state: MyState = undefined;
-    try ae.App.init(init.io, memory, config, 1280, 720, "Aether", false, false, &state.state());
+    try ae.App.init(init.io, memory, .{
+        .memory = .{
+            .render = 4 * 1024 * 1024,
+            .audio = 2 * 1024 * 1024,
+            .game = 2 * 1024 * 1024,
+            .user = 8 * 1024 * 1024,
+            .scratch = 4 * 1024 * 1024,
+        },
+        .resizable = if (ae.gfx == .vulkan) false else true,
+    }, &state.state());
     defer ae.App.deinit();
     try ae.App.main_loop();
 }

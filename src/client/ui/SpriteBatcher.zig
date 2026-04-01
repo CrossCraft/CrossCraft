@@ -4,8 +4,10 @@ const Math = ae.Math;
 const Util = ae.Util;
 const Rendering = ae.Rendering;
 
-const vertex = @import("../vertex.zig");
-pub const Vertex = vertex.Vertex;
+const Scaling = @import("Scaling.zig");
+
+pub const Color = @import("Color.zig").Color;
+pub const Vertex = @import("../vertex.zig").Vertex;
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
 const Self = @This();
@@ -21,21 +23,6 @@ pub const Sprite = extern struct {
     color: Color,
     layer: u8,
     _pad: [3]u8 = .{ 0, 0, 0 },
-
-    pub const Color = packed struct(u32) {
-        r: u8,
-        g: u8,
-        b: u8,
-        a: u8,
-
-        pub fn rgba(r: u8, g: u8, b: u8, a: u8) Color {
-            return .{ .r = r, .g = g, .b = b, .a = a };
-        }
-
-        pub fn white() Color {
-            return rgba(255, 255, 255, 255);
-        }
-    };
 };
 
 const TextureBatch = struct {
@@ -46,25 +33,23 @@ const TextureBatch = struct {
 const MAX_SPRITES: u16 = if (ae.platform == .psp) 256 else 1024;
 const VERTS_PER_SPRITE: u16 = 6;
 
-sprites_a: [MAX_SPRITES]Sprite,
-sprites_b: [MAX_SPRITES]Sprite,
+sprites: [2][MAX_SPRITES]Sprite,
 count: u16,
 prev_count: u16,
-current_is_a: bool,
+current: u1,
+last_screen_w: u32,
+last_screen_h: u32,
 batches: std.ArrayList(TextureBatch),
 pipeline_handle: Rendering.Pipeline.Handle,
 
-comptime {
-    std.debug.assert(@sizeOf(Sprite.Color) == 4);
-}
-
 pub fn init(pipeline: Rendering.Pipeline.Handle) !Self {
     return Self{
-        .sprites_a = undefined,
-        .sprites_b = undefined,
+        .sprites = undefined,
         .count = 0,
         .prev_count = 0,
-        .current_is_a = true,
+        .current = 0,
+        .last_screen_w = 0,
+        .last_screen_h = 0,
         .batches = try std.ArrayList(TextureBatch).initCapacity(Util.allocator(.render), 4),
         .pipeline_handle = pipeline,
     };
@@ -79,31 +64,35 @@ pub fn deinit(self: *Self) void {
 
 pub fn add_sprite(self: *Self, sprite: *const Sprite) void {
     std.debug.assert(self.count < MAX_SPRITES);
-    self.current_buf()[self.count] = sprite.*;
+    self.sprites[self.current][self.count] = sprite.*;
     self.count += 1;
 }
 
 pub fn clear(self: *Self) void {
     self.prev_count = self.count;
-    self.current_is_a = !self.current_is_a;
+    self.current ^= 1;
     self.count = 0;
 }
 
 pub fn flush(self: *Self) !void {
     if (self.count == 0) return;
 
-    const curr = std.mem.sliceAsBytes(self.current_buf()[0..self.count]);
-    const prev = std.mem.sliceAsBytes(self.previous_buf()[0..self.prev_count]);
-    const changed = curr.len != prev.len or !std.mem.eql(u8, curr, prev);
+    const screen_w = Rendering.gfx.surface.get_width();
+    const screen_h = Rendering.gfx.surface.get_height();
 
-    if (changed) {
-        sort_sprites(self.current_buf()[0..self.count]);
-        try self.rebuild_batches();
+    const curr = std.mem.sliceAsBytes(self.sprites[self.current][0..self.count]);
+    const prev = std.mem.sliceAsBytes(self.sprites[self.current ^ 1][0..self.prev_count]);
+    const sprites_changed = curr.len != prev.len or !std.mem.eql(u8, curr, prev);
+    const size_changed = screen_w != self.last_screen_w or screen_h != self.last_screen_h;
+
+    if (sprites_changed or size_changed) {
+        sort_sprites(self.sprites[self.current][0..self.count]);
+        try self.rebuild_batches(screen_w, screen_h);
+        self.last_screen_w = screen_w;
+        self.last_screen_h = screen_h;
     }
 
-    const w: u32 = Rendering.gfx.surface.get_width();
-    const h: u32 = Rendering.gfx.surface.get_height();
-    Rendering.gfx.api.set_proj_matrix(&pixel_ortho(w, h));
+    Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
     Rendering.gfx.api.set_view_matrix(&Math.Mat4.identity());
     Rendering.Pipeline.bind(self.pipeline_handle);
 
@@ -114,8 +103,9 @@ pub fn flush(self: *Self) !void {
     }
 }
 
-fn rebuild_batches(self: *Self) !void {
-    const sprites = self.current_buf()[0..self.count];
+fn rebuild_batches(self: *Self, screen_w: u32, screen_h: u32) !void {
+    const sprites = self.sprites[self.current][0..self.count];
+    const scale = Scaling.compute(screen_w, screen_h);
     var batch_idx: u16 = 0;
     var i: u16 = 0;
 
@@ -125,7 +115,6 @@ fn rebuild_batches(self: *Self) !void {
         while (i < self.count and sprites[i].texture == tex) : (i += 1) {}
         const group_count: u16 = i - group_start;
 
-        // Reuse existing batch or create a new one
         if (batch_idx >= self.batches.items.len) {
             const mesh = try BatchMesh.new(self.pipeline_handle);
             try self.batches.append(Util.allocator(.render), .{ .texture = tex, .mesh = mesh });
@@ -140,83 +129,89 @@ fn rebuild_batches(self: *Self) !void {
         );
 
         for (sprites[group_start..i]) |sprite| {
-            emit_sprite_vertices(&batch.mesh, &sprite);
+            emit_sprite_vertices(&batch.mesh, &sprite, screen_w, screen_h, scale);
         }
 
         batch.mesh.update();
         batch_idx += 1;
     }
 
-    // Destroy excess batches from previous frames
     while (self.batches.items.len > batch_idx) {
         var old = self.batches.pop().?;
         old.mesh.deinit();
     }
 }
 
-fn emit_sprite_vertices(mesh: *BatchMesh, sprite: *const Sprite) void {
+fn emit_sprite_vertices(mesh: *BatchMesh, sprite: *const Sprite, screen_w: u32, screen_h: u32, scale: u32) void {
+    // Clip to screen bounds in logical pixels so snorm stays in i16 range.
+    const max_lx: i16 = @intCast(screen_w / scale);
+    const max_ly: i16 = @intCast(screen_h / scale);
+
     const x0 = sprite.pos_offset.x;
     const y0 = sprite.pos_offset.y;
-    const x1 = x0 + sprite.pos_extent.x;
-    const y1 = y0 + sprite.pos_extent.y;
+    const x1 = @min(x0 + sprite.pos_extent.x, max_lx);
+    const y1 = @min(y0 + sprite.pos_extent.y, max_ly);
+
+    if (x0 >= x1 or y0 >= y1) return;
+
+    const sx0 = logical_to_snorm_x(x0, screen_w, scale);
+    const sy0 = logical_to_snorm_y(y0, screen_h, scale);
+    const sx1 = logical_to_snorm_x(x1, screen_w, scale);
+    const sy1 = logical_to_snorm_y(y1, screen_h, scale);
+    const z: i16 = @intCast(sprite.layer);
 
     const uv_l = texel_to_snorm(sprite.tex_offset.x, sprite.texture.width);
     const uv_t = texel_to_snorm(sprite.tex_offset.y, sprite.texture.height);
-    const uv_r = texel_to_snorm(sprite.tex_offset.x + sprite.tex_extent.x, sprite.texture.width);
-    const uv_b = texel_to_snorm(sprite.tex_offset.y + sprite.tex_extent.y, sprite.texture.height);
+    const uv_r = texel_to_snorm(
+        sprite.tex_offset.x + @divTrunc(sprite.tex_extent.x * (x1 - x0), sprite.pos_extent.x),
+        sprite.texture.width,
+    );
+    const uv_b = texel_to_snorm(
+        sprite.tex_offset.y + @divTrunc(sprite.tex_extent.y * (y1 - y0), sprite.pos_extent.y),
+        sprite.texture.height,
+    );
 
     const color: u32 = @bitCast(sprite.color);
 
     mesh.vertices.appendSliceAssumeCapacity(&.{
-        Vertex{ .pos = .{ x0, y0, 0 }, .uv = .{ uv_l, uv_t }, .color = color },
-        Vertex{ .pos = .{ x1, y1, 0 }, .uv = .{ uv_r, uv_b }, .color = color },
-        Vertex{ .pos = .{ x1, y0, 0 }, .uv = .{ uv_r, uv_t }, .color = color },
-        Vertex{ .pos = .{ x0, y0, 0 }, .uv = .{ uv_l, uv_t }, .color = color },
-        Vertex{ .pos = .{ x0, y1, 0 }, .uv = .{ uv_l, uv_b }, .color = color },
-        Vertex{ .pos = .{ x1, y1, 0 }, .uv = .{ uv_r, uv_b }, .color = color },
+        Vertex{ .pos = .{ sx0, sy0, z }, .uv = .{ uv_l, uv_t }, .color = color },
+        Vertex{ .pos = .{ sx1, sy1, z }, .uv = .{ uv_r, uv_b }, .color = color },
+        Vertex{ .pos = .{ sx1, sy0, z }, .uv = .{ uv_r, uv_t }, .color = color },
+        Vertex{ .pos = .{ sx0, sy0, z }, .uv = .{ uv_l, uv_t }, .color = color },
+        Vertex{ .pos = .{ sx0, sy1, z }, .uv = .{ uv_l, uv_b }, .color = color },
+        Vertex{ .pos = .{ sx1, sy1, z }, .uv = .{ uv_r, uv_b }, .color = color },
     });
+}
+
+/// Converts a logical X pixel to snorm NDC.
+/// Origin (0,0) is the top-left corner of the window.
+fn logical_to_snorm_x(x: i16, screen_w: u32, scale: u32) i16 {
+    const s: i32 = @intCast(scale);
+    const sw: i32 = @intCast(screen_w);
+    return @intCast(@divTrunc((2 * @as(i32, x) * s - sw) * 32767, sw));
+}
+
+/// Converts a logical Y pixel to snorm NDC (Y-flipped for top-left origin).
+/// Origin (0,0) is the top-left corner of the window.
+fn logical_to_snorm_y(y: i16, screen_h: u32, scale: u32) i16 {
+    const s: i32 = @intCast(scale);
+    const sh: i32 = @intCast(screen_h);
+    return @intCast(@divTrunc((sh - 2 * @as(i32, y) * s) * 32767, sh));
 }
 
 fn texel_to_snorm(texel: i16, dim: u32) i16 {
     return @intCast(@divTrunc(@as(i32, texel) * 32767, @as(i32, @intCast(dim))));
 }
 
-fn pixel_ortho(w: u32, h: u32) Math.Mat4 {
-    const fw: f32 = @floatFromInt(w);
-    const fh: f32 = @floatFromInt(h);
-    const s: f32 = 32767.0;
-    return .{ .data = .{
-        .{ 2.0 * s / fw, 0,              0,  0 },
-        .{ 0,            -2.0 * s / fh,  0,  0 },
-        .{ 0,            0,             -1,  0 },
-        .{ -1,           1,              0,  1 },
-    } };
-}
-
-/// Sorts by texture pointer (for batching), then by layer within each texture.
+/// Sorts by texture pointer for batching.
 fn sort_sprites(sprites: []Sprite) void {
     var i: u16 = 1;
     while (i < @as(u16, @intCast(sprites.len))) : (i += 1) {
         const key = sprites[i];
         var j: u16 = i;
-        while (j > 0 and order_greater(&sprites[j - 1], &key)) : (j -= 1) {
+        while (j > 0 and @intFromPtr(sprites[j - 1].texture) > @intFromPtr(key.texture)) : (j -= 1) {
             sprites[j] = sprites[j - 1];
         }
         sprites[j] = key;
     }
-}
-
-fn order_greater(a: *const Sprite, b: *const Sprite) bool {
-    const ta = @intFromPtr(a.texture);
-    const tb = @intFromPtr(b.texture);
-    if (ta != tb) return ta > tb;
-    return a.layer > b.layer;
-}
-
-fn current_buf(self: *Self) *[MAX_SPRITES]Sprite {
-    return if (self.current_is_a) &self.sprites_a else &self.sprites_b;
-}
-
-fn previous_buf(self: *Self) *[MAX_SPRITES]Sprite {
-    return if (self.current_is_a) &self.sprites_b else &self.sprites_a;
 }
