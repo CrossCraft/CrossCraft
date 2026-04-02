@@ -110,6 +110,14 @@ pub fn init(pipeline: Rendering.Pipeline.Handle, textures: Textures, camera: *co
     for (0..self.section_count) |i| self.build_order[i] = @intCast(i);
     sort_by_distance(self.build_order[0..self.section_count], self.sections[0..self.section_count], camera);
 
+    // Warm up the estimator before entering the world
+    while (self.build_cursor < self.section_count and self.build_estimator.is_warming_up()) {
+        self.build_estimator.begin();
+        self.sections[self.build_order[self.build_cursor]].rebuild(&self.pool, &self.textures.atlas);
+        self.build_estimator.end();
+        self.build_cursor += 1;
+    }
+
     return self;
 }
 
