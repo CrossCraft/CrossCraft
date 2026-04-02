@@ -10,6 +10,20 @@ const FontBatcher = @import("../ui/FontBatcher.zig");
 const Scaling = @import("../ui/Scaling.zig");
 const Vertex = @import("../Vertex.zig").Vertex;
 const Zip = @import("../util/Zip.zig");
+const Server = @import("game").Server;
+
+const log = std.log.scoped(.game);
+
+var server_ready: std.atomic.Value(bool) = .init(false);
+
+fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, io: std.Io) void {
+    // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
+    Server.init(alloc, scratch, seed, io) catch |err| {
+        log.err("server init failed: {}", .{err});
+        return;
+    };
+    server_ready.store(true, .release);
+}
 
 const LoadTextures = struct {
     dirt: Rendering.Texture,
@@ -42,6 +56,8 @@ pack: *Zip,
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 time: f32,
+server_future: std.Io.Future(void),
+server_notified: bool,
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
 
@@ -57,12 +73,20 @@ fn init(ctx: *anyopaque) anyerror!void {
     self.batcher = try SpriteBatcher.init(pipeline);
     self.font_batcher = try FontBatcher.init(pipeline, &LoadTextures.inst.font);
     self.time = 0;
+    self.server_notified = false;
+
+    const io = Util.io();
+    const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
+    server_ready.store(false, .monotonic);
+    // TODO: allocator pool budget may need tuning for server + client coexistence
+    self.server_future = io.async(serverTask, .{ Util.allocator(.user), Util.allocator(.scratch), seed, io });
 
     Util.report();
 }
 
 fn deinit(ctx: *anyopaque) void {
     var self = Util.ctx_to_self(@This(), ctx);
+    self.server_future.await(Util.io());
     self.font_batcher.deinit();
     self.batcher.deinit();
 
@@ -72,7 +96,12 @@ fn deinit(ctx: *anyopaque) void {
 }
 
 fn tick(ctx: *anyopaque) anyerror!void {
-    _ = ctx;
+    var self = Util.ctx_to_self(@This(), ctx);
+    if (!self.server_notified and server_ready.load(.acquire)) {
+        self.server_notified = true;
+        log.info("Server ready!", .{});
+        Util.report();
+    }
 }
 
 fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void {
@@ -175,6 +204,7 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     });
 
     try self.font_batcher.flush();
+    try std.Io.sleep(Util.io(), std.Io.Duration.fromMilliseconds(50), .real);
 }
 
 pub fn state(self: *@This()) State {

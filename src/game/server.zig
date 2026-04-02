@@ -22,14 +22,14 @@ fn pad(comptime s: []const u8) [64]u8 {
     return buf;
 }
 
-pub fn init(alloc: std.mem.Allocator, seed: u64, _io: std.Io) !void {
+pub fn init(alloc: std.mem.Allocator, scratch_alloc: std.mem.Allocator, seed: u64, _io: std.Io) !void {
     allocator = .init(alloc);
     io = _io;
 
     load_config();
 
     // Temporary scratch allocations
-    var scratch = std.heap.ArenaAllocator.init(alloc);
+    var scratch = std.heap.ArenaAllocator.init(scratch_alloc);
     defer scratch.deinit();
 
     try world.init(allocator.allocator(), scratch.allocator(), io, seed);
