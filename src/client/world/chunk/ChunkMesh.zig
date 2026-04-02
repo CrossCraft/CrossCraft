@@ -12,7 +12,7 @@ pub const MeshPool = @import("MeshPool.zig").MeshPool;
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
 /// One 16x16x16 section with 2 meshes:
-///   opaque -- solid blocks + inner leaf faces (Bedrock-style)
+///   opaque -- solid blocks + leaf shell faces
 ///   trans  -- outer leaves + water/glass/cross
 @"opaque": BatchMesh,
 trans: BatchMesh,
