@@ -8,7 +8,7 @@ const State = Core.State;
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
 const Scaling = @import("../ui/Scaling.zig");
-const Vertex = @import("../Vertex.zig").Vertex;
+const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const Zip = @import("../util/Zip.zig");
 
 const MenuTextures = struct {

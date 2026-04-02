@@ -71,8 +71,11 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
         return input.color;
     }
     uint idx = NonUniformResourceIndex(pc.textureIndex);
-    return g_textures[idx].Sample(g_sampler, input.uv) * input.color;
+    float4 result = g_textures[idx].Sample(g_sampler, input.uv) * input.color;
 #else
-    return u_combinedTexture.Sample(input.uv) * input.color;
+    float4 result = u_combinedTexture.Sample(input.uv) * input.color;
 #endif
+    // Vertex alpha == 0 signals "force opaque" (LOD leaves -- skip alpha test)
+    if (input.color.a > 0.0 && result.a < 0.5) discard;
+    return result;
 }

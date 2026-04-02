@@ -5,11 +5,11 @@ const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const Scaling = @import("Scaling.zig");
-const TextureAtlas = @import("../TextureAtlas.zig").TextureAtlas;
+const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 
 pub const Anchor = @import("SpriteBatcher.zig").Anchor;
-pub const Color = @import("../Color.zig").Color;
-pub const Vertex = @import("../Vertex.zig").Vertex;
+pub const Color = @import("../graphics/Color.zig").Color;
+pub const Vertex = @import("../graphics/Vertex.zig").Vertex;
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
 const Self = @This();

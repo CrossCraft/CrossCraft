@@ -23,6 +23,8 @@ fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
 }
 
+pub const build_options = @import("build_options");
+
 const MenuState = @import("state/MenuState.zig");
 const LoadState = @import("state/LoadState.zig");
 
@@ -32,22 +34,18 @@ pub fn main(init: std.process.Init) !void {
         try sdk.power.set_clock_frequency(333, 333, 166);
     }
 
-    const memory = try init.gpa.alloc(u8, 20 * 1024 * 1024);
+    const game_config = @import("config.zig");
+    const memory = try init.gpa.alloc(u8, game_config.current.total_memory_mb * 1024 * 1024);
     defer init.gpa.free(memory);
 
     var state: if (true) LoadState else MenuState = undefined;
     try ae.App.init(init.io, memory, .{
-        .memory = .{
-            .render = 4 * 1024 * 1024,
-            .audio = 2 * 1024 * 1024,
-            .game = 2 * 1024 * 1024,
-            .user = 12 * 1024 * 1024,
-        },
+        .memory = game_config.init_memory(),
         .width = 960,
         .height = 544,
         .title = "CrossCraft Classic",
         .vsync = false,
-        .resizable = if (ae.gfx == .vulkan) false else true,
+        .resizable = if (ae.gfx == .vulkan) false else true, // TODO: Bug in Vulkan :(
     }, &state.state());
     defer ae.App.deinit();
     try ae.App.main_loop();

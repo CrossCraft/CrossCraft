@@ -10,6 +10,8 @@ pub fn build(b: *std.Build) void {
         .psp_display_mode = b.option(Aether.PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
     };
 
+    const slim = b.option(bool, "slim", "Slim mode: reduced memory, smaller render distance (for PSP-1000)") orelse false;
+
     const config = Aether.Config.resolve(target, overrides);
 
     const zbc = b.dependency("ZeeBuffer", .{});
@@ -81,6 +83,11 @@ pub fn build(b: *std.Build) void {
     client_exe.root_module.addImport("game", game);
     client_exe.root_module.addImport("common", common);
     client_exe.root_module.addImport("protocol", protocol);
+
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "slim", slim);
+    client_exe.root_module.addImport("build_options", build_options.createModule());
+
 
     Aether.addShader(ae_dep.builder, b, client_exe, config, "basic", .{
         .slang = b.path("src/client/shaders/basic.slang"),
