@@ -93,6 +93,19 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.conn.drain_packets();
     self.camera.apply();
+
+    const sky = @import("../graphics/Color.zig").Color.game_daytime;
+    const fog_end: f32 = @floatFromInt(config.chunk_radius * 16 - 16);
+    const fog_start: f32 = fog_end * 0.4;
+    Rendering.gfx.api.set_fog(
+        true,
+        fog_start,
+        fog_end,
+        @as(f32, @floatFromInt(sky.r)) / 255.0,
+        @as(f32, @floatFromInt(sky.g)) / 255.0,
+        @as(f32, @floatFromInt(sky.b)) / 255.0,
+    );
+
     self.world.draw(&self.camera);
 }
 

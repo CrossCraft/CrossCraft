@@ -56,7 +56,6 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
         * Tooling is not considered to be a dependency (i.e. ZeeBuffers)
         * Runtime dependencies are not allowed beyond the Zig runtime and platform APIs (OpenGL, etc.)
   * Exceptions are made sparingly for platform APIs like GLFW, miniaudio
-  * Cross-platform dependencies exceptions: zmath, zstbi for math and image loading
 	* The only other dependencies should be the Zig compiler and sections of the Standard Library
 	* Standard Library:
 		* Allowed imports:
@@ -64,13 +63,8 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 			* All software submodules built with this design ruleset.
 			* Particularly encouraged: `std.mem`, `std.io`.
 				These implementations are highly generic, and allow for overloading via static polymorphism or runtime VTables, so have no cross-platform concerns (dependency injection)
-		* Must have alternate implementation:
-			* `std.fs.*` and `std.posix.*`
-				* These abstractions are good in the generic case but fail on custom OS systems.
-				* Therefore the interfaces internally using this must never reference `std.fs.*` or `std.posix.*` as expected parameters.
 		* Disallowed:
-			* `std.os` and `std.c`, alongside things built on these modules
-				* E.G. `std.time`
+			* `std.os` and `std.c`, alongside `std.posix` (which will be deleted soon)
 * #### Design with performance in mind
 	* Design is the easiest time to create a good, performant system
 	* Optimize for the slowest resources (Network, Disk, Memory, GPU, CPU)
