@@ -95,6 +95,7 @@ pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *b
     client.reader = reader;
     client.writer = writer;
     client.initialized = false;
+    client.local = false;
     client.name_len = 0;
     client.id = -1;
     client.x = 0;
@@ -114,6 +115,14 @@ pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *b
         client.send_disconnect("Server is full!") catch return null;
         return null;
     }
+}
+
+/// Join the server as the local singleplayer client. Same as client_join
+/// but marks the client as local so world compression is skipped.
+pub fn local_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bool) ?*Client {
+    const client = client_join(reader, writer, connected) orelse return null;
+    client.local = true;
+    return client;
 }
 
 pub fn broadcast_spawn_player(sender_id: i8, packet: *zb.SpawnPlayer) void {
@@ -166,6 +175,16 @@ pub fn broadcast_player_positions() void {
                 players.items[i].?.send_player_position(p.id, p.x, p.y, p.z, p.yaw, p.pitch) catch continue;
                 players.items[i].?.writer.flush() catch continue;
             }
+        }
+    }
+}
+
+/// Process all pending packets from local (singleplayer) clients.
+/// Called each tick instead of running a blocking read_loop thread.
+pub fn drain_local_packets() void {
+    for (0..consts.MAX_PLAYERS) |i| {
+        if (players.items[i] != null and players.items[i].?.local) {
+            players.items[i].?.drain_packets();
         }
     }
 }

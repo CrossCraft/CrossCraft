@@ -4,7 +4,7 @@ const Protocol = zb.Protocol;
 const assert = std.debug.assert;
 const c = @import("common").consts;
 const world = @import("world.zig");
-const proto = @import("protocol.zig");
+const proto = @import("common").protocol;
 
 const Server = @import("server.zig");
 
@@ -40,6 +40,7 @@ connected: *bool,
 name: [16:0]u8,
 name_len: u8,
 initialized: bool,
+local: bool,
 protocol: Protocol,
 
 buffer: [1024]u8,
@@ -95,7 +96,7 @@ const ChunkSender = struct {
         cs.bytes_sent += @intCast(filled);
 
         const end_before = cs.output.end;
-        proto.send_level_chunk(cs.output, @intCast(filled), &chunk, cs.percent()) catch
+        proto.send_level_chunk_to_client(cs.output, @intCast(filled), &chunk, cs.percent()) catch
             return error.WriteFailed;
         const end_after = cs.output.end;
         // If the protocol write triggered an auto-drain, end_after < end_before + 1028
@@ -117,7 +118,7 @@ fn ctx_to_client(ctx: *anyopaque) *Self {
 
 fn read_packet(self: *Self) !bool {
     const packet_id = try self.reader.peekByte();
-    const len = try proto.packet_length(packet_id);
+    const len = try proto.packet_length_to_server(packet_id);
 
     const buffer = try self.reader.peek(len);
     @memcpy(self.buffer[0..len], buffer);
@@ -127,62 +128,66 @@ fn read_packet(self: *Self) !bool {
 }
 
 pub fn send_message(self: *Self, id: i8, message: []u8) !void {
-    try proto.send_message(self.writer, self.id, id, message);
+    const pid: i8 = if (id == self.id) -1 else id;
+    try proto.send_message(self.writer, pid, message);
 }
 
 pub fn send_disconnect(self: *Self, reason: []const u8) !void {
     self.connected.* = false;
-    try proto.send_disconnect(self.writer, reason);
+    try proto.send_disconnect_to_client(self.writer, reason);
 }
 
 pub fn send_player_position(self: *Self, id: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) !void {
-    try proto.send_player_position(self.writer, id, x, y, z, yaw, pitch);
+    try proto.send_position_to_client(self.writer, id, x, y, z, yaw, pitch);
 }
 
 pub fn send_spawn(ctx: *Self, packet: *zb.SpawnPlayer) !void {
     const self: *Self = @ptrCast(@alignCast(ctx));
-    try proto.send_spawn(self.writer, packet);
+    try proto.send_spawn_to_client(self.writer, packet);
 }
 
 pub fn send_despawn(self: *Self, id: i8) !void {
-    try proto.send_despawn(self.writer, id);
+    try proto.send_despawn_to_client(self.writer, id);
 }
 
 pub fn send_block_change(self: *Self, x: u16, y: u16, z: u16, block: u8) !void {
-    try proto.send_block_change(self.writer, x, y, z, block);
+    try proto.send_block_change_to_client(self.writer, x, y, z, block);
 }
 
 fn send_world(self: *Self) !void {
-    try proto.send_level_initialize(self.writer);
+    try proto.send_level_initialize_to_client(self.writer);
     try self.writer.flush();
 
-    var chunk_buf: [1024]u8 = @splat(0);
+    if (!self.local) {
+        var chunk_buf: [1024]u8 = @splat(0);
 
-    assert(!compress_in_use);
-    compress_in_use = true;
-    defer compress_in_use = false;
+        assert(!compress_in_use);
+        compress_in_use = true;
+        defer compress_in_use = false;
 
-    var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.raw_blocks.len));
-    try reset_compressor(&sender.interface);
+        var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.raw_blocks.len));
+        try reset_compressor(&sender.interface);
 
-    try compressor.writer.writeAll(world.raw_blocks);
-    try compressor.finish();
+        try compressor.writer.writeAll(world.raw_blocks);
+        try compressor.finish();
 
-    // Send any remaining partial chunk as the final packet.
-    if (sender.interface.end > 0) {
-        var final_chunk: [1024]u8 = @splat(0);
-        @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
-        sender.bytes_sent = @intCast(world.raw_blocks.len);
-        try proto.send_level_chunk(self.writer, @intCast(sender.interface.end), &final_chunk, sender.percent());
-        try self.writer.flush();
+        // Send any remaining partial chunk as the final packet.
+        if (sender.interface.end > 0) {
+            var final_chunk: [1024]u8 = @splat(0);
+            @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
+            sender.bytes_sent = @intCast(world.raw_blocks.len);
+            try proto.send_level_chunk_to_client(self.writer, @intCast(sender.interface.end), &final_chunk, sender.percent());
+            try self.writer.flush();
+        }
     }
+    // Local client reads World.blocks directly — no chunks needed.
 
-    try proto.send_level_finalize(self.writer);
+    try proto.send_level_finalize_to_client(self.writer, c.WorldLength, c.WorldHeight, c.WorldDepth);
     try self.writer.flush();
 }
 
-fn handshake(self: *Self) !void {
-    try proto.send_player_id(self.writer, &Server.server_name, &Server.server_motd);
+pub fn handshake(self: *Self) !void {
+    try proto.send_player_id_to_client(self.writer, &Server.server_name, &Server.server_motd);
 
     try self.send_world();
 
@@ -204,7 +209,7 @@ fn handshake(self: *Self) !void {
     self.z = initial_spawn.z;
     self.yaw = 0;
     self.pitch = 0;
-    try proto.send_spawn(self.writer, &initial_spawn);
+    try proto.send_spawn_to_client(self.writer, &initial_spawn);
     try self.writer.flush();
 
     // Send existing players to the new joiner before broadcasting the new joiner to others.
@@ -225,7 +230,7 @@ fn handshake(self: *Self) !void {
                 .yaw = p.yaw,
                 .pitch = p.pitch,
             };
-            try proto.send_spawn(self.writer, &player_spawn);
+            try proto.send_spawn_to_client(self.writer, &player_spawn);
             try self.writer.flush();
         }
     }
@@ -234,7 +239,7 @@ fn handshake(self: *Self) !void {
 
     Server.broadcast_spawn_player(self.id, &initial_spawn);
 
-    try proto.send_player_position(self.writer, -1, self.x, self.y, self.z, 0, 0);
+    try proto.send_position_to_client(self.writer, -1, self.x, self.y, self.z, 0, 0);
     try self.writer.flush();
 
     var msg_buf: c.Message = @splat(' ');
@@ -416,6 +421,20 @@ pub fn init(self: *Self) void {
         .onMessage = handle_message,
         .onSetBlockToServer = handle_set_block,
     };
+}
+
+/// Non-blocking: read and process one packet if available. Returns true
+/// if a packet was processed. Used for singleplayer (same-process) mode
+/// where there is no dedicated read thread.
+pub fn try_process_packet(self: *Self) bool {
+    const received = self.read_packet() catch return false;
+    if (!received) return false;
+    self.protocol.handle_packet(self.buffer[1..], self.buffer[0]) catch return false;
+    return true;
+}
+
+pub fn drain_packets(self: *Self) void {
+    while (self.try_process_packet()) {}
 }
 
 /// Blocking read loop -- runs on an Io thread pool thread. Reads and

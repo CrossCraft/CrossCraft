@@ -12,6 +12,7 @@ const Vertex = @import("../Vertex.zig").Vertex;
 const Zip = @import("../util/Zip.zig");
 const Server = @import("game").Server;
 const World = @import("game").World;
+const GameState = @import("GameState.zig");
 
 const log = std.log.scoped(.game);
 
@@ -61,6 +62,8 @@ server_future: std.Io.Future(void),
 server_notified: bool,
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
+var game_state: GameState = undefined;
+var state_inst: State = undefined;
 
 fn init(ctx: *anyopaque) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
@@ -80,7 +83,7 @@ fn init(ctx: *anyopaque) anyerror!void {
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
     server_ready.store(false, .monotonic);
     // TODO: allocator pool budget may need tuning for server + client coexistence
-    self.server_future = io.async(serverTask, .{ Util.allocator(.user), Util.allocator(.scratch), seed, io });
+    self.server_future = io.async(serverTask, .{ Util.allocator(.user), Util.allocator(.user), seed, io });
 
     Util.report();
 }
@@ -100,8 +103,8 @@ fn tick(ctx: *anyopaque) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.server_notified and server_ready.load(.acquire)) {
         self.server_notified = true;
-        log.info("Server ready!", .{});
-        Util.report();
+        state_inst = game_state.state();
+        try ae.Core.state_machine.transition(&state_inst);
     }
 }
 

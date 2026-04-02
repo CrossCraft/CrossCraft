@@ -1,0 +1,118 @@
+const std = @import("std");
+const zb = @import("protocol");
+const proto = @import("common").protocol;
+
+const log = std.log.scoped(.client_conn);
+
+const Self = @This();
+
+reader: *std.Io.Reader,
+writer: *std.Io.Writer,
+protocol: zb.Protocol,
+
+spawn_x: u16,
+spawn_y: u16,
+spawn_z: u16,
+world_x: u16,
+world_y: u16,
+world_z: u16,
+handshake_complete: bool,
+
+buffer: [1028]u8,
+
+pub fn init(self: *Self, reader: *std.Io.Reader, writer: *std.Io.Writer) void {
+    self.reader = reader;
+    self.writer = writer;
+    self.spawn_x = 0;
+    self.spawn_y = 0;
+    self.spawn_z = 0;
+    self.world_x = 0;
+    self.world_y = 0;
+    self.world_z = 0;
+    self.handshake_complete = false;
+    self.protocol = zb.Protocol.init(.server, .Connected, self);
+    self.protocol.handles = .{
+        .onPlayerIDToClient = on_player_id,
+        .onLevelInitialize = on_level_initialize,
+        .onLevelDataChunk = on_level_data_chunk,
+        .onLevelFinalize = on_level_finalize,
+        .onSpawnPlayer = on_spawn,
+        .onSetPositionOrientation = on_position,
+        .onMessage = on_message,
+        .onSetBlockToClient = on_block_change,
+        .onDespawnPlayer = on_despawn,
+        .onDisconnectPlayer = on_disconnect,
+    };
+}
+
+pub fn join(self: *Self, username: []const u8) !void {
+    try proto.send_player_id_to_server(self.writer, username);
+    try self.writer.flush();
+}
+
+/// Non-blocking: read and process one server packet if available.
+pub fn try_process_packet(self: *Self) bool {
+    const packet_id = self.reader.peekByte() catch return false;
+    const len = proto.packet_length_to_client(packet_id) catch return false;
+    const buf = self.reader.peek(len) catch return false;
+    @memcpy(self.buffer[0..len], buf);
+    self.reader.toss(len);
+    self.protocol.handle_packet(self.buffer[1..len], self.buffer[0]) catch return false;
+    return true;
+}
+
+pub fn drain_packets(self: *Self) void {
+    while (self.try_process_packet()) {}
+}
+
+fn on_player_id(_: *anyopaque, event: zb.PlayerIDToClient) !void {
+    log.info("PlayerID: version={d}", .{event.protocol_version});
+    log.info("  name={s}", .{&event.server_name});
+    log.info("  motd={s}", .{&event.server_motd});
+}
+
+fn on_level_initialize(_: *anyopaque, _: zb.LevelInitialize) !void {
+    log.info("LevelInitialize", .{});
+}
+
+fn on_level_data_chunk(_: *anyopaque, event: zb.LevelDataChunk) !void {
+    log.info("LevelDataChunk: {d} bytes, {d}%", .{ event.length, event.percent });
+}
+
+fn on_level_finalize(ctx: *anyopaque, event: zb.LevelFinalize) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.world_x = event.x;
+    self.world_y = event.y;
+    self.world_z = event.z;
+    log.info("LevelFinalize: {d}x{d}x{d}", .{ event.x, event.y, event.z });
+}
+
+fn on_spawn(ctx: *anyopaque, event: zb.SpawnPlayer) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    log.info("SpawnPlayer: pid={d} pos=({d},{d},{d})", .{ event.pid, event.x, event.y, event.z });
+    if (event.pid != -1) return;
+    self.spawn_x = event.x;
+    self.spawn_y = event.y;
+    self.spawn_z = event.z;
+    self.handshake_complete = true;
+}
+
+fn on_position(_: *anyopaque, event: zb.SetPositionOrientation) !void {
+    log.info("Position: pid={d} pos=({d},{d},{d})", .{ event.pid, event.x, event.y, event.z });
+}
+
+fn on_message(_: *anyopaque, event: zb.Message) !void {
+    log.info("Message: pid={d} {s}", .{ event.pid, &event.message });
+}
+
+fn on_block_change(_: *anyopaque, event: zb.SetBlockToClient) !void {
+    log.info("BlockChange: ({d},{d},{d}) block={d}", .{ event.x, event.y, event.z, event.block });
+}
+
+fn on_despawn(_: *anyopaque, event: zb.DespawnPlayer) !void {
+    log.info("Despawn: pid={d}", .{ event.pid });
+}
+
+fn on_disconnect(_: *anyopaque, event: zb.DisconnectPlayer) !void {
+    log.info("Disconnect: {s}", .{&event.reason});
+}

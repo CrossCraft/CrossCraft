@@ -28,6 +28,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/common/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "protocol", .module = protocol },
+        },
     });
 
     const game = b.addModule("game", .{
@@ -77,6 +80,7 @@ pub fn build(b: *std.Build) void {
     });
     client_exe.root_module.addImport("game", game);
     client_exe.root_module.addImport("common", common);
+    client_exe.root_module.addImport("protocol", protocol);
 
     Aether.addShader(ae_dep.builder, b, client_exe, config, "basic", .{
         .slang = b.path("src/client/shaders/basic.slang"),
