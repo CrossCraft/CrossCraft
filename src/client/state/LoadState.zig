@@ -11,6 +11,7 @@ const Scaling = @import("../ui/Scaling.zig");
 const Vertex = @import("../Vertex.zig").Vertex;
 const Zip = @import("../util/Zip.zig");
 const Server = @import("game").Server;
+const World = @import("game").World;
 
 const log = std.log.scoped(.game);
 
@@ -141,7 +142,11 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     const bar_width: i16 = 100;
     const bar_height: i16 = 2;
     const bar_y: i16 = 16;
-    const progress = @min(self.time / 3.0, 1.0);
+    const progress: f32 = switch (World.load_status) {
+        .loading => @min(self.time / 3.0, 1.0),
+        .generating => |phase| @as(f32, @floatFromInt(@intFromEnum(phase))) / 10.0,
+        .complete => 1.0,
+    };
     const default_tex = &Rendering.Texture.Default;
 
     self.batcher.add_sprite(&.{
@@ -175,7 +180,11 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
 
     self.font_batcher.clear();
 
-    const loading: []const u8 = "Generating level";
+    const load_status = World.load_status;
+    const loading: []const u8 = switch (load_status) {
+        .loading => "Loading level",
+        .generating, .complete => "Generating level",
+    };
     self.font_batcher.add_text(&.{
         .str = loading,
         .pos_x = 0,
@@ -188,9 +197,22 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
         .origin = .middle_center,
     });
 
-    // TODO: Status change based on world
-    // TODO: Change both text in multiplayer load
-    const status: []const u8 = "Building terrain";
+    const status: []const u8 = switch (load_status) {
+        .loading => "Loading...",
+        .generating => |phase| switch (phase) {
+            .raising => "Raising...",
+            .erosion => "Eroding...",
+            .strata => "Layering...",
+            .caves => "Carving...",
+            .ores => "Placing ores...",
+            .merge => "Merging...",
+            .water => "Flooding water...",
+            .lava => "Flooding lava...",
+            .surface => "Surfacing...",
+            .plants => "Planting...",
+        },
+        .complete => "Done!",
+    };
     self.font_batcher.add_text(&.{
         .str = status,
         .pos_x = 0,

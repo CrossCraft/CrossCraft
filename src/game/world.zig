@@ -60,6 +60,14 @@ var rng: Xorshift64 = .{ .state = 1 };
 const BLOCK_COUNT: u32 = c.WorldLength * c.WorldHeight * c.WorldDepth;
 var enqueued_bitmap: []u8 = undefined;
 
+pub const LoadStatus = union(enum) {
+    loading,
+    generating: @import("worldgen.zig").GenPhase,
+    complete,
+};
+
+pub var load_status: LoadStatus = .loading;
+
 pub var backing_allocator: std.mem.Allocator = undefined;
 pub var raw_blocks: []u8 = undefined;
 pub var blocks: []u8 = undefined;
@@ -154,16 +162,20 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
 
     rng = Xorshift64.init(new_seed);
 
+    load_status = .loading;
     if (!load()) {
         seed = new_seed;
         const worldgen = @import("worldgen.zig");
+        load_status = .{ .generating = .raising };
         const start = std.Io.Clock.Timestamp.now(io, .boot);
-        try worldgen.generate(scratch, blocks, seed, io);
+        try worldgen.generate(scratch, blocks, seed, io, &load_status.generating);
         const end = std.Io.Clock.Timestamp.now(io, .boot);
         const elapsed_ns: i64 = @truncate(end.raw.nanoseconds - start.raw.nanoseconds);
         const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
         log.info("World generation took {d}ms", .{elapsed_ms});
+        save() catch {};
     }
+    load_status = .complete;
     log.info("World seed: {d}", .{seed});
 }
 
