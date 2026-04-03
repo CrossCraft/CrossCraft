@@ -5,45 +5,17 @@ const Rendering = ae.Rendering;
 
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
+const Color = @import("../graphics/Color.zig").Color;
 const Camera = @import("../player/Camera.zig");
-const Zip = @import("../util/Zip.zig");
 const config = @import("../config.zig").current;
 
 const chunk = @import("chunk/root.zig");
 const ChunkMesh = chunk.ChunkMesh;
 const MeshPool = chunk.MeshPool;
+const Sky = @import("sky/sky.zig");
 
 const SECTIONS_Y: u32 = 4;
 const MAX_SECTIONS: u32 = @import("../config.zig").max_sections();
-
-pub const Textures = struct {
-    terrain: Rendering.Texture,
-    atlas: TextureAtlas,
-
-    fn load_from_pack(pack: *Zip, file: []const u8) !Rendering.Texture {
-        var buf: [256]u8 = undefined;
-        const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{file});
-        var stream = try pack.open(path);
-        defer pack.closeStream(&stream);
-        return try Rendering.Texture.load_from_reader(stream.reader);
-    }
-
-    pub fn init(pack: *Zip) !Textures {
-        var tex: Textures = undefined;
-        tex.terrain = try load_from_pack(pack, "minecraft/textures/terrain");
-        tex.terrain.force_resident();
-        tex.atlas = TextureAtlas.init(256, 256, 16, 16);
-        return tex;
-    }
-
-    pub fn deinit(self: *Textures) void {
-        self.terrain.deinit();
-    }
-
-    pub fn bind(self: *const Textures) void {
-        self.terrain.bind();
-    }
-};
 
 const Self = @This();
 
@@ -53,10 +25,19 @@ build_order: [MAX_SECTIONS]u32,
 section_count: u32, // actual number of sections (within radius + world bounds)
 build_cursor: u32,
 build_estimator: Util.Estimator,
-textures: Textures,
+terrain: *const Rendering.Texture,
+clouds: *const Rendering.Texture,
+atlas: TextureAtlas,
 pipeline: Rendering.Pipeline.Handle,
+sky: Sky,
 
-pub fn init(pipeline: Rendering.Pipeline.Handle, textures: Textures, camera: *const Camera) !Self {
+pub fn init(
+    pipeline: Rendering.Pipeline.Handle,
+    terrain: *const Rendering.Texture,
+    clouds: *const Rendering.Texture,
+    atlas: TextureAtlas,
+    camera: *const Camera,
+) !Self {
     var self: Self = .{
         .pool = undefined,
         .sections = undefined,
@@ -64,8 +45,11 @@ pub fn init(pipeline: Rendering.Pipeline.Handle, textures: Textures, camera: *co
         .section_count = 0,
         .build_cursor = 0,
         .build_estimator = Util.Estimator.init(),
-        .textures = textures,
+        .terrain = terrain,
+        .clouds = clouds,
+        .atlas = atlas,
         .pipeline = pipeline,
+        .sky = try Sky.init(pipeline),
     };
 
     // Collect chunks within radius of camera, clamped to world [0, 15]
@@ -113,7 +97,7 @@ pub fn init(pipeline: Rendering.Pipeline.Handle, textures: Textures, camera: *co
     // Warm up the estimator before entering the world
     while (self.build_cursor < self.section_count and self.build_estimator.is_warming_up()) {
         self.build_estimator.begin();
-        self.sections[self.build_order[self.build_cursor]].rebuild(&self.pool, &self.textures.atlas);
+        self.sections[self.build_order[self.build_cursor]].rebuild(&self.pool, &self.atlas);
         self.build_estimator.end();
         self.build_cursor += 1;
     }
@@ -122,13 +106,14 @@ pub fn init(pipeline: Rendering.Pipeline.Handle, textures: Textures, camera: *co
 }
 
 pub fn deinit(self: *Self) void {
+    self.sky.deinit();
     for (self.sections[0..self.section_count]) |*sec| sec.deinit();
     self.pool.deinit();
-    self.textures.deinit();
 }
 
 /// Build sections incrementally. Call each frame with the budget context.
-pub fn update(self: *Self, budget: *const Util.BudgetContext) void {
+pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext) void {
+    self.sky.update(dt);
     if (self.build_cursor >= self.section_count) return;
 
     const available = budget.safe_remaining();
@@ -140,16 +125,24 @@ pub fn update(self: *Self, budget: *const Util.BudgetContext) void {
 
     for (self.build_cursor..end) |i| {
         self.build_estimator.begin();
-        self.sections[self.build_order[i]].rebuild(&self.pool, &self.textures.atlas);
+        self.sections[self.build_order[i]].rebuild(&self.pool, &self.atlas);
         self.build_estimator.end();
     }
     self.build_cursor = end;
 }
 
-/// Draw all visible sections. Handles frustum culling, sorting, and render passes.
+/// Draw sky, terrain, and clouds. Handles frustum culling, sorting, and render passes.
 pub fn draw(self: *Self, camera: *const Camera) void {
     Rendering.Pipeline.bind(self.pipeline);
-    self.textures.bind();
+
+    // Sky plane (drawn first, before terrain writes depth)
+    Rendering.Texture.Default.bind();
+    self.sky.draw_plane(camera);
+
+    // Terrain fog
+    set_terrain_fog();
+    self.terrain.bind();
+
     // Frustum cull + 3D distance sort
     var visible: [MAX_SECTIONS]u32 = undefined;
     var dists: [MAX_SECTIONS]f32 = undefined;
@@ -191,6 +184,23 @@ pub fn draw(self: *Self, camera: *const Camera) void {
         ri -= 1;
         self.sections[visible[ri]].draw_transparent();
     }
+
+    // Clouds (after terrain, depth test on)
+    self.clouds.bind();
+    self.sky.draw_clouds(camera);
+}
+
+fn set_terrain_fog() void {
+    const c = Color.game_daytime;
+    const fog_end: f32 = @floatFromInt(config.chunk_radius * 16 - 16);
+    Rendering.gfx.api.set_fog(
+        true,
+        fog_end * 0.4,
+        fog_end,
+        @as(f32, @floatFromInt(c.r)) / 255.0,
+        @as(f32, @floatFromInt(c.g)) / 255.0,
+        @as(f32, @floatFromInt(c.b)) / 255.0,
+    );
 }
 
 fn sort_by_distance(order: []u32, sections: []const ChunkMesh, cam: *const Camera) void {

@@ -36,6 +36,7 @@ pub const Color = packed struct(u32) {
     pub const progress_bar = rgba(0x80, 0xFF, 0x80, 0xFF);
     pub const progress_bg = rgba(0x80, 0x80, 0x80, 0xFF);
     pub const game_daytime = rgba(191, 216, 255, 255);
+    pub const game_daytime_zenith = rgba(119, 167, 255, 255);
 };
 
 comptime {

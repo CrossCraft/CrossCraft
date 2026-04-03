@@ -9,12 +9,41 @@ const Server = @import("game").Server;
 const FakeConn = @import("../connection/FakeConn.zig").FakeConn;
 const ClientConn = @import("../connection/ClientConn.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const WorldRenderer = @import("../world/world.zig");
 const Camera = @import("../player/Camera.zig");
 const Zip = @import("../util/Zip.zig");
 
 const log = std.log.scoped(.game);
-const config = @import("../config.zig").current;
+
+const GameTextures = struct {
+    terrain: Rendering.Texture,
+    clouds: Rendering.Texture,
+    atlas: TextureAtlas,
+
+    var inst: GameTextures = undefined;
+
+    fn load_from_pack(pack: *Zip, file: []const u8) !Rendering.Texture {
+        var buf: [256]u8 = undefined;
+        const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{file});
+        var stream = try pack.open(path);
+        defer pack.closeStream(&stream);
+        return try Rendering.Texture.load_from_reader(stream.reader);
+    }
+
+    pub fn init(pack: *Zip) !void {
+        inst.terrain = try load_from_pack(pack, "minecraft/textures/terrain");
+        inst.terrain.force_resident();
+        inst.clouds = try load_from_pack(pack, "minecraft/textures/clouds");
+        inst.clouds.force_resident();
+        inst.atlas = TextureAtlas.init(256, 256, 16, 16);
+    }
+
+    pub fn deinit() void {
+        inst.clouds.deinit();
+        inst.terrain.deinit();
+    }
+};
 
 fake_conn: FakeConn,
 conn: ClientConn,
@@ -58,13 +87,21 @@ fn init(ctx: *anyopaque) anyerror!void {
 
     // Camera
     self.camera = Camera.init(128.0, 44.0, 128.0);
-    self.camera.pitch = 0.4;
+    self.camera.pitch = 0;
 
-    // World renderer (loads terrain texture, creates sections + pool)
+    // Textures
     var pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
     defer pack.deinit();
-    const textures = try WorldRenderer.Textures.init(pack);
-    self.world = try WorldRenderer.init(self.pipeline, textures, &self.camera);
+    try GameTextures.init(pack);
+
+    // World renderer
+    self.world = try WorldRenderer.init(
+        self.pipeline,
+        &GameTextures.inst.terrain,
+        &GameTextures.inst.clouds,
+        GameTextures.inst.atlas,
+        &self.camera,
+    );
 
     self.time = 0;
     Util.report();
@@ -73,6 +110,7 @@ fn init(ctx: *anyopaque) anyerror!void {
 fn deinit(ctx: *anyopaque) void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.world.deinit();
+    GameTextures.deinit();
     Rendering.Pipeline.deinit(self.pipeline);
     self.fake_conn.connected = false;
 }
@@ -86,26 +124,13 @@ fn update(ctx: *anyopaque, dt: f32, budget: *const Util.BudgetContext) anyerror!
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
     self.camera.yaw = self.time * 0.3;
-    self.world.update(budget);
+    self.world.update(dt, budget);
 }
 
 fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.conn.drain_packets();
     self.camera.apply();
-
-    const sky = @import("../graphics/Color.zig").Color.game_daytime;
-    const fog_end: f32 = @floatFromInt(config.chunk_radius * 16 - 16);
-    const fog_start: f32 = fog_end * 0.4;
-    Rendering.gfx.api.set_fog(
-        true,
-        fog_start,
-        fog_end,
-        @as(f32, @floatFromInt(sky.r)) / 255.0,
-        @as(f32, @floatFromInt(sky.g)) / 255.0,
-        @as(f32, @floatFromInt(sky.b)) / 255.0,
-    );
-
     self.world.draw(&self.camera);
 }
 
