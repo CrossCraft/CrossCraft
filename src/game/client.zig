@@ -180,7 +180,7 @@ fn send_world(self: *Self) !void {
             try self.writer.flush();
         }
     }
-    // Local client reads World.blocks directly — no chunks needed.
+    // Local client reads World.blocks directly - no chunks needed.
 
     try proto.send_level_finalize_to_client(self.writer, c.WorldLength, c.WorldHeight, c.WorldDepth);
     try self.writer.flush();

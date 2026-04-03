@@ -8,9 +8,9 @@ const Self = @This();
 x: f32,
 y: f32,
 z: f32,
-yaw: f32,   // radians, 0 = looking -Z
+yaw: f32, // radians, 0 = looking -Z
 pitch: f32, // radians, positive = looking up
-fov: f32,   // vertical FOV in radians
+fov: f32, // vertical FOV in radians
 frustum: Math.Frustum,
 
 pub fn init(x: f32, y: f32, z: f32) Self {
@@ -31,7 +31,7 @@ pub fn apply(self: *Self) void {
     const screen_h = Rendering.gfx.surface.get_height();
     const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
 
-    const proj = Math.Mat4.perspectiveFovRh(self.fov, aspect, 0.1, 1000.0);
+    const proj = Math.Mat4.perspectiveFovRh(self.fov, aspect, 0.2, 256.0);
     Rendering.gfx.api.set_proj_matrix(&proj);
 
     const view = Math.Mat4.translation(-self.x, -self.y, -self.z)

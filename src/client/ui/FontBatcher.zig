@@ -305,7 +305,7 @@ fn emit_string_screen(
     const max_ly: i16 = @intCast(screen_h / ui_scale);
     const ts: i32 = text_scale;
 
-    // Y bounds are constant across all characters — hoist out of loop.
+    // Y bounds are constant across all characters - hoist out of loop.
     const y0: i16 = @intCast(@min(@max(start_y, 0), @as(i32, max_ly)));
     const y1: i16 = @intCast(@min(start_y + @as(i32, GLYPH_SIZE) * ts, @as(i32, max_ly)));
     if (y0 >= y1) return;

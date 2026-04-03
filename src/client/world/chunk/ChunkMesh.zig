@@ -7,13 +7,13 @@ const Rendering = ae.Rendering;
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const mesher = @import("mesher.zig");
-pub const MeshPool = @import("MeshPool.zig").MeshPool;
 
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
 /// One 16x16x16 section with 2 meshes:
 ///   opaque -- solid blocks + leaf shell faces
 ///   trans  -- outer leaves + water/glass/cross
+/// Each mesh owns its vertex storage via the render allocator.
 @"opaque": BatchMesh,
 trans: BatchMesh,
 cx: u32,
@@ -23,56 +23,38 @@ cz: u32,
 const Self = @This();
 
 pub fn init(pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Self {
-    var self = Self{
-        .@"opaque" = undefined, .trans = undefined,
+    return .{
+        .@"opaque" = try BatchMesh.new(pipeline),
+        .trans = try BatchMesh.new(pipeline),
         .cx = cx, .sy = sy, .cz = cz,
     };
-    self.@"opaque" = try BatchMesh.new(pipeline);
-    self.trans = try BatchMesh.new(pipeline);
-    const a = Util.allocator(.render);
-    self.@"opaque".vertices.deinit(a);
-    self.trans.vertices.deinit(a);
-    self.clear_meshes();
-    return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.clear_meshes();
     self.@"opaque".deinit();
     self.trans.deinit();
 }
 
-fn clear_meshes(self: *Self) void {
-    inline for (&.{ &self.@"opaque", &self.trans }) |mesh| {
-        mesh.vertices.items = &.{};
-        mesh.vertices.capacity = 0;
-    }
+/// Release vertex data but keep GPU handles alive for reuse.
+pub fn clear(self: *Self) void {
+    const a = Util.allocator(.render);
+    self.@"opaque".vertices.clearAndFree(a);
+    self.trans.vertices.clearAndFree(a);
 }
 
-fn bind_mesh(mesh: *BatchMesh, pool: *MeshPool, count: u32) bool {
-    if (count == 0) {
-        mesh.vertices.items = &.{};
-        mesh.vertices.capacity = 0;
-        return true;
-    }
-    const ptr = pool.alloc(count) orelse return false;
-    mesh.vertices.items.ptr = ptr;
-    mesh.vertices.items.len = 0;
-    mesh.vertices.capacity = count;
-    return true;
-}
-
-pub fn rebuild(self: *Self, pool: *MeshPool, atlas: *const TextureAtlas) void {
+/// Returns true on success, false if allocation failed (caller should retry).
+pub fn rebuild(self: *Self, atlas: *const TextureAtlas) bool {
     var buf: mesher.SectionBuf = undefined;
     mesher.pack_section(self.cx, self.sy, self.cz, &buf);
     const counts = mesher.count_section(&buf);
 
-    if (!bind_mesh(&self.@"opaque", pool, counts.opaque_verts) or
-        !bind_mesh(&self.trans, pool, counts.transparent_verts))
-    {
-        self.clear_meshes();
-        return;
-    }
+    const a = Util.allocator(.render);
+
+    self.@"opaque".vertices.clearRetainingCapacity();
+    self.trans.vertices.clearRetainingCapacity();
+
+    self.@"opaque".vertices.ensureTotalCapacity(a, counts.opaque_verts) catch return false;
+    self.trans.vertices.ensureTotalCapacity(a, counts.transparent_verts) catch return false;
 
     mesher.emit_section(&buf, self.cx, self.sy, self.cz, .{
         .@"opaque" = &self.@"opaque".vertices,
@@ -82,6 +64,7 @@ pub fn rebuild(self: *Self, pool: *MeshPool, atlas: *const TextureAtlas) void {
     inline for (&.{ &self.@"opaque", &self.trans }) |mesh| {
         if (mesh.vertices.items.len > 0) mesh.update();
     }
+    return true;
 }
 
 pub fn center_x(self: *const Self) f32 {

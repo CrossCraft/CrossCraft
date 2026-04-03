@@ -38,7 +38,7 @@ pub var pending_count: u32 = 0;
 // 1024 buckets (one per tick modulo WHEEL_SIZE). Each bucket is a singly-
 // linked list threaded through a pool of fixed-size nodes. Entries land in
 // bucket[ready_tick % WHEEL_SIZE] so only the current tick's bucket is
-// drained each tick — no dequeue-decrement-reenqueue of deferred entries.
+// drained each tick - no dequeue-decrement-reenqueue of deferred entries.
 const WHEEL_SIZE: u32 = 1024;
 const WHEEL_MASK: u32 = WHEEL_SIZE - 1;
 const POOL_CAPACITY: u32 = 1 << 18; // 262144 nodes

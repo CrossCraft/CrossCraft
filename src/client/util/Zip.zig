@@ -159,7 +159,7 @@ pub fn open(self: *Zip, path: []const u8) !Stream {
 
         if (!std.mem.eql(u8, slot.filename_buf[0..zip_entry.filename_len], path)) continue;
 
-        // Found the matching entry — set up streaming
+        // Found the matching entry - set up streaming
         slot.filename_len = zip_entry.filename_len;
         try setupStream(self, slot, &zip_entry);
         slot.in_use = true;

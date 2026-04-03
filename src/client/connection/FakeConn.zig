@@ -1,7 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-// SPSC ring buffer size — large enough for all non-world handshake packets
+// SPSC ring buffer size - large enough for all non-world handshake packets
 // plus ongoing gameplay traffic (block changes, positions, pings) per tick.
 const RING_SIZE: u32 = 4096;
 const RING_MASK: u32 = RING_SIZE - 1;
@@ -23,7 +23,7 @@ pub const FakeConn = struct {
 
     connected: bool = true,
 
-    // Internal buffers — writers accumulate here before draining to ring.
+    // Internal buffers - writers accumulate here before draining to ring.
     // Largest S→C packet is PlayerID at 131 bytes; 1024 is comfortable.
     server_write_buf: [1024]u8 = undefined,
     // Largest C→S packet is PlayerIDToServer at 131 bytes.
@@ -33,11 +33,11 @@ pub const FakeConn = struct {
     server_read_buf: [256]u8 = undefined,
     client_read_buf: [256]u8 = undefined,
 
-    // Server-facing interfaces — passed to local_join.
+    // Server-facing interfaces - passed to local_join.
     server_writer: std.Io.Writer = undefined, // server writes S→C here
     server_reader: std.Io.Reader = undefined, // server reads C→S here (unused for local)
 
-    // Client-facing interfaces — GameState uses these.
+    // Client-facing interfaces - GameState uses these.
     client_writer: std.Io.Writer = undefined, // client writes C→S here
     client_reader: std.Io.Reader = undefined, // client reads S→C here
 
@@ -126,7 +126,7 @@ pub const FakeConn = struct {
         _ = w;
         const self: *FakeConn = @alignCast(@fieldParentPtr("client_reader", r));
         const n = ring_read(&self.s2c, &self.s2c_head, &self.s2c_tail, limit.slice(r.buffer[r.end..]));
-        if (n == 0) return error.ReadFailed; // ring empty — caller treats as no data
+        if (n == 0) return error.ReadFailed; // ring empty - caller treats as no data
         r.end += n;
         return 0; // data stored in r.buffer; caller serves it from there
     }
