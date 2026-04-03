@@ -1,5 +1,5 @@
 const std = @import("std");
-const lut = @import("lut.zig");
+const BlockRegistry = @import("../block/BlockRegistry.zig");
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
 
@@ -36,7 +36,7 @@ fn face_color(face: Face) u32 {
 
 const UVRect = struct { tu0: i16, tv0: i16, tu1: i16, tv1: i16 };
 
-fn tile_uvs(tile: lut.Tile, atlas: *const TextureAtlas) UVRect {
+fn tile_uvs(tile: BlockRegistry.Tile, atlas: *const TextureAtlas) UVRect {
     const base_u = atlas.tileU(tile.col);
     const base_v = atlas.tileV(tile.row);
     return .{
@@ -117,7 +117,7 @@ pub fn emit_face(
     x: u32,
     y: u32,
     z: u32,
-    tile: lut.Tile,
+    tile: BlockRegistry.Tile,
     atlas: *const TextureAtlas,
 ) void {
     const uv = tile_uvs(tile, atlas);
@@ -143,7 +143,7 @@ pub fn emit_fluid_top(
     x: u32,
     y: u32,
     z: u32,
-    tile: lut.Tile,
+    tile: BlockRegistry.Tile,
     atlas: *const TextureAtlas,
 ) void {
     const uv = tile_uvs(tile, atlas);
@@ -169,7 +169,7 @@ pub fn emit_cross(
     x: u32,
     y: u32,
     z: u32,
-    tile: lut.Tile,
+    tile: BlockRegistry.Tile,
     atlas: *const TextureAtlas,
 ) void {
     const color: u32 = 0xFFFFFFFF;

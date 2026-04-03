@@ -3,7 +3,7 @@ const c = @import("common").consts;
 const World = @import("game").World;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
-const lut = @import("lut.zig");
+const BlockRegistry = @import("../block/BlockRegistry.zig");
 const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 
@@ -55,13 +55,13 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
             continue;
         }
         const block = World.get_block(@intCast(wx_raw), wy, wz);
-        if (block < 50) {
-            if (lut.opaque_lut[block]) opq |= @as(u32, 1) << @intCast(i);
-            if (lut.visible_lut[block]) vis |= @as(u32, 1) << @intCast(i);
-            if (lut.fluid_lut[block]) flu |= @as(u32, 1) << @intCast(i);
-            if (lut.cross_lut[block]) cross |= @as(u32, 1) << @intCast(i);
-            if (lut.leaf_lut[block]) leaf |= @as(u32, 1) << @intCast(i);
-        }
+        const reg = &BlockRegistry.global;
+        const bit: u32 = @as(u32, 1) << @intCast(i);
+        if (reg.@"opaque".isSet(block)) opq |= bit;
+        if (reg.visible.isSet(block)) vis |= bit;
+        if (reg.fluid.isSet(block)) flu |= bit;
+        if (reg.cross.isSet(block)) cross |= bit;
+        if (reg.leaf.isSet(block)) leaf |= bit;
     }
     return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf };
 }
@@ -220,12 +220,13 @@ fn emit_mask(
         const wx: u16 = @intCast(cx * 16 + lx);
         const wz: u16 = @intCast(cz * 16 + lz);
         const block = World.get_block(wx, @intCast(y), wz);
-        const tile = lut.get_face_tile(block, face);
+        const reg = &BlockRegistry.global;
+        const tile = reg.get_face_tile(block, face);
 
-        const mesh = if (block < 50 and lut.opaque_lut[block]) m.@"opaque" else m.transparent;
+        const mesh = if (reg.@"opaque".isSet(block)) m.@"opaque" else m.transparent;
         assert_has_room(mesh, 6);
 
-        if (face == .y_pos and block < 50 and lut.fluid_lut[block]) {
+        if (face == .y_pos and reg.fluid.isSet(block)) {
             face_mod.emit_fluid_top(mesh, lx, local_y, lz, tile, atlas);
         } else {
             face_mod.emit_face(mesh, face, lx, local_y, lz, tile, atlas);
@@ -255,7 +256,7 @@ fn emit_opaque_leaf_mask(
         const wx: u16 = @intCast(cx * 16 + lx);
         const wz: u16 = @intCast(cz * 16 + lz);
         const block = World.get_block(wx, @intCast(y), wz);
-        const tile = lut.get_face_tile(block, face);
+        const tile = BlockRegistry.global.get_face_tile(block, face);
         face_mod.emit_face(opaque_mesh, face, lx, local_y, lz, tile, atlas);
     }
 }
@@ -280,7 +281,7 @@ fn emit_cross_mask(
         const wx: u16 = @intCast(cx * 16 + lx);
         const wz: u16 = @intCast(cz * 16 + lz);
         const block = World.get_block(wx, @intCast(y), wz);
-        const tile = lut.get_face_tile(block, .y_pos);
+        const tile = BlockRegistry.global.get_face_tile(block, .y_pos);
         face_mod.emit_cross(transparent_mesh, lx, local_y, lz, tile, atlas);
     }
 }

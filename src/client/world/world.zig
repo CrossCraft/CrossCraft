@@ -8,8 +8,8 @@ const Color = @import("../graphics/Color.zig").Color;
 const Camera = @import("../player/Camera.zig");
 const config = @import("../config.zig").current;
 
-const chunk = @import("chunk/root.zig");
-const ChunkMesh = chunk.ChunkMesh;
+const ChunkMesh = @import("chunk/ChunkMesh.zig");
+const BlockRegistry = @import("block/BlockRegistry.zig");
 const Sky = @import("sky/sky.zig");
 
 const SECTIONS_Y: u32 = 4;
@@ -50,6 +50,8 @@ pub fn init(
     atlas: TextureAtlas,
     camera: *const Camera,
 ) !Self {
+    BlockRegistry.init();
+
     const row_false = [_]bool{false} ** WORLD_CZ;
     const section_false = [_]bool{false} ** SECTIONS_Y;
     const col_section_false = [_][SECTIONS_Y]bool{section_false} ** WORLD_CZ;
