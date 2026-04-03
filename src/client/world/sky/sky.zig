@@ -65,8 +65,7 @@ pub fn draw_plane(self: *Self, camera: *const Camera) void {
 }
 
 /// Draw cloud layer at fixed Y=80. Call after terrain.
-pub fn draw_clouds(self: *Self, camera: *const Camera) void {
-    _ = camera;
+pub fn draw_clouds(self: *Self) void {
     Rendering.gfx.api.set_alpha_blend(true);
     const m = Math.Mat4.scaling(PLANE_SIZE, 1.0, PLANE_SIZE)
         .mul(Math.Mat4.translation(

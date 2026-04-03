@@ -77,9 +77,8 @@ pub fn init(
     while (self.build_cursor < self.build_end and self.build_estimator.is_warming_up()) {
         const ref = self.build_queue[self.build_cursor];
         self.build_estimator.begin();
-        const ok = self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas);
+        self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch break;
         self.build_estimator.end();
-        if (!ok) break;
         self.built[ref.cx][ref.cz][ref.sy] = true;
         self.build_cursor += 1;
     }
@@ -124,14 +123,17 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
     for (self.build_cursor..end) |i| {
         const ref = self.build_queue[i];
         self.build_estimator.begin();
-        var ok = self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas);
-        self.build_estimator.end();
-        if (!ok) {
+        if (self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas)) {
+            self.build_estimator.end();
+        } else |_| {
+            self.build_estimator.end();
             // OOM — evict farthest built section and retry once
             if (self.try_evict_farthest(camera)) {
-                ok = self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas);
-            }
-            if (!ok) {
+                self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch {
+                    self.build_cursor = @intCast(i);
+                    return;
+                };
+            } else {
                 self.build_cursor = @intCast(i);
                 return;
             }
@@ -197,7 +199,7 @@ pub fn draw(self: *Self, camera: *const Camera) void {
     }
 
     self.clouds.bind();
-    self.sky.draw_clouds(camera);
+    self.sky.draw_clouds();
 }
 
 fn recollect(self: *Self, camera: *const Camera) void {
@@ -258,7 +260,10 @@ fn init_column(self: *Self, cx: u8, cz: u8) bool {
     var count: u32 = 0;
     for (0..SECTIONS_Y) |sy| {
         self.grid[cx][cz][sy] = ChunkMesh.init(
-            self.pipeline, @intCast(cx), @intCast(sy), @intCast(cz),
+            self.pipeline,
+            @intCast(cx),
+            @intCast(sy),
+            @intCast(cz),
         ) catch {
             // Rollback: deinit already-initialized sections
             for (0..count) |prev| self.grid[cx][cz][prev].deinit();

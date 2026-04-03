@@ -16,6 +16,7 @@ const GameState = @import("GameState.zig");
 
 const log = std.log.scoped(.game);
 
+// Module-level: only one LoadState instance may exist at a time.
 var server_ready: std.atomic.Value(bool) = .init(false);
 
 fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, io: std.Io) void {
@@ -31,6 +32,7 @@ const LoadTextures = struct {
     dirt: Rendering.Texture,
     font: Rendering.Texture,
 
+    /// Valid between LoadTextures.init() and LoadTextures.deinit().
     var inst: LoadTextures = undefined;
 
     fn load_from_pack(pack: *Zip, file: []const u8) !Rendering.Texture {
@@ -229,6 +231,8 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     });
 
     try self.font_batcher.flush();
+    // Throttle to ~20 FPS while server generates on background thread;
+    // avoids burning CPU on draw calls that show a static progress bar.
     try std.Io.sleep(Util.io(), std.Io.Duration.fromMilliseconds(50), .real);
 }
 

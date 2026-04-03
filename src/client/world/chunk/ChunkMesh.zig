@@ -26,7 +26,9 @@ pub fn init(pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Sel
     return .{
         .@"opaque" = try BatchMesh.new(pipeline),
         .trans = try BatchMesh.new(pipeline),
-        .cx = cx, .sy = sy, .cz = cz,
+        .cx = cx,
+        .sy = sy,
+        .cz = cz,
     };
 }
 
@@ -42,8 +44,7 @@ pub fn clear(self: *Self) void {
     self.trans.vertices.clearAndFree(a);
 }
 
-/// Returns true on success, false if allocation failed (caller should retry).
-pub fn rebuild(self: *Self, atlas: *const TextureAtlas) bool {
+pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void {
     var buf: mesher.SectionBuf = undefined;
     mesher.pack_section(self.cx, self.sy, self.cz, &buf);
     const counts = mesher.count_section(&buf);
@@ -53,8 +54,8 @@ pub fn rebuild(self: *Self, atlas: *const TextureAtlas) bool {
     self.@"opaque".vertices.clearRetainingCapacity();
     self.trans.vertices.clearRetainingCapacity();
 
-    self.@"opaque".vertices.ensureTotalCapacity(a, counts.opaque_verts) catch return false;
-    self.trans.vertices.ensureTotalCapacity(a, counts.transparent_verts) catch return false;
+    try self.@"opaque".vertices.ensureTotalCapacity(a, counts.opaque_verts);
+    try self.trans.vertices.ensureTotalCapacity(a, counts.transparent_verts);
 
     mesher.emit_section(&buf, self.cx, self.sy, self.cz, .{
         .@"opaque" = &self.@"opaque".vertices,
@@ -64,7 +65,6 @@ pub fn rebuild(self: *Self, atlas: *const TextureAtlas) bool {
     inline for (&.{ &self.@"opaque", &self.trans }) |mesh| {
         if (mesh.vertices.items.len > 0) mesh.update();
     }
-    return true;
 }
 
 pub fn center_x(self: *const Self) f32 {

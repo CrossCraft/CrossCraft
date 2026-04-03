@@ -22,6 +22,7 @@ const GameTextures = struct {
     clouds: Rendering.Texture,
     atlas: TextureAtlas,
 
+    /// Valid between GameTextures.init() and GameTextures.deinit().
     var inst: GameTextures = undefined;
 
     fn load_from_pack(pack: *Zip, file: []const u8) !Rendering.Texture {

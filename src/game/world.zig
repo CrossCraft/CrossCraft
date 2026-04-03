@@ -173,14 +173,18 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
         const elapsed_ns: i64 = @truncate(end.raw.nanoseconds - start.raw.nanoseconds);
         const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
         log.info("World generation took {d}ms", .{elapsed_ms});
-        save() catch {};
+        save() catch |err| {
+            log.err("failed to save world: {}", .{err});
+        };
     }
     load_status = .complete;
     log.info("World seed: {d}", .{seed});
 }
 
 pub fn deinit() void {
-    save() catch {};
+    save() catch |err| {
+        log.err("failed to save world: {}", .{err});
+    };
 
     backing_allocator.free(raw_blocks);
     backing_allocator.free(node_pool);
@@ -283,7 +287,9 @@ pub fn tick() void {
     save_counter += 1;
     if (save_counter >= 6000) {
         save_counter = 0;
-        save() catch {};
+        save() catch |err| {
+            log.err("failed to save world: {}", .{err});
+        };
     }
 }
 

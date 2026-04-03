@@ -5,9 +5,10 @@ const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const Scaling = @import("Scaling.zig");
+const layout = @import("layout.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 
-pub const Anchor = @import("SpriteBatcher.zig").Anchor;
+pub const Anchor = layout.Anchor;
 pub const Color = @import("../graphics/Color.zig").Color;
 pub const Vertex = @import("../graphics/Vertex.zig").Vertex;
 pub const BatchMesh = Rendering.Mesh(Vertex);
@@ -450,33 +451,9 @@ fn compute_glyph_widths(texture: *const Rendering.Texture) [GLYPH_COUNT]u8 {
     return widths;
 }
 
-// --- Coordinate helpers (duplicated from SpriteBatcher to keep modules independent) ---
-
-fn anchor_point(anchor: Anchor, ex: i16, ey: i16) struct { x: i16, y: i16 } {
-    return switch (anchor) {
-        .top_left => .{ .x = 0, .y = 0 },
-        .top_center => .{ .x = @divTrunc(ex, 2), .y = 0 },
-        .top_right => .{ .x = ex, .y = 0 },
-        .middle_left => .{ .x = 0, .y = @divTrunc(ey, 2) },
-        .middle_center => .{ .x = @divTrunc(ex, 2), .y = @divTrunc(ey, 2) },
-        .middle_right => .{ .x = ex, .y = @divTrunc(ey, 2) },
-        .bottom_left => .{ .x = 0, .y = ey },
-        .bottom_center => .{ .x = @divTrunc(ex, 2), .y = ey },
-        .bottom_right => .{ .x = ex, .y = ey },
-    };
-}
-
-fn logical_to_snorm_x(x: i16, screen_w: u32, scale: u32) i16 {
-    const s: i32 = @intCast(scale);
-    const sw: i32 = @intCast(screen_w);
-    return @intCast(@divTrunc((2 * @as(i32, x) * s - sw) * 32767, sw));
-}
-
-fn logical_to_snorm_y(y: i16, screen_h: u32, scale: u32) i16 {
-    const s: i32 = @intCast(scale);
-    const sh: i32 = @intCast(screen_h);
-    return @intCast(@divTrunc((sh - 2 * @as(i32, y) * s) * 32767, sh));
-}
+const anchor_point = layout.anchor_point;
+const logical_to_snorm_x = layout.logical_to_snorm_x;
+const logical_to_snorm_y = layout.logical_to_snorm_y;
 
 /// Maps [0, extent] to [-32767, 32767] for normalized mesh export.
 fn local_to_snorm_x(x: i32, extent_w: i32) i16 {

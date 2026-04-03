@@ -17,6 +17,7 @@ const MenuTextures = struct {
     font: Rendering.Texture,
     gui: Rendering.Texture,
 
+    /// Valid between MenuTextures.init() and MenuTextures.deinit().
     var inst: MenuTextures = undefined;
 
     fn load_from_pack(pack: *Zip, file: []const u8) !Rendering.Texture {

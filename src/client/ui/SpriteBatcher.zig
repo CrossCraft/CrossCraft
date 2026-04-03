@@ -5,6 +5,7 @@ const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const Scaling = @import("Scaling.zig");
+const layout = @import("layout.zig");
 
 pub const Color = @import("../graphics/Color.zig").Color;
 pub const Vertex = @import("../graphics/Vertex.zig").Vertex;
@@ -12,17 +13,7 @@ pub const BatchMesh = Rendering.Mesh(Vertex);
 
 const Self = @This();
 
-pub const Anchor = enum(u8) {
-    top_left,
-    top_center,
-    top_right,
-    middle_left,
-    middle_center,
-    middle_right,
-    bottom_left,
-    bottom_center,
-    bottom_right,
-};
+pub const Anchor = layout.Anchor;
 
 pub const Sprite = extern struct {
     pub const Range = extern struct { x: i16, y: i16 };
@@ -36,7 +27,12 @@ pub const Sprite = extern struct {
     layer: u8,
     reference: Anchor = .top_left,
     origin: Anchor = .top_left,
-    _pad: u8 = 0,
+    _pad: u8 = 0, // alignment to pointer-size boundary
+
+    comptime {
+        // 1 pointer + 4 Ranges (16 bytes) + Color (4) + 4 u8 = ptr_size + 24
+        std.debug.assert(@sizeOf(Sprite) == @sizeOf(*anyopaque) + 24);
+    }
 };
 
 const TextureBatch = struct {
@@ -206,34 +202,12 @@ fn emit_sprite_vertices(mesh: *BatchMesh, sprite: *const Sprite, screen_w: u32, 
 }
 
 fn anchor_point(anchor: Anchor, ex: i16, ey: i16) Sprite.Range {
-    return switch (anchor) {
-        .top_left => .{ .x = 0, .y = 0 },
-        .top_center => .{ .x = @divTrunc(ex, 2), .y = 0 },
-        .top_right => .{ .x = ex, .y = 0 },
-        .middle_left => .{ .x = 0, .y = @divTrunc(ey, 2) },
-        .middle_center => .{ .x = @divTrunc(ex, 2), .y = @divTrunc(ey, 2) },
-        .middle_right => .{ .x = ex, .y = @divTrunc(ey, 2) },
-        .bottom_left => .{ .x = 0, .y = ey },
-        .bottom_center => .{ .x = @divTrunc(ex, 2), .y = ey },
-        .bottom_right => .{ .x = ex, .y = ey },
-    };
+    const p = layout.anchor_point(anchor, ex, ey);
+    return .{ .x = p.x, .y = p.y };
 }
 
-/// Converts a logical X pixel to snorm NDC.
-/// Origin (0,0) is the top-left corner of the window.
-fn logical_to_snorm_x(x: i16, screen_w: u32, scale: u32) i16 {
-    const s: i32 = @intCast(scale);
-    const sw: i32 = @intCast(screen_w);
-    return @intCast(@divTrunc((2 * @as(i32, x) * s - sw) * 32767, sw));
-}
-
-/// Converts a logical Y pixel to snorm NDC (Y-flipped for top-left origin).
-/// Origin (0,0) is the top-left corner of the window.
-fn logical_to_snorm_y(y: i16, screen_h: u32, scale: u32) i16 {
-    const s: i32 = @intCast(scale);
-    const sh: i32 = @intCast(screen_h);
-    return @intCast(@divTrunc((sh - 2 * @as(i32, y) * s) * 32767, sh));
-}
+const logical_to_snorm_x = layout.logical_to_snorm_x;
+const logical_to_snorm_y = layout.logical_to_snorm_y;
 
 fn texel_to_snorm(texel: i32, dim: u32) i16 {
     return @intCast(@divTrunc(texel * 32767, @as(i32, @intCast(dim))));

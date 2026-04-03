@@ -53,11 +53,17 @@ pub fn join(self: *Self, username: []const u8) !void {
 /// Non-blocking: read and process one server packet if available.
 pub fn try_process_packet(self: *Self) bool {
     const packet_id = self.reader.peekByte() catch return false;
-    const len = proto.packet_length_to_client(packet_id) catch return false;
+    const len = proto.packet_length_to_client(packet_id) catch |err| {
+        log.err("unknown packet id 0x{x:0>2}: {}", .{ packet_id, err });
+        return false;
+    };
     const buf = self.reader.peek(len) catch return false;
     @memcpy(self.buffer[0..len], buf);
     self.reader.toss(len);
-    self.protocol.handle_packet(self.buffer[1..len], self.buffer[0]) catch return false;
+    self.protocol.handle_packet(self.buffer[1..len], self.buffer[0]) catch |err| {
+        log.err("failed to handle packet 0x{x:0>2}: {}", .{ self.buffer[0], err });
+        return false;
+    };
     return true;
 }
 
@@ -110,7 +116,7 @@ fn on_block_change(_: *anyopaque, event: zb.SetBlockToClient) !void {
 }
 
 fn on_despawn(_: *anyopaque, event: zb.DespawnPlayer) !void {
-    log.info("Despawn: pid={d}", .{ event.pid });
+    log.info("Despawn: pid={d}", .{event.pid});
 }
 
 fn on_disconnect(_: *anyopaque, event: zb.DisconnectPlayer) !void {

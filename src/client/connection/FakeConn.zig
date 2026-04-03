@@ -100,6 +100,9 @@ pub const FakeConn = struct {
 
     const s2c_writer_vtable: std.Io.Writer.VTable = .{ .drain = s2c_drain };
 
+    // Ring must never fill: in singleplayer, producer and consumer are
+    // synchronized (same thread or tick-drained), so 4 KiB is always enough.
+    // If this assert fires, RING_SIZE needs to grow.
     fn s2c_drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         _ = splat;
         const self: *FakeConn = @alignCast(@fieldParentPtr("server_writer", w));
