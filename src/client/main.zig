@@ -12,7 +12,7 @@ comptime {
 }
 
 pub const psp_stack_size: u32 = 256 * 1024;
-pub const psp_async_stack_size: u32 = 384 * 1024;
+pub const psp_async_stack_size: u32 = 256 * 1024;
 
 // PSP: override panic/IO handlers that would otherwise pull in posix symbols.
 pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);

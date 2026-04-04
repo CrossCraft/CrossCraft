@@ -31,7 +31,7 @@ pub fn apply(self: *Self) void {
     const screen_h = Rendering.gfx.surface.get_height();
     const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
 
-    const proj = Math.Mat4.perspectiveFovRh(self.fov, aspect, 0.1, 128.0);
+    const proj = Math.Mat4.perspectiveFovRh(self.fov, aspect, 0.3, 128.0);
     Rendering.gfx.api.set_proj_matrix(&proj);
 
     const view = Math.Mat4.translation(-self.x, -self.y, -self.z)

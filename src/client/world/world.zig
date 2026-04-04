@@ -191,17 +191,38 @@ pub fn draw(self: *Self, camera: *const Camera) void {
         }
     }
 
+    // Sections close to the player need hardware clip planes to prevent
+    // vertices from overflowing the PSP 4096 virtual viewport.
+    const CLIP_SECTION_COUNT: u32 = 4;
+    const clip_count = @min(CLIP_SECTION_COUNT, visible_count);
+
+    // Opaque pass (front-to-back): clip planes on for closest sections
     Rendering.gfx.api.set_alpha_blend(false);
-    for (visible[0..visible_count]) |ref| {
+    if (clip_count > 0) {
+        Rendering.gfx.api.set_clip_planes(true);
+        for (visible[0..clip_count]) |ref| {
+            self.grid[ref.cx][ref.cz][ref.sy].draw_opaque();
+        }
+        Rendering.gfx.api.set_clip_planes(false);
+    }
+    for (visible[clip_count..visible_count]) |ref| {
         self.grid[ref.cx][ref.cz][ref.sy].draw_opaque();
     }
 
+    // Transparent pass (back-to-front): far sections first, then closest with clip planes
     Rendering.gfx.api.set_alpha_blend(true);
     var ri: u32 = visible_count;
-    while (ri > 0) {
+    while (ri > clip_count) {
         ri -= 1;
-        const ref = visible[ri];
-        self.grid[ref.cx][ref.cz][ref.sy].draw_transparent();
+        self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_transparent();
+    }
+    if (clip_count > 0) {
+        Rendering.gfx.api.set_clip_planes(true);
+        while (ri > 0) {
+            ri -= 1;
+            self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_transparent();
+        }
+        Rendering.gfx.api.set_clip_planes(false);
     }
 
     self.clouds.bind();

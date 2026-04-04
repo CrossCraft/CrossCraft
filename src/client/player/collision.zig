@@ -466,3 +466,4 @@ fn snap_hi(edge: f32) f32 {
 fn world_coord(v: f32) i32 {
     return @intFromFloat(@floor(v));
 }
+
