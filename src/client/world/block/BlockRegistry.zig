@@ -137,22 +137,22 @@ fn defaults() Self {
     self.face_tiles[B.Glass] = all(1, 3);
 
     // Wool colors
-    self.face_tiles[B.White_Wool] = all(0, 4);
+    self.face_tiles[B.Red_Wool] = all(0, 4);
     self.face_tiles[B.Orange_Wool] = all(1, 4);
-    self.face_tiles[B.Magenta_Wool] = all(2, 4);
-    self.face_tiles[B.Light_Blue_Wool] = all(3, 4);
-    self.face_tiles[B.Yellow_Wool] = all(4, 4);
-    self.face_tiles[B.Lime_Wool] = all(5, 4);
-    self.face_tiles[B.Pink_Wool] = all(6, 4);
-    self.face_tiles[B.Gray_Wool] = all(7, 4);
-    self.face_tiles[B.Light_Gray_Wool] = all(8, 4);
-    self.face_tiles[B.Cyan_Wool] = all(9, 4);
-    self.face_tiles[B.Purple_Wool] = all(10, 4);
-    self.face_tiles[B.Blue_Wool] = all(11, 4);
-    self.face_tiles[B.Brown_Wool] = all(12, 4);
-    self.face_tiles[B.Green_Wool] = all(13, 4);
-    self.face_tiles[B.Red_Wool] = all(14, 4);
-    self.face_tiles[B.Black_Wool] = all(15, 4);
+    self.face_tiles[B.Yellow_Wool] = all(2, 4);
+    self.face_tiles[B.Chartreuse_Wool] = all(3, 4);
+    self.face_tiles[B.Green_Wool] = all(4, 4);
+    self.face_tiles[B.Spring_Green_Wool] = all(5, 4);
+    self.face_tiles[B.Cyan_Wool] = all(6, 4);
+    self.face_tiles[B.Capri_Wool] = all(7, 4);
+    self.face_tiles[B.Ultramarine_Wool] = all(8, 4);
+    self.face_tiles[B.Purple_Wool] = all(9, 4);
+    self.face_tiles[B.Violet_Wool] = all(10, 4);
+    self.face_tiles[B.Magenta_Wool] = all(11, 4);
+    self.face_tiles[B.Rose_Wool] = all(12, 4);
+    self.face_tiles[B.Dark_Gray_Wool] = all(13, 4);
+    self.face_tiles[B.Light_Gray_Wool] = all(14, 4);
+    self.face_tiles[B.White_Wool] = all(15, 4);
 
     self.face_tiles[B.Flower1] = all(13, 0);
     self.face_tiles[B.Flower2] = all(12, 0);

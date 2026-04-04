@@ -130,7 +130,7 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
             self.build_estimator.end();
         } else |_| {
             self.build_estimator.end();
-            // OOM — evict farthest built section and retry once
+            // OOM - evict farthest built section and retry once
             if (self.try_evict_farthest(camera)) {
                 self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch {
                     self.build_cursor = @intCast(i);
@@ -159,7 +159,6 @@ pub fn draw(self: *Self, camera: *const Camera) void {
     self.terrain.bind();
 
     var visible: [MAX_ACTIVE]GridRef = undefined;
-    var dists: [MAX_ACTIVE]f32 = undefined;
     var visible_count: u32 = 0;
 
     for (0..WORLD_CX) |cx| {
@@ -168,28 +167,13 @@ pub fn draw(self: *Self, camera: *const Camera) void {
             for (0..SECTIONS_Y) |sy| {
                 const sec = &self.grid[cx][cz][sy];
                 if (!camera.section_visible(sec.cx, sec.sy, sec.cz)) continue;
-                const vi = visible_count;
-                visible[vi] = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
-                dists[vi] = camera.distance_sq(sec.center_x(), sec.center_y(), sec.center_z());
+                visible[visible_count] = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
                 visible_count += 1;
             }
         }
     }
 
-    if (visible_count > 1) {
-        for (1..visible_count) |i| {
-            const key_ref = visible[i];
-            const key_dist = dists[i];
-            var j: u32 = @intCast(i);
-            while (j > 0 and dists[j - 1] > key_dist) {
-                visible[j] = visible[j - 1];
-                dists[j] = dists[j - 1];
-                j -= 1;
-            }
-            visible[j] = key_ref;
-            dists[j] = key_dist;
-        }
-    }
+    std.sort.pdq(GridRef, visible[0..visible_count], camera, grid_ref_less_than);
 
     // Sections close to the player need hardware clip planes to prevent
     // vertices from overflowing the PSP 4096 virtual viewport.
@@ -373,22 +357,18 @@ pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
 }
 
 fn sort_build_queue(queue: []GridRef, cam: *const Camera) void {
-    for (1..queue.len) |i| {
-        const key = queue[i];
-        const key_dist = ref_dist_sq(key, cam);
-        var j: u32 = @intCast(i);
-        while (j > 0 and ref_dist_sq(queue[j - 1], cam) > key_dist) {
-            queue[j] = queue[j - 1];
-            j -= 1;
-        }
-        queue[j] = key;
-    }
+    std.sort.pdq(GridRef, queue, cam, grid_ref_less_than);
 }
 
-fn ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
+fn grid_ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
     const wx: f32 = @as(f32, @floatFromInt(@as(u32, ref.cx) * 16)) + 8.0;
+    const wy: f32 = @as(f32, @floatFromInt(@as(u32, ref.sy) * 16)) + 8.0;
     const wz: f32 = @as(f32, @floatFromInt(@as(u32, ref.cz) * 16)) + 8.0;
-    return cam.distance_sq_xz(wx, wz);
+    return cam.distance_sq(wx, wy, wz);
+}
+
+fn grid_ref_less_than(cam: *const Camera, a: GridRef, b: GridRef) bool {
+    return grid_ref_dist_sq(a, cam) < grid_ref_dist_sq(b, cam);
 }
 
 fn camera_chunk(pos: f32) i32 {
