@@ -8,6 +8,32 @@ const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 
 const SECTION_H: u32 = 16;
+const B = c.Block;
+
+/// Check sunlight at the neighbor block this face looks into.
+fn face_sunlit(wx: u16, y: u32, wz: u16, face: Face) bool {
+    const nx: i32 = @as(i32, wx) + switch (face) {
+        .x_pos => @as(i32, 1),
+        .x_neg => @as(i32, -1),
+        else => @as(i32, 0),
+    };
+    const ny: i32 = @as(i32, @intCast(y)) + switch (face) {
+        .y_pos => @as(i32, 1),
+        .y_neg => @as(i32, -1),
+        else => @as(i32, 0),
+    };
+    const nz: i32 = @as(i32, wz) + switch (face) {
+        .z_pos => @as(i32, 1),
+        .z_neg => @as(i32, -1),
+        else => @as(i32, 0),
+    };
+    // Out-of-bounds neighbors are treated as sunlit (sky above / world edge)
+    if (nx < 0 or nx >= c.WorldLength or
+        nz < 0 or nz >= c.WorldDepth or
+        ny < 0 or ny >= c.WorldHeight)
+        return true;
+    return World.is_sunlit(@intCast(nx), @intCast(ny), @intCast(nz));
+}
 const WORLD_H: u32 = c.WorldHeight;
 const WORLD_W: u32 = c.WorldLength;
 const WORLD_D: u32 = c.WorldDepth;
@@ -226,10 +252,13 @@ fn emit_mask(
         const mesh = if (reg.@"opaque".isSet(block)) m.@"opaque" else m.transparent;
         assert_has_room(mesh, 6);
 
+        const shadowed = !face_sunlit(wx, y, wz, face) and
+            block != B.Flowing_Lava and block != B.Still_Lava;
+
         if (face == .y_pos and reg.fluid.isSet(block)) {
-            face_mod.emit_fluid_top(mesh, lx, local_y, lz, tile, atlas);
+            face_mod.emit_fluid_top(mesh, lx, local_y, lz, tile, atlas, shadowed);
         } else {
-            face_mod.emit_face(mesh, face, lx, local_y, lz, tile, atlas);
+            face_mod.emit_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);
         }
     }
 }
@@ -257,7 +286,8 @@ fn emit_opaque_leaf_mask(
         const wz: u16 = @intCast(cz * 16 + lz);
         const block = World.get_block(wx, @intCast(y), wz);
         const tile = BlockRegistry.global.get_face_tile(block, face);
-        face_mod.emit_face(opaque_mesh, face, lx, local_y, lz, tile, atlas);
+        const shadowed = !face_sunlit(wx, y, wz, face);
+        face_mod.emit_face(opaque_mesh, face, lx, local_y, lz, tile, atlas, shadowed);
     }
 }
 
@@ -282,7 +312,7 @@ fn emit_cross_mask(
         const wz: u16 = @intCast(cz * 16 + lz);
         const block = World.get_block(wx, @intCast(y), wz);
         const tile = BlockRegistry.global.get_face_tile(block, .y_pos);
-        face_mod.emit_cross(transparent_mesh, lx, local_y, lz, tile, atlas);
+        face_mod.emit_cross(transparent_mesh, lx, local_y, lz, tile, atlas, !World.is_sunlit(wx, @intCast(y), wz));
     }
 }
 

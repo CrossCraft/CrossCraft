@@ -34,6 +34,15 @@ fn face_color(face: Face) u32 {
     };
 }
 
+/// Darken a color for shadowed faces. Multiplies RGB by 153/256 (~0.6).
+fn apply_shadow(color: u32) u32 {
+    const r = (color >> 16) & 0xFF;
+    const g = (color >> 8) & 0xFF;
+    const b = color & 0xFF;
+    const a = color & 0xFF000000;
+    return a | (((r * 153) >> 8) << 16) | (((g * 153) >> 8) << 8) | ((b * 153) >> 8);
+}
+
 const UVRect = struct { tu0: i16, tv0: i16, tu1: i16, tv1: i16 };
 
 fn tile_uvs(tile: BlockRegistry.Tile, atlas: *const TextureAtlas) UVRect {
@@ -119,7 +128,10 @@ pub fn emit_face(
     z: u32,
     tile: BlockRegistry.Tile,
     atlas: *const TextureAtlas,
+    shadowed: bool,
 ) void {
+    const base = face_color(face);
+    const color = if (shadowed) apply_shadow(base) else base;
     const uv = tile_uvs(tile, atlas);
     emit_quad(vertices, make_quad(
         face,
@@ -133,7 +145,7 @@ pub fn emit_face(
         uv.tv0,
         uv.tu1,
         uv.tv1,
-        face_color(face),
+        color,
     ));
 }
 
@@ -145,7 +157,9 @@ pub fn emit_fluid_top(
     z: u32,
     tile: BlockRegistry.Tile,
     atlas: *const TextureAtlas,
+    shadowed: bool,
 ) void {
+    const color: u32 = if (shadowed) apply_shadow(0xFFFFFFFF) else 0xFFFFFFFF;
     const uv = tile_uvs(tile, atlas);
     emit_quad(vertices, make_quad(
         .y_pos,
@@ -159,7 +173,7 @@ pub fn emit_fluid_top(
         uv.tv0,
         uv.tu1,
         uv.tv1,
-        0xFFFFFFFF,
+        color,
     ));
 }
 
@@ -171,8 +185,9 @@ pub fn emit_cross(
     z: u32,
     tile: BlockRegistry.Tile,
     atlas: *const TextureAtlas,
+    shadowed: bool,
 ) void {
-    const color: u32 = 0xFFFFFFFF;
+    const color: u32 = if (shadowed) apply_shadow(0xFFFFFFFF) else 0xFFFFFFFF;
     const uv = tile_uvs(tile, atlas);
     const px = encode_pos(x);
     const px1 = encode_pos(x + 1);
