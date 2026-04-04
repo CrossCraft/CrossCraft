@@ -15,13 +15,18 @@ pub fn init() !void {
     try input.bind_action("move", .{ .source = .{ .gamepad_axis = .LeftX }, .component = .x });
     try input.bind_action("move", .{ .source = .{ .gamepad_axis = .LeftY }, .component = .y, .multiplier = -1.0 });
 
-    // ---- vertical flight ----
-    try input.register_action("fly_up", .button);
-    try input.bind_action("fly_up", .{ .source = .{ .key = .Space } });
-    try input.bind_action("fly_up", .{ .source = .{ .gamepad_button = .DpadUp } });
-    try input.register_action("fly_down", .button);
-    try input.bind_action("fly_down", .{ .source = .{ .key = .LeftShift } });
-    try input.bind_action("fly_down", .{ .source = .{ .gamepad_button = .DpadDown } });
+    // ---- jump / sneak ----
+    try input.register_action("jump", .button);
+    try input.bind_action("jump", .{ .source = .{ .key = .Space } });
+    try input.bind_action("jump", .{ .source = .{ .gamepad_button = .DpadUp } });
+    try input.register_action("sneak", .button);
+    try input.bind_action("sneak", .{ .source = .{ .key = .LeftShift } });
+    try input.bind_action("sneak", .{ .source = .{ .gamepad_button = .DpadDown } });
+
+    // ---- noclip toggle ----
+    try input.register_action("noclip", .button);
+    try input.bind_action("noclip", .{ .source = .{ .gamepad_button = .Back } });
+    try input.bind_action("noclip", .{ .source = .{ .key = .X } });
 
     // ---- mouse look (delta-based) ----
     try input.register_action("look", .vector2);

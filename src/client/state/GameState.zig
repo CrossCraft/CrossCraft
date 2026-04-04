@@ -11,7 +11,6 @@ const ClientConn = @import("../connection/ClientConn.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const WorldRenderer = @import("../world/world.zig");
-const Camera = @import("../player/Camera.zig");
 const Player = @import("../player/Player.zig");
 const Zip = @import("../util/Zip.zig");
 
@@ -51,7 +50,6 @@ fake_conn: FakeConn,
 conn: ClientConn,
 pipeline: Rendering.Pipeline.Handle,
 world: WorldRenderer,
-camera: Camera,
 player: Player,
 
 fn init(ctx: *anyopaque) anyerror!void {
@@ -87,19 +85,16 @@ fn init(ctx: *anyopaque) anyerror!void {
         1.0,
     );
 
-    // Camera - use server spawn position when available
+    // Player -- owns the camera; spawn Y is eye-level from the server
     if (self.conn.handshake_complete) {
-        self.camera = Camera.init(
+        try self.player.init(
             @as(f32, @floatFromInt(self.conn.spawn_x)) / 32.0,
             @as(f32, @floatFromInt(self.conn.spawn_y)) / 32.0,
             @as(f32, @floatFromInt(self.conn.spawn_z)) / 32.0,
         );
     } else {
-        self.camera = Camera.init(128.0, 44.0, 128.0);
+        try self.player.init(128.0, 44.0, 128.0);
     }
-
-    // Player (freecam)
-    try self.player.init(&self.camera);
 
     // Textures
     var pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
@@ -112,7 +107,7 @@ fn init(ctx: *anyopaque) anyerror!void {
         &GameTextures.inst.terrain,
         &GameTextures.inst.clouds,
         GameTextures.inst.atlas,
-        &self.camera,
+        &self.player.camera,
     );
 
     Util.report();
@@ -134,14 +129,14 @@ fn tick(_: *anyopaque) anyerror!void {
 fn update(ctx: *anyopaque, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.player.update(dt);
-    self.world.update(dt, budget, &self.camera);
+    self.world.update(dt, budget, &self.player.camera);
 }
 
 fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.conn.drain_packets();
-    self.camera.apply();
-    self.world.draw(&self.camera);
+    self.player.camera.apply();
+    self.world.draw(&self.player.camera);
 }
 
 pub fn state(self: *@This()) State {
