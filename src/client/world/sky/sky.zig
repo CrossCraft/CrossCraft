@@ -51,9 +51,22 @@ pub fn update(self: *Self, dt: f32) void {
     if (self.scroll >= 256.0) self.scroll -= 256.0;
 }
 
+const collision = @import("../../player/collision.zig");
+
+/// Set the clear color based on whether the camera is submerged.
+pub fn clear(submerged: ?collision.Liquid) void {
+    const c = fog_color(submerged);
+    Rendering.gfx.api.set_clear_color(
+        @as(f32, @floatFromInt(c.r)) / 255.0,
+        @as(f32, @floatFromInt(c.g)) / 255.0,
+        @as(f32, @floatFromInt(c.b)) / 255.0,
+        1.0,
+    );
+}
+
 /// Draw sky "dome". Call before terrain
-pub fn draw_plane(self: *Self, camera: *const Camera) void {
-    set_sky_fog();
+pub fn draw_plane(self: *Self, camera: *const Camera, submerged: ?collision.Liquid) void {
+    set_sky_fog(submerged);
     Rendering.gfx.api.set_alpha_blend(false);
     const m = Math.Mat4.scaling(PLANE_SIZE, 1.0, PLANE_SIZE)
         .mul(Math.Mat4.translation(
@@ -78,16 +91,31 @@ pub fn draw_clouds(self: *Self) void {
 
 // -- Fog --
 
-fn set_sky_fog() void {
-    const c = Color.game_daytime;
+fn set_sky_fog(submerged: ?collision.Liquid) void {
+    const c = fog_color(submerged);
+    const params = fog_params(submerged);
     Rendering.gfx.api.set_fog(
         true,
-        40.0,
-        120.0,
+        params[0],
+        params[1],
         @as(f32, @floatFromInt(c.r)) / 255.0,
         @as(f32, @floatFromInt(c.g)) / 255.0,
         @as(f32, @floatFromInt(c.b)) / 255.0,
     );
+}
+
+fn fog_color(submerged: ?collision.Liquid) Color {
+    return switch (submerged orelse return Color.game_daytime) {
+        .water => Color.game_underwater,
+        .lava => Color.game_underlava,
+    };
+}
+
+fn fog_params(submerged: ?collision.Liquid) [2]f32 {
+    return switch (submerged orelse return .{ 40.0, 120.0 }) {
+        .water => .{ 0.0, 16.0 },
+        .lava => .{ 0.0, 2.0 },
+    };
 }
 
 // -- Mesh building --

@@ -76,15 +76,6 @@ fn init(ctx: *anyopaque) anyerror!void {
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     self.pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
-    // Sky color
-    const sky = @import("../graphics/Color.zig").Color.game_daytime;
-    Rendering.gfx.api.set_clear_color(
-        @as(f32, @floatFromInt(sky.r)) / 255.0,
-        @as(f32, @floatFromInt(sky.g)) / 255.0,
-        @as(f32, @floatFromInt(sky.b)) / 255.0,
-        1.0,
-    );
-
     // Player -- owns the camera; spawn Y is eye-level from the server
     if (self.conn.handshake_complete) {
         try self.player.init(

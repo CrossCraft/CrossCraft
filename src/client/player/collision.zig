@@ -46,6 +46,21 @@ pub fn block_height(id: u8) f32 {
 
 pub const Liquid = enum { water, lava };
 
+/// Single-point liquid test at the given world coordinate.
+/// Used to detect whether the camera is submerged.
+pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
+    const bx: i32 = @intFromFloat(@floor(px));
+    const by: i32 = @intFromFloat(@floor(py));
+    const bz: i32 = @intFromFloat(@floor(pz));
+    if (bx < 0 or bx >= c.WorldLength) return null;
+    if (by < 0 or by >= c.WorldHeight) return null;
+    if (bz < 0 or bz >= c.WorldDepth) return null;
+    const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
+    if (block == B.Flowing_Water or block == B.Still_Water) return .water;
+    if (block == B.Flowing_Lava or block == B.Still_Lava) return .lava;
+    return null;
+}
+
 /// Feet zone: the single block-row at floor(py).
 pub fn liquid_feet(px: f32, py: f32, pz: f32) ?Liquid {
     const by: i32 = @intFromFloat(@floor(py));

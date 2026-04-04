@@ -6,6 +6,7 @@ const Rendering = ae.Rendering;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Color = @import("../graphics/Color.zig").Color;
 const Camera = @import("../player/Camera.zig");
+const collision = @import("../player/collision.zig");
 const config = @import("../config.zig").current;
 
 const ChunkMesh = @import("chunk/ChunkMesh.zig");
@@ -146,12 +147,15 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
 }
 
 pub fn draw(self: *Self, camera: *const Camera) void {
+    const submerged = collision.liquid_at_point(camera.x, camera.y, camera.z);
+
     Rendering.Pipeline.bind(self.pipeline);
 
     Rendering.Texture.Default.bind();
-    self.sky.draw_plane(camera);
+    Sky.clear(submerged);
+    self.sky.draw_plane(camera, submerged);
 
-    set_terrain_fog();
+    set_terrain_fog(submerged);
     self.terrain.bind();
 
     var visible: [MAX_ACTIVE]GridRef = undefined;
@@ -370,12 +374,19 @@ fn camera_chunk(pos: f32) i32 {
     return @intFromFloat(@floor(pos / 16.0));
 }
 
-fn set_terrain_fog() void {
-    const c = Color.game_daytime;
-    const fog_end: f32 = @floatFromInt(config.chunk_radius * 16 - 16);
+fn set_terrain_fog(submerged: ?collision.Liquid) void {
+    const c = switch (submerged orelse .water) {
+        .water => if (submerged != null) Color.game_underwater else Color.game_daytime,
+        .lava => Color.game_underlava,
+    };
+    const fog_end: f32 = switch (submerged orelse .water) {
+        .water => if (submerged != null) 16.0 else @as(f32, @floatFromInt(config.chunk_radius * 16 - 16)),
+        .lava => 2.0,
+    };
+    const fog_start: f32 = if (submerged != null) 0.0 else fog_end * 0.4;
     Rendering.gfx.api.set_fog(
         true,
-        fog_end * 0.4,
+        fog_start,
         fog_end,
         @as(f32, @floatFromInt(c.r)) / 255.0,
         @as(f32, @floatFromInt(c.g)) / 255.0,
