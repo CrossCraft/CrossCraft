@@ -127,6 +127,8 @@ const FaceMasks = struct {
     cross: u32,
     opq: u32,
     leaf: u32,
+    // Fluid y_pos faces needing double-sided emission (extra 6 verts each)
+    flu_yp: u32,
 };
 
 fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
@@ -166,13 +168,22 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const s_yp = leaf & y_pos & buf[by + 1][bz].leaf;
     const s_yn = leaf & y_neg & buf[by - 1][bz].leaf;
 
+    // Fluid side/bottom faces: emit where neighbor is not opaque and not fluid
+    const flu_xp = (flu & ~(opq >> 1) & ~(flu >> 1)) & SECTION_MASK;
+    const flu_xn = (flu & ~(opq << 1) & ~(flu << 1)) & SECTION_MASK;
+    const flu_zp = (flu & ~buf[by][bz + 1].opq & ~buf[by][bz + 1].flu) & SECTION_MASK;
+    const flu_zn = (flu & ~buf[by][bz - 1].opq & ~buf[by][bz - 1].flu) & SECTION_MASK;
+    const flu_yn = (flu & ~buf[by - 1][bz].opq & ~buf[by - 1][bz].flu) & SECTION_MASK;
+
+    const final_yp = y_pos & ~s_yp;
+
     return .{
-        .x_pos = x_pos & ~s_xp,
-        .x_neg = x_neg & ~s_xn,
-        .y_pos = y_pos & ~s_yp,
-        .y_neg = y_neg & ~s_yn,
-        .z_pos = z_pos & ~s_zp,
-        .z_neg = z_neg & ~s_zn,
+        .x_pos = (x_pos & ~s_xp) | flu_xp,
+        .x_neg = (x_neg & ~s_xn) | flu_xn,
+        .y_pos = final_yp,
+        .y_neg = (y_neg & ~s_yn) | flu_yn,
+        .z_pos = (z_pos & ~s_zp) | flu_zp,
+        .z_neg = (z_neg & ~s_zn) | flu_zn,
         .s_xp = s_xp,
         .s_xn = s_xn,
         .s_yp = s_yp,
@@ -182,6 +193,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
         .cross = cur.cross & SECTION_MASK,
         .opq = opq,
         .leaf = leaf,
+        .flu_yp = flu & final_yp,
     };
 }
 
@@ -196,10 +208,11 @@ fn count_row_faces(by: u32, bz: u32, buf: *const SectionBuf) SectionCounts {
         pop(f.z_pos) + pop(f.z_neg) +
         pop(f.y_pos) + pop(f.y_neg);
     const cross_count = pop(f.cross);
+    const flu_top_extra = pop(f.flu_yp);
 
     return .{
         .opaque_verts = (opq_count + shell) * 6,
-        .transparent_verts = (all_count - opq_count) * 6 + cross_count * 24,
+        .transparent_verts = (all_count - opq_count) * 6 + cross_count * 24 + flu_top_extra * 6,
     };
 }
 
@@ -250,14 +263,15 @@ fn emit_mask(
         const tile = reg.get_face_tile(block, face);
 
         const mesh = if (reg.@"opaque".isSet(block)) m.@"opaque" else m.transparent;
-        assert_has_room(mesh, 6);
 
         const shadowed = !face_sunlit(wx, y, wz, face) and
             block != B.Flowing_Lava and block != B.Still_Lava;
 
         if (face == .y_pos and reg.fluid.isSet(block)) {
+            assert_has_room(mesh, 12);
             face_mod.emit_fluid_top(mesh, lx, local_y, lz, tile, atlas, shadowed);
         } else {
+            assert_has_room(mesh, 6);
             face_mod.emit_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);
         }
     }

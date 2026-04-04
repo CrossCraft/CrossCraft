@@ -149,7 +149,7 @@ pub fn emit_face(
     ));
 }
 
-/// Emit fluid top face at 0.9 block height (6 vertices).
+/// Emit fluid top face at 0.9 block height, double-sided (12 vertices).
 pub fn emit_fluid_top(
     vertices: *std.ArrayList(Vertex),
     x: u32,
@@ -161,7 +161,7 @@ pub fn emit_fluid_top(
 ) void {
     const color: u32 = if (shadowed) apply_shadow(0xFFFFFFFF) else 0xFFFFFFFF;
     const uv = tile_uvs(tile, atlas);
-    emit_quad(vertices, make_quad(
+    emit_quad_double_sided(vertices, make_quad(
         .y_pos,
         encode_pos(x),
         encode_pos(x + 1),
