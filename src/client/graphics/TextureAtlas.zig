@@ -15,13 +15,13 @@ pub const TextureAtlas = struct {
         std.debug.assert(std.math.isPowerOfTwo(rows));
         std.debug.assert(std.math.isPowerOfTwo(cols));
         // Half-texel inset: 0.5 / res * 32767
-        const eps_u: u5 = @intCast(@ctz(res_x));
-        const eps_v: u5 = @intCast(@ctz(res_y));
+        // const eps_u: u5 = @intCast(@ctz(res_x));
+        // const eps_v: u5 = @intCast(@ctz(res_y));
         return .{
             .col_log2 = @intCast(@ctz(cols)),
             .row_log2 = @intCast(@ctz(rows)),
-            .epsilon_u = @intCast(@as(i32, 32767) >> eps_u),
-            .epsilon_v = @intCast(@as(i32, 32767) >> eps_v),
+            .epsilon_u = 16, // @intCast(@as(i32, 32767) >> eps_u >> 2),
+            .epsilon_v = 16, // @intCast(@as(i32, 32767) >> eps_v >> 2),
         };
     }
 

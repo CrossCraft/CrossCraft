@@ -49,9 +49,9 @@ fn tile_uvs(tile: BlockRegistry.Tile, atlas: *const TextureAtlas) UVRect {
     const base_u = atlas.tileU(tile.col);
     const base_v = atlas.tileV(tile.row);
     return .{
-        .tu0 = base_u,
+        .tu0 = @intCast(@as(i32, base_u) + @as(i32, atlas.tileWidth())),
         .tv0 = base_v,
-        .tu1 = @intCast(@as(i32, base_u) + @as(i32, atlas.tileWidth())),
+        .tu1 = base_u,
         .tv1 = @intCast(@as(i32, base_v) + @as(i32, atlas.tileHeight())),
     };
 }
