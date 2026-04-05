@@ -623,7 +623,20 @@ fn placeMushrooms(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
 
 // -- Public entry point --------------------------------------------------
 
-pub fn generate(scratch: std.mem.Allocator, blocks: []u8, seed: u64, io: std.Io) !void {
+pub const GenPhase = enum(u8) {
+    raising,
+    erosion,
+    strata,
+    caves,
+    ores,
+    merge,
+    water,
+    lava,
+    surface,
+    plants,
+};
+
+pub fn generate(scratch: std.mem.Allocator, blocks: []u8, seed: u64, io: std.Io, phase: *GenPhase) !void {
     assert(blocks.len == MAP_VOL);
     var rng = Xorshift64.init(seed);
 
@@ -638,35 +651,45 @@ pub fn generate(scratch: std.mem.Allocator, blocks: []u8, seed: u64, io: std.Io)
 
     var t = std.Io.Clock.Timestamp.now(io, .boot);
 
+    phase.* = .raising;
     stepRaising(heightmap, &rng);
     t = logStep(io, t, "Raising");
 
+    phase.* = .erosion;
     stepErosion(heightmap, &rng);
     t = logStep(io, t, "Erosion");
 
+    phase.* = .strata;
     stepStrata(blocks, heightmap, &rng);
     t = logStep(io, t, "Strata");
 
     @memset(cave_mask, 0);
     @memset(ore_mask, 0);
+    phase.* = .caves;
     stepCaves(cave_mask, &rng);
     t = logStep(io, t, "Caves");
 
+    phase.* = .ores;
     stepOres(ore_mask, &rng);
     t = logStep(io, t, "Ores");
 
+    phase.* = .merge;
     stepMerge(blocks, cave_mask, ore_mask);
     t = logStep(io, t, "Merge");
 
+    phase.* = .water;
     stepFloodWater(blocks, heightmap, &rng, flood_queue);
     t = logStep(io, t, "Water");
 
+    phase.* = .lava;
     stepFloodLava(blocks, &rng, flood_queue);
     t = logStep(io, t, "Lava");
 
+    phase.* = .surface;
     stepSurface(blocks, heightmap, &rng);
     t = logStep(io, t, "Surface");
 
+    phase.* = .plants;
     stepPlants(blocks, heightmap, &rng);
     _ = logStep(io, t, "Plants");
 }

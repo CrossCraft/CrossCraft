@@ -38,7 +38,7 @@ pub var pending_count: u32 = 0;
 // 1024 buckets (one per tick modulo WHEEL_SIZE). Each bucket is a singly-
 // linked list threaded through a pool of fixed-size nodes. Entries land in
 // bucket[ready_tick % WHEEL_SIZE] so only the current tick's bucket is
-// drained each tick — no dequeue-decrement-reenqueue of deferred entries.
+// drained each tick - no dequeue-decrement-reenqueue of deferred entries.
 const WHEEL_SIZE: u32 = 1024;
 const WHEEL_MASK: u32 = WHEEL_SIZE - 1;
 const POOL_CAPACITY: u32 = 1 << 18; // 262144 nodes
@@ -60,6 +60,14 @@ var rng: Xorshift64 = .{ .state = 1 };
 const BLOCK_COUNT: u32 = c.WorldLength * c.WorldHeight * c.WorldDepth;
 var enqueued_bitmap: []u8 = undefined;
 
+pub const LoadStatus = union(enum) {
+    loading,
+    generating: @import("worldgen.zig").GenPhase,
+    complete,
+};
+
+pub var load_status: LoadStatus = .loading;
+
 pub var backing_allocator: std.mem.Allocator = undefined;
 pub var raw_blocks: []u8 = undefined;
 pub var blocks: []u8 = undefined;
@@ -68,6 +76,10 @@ pub var seed: u64 = undefined;
 pub var tick_count: u64 = 0;
 pub var io: std.Io = undefined;
 var save_counter: u32 = 0;
+
+/// For each (x,z) column, stores Y+1 of the highest light-blocking block.
+/// A value of 0 means the entire column is sunlit.
+pub var height_map: [c.WorldLength * c.WorldDepth]u8 = undefined;
 
 /// File header: 3 little-endian u16 (x, y, z), 1 little-endian u64 (seed), then raw block data.
 pub fn save() !void {
@@ -154,21 +166,30 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
 
     rng = Xorshift64.init(new_seed);
 
+    load_status = .loading;
     if (!load()) {
         seed = new_seed;
         const worldgen = @import("worldgen.zig");
+        load_status = .{ .generating = .raising };
         const start = std.Io.Clock.Timestamp.now(io, .boot);
-        try worldgen.generate(scratch, blocks, seed, io);
+        try worldgen.generate(scratch, blocks, seed, io, &load_status.generating);
         const end = std.Io.Clock.Timestamp.now(io, .boot);
         const elapsed_ns: i64 = @truncate(end.raw.nanoseconds - start.raw.nanoseconds);
         const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
         log.info("World generation took {d}ms", .{elapsed_ms});
+        save() catch |err| {
+            log.err("failed to save world: {}", .{err});
+        };
     }
+    compute_height_map();
+    load_status = .complete;
     log.info("World seed: {d}", .{seed});
 }
 
 pub fn deinit() void {
-    save() catch {};
+    save() catch |err| {
+        log.err("failed to save world: {}", .{err});
+    };
 
     backing_allocator.free(raw_blocks);
     backing_allocator.free(node_pool);
@@ -197,6 +218,54 @@ pub fn get_block(x: u16, y: u16, z: u16) u8 {
 pub fn set_block(x: u16, y: u16, z: u16, block: u8) void {
     const idx = get_index(x, y, z);
     blocks[idx] = block;
+    update_height_column(x, y, z, block);
+}
+
+// -- Sunlight height map ------------------------------------------------------
+
+/// Scan a single column top-down; return Y+1 of highest light-blocking block (0 if none).
+fn column_height(x: u16, z: u16) u8 {
+    var y: u16 = c.WorldHeight;
+    while (y > 0) {
+        y -= 1;
+        const blk = get_block(x, y, z);
+        if (blk >= light_passes.len or !light_passes[blk]) {
+            return @intCast(y + 1);
+        }
+    }
+    return 0;
+}
+
+/// Build the full height map. Called once after generation or load.
+pub fn compute_height_map() void {
+    for (0..c.WorldDepth) |z| {
+        for (0..c.WorldLength) |x| {
+            height_map[z * c.WorldLength + x] = column_height(
+                @intCast(x),
+                @intCast(z),
+            );
+        }
+    }
+}
+
+/// O(1) sunlight query: true if no light-blocking block exists above (x,y,z).
+pub fn is_sunlit(x: u16, y: u16, z: u16) bool {
+    return y + 1 >= height_map[@as(u32, z) * c.WorldLength + x];
+}
+
+/// Incrementally update height map after a block change at (x,y,z).
+fn update_height_column(x: u16, y: u16, z: u16, block: u8) void {
+    const col_idx: u32 = @as(u32, z) * c.WorldLength + x;
+    const cur = height_map[col_idx];
+    const blocks_light = block >= light_passes.len or !light_passes[block];
+
+    if (blocks_light) {
+        const new_h: u8 = @intCast(y + 1);
+        if (new_h > cur) height_map[col_idx] = new_h;
+    } else if (y + 1 >= cur) {
+        // Removed the top blocker; rescan
+        height_map[col_idx] = column_height(x, z);
+    }
 }
 
 pub fn find_spawn() [3]u16 {
@@ -271,7 +340,9 @@ pub fn tick() void {
     save_counter += 1;
     if (save_counter >= 6000) {
         save_counter = 0;
-        save() catch {};
+        save() catch |err| {
+            log.err("failed to save world: {}", .{err});
+        };
     }
 }
 

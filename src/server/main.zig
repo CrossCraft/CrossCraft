@@ -272,7 +272,7 @@ fn run_server(backing_allocator: std.mem.Allocator, io: std.Io) !void {
     defer allocator.free(conn_handles);
 
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
-    try Server.init(allocator, seed, io);
+    try Server.init(allocator, allocator, seed, io);
     defer Server.deinit();
 
     counting.print();
