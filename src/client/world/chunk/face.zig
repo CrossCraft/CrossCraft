@@ -29,7 +29,7 @@ fn face_color(face: Face) u32 {
     return switch (face) {
         .y_pos => 0xFFFFFFFF,
         .y_neg => 0xFF7F7F7F,
-        .x_neg, .x_pos => 0xFFBFBFBF,
+        .x_neg, .x_pos => 0xFF999999,
         .z_neg, .z_pos => 0xFFCCCCCC,
     };
 }
