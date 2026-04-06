@@ -12,6 +12,8 @@ const Camera = @import("Camera.zig");
 const bindings = @import("bindings.zig");
 const collision = @import("collision.zig");
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
+const ParticleSystem = @import("../world/ParticleSystem.zig");
+const Face = @import("../world/chunk/face.zig").Face;
 
 pub const RaycastHit = struct {
     /// Block coordinates of the solid voxel under the crosshair.
@@ -108,6 +110,11 @@ selected: ?RaycastHit,
 /// real socket). Used by break/place callbacks to send SetBlockToServer.
 writer: *std.Io.Writer,
 
+/// Optional sink for break particles. GameState wires this after both the
+/// world renderer and player exist; null leaves on_break silently skipping
+/// the visual effect (useful for tests).
+particle_sink: ?*ParticleSystem,
+
 /// Initialise player state and wire up input callbacks.
 /// `self` must have a stable address (module-level or arena-backed).
 /// `x`, `y`, `z` are world coordinates; `y` is eye-level from server.
@@ -139,6 +146,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .stick_look_speed = 3.0,
         .selected = null,
         .writer = writer,
+        .particle_sink = null,
     };
 
     try bindings.init();
@@ -608,7 +616,29 @@ fn on_break(ctx: *anyopaque, event: input.ButtonEvent) void {
     const self: *Self = @ptrCast(@alignCast(ctx));
     if (!self.mouse_captured) return;
     const hit = self.selected orelse return;
+    if (self.particle_sink) |ps| {
+        const block_id = World.get_block(hit.x, hit.y, hit.z);
+        if (block_id != B.Air) {
+            ps.spawn_break(block_id, hit.x, hit.y, hit.z, derive_break_face(hit));
+        }
+    }
     send_block_change(self.writer, hit.x, hit.y, hit.z, 0, B.Air);
+}
+
+/// Recover which face the player struck from the raycast result. The
+/// raycaster stores the empty cell just before the hit (`place_*`); the
+/// delta from there to the hit voxel points along the broken face's normal.
+fn derive_break_face(hit: RaycastHit) Face {
+    if (!hit.has_place) return .y_pos;
+    const dx: i32 = @as(i32, hit.place_x) - @as(i32, hit.x);
+    const dy: i32 = @as(i32, hit.place_y) - @as(i32, hit.y);
+    const dz: i32 = @as(i32, hit.place_z) - @as(i32, hit.z);
+    if (dy > 0) return .y_pos;
+    if (dy < 0) return .y_neg;
+    if (dx > 0) return .x_pos;
+    if (dx < 0) return .x_neg;
+    if (dz > 0) return .z_pos;
+    return .z_neg;
 }
 
 fn on_place(ctx: *anyopaque, event: input.ButtonEvent) void {

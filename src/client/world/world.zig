@@ -12,6 +12,7 @@ const config = @import("../config.zig").current;
 const ChunkMesh = @import("chunk/ChunkMesh.zig");
 const BlockRegistry = @import("block/BlockRegistry.zig");
 const Sky = @import("sky/sky.zig");
+const ParticleSystem = @import("ParticleSystem.zig");
 
 const SECTIONS_Y: u32 = 4;
 const WORLD_CX: u32 = 16;
@@ -47,6 +48,7 @@ clouds: *const Rendering.Texture,
 atlas: TextureAtlas,
 pipeline: Rendering.Pipeline.Handle,
 sky: Sky,
+particles: ParticleSystem,
 cam_cx: i32,
 cam_cz: i32,
 
@@ -78,6 +80,7 @@ pub fn init(
         .atlas = atlas,
         .pipeline = pipeline,
         .sky = try Sky.init(pipeline),
+        .particles = try ParticleSystem.init(pipeline, atlas),
         .cam_cx = camera_chunk(camera.x),
         .cam_cz = camera_chunk(camera.z),
     };
@@ -98,6 +101,7 @@ pub fn init(
 }
 
 pub fn deinit(self: *Self) void {
+    self.particles.deinit();
     self.sky.deinit();
     for (0..WORLD_CX) |cx| {
         for (0..WORLD_CZ) |cz| {
@@ -109,6 +113,7 @@ pub fn deinit(self: *Self) void {
 
 pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
     self.sky.update(dt);
+    self.particles.update(dt);
 
     const new_cx = camera_chunk(camera.x);
     const new_cz = camera_chunk(camera.z);
@@ -224,6 +229,10 @@ pub fn draw(self: *Self, camera: *const Camera) void {
         }
         Rendering.gfx.api.set_clip_planes(false);
     }
+
+    // Particles ride the same terrain texture binding and use alpha blending
+    // (still on after the transparent pass).
+    self.particles.draw(camera);
 
     self.clouds.bind();
     self.sky.draw_clouds();

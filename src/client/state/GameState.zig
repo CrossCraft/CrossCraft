@@ -173,6 +173,9 @@ fn init(ctx: *anyopaque) anyerror!void {
     // Let block-change packets find the renderer so they can mark sections.
     self.conn.world_renderer = &self.world;
 
+    // Wire break particles now that both player and world exist.
+    self.player.particle_sink = &self.world.particles;
+
     // UI sprite batcher for HUD overlay (crosshair, etc.)
     self.ui_batcher = try SpriteBatcher.init(self.pipeline);
 
