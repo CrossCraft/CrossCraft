@@ -12,7 +12,7 @@ const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const LO: i16 = 0;
 const HI: i16 = 2048;
 
-const COLOR: u32 = 0xFF000000; // opaque black
+const COLOR: u32 = 0xAA202020; // opaque dark gray
 const VERTEX_COUNT: usize = 24; // 12 edges * 2 endpoints
 
 const Self = @This();

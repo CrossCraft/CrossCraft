@@ -26,6 +26,7 @@ const lava_tile_col: u32 = 14;
 const lava_tile_row: u32 = 1;
 const tile_size: u32 = 16;
 const anim_period_ticks: u32 = 2;
+const selection_depth_nudge: f32 = 1.0 / 160.0;
 
 const GameTextures = struct {
     terrain: Rendering.Texture,
@@ -213,26 +214,27 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     self.player.camera.apply();
     self.world.draw(&self.player.camera);
 
-    // Selection outline: still in the 3D pass, depth-tested against the
-    // opaque world. WorldRenderer leaves alpha blend on after the
-    // transparent pass; force it off so the line shader doesn't discard.
+    // Selection outline: still in the 3D pass, depth-tested against the world.
+    // Nudge it slightly toward the camera so it does not z-fight the selected
+    // block face, without making it show through other geometry.
     if (self.player.selected) |hit| {
-        Rendering.gfx.api.set_alpha_blend(false);
         Rendering.Texture.Default.bind();
         var t = Rendering.Transform.new();
+        const cp = @cos(self.player.camera.pitch);
+        const toward_camera = .{
+            .x = @sin(self.player.camera.yaw) * cp,
+            .y = @sin(self.player.camera.pitch),
+            .z = @cos(self.player.camera.yaw) * cp,
+        };
         t.pos = .{
-            .x = @as(f32, @floatFromInt(hit.x)),
-            .y = @as(f32, @floatFromInt(hit.y)),
-            .z = @as(f32, @floatFromInt(hit.z)),
+            .x = @as(f32, @floatFromInt(hit.x)) + toward_camera.x * selection_depth_nudge,
+            .y = @as(f32, @floatFromInt(hit.y)) + toward_camera.y * selection_depth_nudge,
+            .z = @as(f32, @floatFromInt(hit.z)) + toward_camera.z * selection_depth_nudge,
         };
         // Vertices live in SNORM16 block-units (1 block = 2048 / 32768);
         // scale by 16 to recover world units, matching ChunkMesh.
         t.scale = .{ .x = 16.0, .y = 16.0, .z = 16.0 };
         self.selection.draw(&t);
-        // Restore alpha blending for the HUD pass so the crosshair's
-        // transparent texels stay transparent (the basic shader forces
-        // color.a = 1.0 when blending is off).
-        Rendering.gfx.api.set_alpha_blend(true);
     }
 
     // UI pass: orthographic overlay drawn on top of the 3D scene.
