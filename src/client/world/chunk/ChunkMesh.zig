@@ -11,7 +11,7 @@ const mesher = @import("mesher.zig");
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
 /// One 16x16x16 section with 2 meshes:
-///   opaque -- solid blocks + leaf shell faces
+///   opaque -- solid blocks + buried (solid) leaf faces
 ///   trans  -- outer leaves + water/glass/cross
 /// Each mesh owns its vertex storage via the render allocator.
 @"opaque": BatchMesh,

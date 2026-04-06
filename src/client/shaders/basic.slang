@@ -100,6 +100,9 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     }
     if (pc.alphaBlendEnabled == 0) {
         color.a = 1.0;
+    } else {
+        if (color.a <= 0.5)
+            discard;
     }
 #else
     if (camera.fogEnabled != 0) {
@@ -108,6 +111,9 @@ float4 fragmentMain(VertexOutput input) : SV_Target {
     }
     if (camera.alphaBlendEnabled == 0) {
         color.a = 1.0;
+    } else {
+        if (color.a <= 0.5)
+            discard;
     }
 #endif
     return color;

@@ -47,6 +47,9 @@ const Row = struct {
     flu: u32,
     cross: u32,
     leaf: u32,
+    /// Bits set where a leaf has all 6 neighbors covered (leaf-or-opaque).
+    /// Filled by `compute_solid_leaves` after `pack_row` runs.
+    solid_leaf: u32,
 };
 
 /// 18 Y levels x 18 Z rows (section + borders).
@@ -55,14 +58,14 @@ pub const BUF_Z: u32 = 18;
 pub const SectionBuf = [BUF_Y][BUF_Z]Row;
 
 pub const SectionCounts = struct {
-    opaque_verts: u32, // solid blocks + leaf shell faces
+    opaque_verts: u32, // solid blocks + fully-buried leaf faces
     transparent_verts: u32, // outer leaves + water/glass/cross
 };
 
 // -- Pack ---------------------------------------------------------------------
 
 fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
-    const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0 };
+    const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .solid_leaf = 0 };
     if (wz_raw < 0 or wz_raw >= @as(i32, WORLD_D)) return BOUNDARY;
     if (y < 0 or y >= @as(i32, WORLD_H)) return BOUNDARY;
 
@@ -89,7 +92,54 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
         if (reg.cross.isSet(block)) cross |= bit;
         if (reg.leaf.isSet(block)) leaf |= bit;
     }
-    return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf };
+    return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .solid_leaf = 0 };
+}
+
+/// Flag leaves whose all 6 neighbors are leaf-or-opaque. Such leaves are
+/// treated like opaque for culling and are drawn on the opaque mesh — this
+/// hides the interior of a leaf cluster while still letting the outer layer
+/// render as a transparent shell with holes.
+///
+/// Buffer-edge cells (by/bz boundary) can't see 1-deep in every direction and
+/// conservatively fall back to "not solid". The natural 0-fill of the u32
+/// shifts handles the x-direction boundaries the same way.
+fn compute_solid_leaves(buf: *SectionBuf) void {
+    for (0..BUF_Y) |by| {
+        for (0..BUF_Z) |bz| {
+            const cur = &buf[by][bz];
+            if (cur.leaf == 0) {
+                cur.solid_leaf = 0;
+                continue;
+            }
+            const cov_cur = cur.opq | cur.leaf;
+
+            var cov_zp: u32 = 0;
+            if (bz + 1 < BUF_Z) {
+                const n = &buf[by][bz + 1];
+                cov_zp = n.opq | n.leaf;
+            }
+            var cov_zn: u32 = 0;
+            if (bz > 0) {
+                const n = &buf[by][bz - 1];
+                cov_zn = n.opq | n.leaf;
+            }
+            var cov_yp: u32 = 0;
+            if (by + 1 < BUF_Y) {
+                const n = &buf[by + 1][bz];
+                cov_yp = n.opq | n.leaf;
+            }
+            var cov_yn: u32 = 0;
+            if (by > 0) {
+                const n = &buf[by - 1][bz];
+                cov_yn = n.opq | n.leaf;
+            }
+
+            cur.solid_leaf = cur.leaf &
+                (cov_cur >> 1) & (cov_cur << 1) &
+                cov_zp & cov_zn & cov_yp & cov_yn;
+            std.debug.assert((cur.solid_leaf & ~cur.leaf) == 0);
+        }
+    }
 }
 
 pub fn pack_section(cx: u32, sy: u32, cz: u32, buf: *SectionBuf) void {
@@ -101,6 +151,7 @@ pub fn pack_section(cx: u32, sy: u32, cz: u32, buf: *SectionBuf) void {
             buf[by][bz] = pack_row(cx, wy, wz_raw);
         }
     }
+    compute_solid_leaves(buf);
 }
 
 // -- Count --------------------------------------------------------------------
@@ -111,19 +162,23 @@ fn pop(v: u32) u32 {
 
 /// Computed face masks for a single row, shared by counting and emission.
 const FaceMasks = struct {
+    // Faces routed via emit_mask (registry picks opaque vs transparent mesh).
+    // Includes: opaque blocks, outer leaves, glass, and fluids.
     x_pos: u32,
     x_neg: u32,
     y_pos: u32,
     y_neg: u32,
     z_pos: u32,
     z_neg: u32,
-    // Shell: leaf faces routed to the opaque mesh
-    s_xp: u32,
-    s_xn: u32,
-    s_yp: u32,
-    s_yn: u32,
-    s_zp: u32,
-    s_zn: u32,
+    // Solid-leaf faces — always emitted to the opaque mesh. Only nonzero where
+    // the neighbor in that direction is an outer leaf (everywhere else the
+    // neighbor is opaque-or-solid-leaf and the face is culled by construction).
+    sl_xp: u32,
+    sl_xn: u32,
+    sl_yp: u32,
+    sl_yn: u32,
+    sl_zp: u32,
+    sl_zn: u32,
     cross: u32,
     opq: u32,
     leaf: u32,
@@ -137,70 +192,76 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const vis = cur.vis;
     const flu = cur.flu;
     const leaf = cur.leaf;
-    const solid_vis = vis & ~flu;
-    const covered = opq | leaf;
+    const sleaf = cur.solid_leaf;
 
-    var x_pos = (solid_vis & ~(opq >> 1)) & SECTION_MASK;
-    var x_neg = (solid_vis & ~(opq << 1)) & SECTION_MASK;
-    var z_pos = (solid_vis & ~buf[by][bz + 1].opq) & SECTION_MASK;
-    var z_neg = (solid_vis & ~buf[by][bz - 1].opq) & SECTION_MASK;
-    var y_pos = (vis & ~buf[by + 1][bz].opq & ~(flu & buf[by + 1][bz].flu)) & SECTION_MASK;
-    var y_neg = (solid_vis & ~buf[by - 1][bz].opq) & SECTION_MASK;
+    // "Effective opaque" = real opaque + solid leaves. Anything in eff acts as
+    // an opaque barrier for face culling — so a dirt block adjacent to a
+    // solid-leaf does not draw its face, just like dirt-against-dirt.
+    const n_zp = &buf[by][bz + 1];
+    const n_zn = &buf[by][bz - 1];
+    const n_yp = &buf[by + 1][bz];
+    const n_yn = &buf[by - 1][bz];
+    const eff_cur = opq | sleaf;
+    const eff_zp = n_zp.opq | n_zp.solid_leaf;
+    const eff_zn = n_zn.opq | n_zn.solid_leaf;
+    const eff_yp = n_yp.opq | n_yp.solid_leaf;
+    const eff_yn = n_yn.opq | n_yn.solid_leaf;
 
-    // Per-face leaf depth: cull deep interior (leaf 1 ahead AND covered 2 ahead)
-    const cov_2_zp: u32 = if (bz + 2 < BUF_Z) (buf[by][bz + 2].opq | buf[by][bz + 2].leaf) else 0;
-    const cov_2_zn: u32 = if (bz >= 2) (buf[by][bz - 2].opq | buf[by][bz - 2].leaf) else 0;
-    const cov_2_yp: u32 = if (by + 2 < BUF_Y) (buf[by + 2][bz].opq | buf[by + 2][bz].leaf) else 0;
-    const cov_2_yn: u32 = if (by >= 2) (buf[by - 2][bz].opq | buf[by - 2][bz].leaf) else 0;
+    // Standard visible blocks: opaque + outer leaves + glass. Fluids and solid
+    // leaves are emitted through their own paths and excluded here.
+    const std_vis = (vis & ~flu) & ~sleaf;
 
-    x_pos &= ~(leaf & (leaf >> 1) & (covered >> 2));
-    x_neg &= ~(leaf & (leaf << 1) & (covered << 2));
-    z_pos &= ~(leaf & buf[by][bz + 1].leaf & cov_2_zp);
-    z_neg &= ~(leaf & buf[by][bz - 1].leaf & cov_2_zn);
-    y_pos &= ~(leaf & buf[by + 1][bz].leaf & cov_2_yp);
-    y_neg &= ~(leaf & buf[by - 1][bz].leaf & cov_2_yn);
+    const x_pos = (std_vis & ~(eff_cur >> 1)) & SECTION_MASK;
+    const x_neg = (std_vis & ~(eff_cur << 1)) & SECTION_MASK;
+    const z_pos = (std_vis & ~eff_zp) & SECTION_MASK;
+    const z_neg = (std_vis & ~eff_zn) & SECTION_MASK;
+    const y_pos = (std_vis & ~eff_yp) & SECTION_MASK;
+    const y_neg = (std_vis & ~eff_yn) & SECTION_MASK;
 
-    // Shell: leaf with leaf 1 ahead (post-cull => opaque boundary)
-    const s_xp = leaf & x_pos & (leaf >> 1);
-    const s_xn = leaf & x_neg & (leaf << 1);
-    const s_zp = leaf & z_pos & buf[by][bz + 1].leaf;
-    const s_zn = leaf & z_neg & buf[by][bz - 1].leaf;
-    const s_yp = leaf & y_pos & buf[by + 1][bz].leaf;
-    const s_yn = leaf & y_neg & buf[by - 1][bz].leaf;
+    // Fluid faces: cull against eff (so fluid against solid-leaf is culled)
+    // and against same-fluid neighbors (water-against-water looks like bulk).
+    const flu_xp = (flu & ~(eff_cur >> 1) & ~(flu >> 1)) & SECTION_MASK;
+    const flu_xn = (flu & ~(eff_cur << 1) & ~(flu << 1)) & SECTION_MASK;
+    const flu_zp = (flu & ~eff_zp & ~n_zp.flu) & SECTION_MASK;
+    const flu_zn = (flu & ~eff_zn & ~n_zn.flu) & SECTION_MASK;
+    const flu_yp_bits = (flu & ~eff_yp & ~n_yp.flu) & SECTION_MASK;
+    const flu_yn = (flu & ~eff_yn & ~n_yn.flu) & SECTION_MASK;
 
-    // Fluid side/bottom faces: emit where neighbor is not opaque and not fluid
-    const flu_xp = (flu & ~(opq >> 1) & ~(flu >> 1)) & SECTION_MASK;
-    const flu_xn = (flu & ~(opq << 1) & ~(flu << 1)) & SECTION_MASK;
-    const flu_zp = (flu & ~buf[by][bz + 1].opq & ~buf[by][bz + 1].flu) & SECTION_MASK;
-    const flu_zn = (flu & ~buf[by][bz - 1].opq & ~buf[by][bz - 1].flu) & SECTION_MASK;
-    const flu_yn = (flu & ~buf[by - 1][bz].opq & ~buf[by - 1][bz].flu) & SECTION_MASK;
-
-    const final_yp = y_pos & ~s_yp;
+    // Solid-leaf faces. By construction, all 6 neighbors of a solid leaf are
+    // leaf-or-opaque, so a face is only emitted where the neighbor is an
+    // outer leaf (not in eff). That's exactly the boundary you'd see through
+    // the transparent outer leaf — drawn here on the opaque mesh.
+    const sl_xp = (sleaf & ~(eff_cur >> 1)) & SECTION_MASK;
+    const sl_xn = (sleaf & ~(eff_cur << 1)) & SECTION_MASK;
+    const sl_zp = (sleaf & ~eff_zp) & SECTION_MASK;
+    const sl_zn = (sleaf & ~eff_zn) & SECTION_MASK;
+    const sl_yp = (sleaf & ~eff_yp) & SECTION_MASK;
+    const sl_yn = (sleaf & ~eff_yn) & SECTION_MASK;
 
     return .{
-        .x_pos = (x_pos & ~s_xp) | flu_xp,
-        .x_neg = (x_neg & ~s_xn) | flu_xn,
-        .y_pos = final_yp,
-        .y_neg = (y_neg & ~s_yn) | flu_yn,
-        .z_pos = (z_pos & ~s_zp) | flu_zp,
-        .z_neg = (z_neg & ~s_zn) | flu_zn,
-        .s_xp = s_xp,
-        .s_xn = s_xn,
-        .s_yp = s_yp,
-        .s_yn = s_yn,
-        .s_zp = s_zp,
-        .s_zn = s_zn,
+        .x_pos = x_pos | flu_xp,
+        .x_neg = x_neg | flu_xn,
+        .y_pos = y_pos | flu_yp_bits,
+        .y_neg = y_neg | flu_yn,
+        .z_pos = z_pos | flu_zp,
+        .z_neg = z_neg | flu_zn,
+        .sl_xp = sl_xp,
+        .sl_xn = sl_xn,
+        .sl_yp = sl_yp,
+        .sl_yn = sl_yn,
+        .sl_zp = sl_zp,
+        .sl_zn = sl_zn,
         .cross = cur.cross & SECTION_MASK,
         .opq = opq,
         .leaf = leaf,
-        .flu_yp = flu & final_yp,
+        .flu_yp = flu_yp_bits,
     };
 }
 
 fn count_row_faces(by: u32, bz: u32, buf: *const SectionBuf) SectionCounts {
     const f = compute_face_masks(by, bz, buf);
 
-    const shell = pop(f.s_xp) + pop(f.s_xn) + pop(f.s_zp) + pop(f.s_zn) + pop(f.s_yp) + pop(f.s_yn);
+    const sl_count = pop(f.sl_xp) + pop(f.sl_xn) + pop(f.sl_zp) + pop(f.sl_zn) + pop(f.sl_yp) + pop(f.sl_yn);
     const opq_count = pop(f.opq & f.x_pos) + pop(f.opq & f.x_neg) +
         pop(f.opq & f.z_pos) + pop(f.opq & f.z_neg) +
         pop(f.opq & f.y_pos) + pop(f.opq & f.y_neg);
@@ -211,7 +272,7 @@ fn count_row_faces(by: u32, bz: u32, buf: *const SectionBuf) SectionCounts {
     const flu_top_extra = pop(f.flu_yp);
 
     return .{
-        .opaque_verts = (opq_count + shell) * 6,
+        .opaque_verts = (opq_count + sl_count) * 6,
         .transparent_verts = (all_count - opq_count) * 6 + cross_count * 24 + flu_top_extra * 6,
     };
 }
@@ -277,7 +338,7 @@ fn emit_mask(
     }
 }
 
-/// Emit leaf shell faces directly to the opaque mesh.
+/// Emit solid-leaf faces directly to the opaque mesh.
 fn emit_opaque_leaf_mask(
     mask: u32,
     y: u32,
@@ -346,7 +407,8 @@ pub fn emit_section(
             const bz: u32 = @as(u32, @intCast(lz)) + 1;
             const f = compute_face_masks(by, bz, buf);
 
-            // Emit remaining faces (transparent routing for outer leaves)
+            // Standard faces — emit_mask routes opaque blocks to the opaque
+            // mesh and outer leaves / glass / fluids to the transparent mesh.
             if (f.x_pos != 0) emit_mask(f.x_pos, world_y, @intCast(lz), cx, cz, .x_pos, m, atlas);
             if (f.x_neg != 0) emit_mask(f.x_neg, world_y, @intCast(lz), cx, cz, .x_neg, m, atlas);
             if (f.z_pos != 0) emit_mask(f.z_pos, world_y, @intCast(lz), cx, cz, .z_pos, m, atlas);
@@ -354,13 +416,13 @@ pub fn emit_section(
             if (f.y_pos != 0) emit_mask(f.y_pos, world_y, @intCast(lz), cx, cz, .y_pos, m, atlas);
             if (f.y_neg != 0) emit_mask(f.y_neg, world_y, @intCast(lz), cx, cz, .y_neg, m, atlas);
 
-            // Emit shell faces -> opaque mesh
-            if (f.s_xp != 0) emit_opaque_leaf_mask(f.s_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.@"opaque", atlas);
-            if (f.s_xn != 0) emit_opaque_leaf_mask(f.s_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.@"opaque", atlas);
-            if (f.s_zp != 0) emit_opaque_leaf_mask(f.s_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.@"opaque", atlas);
-            if (f.s_zn != 0) emit_opaque_leaf_mask(f.s_zn, world_y, @intCast(lz), cx, cz, .z_neg, m.@"opaque", atlas);
-            if (f.s_yp != 0) emit_opaque_leaf_mask(f.s_yp, world_y, @intCast(lz), cx, cz, .y_pos, m.@"opaque", atlas);
-            if (f.s_yn != 0) emit_opaque_leaf_mask(f.s_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.@"opaque", atlas);
+            // Emit solid-leaf faces -> opaque mesh
+            if (f.sl_xp != 0) emit_opaque_leaf_mask(f.sl_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.@"opaque", atlas);
+            if (f.sl_xn != 0) emit_opaque_leaf_mask(f.sl_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.@"opaque", atlas);
+            if (f.sl_zp != 0) emit_opaque_leaf_mask(f.sl_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.@"opaque", atlas);
+            if (f.sl_zn != 0) emit_opaque_leaf_mask(f.sl_zn, world_y, @intCast(lz), cx, cz, .z_neg, m.@"opaque", atlas);
+            if (f.sl_yp != 0) emit_opaque_leaf_mask(f.sl_yp, world_y, @intCast(lz), cx, cz, .y_pos, m.@"opaque", atlas);
+            if (f.sl_yn != 0) emit_opaque_leaf_mask(f.sl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.@"opaque", atlas);
 
             if (f.cross != 0) emit_cross_mask(f.cross, world_y, @intCast(lz), cx, cz, m.transparent, atlas);
         }
