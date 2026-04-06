@@ -18,6 +18,14 @@ const WORLD_CX: u32 = 16;
 const WORLD_CZ: u32 = 16;
 const MAX_ACTIVE: u32 = @import("../config.zig").max_sections();
 
+/// Sections whose center is within this distance of the camera are
+/// considered "near LOD" and meshed at full detail; beyond it the mesher
+/// downgrades them (currently: leaves become fully opaque). Crossing the
+/// boundary in either direction triggers a rebuild via refresh_lod_states.
+/// Per-platform value lives in config.zig.
+const LOD_NEAR_RADIUS_BLOCKS: f32 = @floatFromInt(config.lod_near_radius_blocks);
+const LOD_NEAR_RADIUS_SQ: f32 = LOD_NEAR_RADIUS_BLOCKS * LOD_NEAR_RADIUS_BLOCKS;
+
 const Self = @This();
 
 /// Grid of sections. Only valid where loaded[cx][cz] is true.
@@ -107,6 +115,10 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
     if (new_cx != self.cam_cx or new_cz != self.cam_cz) {
         self.recollect(camera);
     }
+
+    // Catch LOD transitions that happen mid-chunk (player walking inside the
+    // same column can still cross the 32-block radius for nearby sections).
+    self.refresh_lod_states(camera);
 
     // Re-queue if dirty sections were marked while the queue was empty
     if (self.dirty and self.build_cursor >= self.build_end) {
@@ -254,7 +266,7 @@ fn recollect(self: *Self, camera: *const Camera) void {
     for (0..WORLD_CX) |cx| {
         for (0..WORLD_CZ) |cz| {
             if (!self.loaded[cx][cz] and needed[cx][cz]) {
-                if (self.init_column(@intCast(cx), @intCast(cz))) {
+                if (self.init_column(@intCast(cx), @intCast(cz), camera)) {
                     self.loaded[cx][cz] = true;
                 }
                 // If init fails, loaded stays false; will retry next crossing
@@ -267,7 +279,7 @@ fn recollect(self: *Self, camera: *const Camera) void {
     self.queue_unbuilt_sections(camera);
 }
 
-fn init_column(self: *Self, cx: u8, cz: u8) bool {
+fn init_column(self: *Self, cx: u8, cz: u8, cam: *const Camera) bool {
     var count: u32 = 0;
     for (0..SECTIONS_Y) |sy| {
         self.grid[cx][cz][sy] = ChunkMesh.init(
@@ -280,6 +292,9 @@ fn init_column(self: *Self, cx: u8, cz: u8) bool {
             for (0..count) |prev| self.grid[cx][cz][prev].deinit();
             return false;
         };
+        // Set the LOD state up front so the first build uses the correct
+        // detail level rather than the default and immediately rebuilding.
+        self.grid[cx][cz][sy].near_lod = target_near_lod(cx, @intCast(sy), cz, cam);
         count += 1;
     }
     return true;
@@ -356,6 +371,26 @@ pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
     self.dirty = true;
 }
 
+/// Walk loaded sections and update their LOD state. Sections that cross
+/// the LOD_NEAR_RADIUS_BLOCKS boundary in either direction get marked
+/// dirty so they re-mesh with the new detail level.
+fn refresh_lod_states(self: *Self, cam: *const Camera) void {
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz]) continue;
+            for (0..SECTIONS_Y) |sy| {
+                const target = target_near_lod(@intCast(cx), @intCast(sy), @intCast(cz), cam);
+                const sec = &self.grid[cx][cz][sy];
+                if (sec.near_lod != target) {
+                    sec.near_lod = target;
+                    self.built[cx][cz][sy] = false;
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+}
+
 fn sort_build_queue(queue: []GridRef, cam: *const Camera) void {
     std.sort.pdq(GridRef, queue, cam, grid_ref_less_than);
 }
@@ -365,6 +400,14 @@ fn grid_ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
     const wy: f32 = @as(f32, @floatFromInt(@as(u32, ref.sy) * 16)) + 8.0;
     const wz: f32 = @as(f32, @floatFromInt(@as(u32, ref.cz) * 16)) + 8.0;
     return cam.distance_sq(wx, wy, wz);
+}
+
+/// True when a section's center is within LOD_NEAR_RADIUS_BLOCKS of the camera.
+fn target_near_lod(cx: u8, sy: u8, cz: u8, cam: *const Camera) bool {
+    const wx: f32 = @as(f32, @floatFromInt(@as(u32, cx) * 16)) + 8.0;
+    const wy: f32 = @as(f32, @floatFromInt(@as(u32, sy) * 16)) + 8.0;
+    const wz: f32 = @as(f32, @floatFromInt(@as(u32, cz) * 16)) + 8.0;
+    return cam.distance_sq(wx, wy, wz) <= LOD_NEAR_RADIUS_SQ;
 }
 
 fn grid_ref_less_than(cam: *const Camera, a: GridRef, b: GridRef) bool {

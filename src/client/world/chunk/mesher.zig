@@ -103,7 +103,20 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
 /// Buffer-edge cells (by/bz boundary) can't see 1-deep in every direction and
 /// conservatively fall back to "not solid". The natural 0-fill of the u32
 /// shifts handles the x-direction boundaries the same way.
-fn compute_solid_leaves(buf: *SectionBuf) void {
+///
+/// In far LOD (`near_lod == false`), every leaf is unconditionally marked
+/// solid. The downstream face-mask logic then routes all leaf faces through
+/// the opaque mesh and culls neighbors against them, which is the cheap
+/// "fast leaves" rendering used for distant chunks.
+fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
+    if (!near_lod) {
+        for (0..BUF_Y) |by| {
+            for (0..BUF_Z) |bz| {
+                buf[by][bz].solid_leaf = buf[by][bz].leaf;
+            }
+        }
+        return;
+    }
     for (0..BUF_Y) |by| {
         for (0..BUF_Z) |bz| {
             const cur = &buf[by][bz];
@@ -142,7 +155,7 @@ fn compute_solid_leaves(buf: *SectionBuf) void {
     }
 }
 
-pub fn pack_section(cx: u32, sy: u32, cz: u32, buf: *SectionBuf) void {
+pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf) void {
     const base_y: i32 = @as(i32, @intCast(sy)) * 16 - 1;
     for (0..BUF_Y) |by| {
         const wy: i32 = base_y + @as(i32, @intCast(by));
@@ -151,7 +164,7 @@ pub fn pack_section(cx: u32, sy: u32, cz: u32, buf: *SectionBuf) void {
             buf[by][bz] = pack_row(cx, wy, wz_raw);
         }
     }
-    compute_solid_leaves(buf);
+    compute_solid_leaves(buf, near_lod);
 }
 
 // -- Count --------------------------------------------------------------------

@@ -19,6 +19,11 @@ trans: BatchMesh,
 cx: u32,
 sy: u32,
 cz: u32,
+/// Whether this section was last rebuilt as "near LOD" (within
+/// LOD_NEAR_RADIUS_BLOCKS of the camera). World owns the value: it
+/// updates the field when the section transitions across the radius and
+/// queues a rebuild so the mesher picks the new state up.
+near_lod: bool,
 
 const Self = @This();
 
@@ -29,6 +34,7 @@ pub fn init(pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Sel
         .cx = cx,
         .sy = sy,
         .cz = cz,
+        .near_lod = false,
     };
 }
 
@@ -46,7 +52,7 @@ pub fn clear(self: *Self) void {
 
 pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void {
     var buf: mesher.SectionBuf = undefined;
-    mesher.pack_section(self.cx, self.sy, self.cz, &buf);
+    mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
     const counts = mesher.count_section(&buf);
 
     const a = Util.allocator(.render);
