@@ -19,6 +19,9 @@ const SKY_Y_OFFSET: f32 = 48.0;
 /// Clouds: 64x64 vertex grid, UV tiles at 0.5x (one repeat per 512 units).
 const CLOUD_GRID: u32 = 64;
 const CLOUD_UV_REPEATS: u32 = 1;
+/// Texture appears this many times larger on screen without changing mesh;
+/// UVs span 1/CLOUD_TEX_SCALE of the texture across the grid.
+const CLOUD_TEX_SCALE: u32 = 2;
 const CLOUD_Y: f32 = 72.0;
 const CLOUD_SPEED: f32 = 2.0;
 const WORLD_CENTER: f32 = 128.0;
@@ -136,7 +139,7 @@ fn encode_cloud_pos(i: u32) i16 {
 /// resetting at texture repeat boundaries to avoid SNORM wrap artifacts.
 fn cloud_tile_uv(tile: u32) [2]i16 {
     const tiles_per_repeat = CLOUD_GRID / CLOUD_UV_REPEATS;
-    const scale: i32 = 32768 / tiles_per_repeat;
+    const scale: i32 = 32768 / (tiles_per_repeat * CLOUD_TEX_SCALE);
     const local: i32 = @intCast(tile % tiles_per_repeat);
     return .{
         @intCast(@min(local * scale, 32767)),
