@@ -206,29 +206,25 @@ noinline fn runWalker(mask: []u8, mode: MaskMode, rng: *Xorshift64) void {
         else => .{ .value = 0 },
     };
 
-    // Cave length: (rand+rand)*200. Ore length: rand*rand*75*abundance.
-    const len_a = rng.next_float();
-    const len_b = rng.next_float();
+    // Both walker types share the rand*rand length distribution per the
+    // ClassiCube source. Caves multiply by 200; ores multiply by 75*abundance.
+    // (The wiki's "(rand+rand)*200" for caves is incorrect - the C source
+    // uses rand*rand. Following the wiki triples cave coverage, which kills performance)
+    const sq: u64 = blk: {
+        const a: u64 = @intCast(rng.next_float().value);
+        const b: u64 = @intCast(rng.next_float().value);
+        break :blk a * b / 65536;
+    };
     const cave_len: u32 = switch (mode) {
-        .cave => blk: {
-            const sum: u64 = @as(u64, @intCast(len_a.value)) + @as(u64, @intCast(len_b.value));
-            break :blk @max(1, @as(u32, @intCast(sum * 200 / 65536)));
-        },
-        .coal, .iron, .gold => blk: {
-            const x10: u64 = switch (mode) {
-                .coal => COAL_ABUNDANCE_X10,
-                .iron => IRON_ABUNDANCE_X10,
-                .gold => GOLD_ABUNDANCE_X10,
-                else => unreachable,
-            };
-            const sq: u64 = @as(u64, @intCast(len_a.value)) * @as(u64, @intCast(len_b.value)) / 65536;
-            break :blk @max(1, @as(u32, @intCast(sq * 75 * x10 / 10 / 65536)));
-        },
+        .cave => @max(1, @as(u32, @intCast(sq * 200 / 65536))),
+        .coal => @max(1, @as(u32, @intCast(sq * 75 * COAL_ABUNDANCE_X10 / 10 / 65536))),
+        .iron => @max(1, @as(u32, @intCast(sq * 75 * IRON_ABUNDANCE_X10 / 10 / 65536))),
+        .gold => @max(1, @as(u32, @intCast(sq * 75 * GOLD_ABUNDANCE_X10 / 10 / 65536))),
     };
 
     var step: u32 = 0;
     while (step < cave_len) : (step += 1) {
-        walkerStep(&pos_x, &pos_y, &pos_z, &theta, &phi, &d_theta, &d_phi, rng);
+        walkerStep(&pos_x, &pos_y, &pos_z, &theta, &phi, &d_theta, &d_phi, rng, mode);
         if (rng.next_float().value < FP_0_25.value) continue;
 
         const jx = @as(i32, @intCast(rng.next_bounded(WALKER_JITTER_RANGE))) - WALKER_JITTER_CENTER;
@@ -243,7 +239,10 @@ noinline fn runWalker(mask: []u8, mode: MaskMode, rng: *Xorshift64) void {
     }
 }
 
-/// This is the per-phase walker step which moves the head of the walker to a new position and modifies the angle by random
+/// Per-step walker advance: moves the head along (theta, phi) and evolves
+/// the heading. Mode controls the two ore-vs-cave divergences from the
+/// ClassiCube source: ores discard the previous theta each step, and ores
+/// use a slower 0.9 decay on d_phi vs the cave's 0.75.
 fn walkerStep(
     px: *FP16,
     py: *FP16,
@@ -253,14 +252,32 @@ fn walkerStep(
     d_theta: *FP16,
     d_phi: *FP16,
     rng: *Xorshift64,
+    mode: MaskMode,
 ) void {
-    px.* = px.add(sin_fp16(theta.*).mul(cos_fp16(phi.*)));
-    py.* = py.add(cos_fp16(theta.*));
-    pz.* = pz.add(sin_fp16(phi.*));
-    theta.* = theta.add(d_theta.mul(FP_0_2));
+    // CrossCraft uses Y as the vertical axis: y gets sin(phi); horizontal
+    // motion (sin(theta), cos(theta)) in XZ is scaled by cos(phi).
+    const cphi = cos_fp16(phi.*);
+    px.* = px.add(sin_fp16(theta.*).mul(cphi));
+    py.* = py.add(sin_fp16(phi.*));
+    pz.* = pz.add(cos_fp16(theta.*).mul(cphi));
+
+    // Theta: caves accumulate, ores replace. d_theta evolves the same way.
+    const dtheta_step = d_theta.mul(FP_0_2);
+    theta.* = switch (mode) {
+        .cave => theta.add(dtheta_step),
+        else => dtheta_step,
+    };
     d_theta.* = d_theta.mul(FP_0_9).add(rng.next_float()).sub(rng.next_float());
+
+    // Phi update is identical for both modes: phi/2 + d_phi/4.
     phi.* = .{ .value = @divTrunc(phi.value, 2) + @divTrunc(d_phi.value, 4) };
-    d_phi.* = d_phi.mul(FP_0_75).add(rng.next_float()).sub(rng.next_float());
+
+    // d_phi decay: cave 0.75, ore 0.9 (slower → wider vertical wobble).
+    const decay = switch (mode) {
+        .cave => FP_0_75,
+        else => FP_0_9,
+    };
+    d_phi.* = d_phi.mul(decay).add(rng.next_float()).sub(rng.next_float());
 }
 
 /// Changes the radius of the walker. Cave radius peaks ~5.7 (additive
