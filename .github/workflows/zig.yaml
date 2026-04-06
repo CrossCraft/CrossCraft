@@ -71,8 +71,12 @@ jobs:
             extra: -Dcpu=x86_64_v3
           - os: ubuntu-latest
             target: mipsel-psp
-            name: psp
+            name: psp_phat
             extra:
+          - os: ubuntu-latest
+            target: mipsel-psp
+            name: psp_slim
+            extra: -Dslim=true
     runs-on: ${{ matrix.os }}
     name: game (${{ matrix.name }})
     steps:
