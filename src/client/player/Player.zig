@@ -1,10 +1,38 @@
 const std = @import("std");
 const ae = @import("aether");
+const Rendering = ae.Rendering;
 const input = ae.Core.input;
+
+const World = @import("game").World;
+const c = @import("common").consts;
+const B = c.Block;
+const proto = @import("common").protocol;
 
 const Camera = @import("Camera.zig");
 const bindings = @import("bindings.zig");
 const collision = @import("collision.zig");
+const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
+
+pub const RaycastHit = struct {
+    /// Block coordinates of the solid voxel under the crosshair.
+    x: u16,
+    y: u16,
+    z: u16,
+    /// Coordinates of the empty voxel the ray was in just before entering
+    /// the hit block. Used as the placement target. May equal the hit
+    /// position when the camera is already inside the block (no place).
+    place_x: u16,
+    place_y: u16,
+    place_z: u16,
+    has_place: bool,
+};
+
+/// Maximum reach in blocks for the selection raycast.
+pub const REACH: f32 = 5.0;
+
+/// Block ID placed by the right-click action. Hardcoded until a hotbar
+/// exists; matches the original Classic default of cobblestone.
+const PLACE_BLOCK: u8 = B.Cobblestone;
 
 const Self = @This();
 
@@ -72,10 +100,19 @@ sneaking: bool,
 mouse_captured: bool,
 stick_look_speed: f32,
 
+/// Block currently under the crosshair, if any. Refreshed each frame in
+/// `update`. Consumed by GameState to draw the selection outline.
+selected: ?RaycastHit,
+
+/// Outbound packet sink, owned by the connection layer (FakeConn or
+/// real socket). Used by break/place callbacks to send SetBlockToServer.
+writer: *std.Io.Writer,
+
 /// Initialise player state and wire up input callbacks.
 /// `self` must have a stable address (module-level or arena-backed).
 /// `x`, `y`, `z` are world coordinates; `y` is eye-level from server.
-pub fn init(self: *Self, x: f32, y: f32, z: f32) !void {
+/// `writer` is the connection's outbound stream (used for SetBlockToServer).
+pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     const feet_y = y - collision.EYE_HEIGHT;
     self.* = .{
         .camera = Camera.init(x, y, z),
@@ -100,6 +137,8 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32) !void {
         .sneaking = false,
         .mouse_captured = true,
         .stick_look_speed = 3.0,
+        .selected = null,
+        .writer = writer,
     };
 
     try bindings.init();
@@ -111,6 +150,8 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32) !void {
     try input.add_vector2_callback("look_stick", @ptrCast(self), on_look_stick);
     try input.add_button_callback("escape", @ptrCast(self), on_escape);
     try input.add_button_callback("noclip", @ptrCast(self), on_noclip);
+    try input.add_button_callback("break", @ptrCast(self), on_break);
+    try input.add_button_callback("place", @ptrCast(self), on_place);
 
     input.mouse_sensitivity = 3.0;
     input.set_mouse_relative_mode(true);
@@ -128,6 +169,7 @@ pub fn update(self: *Self, dt: f32) void {
     }
 
     self.sync_camera();
+    self.selected = self.raycast_block(REACH);
 }
 
 // -- Look --------------------------------------------------------------------
@@ -369,6 +411,150 @@ fn sync_camera(self: *Self) void {
     self.camera.z = self.prev_z + (self.pos_z - self.prev_z) * alpha;
 }
 
+// -- Voxel raycast (Amanatides & Woo) ----------------------------------------
+
+/// Walk voxels along the camera's forward ray and return the first non-air
+/// block within `range` blocks of the eye, or null if none. Used for the
+/// selection outline; iterative (no recursion), no allocation.
+pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
+    std.debug.assert(range >= 0.0);
+    std.debug.assert(range <= 64.0);
+
+    // Camera-forward in world space. Yaw 0 looks down -Z, positive pitch up.
+    // Derived from Camera.apply(): view = T(-pos) * Ry(-yaw) * Rx(pitch)
+    // (row-vector convention), so the world vector mapping to view -Z is
+    // (-cos(p)*sin(y), -sin(p), -cos(p)*cos(y)).
+    const cp = @cos(self.camera.pitch);
+    const dx = -@sin(self.camera.yaw) * cp;
+    const dy = -@sin(self.camera.pitch);
+    const dz = -@cos(self.camera.yaw) * cp;
+
+    const ox = self.camera.x;
+    const oy = self.camera.y;
+    const oz = self.camera.z;
+
+    var bx: i32 = @intFromFloat(@floor(ox));
+    var by: i32 = @intFromFloat(@floor(oy));
+    var bz: i32 = @intFromFloat(@floor(oz));
+
+    const step_x: i32 = if (dx > 0) 1 else if (dx < 0) -1 else 0;
+    const step_y: i32 = if (dy > 0) 1 else if (dy < 0) -1 else 0;
+    const step_z: i32 = if (dz > 0) 1 else if (dz < 0) -1 else 0;
+
+    const INF: f32 = std.math.inf(f32);
+    const t_delta_x: f32 = if (dx != 0) @abs(1.0 / dx) else INF;
+    const t_delta_y: f32 = if (dy != 0) @abs(1.0 / dy) else INF;
+    const t_delta_z: f32 = if (dz != 0) @abs(1.0 / dz) else INF;
+
+    var t_max_x: f32 = if (dx != 0) next_boundary(ox, dx) else INF;
+    var t_max_y: f32 = if (dy != 0) next_boundary(oy, dy) else INF;
+    var t_max_z: f32 = if (dz != 0) next_boundary(oz, dz) else INF;
+
+    // Check the voxel containing the eye first (in case we're inside a block).
+    if (in_world(bx, by, bz)) {
+        if (is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) {
+            return .{
+                .x = @intCast(bx),
+                .y = @intCast(by),
+                .z = @intCast(bz),
+                .place_x = @intCast(bx),
+                .place_y = @intCast(by),
+                .place_z = @intCast(bz),
+                .has_place = false,
+            };
+        }
+    }
+
+    // Hard cap iterations as defense in depth against numerical edge cases.
+    const max_iters: u32 = 64;
+    var i: u32 = 0;
+    while (i < max_iters) : (i += 1) {
+        const t_min = @min(t_max_x, @min(t_max_y, t_max_z));
+        if (t_min > range) return null;
+
+        // Remember the empty voxel we're stepping out of -- that's where a
+        // place action would put a new block.
+        const prev_x = bx;
+        const prev_y = by;
+        const prev_z = bz;
+
+        if (t_max_x <= t_max_y and t_max_x <= t_max_z) {
+            bx += step_x;
+            t_max_x += t_delta_x;
+        } else if (t_max_y <= t_max_z) {
+            by += step_y;
+            t_max_y += t_delta_y;
+        } else {
+            bz += step_z;
+            t_max_z += t_delta_z;
+        }
+
+        if (!in_world(bx, by, bz)) return null;
+        if (is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) {
+            const has_place = in_world(prev_x, prev_y, prev_z);
+            return .{
+                .x = @intCast(bx),
+                .y = @intCast(by),
+                .z = @intCast(bz),
+                .place_x = if (has_place) @intCast(prev_x) else @intCast(bx),
+                .place_y = if (has_place) @intCast(prev_y) else @intCast(by),
+                .place_z = if (has_place) @intCast(prev_z) else @intCast(bz),
+                .has_place = has_place,
+            };
+        }
+    }
+    return null;
+}
+
+/// Distance along the ray to the next integer grid plane on one axis.
+fn next_boundary(origin: f32, dir: f32) f32 {
+    std.debug.assert(dir != 0);
+    const cell = @floor(origin);
+    const next: f32 = if (dir > 0) cell + 1.0 else cell;
+    return (next - origin) / dir;
+}
+
+fn in_world(x: i32, y: i32, z: i32) bool {
+    return x >= 0 and y >= 0 and z >= 0 and
+        x < c.WorldLength and y < c.WorldHeight and z < c.WorldDepth;
+}
+
+/// What counts as "selectable" by the crosshair. Air and fluids are
+/// passed through so the outline lands on the first solid block behind
+/// any water/lava the ray crosses.
+fn is_selectable(x: u16, y: u16, z: u16) bool {
+    const id = World.get_block(x, y, z);
+    return switch (id) {
+        B.Air,
+        B.Flowing_Water,
+        B.Still_Water,
+        B.Flowing_Lava,
+        B.Still_Lava,
+        => false,
+        else => true,
+    };
+}
+
+// -- UI / HUD ----------------------------------------------------------------
+
+/// Emit the player's HUD sprites into `batcher`. Caller is responsible for
+/// clear()/flush() around this call. The crosshair lives at texel (240, 0)
+/// in gui.png with a 16x16 extent -- standard Minecraft Classic layout.
+pub fn draw_ui(self: *Self, batcher: *SpriteBatcher, gui: *const Rendering.Texture) void {
+    _ = self;
+    batcher.add_sprite(&.{
+        .texture = gui,
+        .pos_offset = .{ .x = 0, .y = 0 },
+        .pos_extent = .{ .x = 16, .y = 16 },
+        .tex_offset = .{ .x = 240, .y = 0 },
+        .tex_extent = .{ .x = 16, .y = 16 },
+        .color = .white,
+        .layer = 255,
+        .reference = .middle_center,
+        .origin = .middle_center,
+    });
+}
+
 // -- Input callbacks ---------------------------------------------------------
 
 fn on_move(ctx: *anyopaque, value: [2]f32) void {
@@ -415,4 +601,45 @@ fn on_noclip(ctx: *anyopaque, event: input.ButtonEvent) void {
     } else {
         self.on_ground = collision.on_ground(self.pos_x, self.pos_y, self.pos_z);
     }
+}
+
+fn on_break(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    if (!self.mouse_captured) return;
+    const hit = self.selected orelse return;
+    send_block_change(self.writer, hit.x, hit.y, hit.z, 0, B.Air);
+}
+
+fn on_place(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    if (!self.mouse_captured) return;
+    const hit = self.selected orelse return;
+    if (!hit.has_place) return;
+    // Avoid placing a block inside the player's own AABB.
+    const bx0: f32 = @floatFromInt(hit.place_x);
+    const by0: f32 = @floatFromInt(hit.place_y);
+    const bz0: f32 = @floatFromInt(hit.place_z);
+    const overlaps = self.pos_x + collision.HALF_W > bx0 and
+        self.pos_x - collision.HALF_W < bx0 + 1.0 and
+        self.pos_y + collision.HEIGHT > by0 and
+        self.pos_y < by0 + 1.0 and
+        self.pos_z + collision.HALF_W > bz0 and
+        self.pos_z - collision.HALF_W < bz0 + 1.0;
+    if (overlaps) return;
+    send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, PLACE_BLOCK);
+}
+
+/// Send a SetBlockToServer packet and flush the writer so the embedded
+/// server picks it up on its next drain. Errors are logged-and-ignored;
+/// dropping a click is harmless and the alternative would crash the game.
+fn send_block_change(w: *std.Io.Writer, x: u16, y: u16, z: u16, mode: u8, block: u8) void {
+    proto.send_set_block_to_server(w, x, y, z, mode, block) catch |err| {
+        std.log.scoped(.player).err("send_set_block_to_server: {}", .{err});
+        return;
+    };
+    w.flush() catch |err| {
+        std.log.scoped(.player).err("writer.flush: {}", .{err});
+    };
 }

@@ -2,6 +2,8 @@ const std = @import("std");
 const zb = @import("protocol");
 const proto = @import("common").protocol;
 
+const WorldRenderer = @import("../world/world.zig");
+
 const log = std.log.scoped(.client_conn);
 
 const Self = @This();
@@ -18,6 +20,10 @@ world_y: u16,
 world_z: u16,
 handshake_complete: bool,
 
+/// Set by GameState after the world renderer exists. Block-change packets
+/// from the server use it to mark affected sections for rebuild.
+world_renderer: ?*WorldRenderer,
+
 buffer: [1028]u8,
 
 pub fn init(self: *Self, reader: *std.Io.Reader, writer: *std.Io.Writer) void {
@@ -30,6 +36,7 @@ pub fn init(self: *Self, reader: *std.Io.Reader, writer: *std.Io.Writer) void {
     self.world_y = 0;
     self.world_z = 0;
     self.handshake_complete = false;
+    self.world_renderer = null;
     self.protocol = zb.Protocol.init(.server, .Connected, self);
     self.protocol.handles = .{
         .onPlayerIDToClient = on_player_id,
@@ -111,8 +118,25 @@ fn on_message(_: *anyopaque, event: zb.Message) !void {
     log.info("Message: pid={d} {s}", .{ event.pid, &event.message });
 }
 
-fn on_block_change(_: *anyopaque, event: zb.SetBlockToClient) !void {
-    log.info("BlockChange: ({d},{d},{d}) block={d}", .{ event.x, event.y, event.z, event.block });
+fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    const wr = self.world_renderer orelse return;
+    // Translate world block coords to (cx, sy, cz) section indices.
+    const cx: u8 = @intCast(event.x >> 4);
+    const cz: u8 = @intCast(event.z >> 4);
+    const sy: u8 = @intCast(event.y >> 4);
+    wr.mark_section_dirty(cx, sy, cz);
+    // Border blocks need their neighbor sections rebuilt as well, since
+    // greedy meshing reads a 1-block padding from adjacent sections.
+    const lx: u16 = event.x & 0xF;
+    const ly: u16 = event.y & 0xF;
+    const lz: u16 = event.z & 0xF;
+    if (lx == 0 and cx > 0) wr.mark_section_dirty(cx - 1, sy, cz);
+    if (lx == 15) wr.mark_section_dirty(cx + 1, sy, cz);
+    if (lz == 0 and cz > 0) wr.mark_section_dirty(cx, sy, cz - 1);
+    if (lz == 15) wr.mark_section_dirty(cx, sy, cz + 1);
+    if (ly == 0 and sy > 0) wr.mark_section_dirty(cx, sy - 1, cz);
+    if (ly == 15) wr.mark_section_dirty(cx, sy + 1, cz);
 }
 
 fn on_despawn(_: *anyopaque, event: zb.DespawnPlayer) !void {

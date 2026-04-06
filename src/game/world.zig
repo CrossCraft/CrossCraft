@@ -219,6 +219,15 @@ pub fn set_block(x: u16, y: u16, z: u16, block: u8) void {
     const idx = get_index(x, y, z);
     blocks[idx] = block;
     update_height_column(x, y, z, block);
+    // The wheel dedup bitmap is keyed by location, not block type. If the
+    // block at this loc was previously something with a slow tick (e.g.
+    // dirt/grass at 100-999 ticks) and is now something fast (water/lava
+    // at 4 ticks), the stale bitmap would prevent try_enqueue from
+    // scheduling the new block at its faster delay until the slow timer
+    // eventually fires (5-50s later). Clearing here lets the next neighbor
+    // pass insert at the correct delay; any orphan wheel entry just no-ops
+    // when it finally fires because process_block_update re-reads the block.
+    bitmap_clear(idx);
 }
 
 // -- Sunlight height map ------------------------------------------------------

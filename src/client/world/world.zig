@@ -120,8 +120,12 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
     // same column can still cross the 32-block radius for nearby sections).
     self.refresh_lod_states(camera);
 
-    // Re-queue if dirty sections were marked while the queue was empty
-    if (self.dirty and self.build_cursor >= self.build_end) {
+    // Re-queue any newly dirty sections immediately. We can't wait for the
+    // current queue to drain: a player break/place that lands while a heavy
+    // LOD rebuild is in flight would otherwise take many frames to show up,
+    // which looks like a dropped update. queue_unbuilt_sections rescans all
+    // loaded sections, so already-built ones drop out naturally.
+    if (self.dirty) {
         self.queue_unbuilt_sections(camera);
         self.dirty = false;
     }
