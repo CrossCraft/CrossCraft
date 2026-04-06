@@ -39,7 +39,7 @@ pub fn main(init: std.process.Init) !void {
     const memory = try init.gpa.alloc(u8, game_config.current.total_memory_mb * 1024 * 1024);
     defer init.gpa.free(memory);
 
-    var state: if (true) LoadState else MenuState = undefined;
+    var state: MenuState = undefined;
     try ae.App.init(init.io, memory, .{
         .memory = game_config.init_memory(),
         .width = 960,
