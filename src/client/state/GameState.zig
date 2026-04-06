@@ -18,11 +18,23 @@ const Zip = @import("../util/Zip.zig");
 
 const log = std.log.scoped(.game);
 
+// Still-water tile sits at atlas (14, 0); still-lava at (14, 1). The animation
+// source PNGs are vertical strips of 16x16 frames.
+const water_tile_col: u32 = 14;
+const water_tile_row: u32 = 0;
+const lava_tile_col: u32 = 14;
+const lava_tile_row: u32 = 1;
+const tile_size: u32 = 16;
+const anim_period_ticks: u32 = 2;
+
 const GameTextures = struct {
     terrain: Rendering.Texture,
     clouds: Rendering.Texture,
     gui: Rendering.Texture,
+    water_still: Rendering.Texture,
+    lava_still: Rendering.Texture,
     atlas: TextureAtlas,
+    anim_tick: u32,
 
     /// Valid between GameTextures.init() and GameTextures.deinit().
     var inst: GameTextures = undefined;
@@ -42,13 +54,61 @@ const GameTextures = struct {
         inst.clouds.force_resident();
         inst.gui = try load_from_pack(pack, "minecraft/textures/gui/gui");
         inst.gui.force_resident();
+        // Animation source strips: kept CPU-side only; never bound. We read
+        // frames via get_pixel and blit them into the terrain atlas.
+        inst.water_still = try load_from_pack(pack, "crosscraft/textures/water_still");
+        inst.lava_still = try load_from_pack(pack, "crosscraft/textures/lava_still");
+        std.debug.assert(inst.water_still.width == tile_size);
+        std.debug.assert(inst.lava_still.width == tile_size);
+        std.debug.assert(inst.water_still.height % tile_size == 0);
+        std.debug.assert(inst.lava_still.height % tile_size == 0);
         inst.atlas = TextureAtlas.init(256, 256, 16, 16);
+        inst.anim_tick = 0;
     }
 
     pub fn deinit() void {
+        inst.lava_still.deinit();
+        inst.water_still.deinit();
         inst.gui.deinit();
         inst.clouds.deinit();
         inst.terrain.deinit();
+    }
+
+    /// Blits one 16x16 frame from a vertical-strip animation source into the
+    /// given atlas tile, via get_pixel/set_pixel so that platform-specific
+    /// swizzling and pixel formats are handled correctly.
+    fn blit_frame(
+        src: *const Rendering.Texture,
+        frame: u32,
+        dst_col: u32,
+        dst_row: u32,
+    ) void {
+        const dst_x0 = dst_col * tile_size;
+        const dst_y0 = dst_row * tile_size;
+        const src_y0 = frame * tile_size;
+        var y: u32 = 0;
+        while (y < tile_size) : (y += 1) {
+            var x: u32 = 0;
+            while (x < tile_size) : (x += 1) {
+                const px = src.get_pixel(x, src_y0 + y);
+                inst.terrain.set_pixel(dst_x0 + x, dst_y0 + y, px);
+            }
+        }
+    }
+
+    /// Advance fluid animations. Called every game tick; actually updates
+    /// terrain once every `anim_period_ticks` ticks.
+    pub fn tick_animations() void {
+        inst.anim_tick +%= 1;
+        if (inst.anim_tick % anim_period_ticks != 0) return;
+
+        const water_frames: u32 = inst.water_still.height / tile_size;
+        const lava_frames: u32 = inst.lava_still.height / tile_size;
+        const step = inst.anim_tick / anim_period_ticks;
+
+        blit_frame(&inst.water_still, step % water_frames, water_tile_col, water_tile_row);
+        blit_frame(&inst.lava_still, step % lava_frames, lava_tile_col, lava_tile_row);
+        inst.terrain.update();
     }
 };
 
@@ -135,6 +195,7 @@ fn deinit(ctx: *anyopaque) void {
 fn tick(_: *anyopaque) anyerror!void {
     Server.drain_local_packets();
     Server.tick();
+    GameTextures.tick_animations();
 }
 
 fn update(ctx: *anyopaque, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
