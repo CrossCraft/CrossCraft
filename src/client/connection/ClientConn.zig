@@ -2,6 +2,7 @@ const std = @import("std");
 const zb = @import("protocol");
 const proto = @import("common").protocol;
 
+const World = @import("game").World;
 const WorldRenderer = @import("../world/world.zig");
 
 const log = std.log.scoped(.client_conn);
@@ -121,6 +122,10 @@ fn on_message(_: *anyopaque, event: zb.Message) !void {
 fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
     const self: *Self = @ptrCast(@alignCast(ctx));
     const wr = self.world_renderer orelse return;
+    // Apply the change locally. Singleplayer's in-process server already
+    // wrote it to the shared World singleton, so this is a no-op echo there;
+    // for real multiplayer it is the only path that updates the client world.
+    World.set_block(event.x, event.y, event.z, event.block);
     // Translate world block coords to (cx, sy, cz) section indices.
     const cx: u8 = @intCast(event.x >> 4);
     const cz: u8 = @intCast(event.z >> 4);

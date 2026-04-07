@@ -80,6 +80,11 @@ const HOTBAR_SLOT_STRIDE: i16 = 20;
 const HOTBAR_BG_LAYER: u8 = 250;
 const SELECTOR_LAYER: u8 = 251;
 
+// Mouse-wheel scroll axis returns +/-1.0 per click; deadband at half a click
+// so a single notch always advances exactly one slot and stray sub-tick
+// values from analog sources never trigger a wrap.
+const HOTBAR_SCROLL_DEADBAND: f32 = 0.5;
+
 const Self = @This();
 
 // -- Physics constants (blocks/tick, Classic units) --------------------------
@@ -913,6 +918,11 @@ fn on_break(ctx: *anyopaque, event: input.ButtonEvent) void {
 /// Recover which face the player struck from the raycast result. The
 /// raycaster stores the empty cell just before the hit (`place_*`); the
 /// delta from there to the hit voxel points along the broken face's normal.
+///
+/// `raycast_block` advances exactly one axis per DDA iteration, so for a
+/// real hit (`has_place == true`) the place cell differs from the hit cell
+/// by exactly one component. The axis priority below is therefore just
+/// "first non-zero wins", not a tiebreaker — corners can't occur.
 fn derive_break_face(hit: RaycastHit) Face {
     if (!hit.has_place) return .y_pos;
     const dx: i32 = @as(i32, hit.place_x) - @as(i32, hit.x);
@@ -1008,10 +1018,10 @@ fn on_hotbar_slot_9(ctx: *anyopaque, event: input.ButtonEvent) void {
 /// = scroll down = next slot. Uses an axis callback because the underlying
 /// mouse_scroll source is a per-frame delta consumed on read.
 fn on_hotbar_scroll(ctx: *anyopaque, value: f32) void {
-    if (value > 0.5) {
+    if (value > HOTBAR_SCROLL_DEADBAND) {
         const self: *Self = @ptrCast(@alignCast(ctx));
         self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
-    } else if (value < -0.5) {
+    } else if (value < -HOTBAR_SCROLL_DEADBAND) {
         const self: *Self = @ptrCast(@alignCast(ctx));
         self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
     }

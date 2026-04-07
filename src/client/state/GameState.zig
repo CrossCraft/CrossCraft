@@ -6,6 +6,9 @@ const Rendering = ae.Rendering;
 const State = Core.State;
 
 const Server = @import("game").Server;
+const World = @import("game").World;
+const c = @import("common").consts;
+const collision = @import("../player/collision.zig");
 const FakeConn = @import("../connection/FakeConn.zig").FakeConn;
 const ClientConn = @import("../connection/ClientConn.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
@@ -227,7 +230,24 @@ fn update(ctx: *anyopaque, dt: f32, budget: *const Util.BudgetContext) anyerror!
     var self = Util.ctx_to_self(@This(), ctx);
     self.player.update(dt);
     self.world.update(dt, budget, &self.player.camera);
-    self.held.update(dt, self.player.hotbar[self.player.selected_slot]);
+    const slot_block = self.player.hotbar[self.player.selected_slot];
+    self.held.update(dt, slot_block, player_in_shadow(&self.player));
+}
+
+/// True when the voxel containing the player's eye is not directly sunlit.
+/// Used to tint the held-block viewmodel to match the surrounding lighting,
+/// matching the per-face shading the chunk mesher applies to world geometry.
+/// Out-of-world positions (e.g. the brief above-ceiling case during a
+/// teleport) read as lit so the held block never goes dark unexpectedly.
+fn player_in_shadow(player: *const Player) bool {
+    const eye_y = player.pos_y + collision.EYE_HEIGHT;
+    const bx_i: i32 = @intFromFloat(@floor(player.pos_x));
+    const by_i: i32 = @intFromFloat(@floor(eye_y));
+    const bz_i: i32 = @intFromFloat(@floor(player.pos_z));
+    if (bx_i < 0 or bx_i >= c.WorldLength or
+        by_i < 0 or by_i >= c.WorldHeight or
+        bz_i < 0 or bz_i >= c.WorldDepth) return false;
+    return !World.is_sunlit(@intCast(bx_i), @intCast(by_i), @intCast(bz_i));
 }
 
 fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {

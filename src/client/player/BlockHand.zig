@@ -63,7 +63,8 @@ const DIG_PITCH_RAD: f32 = -20.0 * std.math.pi / 180.0;
 
 // 6 faces * 6 verts per triangle-pair quad.
 const VERT_CAPACITY: usize = 36;
-// Sentinel distinct from any real block id (BlockRegistry indices 0..255).
+// Sentinel distinct from any real block id. Classic block ids occupy 0..49;
+// 50..255 are unused, so 0xFF is safely outside the assigned range.
 const SENTINEL: u8 = 0xFF;
 
 const SwingKind = enum { idle, place, dig };
@@ -75,6 +76,10 @@ atlas: TextureAtlas,
 mesh: Rendering.Mesh(Vertex),
 cached_block: u8,
 pending_block: u8,
+/// Whether the currently baked mesh used the shadow tint. Tracked alongside
+/// `cached_block` so the mesh rebuilds when the player walks across a
+/// sunlit/shaded boundary even if the slot stayed the same.
+cached_shadowed: bool,
 swing_kind: SwingKind,
 swing_time: f32,
 swing_period: f32,
@@ -87,6 +92,7 @@ pub fn init(pipeline: Rendering.Pipeline.Handle, atlas: TextureAtlas) !Self {
         .mesh = try Rendering.Mesh(Vertex).new(pipeline),
         .cached_block = SENTINEL,
         .pending_block = SENTINEL,
+        .cached_shadowed = false,
         .swing_kind = .idle,
         .swing_time = 0,
         .swing_period = 0,
@@ -126,15 +132,27 @@ pub fn trigger_place(self: *Self) void {
 
 // -- Per-frame update --------------------------------------------------------
 
-pub fn update(self: *Self, dt: f32, current_block: u8) void {
+pub fn update(self: *Self, dt: f32, current_block: u8, shadowed: bool) void {
     std.debug.assert(dt >= 0);
 
     // First frame: bootstrap cache without an animation.
     if (self.cached_block == SENTINEL) {
-        self.rebuild(current_block);
+        self.rebuild(current_block, shadowed);
         self.cached_block = current_block;
         self.pending_block = current_block;
+        self.cached_shadowed = shadowed;
         return;
+    }
+
+    // Light-state transitions don't kick off a swing -- they just rebake the
+    // existing block with the new tint. Walking under a roof shouldn't
+    // animate the held block, only retint it. Skip the rebuild while a dig
+    // swing is mid-flight: that path will redraw the block on completion
+    // anyway, and rebuilding mid-swing would briefly flash the new tint on
+    // the dimming/brightening face during the animation.
+    if (shadowed != self.cached_shadowed and self.swing_kind != .dig) {
+        self.rebuild(self.cached_block, shadowed);
+        self.cached_shadowed = shadowed;
     }
 
     // A slot change while idle kicks off a switch swing (same shape as
@@ -155,10 +173,12 @@ pub fn update(self: *Self, dt: f32, current_block: u8) void {
     self.swing_time += dt;
 
     if (self.swing_time >= self.swing_period) {
-        // End of swing: force-sync the cache if a pending swap never landed.
-        if (self.cached_block != self.pending_block) {
-            self.rebuild(self.pending_block);
+        // End of swing: force-sync the cache if a pending swap (or a tint
+        // change deferred during a dig) never landed.
+        if (self.cached_block != self.pending_block or self.cached_shadowed != shadowed) {
+            self.rebuild(self.pending_block, shadowed);
             self.cached_block = self.pending_block;
+            self.cached_shadowed = shadowed;
         }
         self.swing_kind = .idle;
         self.swing_time = 0;
@@ -173,8 +193,9 @@ pub fn update(self: *Self, dt: f32, current_block: u8) void {
         const t = self.swing_time / self.swing_period;
         const swing_y = SWING_AMPLITUDE_Y * @sin(t * std.math.pi);
         if (swing_y > self.prev_swing_y and self.cached_block != self.pending_block) {
-            self.rebuild(self.pending_block);
+            self.rebuild(self.pending_block, shadowed);
             self.cached_block = self.pending_block;
+            self.cached_shadowed = shadowed;
         }
         self.prev_swing_y = swing_y;
     }
@@ -182,7 +203,7 @@ pub fn update(self: *Self, dt: f32, current_block: u8) void {
 
 // -- Mesh build --------------------------------------------------------------
 
-fn rebuild(self: *Self, block: u8) void {
+fn rebuild(self: *Self, block: u8, shadowed: bool) void {
     self.mesh.vertices.clearRetainingCapacity();
     if (block == B.Air) {
         self.mesh.update();
@@ -190,13 +211,16 @@ fn rebuild(self: *Self, block: u8) void {
     }
     const reg = &BlockRegistry.global;
     const is_slab = reg.slab.isSet(block);
+    // Lava ignores shadowing in chunk meshing; mirror that here so a held
+    // lava block always reads as glowing.
+    const shade = shadowed and block != B.Flowing_Lava and block != B.Still_Lava;
     const faces = [_]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
     for (faces) |face| {
         const tile = reg.get_face_tile(block, face);
         if (is_slab) {
-            face_mod.emit_slab_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, false);
+            face_mod.emit_slab_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
         } else {
-            face_mod.emit_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, false);
+            face_mod.emit_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
         }
     }
     std.debug.assert(self.mesh.vertices.items.len <= VERT_CAPACITY);
