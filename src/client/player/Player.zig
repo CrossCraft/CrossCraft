@@ -25,6 +25,8 @@ const Camera = @import("Camera.zig");
 const bindings = @import("bindings.zig");
 const collision = @import("collision.zig");
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
+const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
+const Scaling = @import("../ui/Scaling.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
 const Face = @import("../world/chunk/face.zig").Face;
@@ -73,6 +75,10 @@ const SELECTOR_TEX_X: i16 = 0;
 const SELECTOR_TEX_Y: i16 = 22;
 const SELECTOR_SIZE: i16 = 24;
 const HOTBAR_SLOT_STRIDE: i16 = 20;
+// Keep HUD quads away from the PSP clip/depth edge. Low layer ids map very
+// close to +1 NDC in SpriteBatcher; that is fragile on the PSP GU path.
+const HOTBAR_BG_LAYER: u8 = 250;
+const SELECTOR_LAYER: u8 = 251;
 
 const Self = @This();
 
@@ -745,10 +751,14 @@ fn is_selectable(x: u16, y: u16, z: u16) bool {
 
 // -- UI / HUD ----------------------------------------------------------------
 
-/// Emit the player's HUD sprites into `batcher`. Caller is responsible for
-/// clear()/flush() around this call. The crosshair lives at texel (240, 0)
-/// in gui.png with a 16x16 extent -- standard Minecraft Classic layout.
-pub fn draw_ui(self: *Self, batcher: *SpriteBatcher, gui: *const Rendering.Texture) void {
+/// First HUD pass: crosshair, hotbar background, and queued iso block icons.
+/// Caller is responsible for clear()/flush() around this call.
+pub fn draw_ui(
+    self: *Self,
+    batcher: *SpriteBatcher,
+    iso: *IsoBlockDrawer,
+    gui: *const Rendering.Texture,
+) void {
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
 
     // Crosshair: gui.png (240, 0), 16x16, screen center.
@@ -764,9 +774,9 @@ pub fn draw_ui(self: *Self, batcher: *SpriteBatcher, gui: *const Rendering.Textu
         .origin = .middle_center,
     });
 
-    // Hotbar background: shifted up 1px so the selector's bottom row stays
-    // on screen (selector is 24 tall, hotbar is 22, so it overhangs by 1px
-    // on the top and bottom).
+    // Hotbar background. The 1 px upward nudge keeps the selector's bottom
+    // row (selector is 24 tall vs the hotbar's 22) from clipping off the
+    // bottom of the screen.
     batcher.add_sprite(&.{
         .texture = gui,
         .pos_offset = .{ .x = 0, .y = -1 },
@@ -774,10 +784,22 @@ pub fn draw_ui(self: *Self, batcher: *SpriteBatcher, gui: *const Rendering.Textu
         .tex_offset = .{ .x = HOTBAR_TEX_X, .y = HOTBAR_TEX_Y },
         .tex_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
         .color = .white,
-        .layer = 250,
+        .layer = HOTBAR_BG_LAYER,
         .reference = .bottom_center,
         .origin = .bottom_center,
     });
+
+    self.draw_hotbar_blocks(iso);
+}
+
+/// Second HUD pass: just the selector frame, drawn after a depth clear so it
+/// always sits visually on top of the iso block icons.
+pub fn draw_ui_selector(
+    self: *Self,
+    batcher: *SpriteBatcher,
+    gui: *const Rendering.Texture,
+) void {
+    std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
 
     // Selector centered over the active slot. Slot i center sits at
     // 20*i - 80 from the hotbar's horizontal center.
@@ -790,10 +812,38 @@ pub fn draw_ui(self: *Self, batcher: *SpriteBatcher, gui: *const Rendering.Textu
         .tex_offset = .{ .x = SELECTOR_TEX_X, .y = SELECTOR_TEX_Y },
         .tex_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
         .color = .white,
-        .layer = 251,
+        .layer = SELECTOR_LAYER,
         .reference = .bottom_center,
         .origin = .bottom_center,
     });
+}
+
+// Logical-pixel half-extent of each rendered iso block. The iso projection
+// makes the cube taller than wide (height ~= 2*cos30/cos45 * half_extent ~=
+// 2.45x); 6 px keeps the projected block ~12 wide x ~14 tall, leaving the
+// 16 px slot interior clear of the surrounding selector frame.
+const HOTBAR_BLOCK_HALF_EXTENT: f32 = 3.75;
+
+fn draw_hotbar_blocks(self: *const Self, iso: *IsoBlockDrawer) void {
+    const screen_w = Rendering.gfx.surface.get_width();
+    const screen_h = Rendering.gfx.surface.get_height();
+    const ui_scale = Scaling.compute(screen_w, screen_h);
+    const max_lx: i32 = @intCast(screen_w / ui_scale);
+    const max_ly: i32 = @intCast(screen_h / ui_scale);
+
+    // Hotbar bg sits at bottom-center with pos_offset y = -1 and origin
+    // bottom-center, so its bottom edge is at max_ly - 1 and its top edge at
+    // max_ly - 1 - HOTBAR_H. Slot centers are 11 px below the top of the bg
+    // (Classic uses centered 20 px slots inside a 22 px tall strip).
+    const hotbar_top: f32 = @floatFromInt(max_ly - 1 - @as(i32, HOTBAR_H));
+    const slot_cy: f32 = hotbar_top + 11.0;
+    const center_x: f32 = @floatFromInt(@divTrunc(max_lx, 2));
+
+    var i: u8 = 0;
+    while (i < HOTBAR_SLOTS) : (i += 1) {
+        const slot_offset_x: f32 = @floatFromInt(@as(i32, HOTBAR_SLOT_STRIDE) * @as(i32, i) - 80);
+        iso.add_block(self.hotbar[i], center_x + slot_offset_x, slot_cy, HOTBAR_BLOCK_HALF_EXTENT);
+    }
 }
 
 // -- Input callbacks ---------------------------------------------------------

@@ -15,6 +15,7 @@ const SelectionOutline = @import("../world/SelectionOutline.zig");
 const Player = @import("../player/Player.zig");
 const BlockHand = @import("../player/BlockHand.zig");
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
+const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
 const Zip = @import("../util/Zip.zig");
 
 const log = std.log.scoped(.game);
@@ -120,6 +121,8 @@ pipeline: Rendering.Pipeline.Handle,
 world: WorldRenderer,
 player: Player,
 ui_batcher: SpriteBatcher,
+ui_selector_batcher: SpriteBatcher,
+iso_blocks: IsoBlockDrawer,
 selection: SelectionOutline,
 held: BlockHand,
 
@@ -181,6 +184,15 @@ fn init(ctx: *anyopaque) anyerror!void {
 
     // UI sprite batcher for HUD overlay (crosshair, etc.)
     self.ui_batcher = try SpriteBatcher.init(self.pipeline);
+    self.ui_selector_batcher = try SpriteBatcher.init(self.pipeline);
+
+    // Iso-projected block icons for hotbar slots; draws to the same terrain
+    // atlas as the world.
+    self.iso_blocks = try IsoBlockDrawer.init(
+        self.pipeline,
+        &GameTextures.inst.terrain,
+        GameTextures.inst.atlas,
+    );
 
     // Block selection outline (line mesh, drawn after the world pass).
     self.selection = try SelectionOutline.init(self.pipeline);
@@ -196,6 +208,8 @@ fn deinit(ctx: *anyopaque) void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.held.deinit();
     self.selection.deinit();
+    self.iso_blocks.deinit();
+    self.ui_selector_batcher.deinit();
     self.ui_batcher.deinit();
     self.world.deinit();
     GameTextures.deinit();
@@ -254,10 +268,23 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     // UI pass: orthographic overlay drawn on top of the 3D scene.
     // clear_depth so HUD sprites aren't z-rejected by world geometry;
     // SpriteBatcher.flush() sets identity proj/view (orthographic NDC).
+    // HUD pass split in three with a depth clear between each so draw order
+    // is explicit: hotbar bg + crosshair, then iso block icons, then the
+    // selector frame on top. This avoids relying on tiny layer differences
+    // near PSP's +Z clip/depth edge.
     Rendering.gfx.api.clear_depth();
     self.ui_batcher.clear();
-    self.player.draw_ui(&self.ui_batcher, &GameTextures.inst.gui);
+    self.iso_blocks.begin();
+    self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, &GameTextures.inst.gui);
     try self.ui_batcher.flush();
+
+    Rendering.gfx.api.clear_depth();
+    self.iso_blocks.flush();
+
+    Rendering.gfx.api.clear_depth();
+    self.ui_selector_batcher.clear();
+    self.player.draw_ui_selector(&self.ui_selector_batcher, &GameTextures.inst.gui);
+    try self.ui_selector_batcher.flush();
 }
 
 pub fn state(self: *@This()) State {
