@@ -756,8 +756,11 @@ fn is_selectable(x: u16, y: u16, z: u16) bool {
 
 // -- UI / HUD ----------------------------------------------------------------
 
-/// First HUD pass: crosshair, hotbar background, and queued iso block icons.
-/// Caller is responsible for clear()/flush() around this call.
+/// HUD pass: queues every 2D sprite (crosshair, hotbar background, selector
+/// frame) into `batcher`, and queues hotbar block icons into `iso`. Caller
+/// flushes the sprite batcher first, then the iso drawer, so the 3D block
+/// icons land on top of the 2D selector frame in a single sprite pass — no
+/// second batcher and no extra depth clear needed.
 pub fn draw_ui(
     self: *Self,
     batcher: *SpriteBatcher,
@@ -794,19 +797,7 @@ pub fn draw_ui(
         .origin = .bottom_center,
     });
 
-    self.draw_hotbar_blocks(iso);
-}
-
-/// Second HUD pass: just the selector frame, drawn after a depth clear so it
-/// always sits visually on top of the iso block icons.
-pub fn draw_ui_selector(
-    self: *Self,
-    batcher: *SpriteBatcher,
-    gui: *const Rendering.Texture,
-) void {
-    std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
-
-    // Selector centered over the active slot. Slot i center sits at
+    // Selector frame, centered over the active slot. Slot i center sits at
     // 20*i - 80 from the hotbar's horizontal center.
     const slot_i: i16 = @intCast(self.selected_slot);
     const sel_x: i16 = HOTBAR_SLOT_STRIDE * slot_i - 80;
@@ -821,6 +812,8 @@ pub fn draw_ui_selector(
         .reference = .bottom_center,
         .origin = .bottom_center,
     });
+
+    self.draw_hotbar_blocks(iso);
 }
 
 // Logical-pixel half-extent of each rendered iso block. The iso projection

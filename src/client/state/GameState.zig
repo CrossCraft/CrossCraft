@@ -124,7 +124,6 @@ pipeline: Rendering.Pipeline.Handle,
 world: WorldRenderer,
 player: Player,
 ui_batcher: SpriteBatcher,
-ui_selector_batcher: SpriteBatcher,
 iso_blocks: IsoBlockDrawer,
 selection: SelectionOutline,
 held: BlockHand,
@@ -185,9 +184,8 @@ fn init(ctx: *anyopaque) anyerror!void {
     // Wire break particles now that both player and world exist.
     self.player.particle_sink = &self.world.particles;
 
-    // UI sprite batcher for HUD overlay (crosshair, etc.)
+    // UI sprite batcher for HUD overlay (crosshair, hotbar bg, selector).
     self.ui_batcher = try SpriteBatcher.init(self.pipeline);
-    self.ui_selector_batcher = try SpriteBatcher.init(self.pipeline);
 
     // Iso-projected block icons for hotbar slots; draws to the same terrain
     // atlas as the world.
@@ -212,7 +210,6 @@ fn deinit(ctx: *anyopaque) void {
     self.held.deinit();
     self.selection.deinit();
     self.iso_blocks.deinit();
-    self.ui_selector_batcher.deinit();
     self.ui_batcher.deinit();
     self.world.deinit();
     GameTextures.deinit();
@@ -286,12 +283,11 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     self.held.draw(&GameTextures.inst.terrain, &self.player.camera);
 
     // UI pass: orthographic overlay drawn on top of the 3D scene.
-    // clear_depth so HUD sprites aren't z-rejected by world geometry;
-    // SpriteBatcher.flush() sets identity proj/view (orthographic NDC).
-    // HUD pass split in three with a depth clear between each so draw order
-    // is explicit: hotbar bg + crosshair, then iso block icons, then the
-    // selector frame on top. This avoids relying on tiny layer differences
-    // near PSP's +Z clip/depth edge.
+    // Draw order is hotbar bg -> selector -> iso block icons. The 2D
+    // sprites all batch into one pass; the iso blocks flush last so they
+    // sit on top of the selector frame. A single depth clear between the
+    // sprite flush and the iso flush is enough -- the iso pass needs a
+    // clean depth buffer for its own z-tests.
     Rendering.gfx.api.clear_depth();
     self.ui_batcher.clear();
     self.iso_blocks.begin();
@@ -300,11 +296,6 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
 
     Rendering.gfx.api.clear_depth();
     self.iso_blocks.flush();
-
-    Rendering.gfx.api.clear_depth();
-    self.ui_selector_batcher.clear();
-    self.player.draw_ui_selector(&self.ui_selector_batcher, &GameTextures.inst.gui);
-    try self.ui_selector_batcher.flush();
 }
 
 pub fn state(self: *@This()) State {

@@ -46,7 +46,7 @@ const BASE_Z: f32 = -0.72;
 const SLAB_Y_LIFT: f32 = 0.1;
 
 // Swing animation.
-const PLACE_PERIOD: f32 = 0.25;
+const PLACE_PERIOD: f32 = 0.125;
 const DIG_PERIOD: f32 = 0.35;
 // Smaller than the Classic reference's -0.4 because our BASE_Y sits the
 // cube near the bottom of the screen already; a full dip would send it
