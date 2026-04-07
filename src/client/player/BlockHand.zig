@@ -228,10 +228,14 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
     const center = Math.Mat4.translation(-half, -half, -half);
     const rot_x = Math.Mat4.rotationX(anim.pitch);
     const rot_y = Math.Mat4.rotationY(YAW + anim.yaw);
+    // Sway opposite the camera bob so the held block visibly moves in
+    // screen space. Both X and Z subtract bob_hor directly (not rotated
+    // by yaw) to match the Classic feel: combined with the shared tilt
+    // baked into the world view matrix, this reads as a hand-sway.
     const trans = Math.Mat4.translation(
-        BASE_X + anim.dx,
-        BASE_Y + anim.dy + slab_lift,
-        BASE_Z + anim.dz,
+        BASE_X + anim.dx - camera.bob_hor,
+        BASE_Y + anim.dy + slab_lift - camera.bob_ver,
+        BASE_Z + anim.dz - camera.bob_hor,
     );
 
     // view_inv: undo Rx(pitch), then Ry(-yaw), then T(-eye).

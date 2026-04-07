@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const ae = @import("aether");
+const Math = ae.Math;
 const Rendering = ae.Rendering;
 const input = ae.Core.input;
 
@@ -110,6 +111,39 @@ const LIQUID_ACCEL: f32 = 0.02;
 const WATER_DRAG: f32 = 0.8;
 const LAVA_DRAG: f32 = 0.5;
 
+// -- View bobbing tuning -----------------------------------------------------
+// Drives both the camera sway and the held-block screen-space sway. The
+// underlying state is a walk phase (advanced by horizontal travel), an
+// envelope (walk_swing) that fades in/out with motion, and a smoothed
+// strength (bob_amount) that fades to zero in midair.
+
+// Spec base unit: ~0.156 blocks. Final hor/ver scale this by 0.3/0.6.
+const BOB_BASE_UNIT: f32 = 2.5 / 16.0;
+const BOB_HOR_SCALE: f32 = 0.3;
+const BOB_VER_SCALE: f32 = 0.6;
+
+// Camera tilt (degrees). The X-rotation component is multiplied by 3 to
+// match the Classic feel.
+const BOB_TILT_DEG: f32 = 0.15;
+const BOB_TILT_X_GAIN: f32 = 3.0;
+
+// Walk-phase advance: minimum tick distance to count as moving, and the
+// rate (= 2 * 20 in the spec, where 20 is TPS).
+const BOB_WALK_THRESHOLD: f32 = 0.05;
+const BOB_WALK_PHASE_RATE: f32 = 40.0;
+
+// Envelope rates (per second) and grounded-strength smoothing.
+const BOB_SWING_RATE: f32 = 3.0;
+const BOB_STRENGTH_DECAY: f32 = 0.84;
+const BOB_STRENGTH_GAIN: f32 = 0.1;
+// Three substeps per 50 ms tick to match the spec's 60 Hz design.
+const BOB_STRENGTH_SUBSTEPS: u32 = 3;
+
+// Fall tilt: small extra X-rotation driven by vertical velocity. The
+// +0.08 offset cancels gravity at rest so it doesn't drift while standing.
+const FALL_TILT_GAIN: f32 = 0.05;
+const FALL_TILT_GRAVITY_OFFSET: f32 = 0.08;
+
 // -- Fields ------------------------------------------------------------------
 
 camera: Camera,
@@ -160,6 +194,16 @@ particle_sink: ?*ParticleSystem,
 /// exists. Used to trigger swing animations on place/break.
 held_renderer: ?*BlockHand,
 
+// View bobbing -- driven per tick from XZ travel + grounded state. All
+// three values are double-buffered for per-frame interpolation, the same
+// way prev_x/pos_x already are.
+walk_phase: f32,
+walk_phase_prev: f32,
+walk_swing: f32,
+walk_swing_prev: f32,
+bob_amount: f32, // smoothed 0..1, the spec's BobStrength
+bob_amount_prev: f32,
+
 /// Initialise player state and wire up input callbacks.
 /// `self` must have a stable address (module-level or arena-backed).
 /// `x`, `y`, `z` are world coordinates; `y` is eye-level from server.
@@ -195,6 +239,12 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .writer = writer,
         .particle_sink = null,
         .held_renderer = null,
+        .walk_phase = 0,
+        .walk_phase_prev = 0,
+        .walk_swing = 0,
+        .walk_swing_prev = 0,
+        .bob_amount = 0,
+        .bob_amount_prev = 0,
     };
 
     try bindings.init();
@@ -344,6 +394,78 @@ fn physics_tick(self: *Self) void {
         self.vel_x *= GROUND_FRICTION_X;
         self.vel_z *= GROUND_FRICTION_Z;
     }
+
+    // 9. Advance view-bob state from this tick's actual XZ movement.
+    self.advance_view_bob();
+}
+
+// -- View bob (advance per tick, compute per frame) --------------------------
+
+fn advance_view_bob(self: *Self) void {
+    // Snapshot prev for sub-tick interpolation, then update.
+    self.walk_phase_prev = self.walk_phase;
+    self.walk_swing_prev = self.walk_swing;
+    self.bob_amount_prev = self.bob_amount;
+
+    const dx = self.pos_x - self.prev_x;
+    const dz = self.pos_z - self.prev_z;
+    const dist = @sqrt(dx * dx + dz * dz);
+
+    if (dist > BOB_WALK_THRESHOLD) {
+        self.walk_phase += dist * BOB_WALK_PHASE_RATE * TICK;
+        self.walk_swing += BOB_SWING_RATE * TICK;
+    } else {
+        self.walk_swing -= BOB_SWING_RATE * TICK;
+    }
+    self.walk_swing = std.math.clamp(self.walk_swing, 0.0, 1.0);
+
+    // Three substeps to match the spec's 60 Hz design at 20 TPS. Strength
+    // grows toward 1 while grounded, decays toward 0 while airborne.
+    var i: u32 = 0;
+    while (i < BOB_STRENGTH_SUBSTEPS) : (i += 1) {
+        if (self.on_ground) {
+            self.bob_amount += BOB_STRENGTH_GAIN;
+        } else {
+            self.bob_amount *= BOB_STRENGTH_DECAY;
+        }
+        self.bob_amount = std.math.clamp(self.bob_amount, 0.0, 1.0);
+    }
+}
+
+const ViewBob = struct {
+    hor: f32,
+    ver: f32,
+    tilt: Math.Mat4,
+};
+
+fn compute_view_bob(self: *const Self, alpha: f32) ViewBob {
+    const phase = self.walk_phase_prev + (self.walk_phase - self.walk_phase_prev) * alpha;
+    const swing = self.walk_swing_prev + (self.walk_swing - self.walk_swing_prev) * alpha;
+    const amount = self.bob_amount_prev + (self.bob_amount - self.bob_amount_prev) * alpha;
+
+    const cosw = @cos(phase);
+    const sinw = @sin(phase);
+    const abs_sin = @abs(sinw);
+
+    const hor_raw = cosw * swing * BOB_BASE_UNIT;
+    const ver_raw = abs_sin * swing * BOB_BASE_UNIT;
+    const hor = hor_raw * BOB_HOR_SCALE * amount;
+    const ver = ver_raw * BOB_VER_SCALE * amount;
+
+    const tilt_rad = BOB_TILT_DEG * std.math.pi / 180.0;
+    const roll_z = -cosw * swing * tilt_rad * amount;
+    const pitch_x = @abs(sinw * swing * tilt_rad) * BOB_TILT_X_GAIN * amount;
+
+    // Fall tilt: small extra X-pitch from vertical velocity. We don't
+    // double-buffer velocity, so use the current value -- the visible
+    // artefact is tiny and avoids touching the existing physics state.
+    const fall = -(self.vel_y + FALL_TILT_GRAVITY_OFFSET) * FALL_TILT_GAIN;
+
+    const tilt = Math.Mat4.rotationZ(roll_z)
+        .mul(Math.Mat4.rotationX(pitch_x))
+        .mul(Math.Mat4.rotationX(fall));
+
+    return .{ .hor = hor, .ver = ver, .tilt = tilt };
 }
 
 // -- Vertical state (3-phase water exit) -------------------------------------
@@ -470,6 +592,11 @@ fn sync_camera(self: *Self) void {
         self.camera.x = self.pos_x;
         self.camera.y = self.pos_y + collision.EYE_HEIGHT;
         self.camera.z = self.pos_z;
+        // Stale bob state would otherwise leak into the held block on
+        // re-enter. Reset to identity / zero while flying.
+        self.camera.tilt = Math.Mat4.identity();
+        self.camera.bob_hor = 0;
+        self.camera.bob_ver = 0;
         return;
     }
     // Interpolate between previous and current tick positions
@@ -477,6 +604,19 @@ fn sync_camera(self: *Self) void {
     self.camera.x = self.prev_x + (self.pos_x - self.prev_x) * alpha;
     self.camera.y = (self.prev_y + (self.pos_y - self.prev_y) * alpha) + collision.EYE_HEIGHT;
     self.camera.z = self.prev_z + (self.pos_z - self.prev_z) * alpha;
+
+    // Apply view bob: positional offset is rotated into yaw so the head
+    // sways relative to facing direction (slight forward-back rocking
+    // when combined with the tilt rotations).
+    const bob = self.compute_view_bob(alpha);
+    const sin_yaw = @sin(self.camera.yaw);
+    const cos_yaw = @cos(self.camera.yaw);
+    self.camera.x += bob.hor * cos_yaw;
+    self.camera.y += bob.ver;
+    self.camera.z += bob.hor * sin_yaw;
+    self.camera.tilt = bob.tilt;
+    self.camera.bob_hor = bob.hor;
+    self.camera.bob_ver = bob.ver;
 }
 
 // -- Voxel raycast (Amanatides & Woo) ----------------------------------------
