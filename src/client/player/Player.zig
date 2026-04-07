@@ -1,3 +1,15 @@
+// Portions adapted from ClassiCube[](https://github.com/ClassiCube/ClassiCube) by UnknownShadow200.
+// - Map generation & dig animation: primarily from wiki algorithm descriptions
+//   (https://github.com/ClassiCube/ClassiCube/wiki/Minecraft-Classic-map-generation-algorithm
+//    https://github.com/ClassiCube/ClassiCube/wiki/Dig-animation-details)
+// - Physics & view-bob: cross-referenced in part from source code.
+// - World generation also includes minimal cross-checks against the original BSD code
+//   (e.g. one-line differences).
+// See THIRD-PARTY-NOTICES.md for the full BSD 3-Clause license text.
+//
+// Ported to Zig for CrossCraft (LGPLv3; uses separate Aether-Engine).
+// Modifications Copyright (c) 2026 CrossCraft
+
 const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
@@ -13,6 +25,7 @@ const bindings = @import("bindings.zig");
 const collision = @import("collision.zig");
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
+const BlockHand = @import("BlockHand.zig");
 const Face = @import("../world/chunk/face.zig").Face;
 
 pub const RaycastHit = struct {
@@ -143,6 +156,10 @@ writer: *std.Io.Writer,
 /// the visual effect (useful for tests).
 particle_sink: ?*ParticleSystem,
 
+/// Optional held-block viewmodel. GameState wires this after the renderer
+/// exists. Used to trigger swing animations on place/break.
+held_renderer: ?*BlockHand,
+
 /// Initialise player state and wire up input callbacks.
 /// `self` must have a stable address (module-level or arena-backed).
 /// `x`, `y`, `z` are world coordinates; `y` is eye-level from server.
@@ -177,6 +194,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .selected_slot = 0,
         .writer = writer,
         .particle_sink = null,
+        .held_renderer = null,
     };
 
     try bindings.init();
@@ -690,6 +708,8 @@ fn on_break(ctx: *anyopaque, event: input.ButtonEvent) void {
     if (event != .pressed) return;
     const self: *Self = @ptrCast(@alignCast(ctx));
     if (!self.mouse_captured) return;
+    // Swing on every click, regardless of whether we actually struck a block.
+    if (self.held_renderer) |hr| hr.trigger_dig();
     const hit = self.selected orelse return;
     if (self.particle_sink) |ps| {
         const block_id = World.get_block(hit.x, hit.y, hit.z);
@@ -735,7 +755,9 @@ fn on_place(ctx: *anyopaque, event: input.ButtonEvent) void {
     if (overlaps) return;
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
     const block = self.hotbar[self.selected_slot];
+    if (block == B.Air) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
+    if (self.held_renderer) |hr| hr.trigger_place();
 }
 
 fn on_hotbar_left(ctx: *anyopaque, event: input.ButtonEvent) void {

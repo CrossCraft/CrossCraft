@@ -13,6 +13,7 @@ const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const WorldRenderer = @import("../world/world.zig");
 const SelectionOutline = @import("../world/SelectionOutline.zig");
 const Player = @import("../player/Player.zig");
+const BlockHand = @import("../player/BlockHand.zig");
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const Zip = @import("../util/Zip.zig");
 
@@ -120,6 +121,7 @@ world: WorldRenderer,
 player: Player,
 ui_batcher: SpriteBatcher,
 selection: SelectionOutline,
+held: BlockHand,
 
 fn init(ctx: *anyopaque) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
@@ -183,11 +185,16 @@ fn init(ctx: *anyopaque) anyerror!void {
     // Block selection outline (line mesh, drawn after the world pass).
     self.selection = try SelectionOutline.init(self.pipeline);
 
+    // Held-block viewmodel. Uses the same terrain atlas as the world.
+    self.held = try BlockHand.init(self.pipeline, GameTextures.inst.atlas);
+    self.player.held_renderer = &self.held;
+
     Util.report();
 }
 
 fn deinit(ctx: *anyopaque) void {
     var self = Util.ctx_to_self(@This(), ctx);
+    self.held.deinit();
     self.selection.deinit();
     self.ui_batcher.deinit();
     self.world.deinit();
@@ -206,6 +213,7 @@ fn update(ctx: *anyopaque, dt: f32, budget: *const Util.BudgetContext) anyerror!
     var self = Util.ctx_to_self(@This(), ctx);
     self.player.update(dt);
     self.world.update(dt, budget, &self.player.camera);
+    self.held.update(dt, self.player.hotbar[self.player.selected_slot]);
 }
 
 fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
@@ -236,6 +244,12 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
         t.scale = .{ .x = 16.0, .y = 16.0, .z = 16.0 };
         self.selection.draw(&t);
     }
+
+    // Held-block viewmodel: swaps in its own projection + identity view,
+    // clears depth internally so it never z-fights against nearby world
+    // geometry. Matrices are left in that state on exit; the UI pass
+    // below installs its own identity proj/view before drawing.
+    self.held.draw(&GameTextures.inst.terrain, &self.player.camera);
 
     // UI pass: orthographic overlay drawn on top of the 3D scene.
     // clear_depth so HUD sprites aren't z-rejected by world geometry;
