@@ -1,15 +1,15 @@
-/// Declarative widget array for the main menu, plus the activation handlers.
+/// Declarative component array for the main menu, plus activation handlers.
 ///
-/// The widgets array is module-static so the Screen can hold a stable slice
+/// The component array is module-static so the Screen can hold a stable slice
 /// into it. Activation callbacks own all side effects — currently only
 /// `on_singleplayer` is wired, the rest are stubs that no-op.
 const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 
-const widget = @import("widget.zig");
-const Widget = widget.Widget;
-const Screen = widget.Screen;
+const component = @import("component.zig");
+const Component = component.Component;
+const Screen = @import("Screen.zig");
 const LoadState = @import("../state/LoadState.zig");
 const Scaling = @import("Scaling.zig");
 const SpriteBatcher = @import("SpriteBatcher.zig");
@@ -22,7 +22,7 @@ pub const Context = struct {
     logo: *const Rendering.Texture,
 };
 
-const widgets = [_]Widget{
+const components = [_]Component{
     .{ .label = .{
         .text = "CrossCraft Classic v0.1.0",
         .pos_x = 2,
@@ -133,7 +133,7 @@ var state_inst: ae.Core.State = undefined;
 
 pub fn build(ctx: *Context) Screen {
     return .{
-        .widgets = widgets[0..],
+        .components = components[0..],
         .ctx = ctx,
         .nav = .stack,
         .draw_underlay = draw_underlay,

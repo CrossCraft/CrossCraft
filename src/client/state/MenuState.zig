@@ -10,7 +10,7 @@ const FontBatcher = @import("../ui/FontBatcher.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const Zip = @import("../util/Zip.zig");
 const ui_input = @import("../ui/input.zig");
-const widget = @import("../ui/widget.zig");
+const Screen = @import("../ui/Screen.zig");
 const MainMenuScreen = @import("../ui/MainMenuScreen.zig");
 
 const MenuTextures = struct {
@@ -53,7 +53,7 @@ batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 splash_mesh: FontBatcher.BatchMesh,
 time: f32,
-screen: widget.Screen,
+screen: Screen,
 ui_repeat: ui_input.Repeat,
 main_menu_ctx: MainMenuScreen.Context,
 
