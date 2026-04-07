@@ -34,8 +34,8 @@ fn face_color(face: Face) u32 {
     };
 }
 
-/// Darken a color for shadowed faces. Multiplies RGB by 153/256 (~0.6).
-fn apply_shadow(color: u32) u32 {
+/// Darken a color for shadowed geometry. Multiplies RGB by 153/256 (~0.6).
+pub fn apply_shadow(color: u32) u32 {
     const r = (color >> 16) & 0xFF;
     const g = (color >> 8) & 0xFF;
     const b = color & 0xFF;

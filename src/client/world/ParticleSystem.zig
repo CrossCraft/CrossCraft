@@ -11,7 +11,8 @@ const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const BlockRegistry = @import("block/BlockRegistry.zig");
-const Face = @import("chunk/face.zig").Face;
+const face_mod = @import("chunk/face.zig");
+const Face = face_mod.Face;
 const collision = @import("../player/collision.zig");
 
 // -- Tunables ----------------------------------------------------------------
@@ -240,6 +241,18 @@ fn point_solid(wx: f32, wy: f32, wz: f32) bool {
     return collision.block_height(id) > 0.0;
 }
 
+/// Match chunk/cross-plant shadowing for the voxel containing a particle.
+/// Out-of-world positions are treated as sunlit, matching face_sunlit.
+fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
+    const bx: i32 = @intFromFloat(@floor(wx));
+    const by: i32 = @intFromFloat(@floor(wy));
+    const bz: i32 = @intFromFloat(@floor(wz));
+    if (bx < 0 or bx >= c.WorldLength) return true;
+    if (by < 0 or by >= c.WorldHeight) return true;
+    if (bz < 0 or bz >= c.WorldDepth) return true;
+    return World.is_sunlit(@intCast(bx), @intCast(by), @intCast(bz));
+}
+
 // -- Rendering ---------------------------------------------------------------
 
 pub fn draw(self: *Self, camera: *const Camera) void {
@@ -290,10 +303,12 @@ fn emit_particle(
     //   v1 bottom-right ( r - up)
     //   v2 top-right    ( r + up)
     //   v3 top-left     (-r + up)
-    const v0 = make_vertex(p.px - rx - upx, p.py - upy, p.pz - rz - upz, p.u0, p.v1);
-    const v1 = make_vertex(p.px + rx - upx, p.py - upy, p.pz + rz - upz, p.u1, p.v1);
-    const v2 = make_vertex(p.px + rx + upx, p.py + upy, p.pz + rz + upz, p.u1, p.v0);
-    const v3 = make_vertex(p.px - rx + upx, p.py + upy, p.pz - rz + upz, p.u0, p.v0);
+    const color: u32 = if (point_sunlit(p.px, p.py, p.pz)) 0xFFFFFFFF else face_mod.apply_shadow(0xFFFFFFFF);
+
+    const v0 = make_vertex(p.px - rx - upx, p.py - upy, p.pz - rz - upz, p.u0, p.v1, color);
+    const v1 = make_vertex(p.px + rx - upx, p.py - upy, p.pz + rz - upz, p.u1, p.v1, color);
+    const v2 = make_vertex(p.px + rx + upx, p.py + upy, p.pz + rz + upz, p.u1, p.v0, color);
+    const v3 = make_vertex(p.px - rx + upx, p.py + upy, p.pz - rz + upz, p.u0, p.v0, color);
 
     mesh.vertices.appendAssumeCapacity(v0);
     mesh.vertices.appendAssumeCapacity(v1);
@@ -303,11 +318,11 @@ fn emit_particle(
     mesh.vertices.appendAssumeCapacity(v3);
 }
 
-fn make_vertex(wx: f32, wy: f32, wz: f32, u: i16, v: i16) Vertex {
+fn make_vertex(wx: f32, wy: f32, wz: f32, u: i16, v: i16, color: u32) Vertex {
     return .{
         .pos = .{ encode(wx), encode(wy), encode(wz) },
         .uv = .{ u, v },
-        .color = 0xFFFFFFFF,
+        .color = color,
     };
 }
 
