@@ -47,6 +47,7 @@ const Row = struct {
     flu: u32,
     cross: u32,
     leaf: u32,
+    slab: u32,
     /// Bits set where a leaf has all 6 neighbors covered (leaf-or-opaque).
     /// Filled by `compute_solid_leaves` after `pack_row` runs.
     solid_leaf: u32,
@@ -65,7 +66,7 @@ pub const SectionCounts = struct {
 // -- Pack ---------------------------------------------------------------------
 
 fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
-    const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .solid_leaf = 0 };
+    const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .solid_leaf = 0 };
     if (wz_raw < 0 or wz_raw >= @as(i32, WORLD_D)) return BOUNDARY;
     if (y < 0 or y >= @as(i32, WORLD_H)) return BOUNDARY;
 
@@ -74,6 +75,7 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     var flu: u32 = 0;
     var cross: u32 = 0;
     var leaf: u32 = 0;
+    var slab: u32 = 0;
     const wy: u16 = @intCast(y);
     const wz: u16 = @intCast(wz_raw);
 
@@ -91,8 +93,9 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
         if (reg.fluid.isSet(block)) flu |= bit;
         if (reg.cross.isSet(block)) cross |= bit;
         if (reg.leaf.isSet(block)) leaf |= bit;
+        if (reg.slab.isSet(block)) slab |= bit;
     }
-    return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .solid_leaf = 0 };
+    return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .solid_leaf = 0 };
 }
 
 /// Flag leaves whose all 6 neighbors are leaf-or-opaque. Such leaves are
@@ -195,6 +198,7 @@ const FaceMasks = struct {
     cross: u32,
     opq: u32,
     leaf: u32,
+    slab: u32,
     // Fluid y_pos faces needing double-sided emission (extra 6 verts each)
     flu_yp: u32,
 };
@@ -205,6 +209,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const vis = cur.vis;
     const flu = cur.flu;
     const leaf = cur.leaf;
+    const slab = cur.slab;
     const sleaf = cur.solid_leaf;
 
     // "Effective opaque" = real opaque + solid leaves. Anything in eff acts as
@@ -228,7 +233,9 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const x_neg = (std_vis & ~(eff_cur << 1)) & SECTION_MASK;
     const z_pos = (std_vis & ~eff_zp) & SECTION_MASK;
     const z_neg = (std_vis & ~eff_zn) & SECTION_MASK;
-    const y_pos = (std_vis & ~eff_yp) & SECTION_MASK;
+    // Slab top sits at y+0.5 with a half-block air gap below the next block,
+    // so it can never be occluded by its y+1 neighbor — force-emit unconditionally.
+    const y_pos = ((std_vis & ~eff_yp) | slab) & SECTION_MASK;
     const y_neg = (std_vis & ~eff_yn) & SECTION_MASK;
 
     // Fluid faces: cull against eff (so fluid against solid-leaf is culled)
@@ -267,6 +274,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
         .cross = cur.cross & SECTION_MASK,
         .opq = opq,
         .leaf = leaf,
+        .slab = slab,
         .flu_yp = flu_yp_bits,
     };
 }
@@ -275,9 +283,12 @@ fn count_row_faces(by: u32, bz: u32, buf: *const SectionBuf) SectionCounts {
     const f = compute_face_masks(by, bz, buf);
 
     const sl_count = pop(f.sl_xp) + pop(f.sl_xn) + pop(f.sl_zp) + pop(f.sl_zn) + pop(f.sl_yp) + pop(f.sl_yn);
-    const opq_count = pop(f.opq & f.x_pos) + pop(f.opq & f.x_neg) +
-        pop(f.opq & f.z_pos) + pop(f.opq & f.z_neg) +
-        pop(f.opq & f.y_pos) + pop(f.opq & f.y_neg);
+    // Slabs render to the opaque mesh even though they're not in `opq`
+    // (which is the cull mask). Fold them in for vertex-count routing.
+    const routed_opq = f.opq | f.slab;
+    const opq_count = pop(routed_opq & f.x_pos) + pop(routed_opq & f.x_neg) +
+        pop(routed_opq & f.z_pos) + pop(routed_opq & f.z_neg) +
+        pop(routed_opq & f.y_pos) + pop(routed_opq & f.y_neg);
     const all_count = pop(f.x_pos) + pop(f.x_neg) +
         pop(f.z_pos) + pop(f.z_neg) +
         pop(f.y_pos) + pop(f.y_neg);
@@ -336,7 +347,8 @@ fn emit_mask(
         const reg = &BlockRegistry.global;
         const tile = reg.get_face_tile(block, face);
 
-        const mesh = if (reg.@"opaque".isSet(block)) m.@"opaque" else m.transparent;
+        const is_slab = reg.slab.isSet(block);
+        const mesh = if (reg.@"opaque".isSet(block) or is_slab) m.@"opaque" else m.transparent;
 
         const shadowed = !face_sunlit(wx, y, wz, face) and
             block != B.Flowing_Lava and block != B.Still_Lava;
@@ -344,6 +356,9 @@ fn emit_mask(
         if (face == .y_pos and reg.fluid.isSet(block)) {
             assert_has_room(mesh, 12);
             face_mod.emit_fluid_top(mesh, lx, local_y, lz, tile, atlas, shadowed);
+        } else if (is_slab) {
+            assert_has_room(mesh, 6);
+            face_mod.emit_slab_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);
         } else {
             assert_has_room(mesh, 6);
             face_mod.emit_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);

@@ -32,9 +32,33 @@ pub const RaycastHit = struct {
 /// Maximum reach in blocks for the selection raycast.
 pub const REACH: f32 = 5.0;
 
-/// Block ID placed by the right-click action. Hardcoded until a hotbar
-/// exists; matches the original Classic default of cobblestone.
-const PLACE_BLOCK: u8 = B.Cobblestone;
+/// Number of slots in the hotbar (Classic uses 9).
+pub const HOTBAR_SLOTS: u8 = 9;
+
+/// Default hotbar contents in slot order.
+const DEFAULT_HOTBAR: [HOTBAR_SLOTS]u8 = .{
+    B.Stone,
+    B.Cobblestone,
+    B.Brick,
+    B.Dirt,
+    B.Planks,
+    B.Log,
+    B.Leaves,
+    B.Glass,
+    B.Slab,
+};
+
+// gui.png layout (Minecraft Classic): hotbar bg at (0,0) 182x22; selector
+// at (0,22) 24x24. Slots are 20px wide; first slot center 11px from the
+// hotbar's left edge, so slot i center is 20*i - 80 from hotbar center.
+const HOTBAR_TEX_X: i16 = 0;
+const HOTBAR_TEX_Y: i16 = 0;
+const HOTBAR_W: i16 = 182;
+const HOTBAR_H: i16 = 22;
+const SELECTOR_TEX_X: i16 = 0;
+const SELECTOR_TEX_Y: i16 = 22;
+const SELECTOR_SIZE: i16 = 24;
+const HOTBAR_SLOT_STRIDE: i16 = 20;
 
 const Self = @This();
 
@@ -106,6 +130,10 @@ stick_look_speed: f32,
 /// `update`. Consumed by GameState to draw the selection outline.
 selected: ?RaycastHit,
 
+/// Hotbar contents (block IDs) and currently selected slot index.
+hotbar: [HOTBAR_SLOTS]u8,
+selected_slot: u8,
+
 /// Outbound packet sink, owned by the connection layer (FakeConn or
 /// real socket). Used by break/place callbacks to send SetBlockToServer.
 writer: *std.Io.Writer,
@@ -145,6 +173,8 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .mouse_captured = true,
         .stick_look_speed = 3.0,
         .selected = null,
+        .hotbar = DEFAULT_HOTBAR,
+        .selected_slot = 0,
         .writer = writer,
         .particle_sink = null,
     };
@@ -160,6 +190,18 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     try input.add_button_callback("noclip", @ptrCast(self), on_noclip);
     try input.add_button_callback("break", @ptrCast(self), on_break);
     try input.add_button_callback("place", @ptrCast(self), on_place);
+    try input.add_button_callback("hotbar_left", @ptrCast(self), on_hotbar_left);
+    try input.add_button_callback("hotbar_right", @ptrCast(self), on_hotbar_right);
+    try input.add_axis_callback("hotbar_scroll", @ptrCast(self), on_hotbar_scroll);
+    try input.add_button_callback("hotbar_slot_1", @ptrCast(self), on_hotbar_slot_1);
+    try input.add_button_callback("hotbar_slot_2", @ptrCast(self), on_hotbar_slot_2);
+    try input.add_button_callback("hotbar_slot_3", @ptrCast(self), on_hotbar_slot_3);
+    try input.add_button_callback("hotbar_slot_4", @ptrCast(self), on_hotbar_slot_4);
+    try input.add_button_callback("hotbar_slot_5", @ptrCast(self), on_hotbar_slot_5);
+    try input.add_button_callback("hotbar_slot_6", @ptrCast(self), on_hotbar_slot_6);
+    try input.add_button_callback("hotbar_slot_7", @ptrCast(self), on_hotbar_slot_7);
+    try input.add_button_callback("hotbar_slot_8", @ptrCast(self), on_hotbar_slot_8);
+    try input.add_button_callback("hotbar_slot_9", @ptrCast(self), on_hotbar_slot_9);
 
     input.mouse_sensitivity = 3.0;
     input.set_mouse_relative_mode(true);
@@ -549,7 +591,9 @@ fn is_selectable(x: u16, y: u16, z: u16) bool {
 /// clear()/flush() around this call. The crosshair lives at texel (240, 0)
 /// in gui.png with a 16x16 extent -- standard Minecraft Classic layout.
 pub fn draw_ui(self: *Self, batcher: *SpriteBatcher, gui: *const Rendering.Texture) void {
-    _ = self;
+    std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
+
+    // Crosshair: gui.png (240, 0), 16x16, screen center.
     batcher.add_sprite(&.{
         .texture = gui,
         .pos_offset = .{ .x = 0, .y = 0 },
@@ -560,6 +604,37 @@ pub fn draw_ui(self: *Self, batcher: *SpriteBatcher, gui: *const Rendering.Textu
         .layer = 255,
         .reference = .middle_center,
         .origin = .middle_center,
+    });
+
+    // Hotbar background: shifted up 1px so the selector's bottom row stays
+    // on screen (selector is 24 tall, hotbar is 22, so it overhangs by 1px
+    // on the top and bottom).
+    batcher.add_sprite(&.{
+        .texture = gui,
+        .pos_offset = .{ .x = 0, .y = -1 },
+        .pos_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
+        .tex_offset = .{ .x = HOTBAR_TEX_X, .y = HOTBAR_TEX_Y },
+        .tex_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
+        .color = .white,
+        .layer = 250,
+        .reference = .bottom_center,
+        .origin = .bottom_center,
+    });
+
+    // Selector centered over the active slot. Slot i center sits at
+    // 20*i - 80 from the hotbar's horizontal center.
+    const slot_i: i16 = @intCast(self.selected_slot);
+    const sel_x: i16 = HOTBAR_SLOT_STRIDE * slot_i - 80;
+    batcher.add_sprite(&.{
+        .texture = gui,
+        .pos_offset = .{ .x = sel_x, .y = 0 },
+        .pos_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
+        .tex_offset = .{ .x = SELECTOR_TEX_X, .y = SELECTOR_TEX_Y },
+        .tex_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
+        .color = .white,
+        .layer = 251,
+        .reference = .bottom_center,
+        .origin = .bottom_center,
     });
 }
 
@@ -658,7 +733,76 @@ fn on_place(ctx: *anyopaque, event: input.ButtonEvent) void {
         self.pos_z + collision.HALF_W > bz0 and
         self.pos_z - collision.HALF_W < bz0 + 1.0;
     if (overlaps) return;
-    send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, PLACE_BLOCK);
+    std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
+    const block = self.hotbar[self.selected_slot];
+    send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
+}
+
+fn on_hotbar_left(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
+}
+
+fn on_hotbar_right(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
+}
+
+fn select_slot(self: *Self, slot: u8) void {
+    std.debug.assert(slot < HOTBAR_SLOTS);
+    self.selected_slot = slot;
+}
+
+fn on_hotbar_slot_1(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    select_slot(@ptrCast(@alignCast(ctx)), 0);
+}
+fn on_hotbar_slot_2(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    select_slot(@ptrCast(@alignCast(ctx)), 1);
+}
+fn on_hotbar_slot_3(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    select_slot(@ptrCast(@alignCast(ctx)), 2);
+}
+fn on_hotbar_slot_4(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    select_slot(@ptrCast(@alignCast(ctx)), 3);
+}
+fn on_hotbar_slot_5(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    select_slot(@ptrCast(@alignCast(ctx)), 4);
+}
+fn on_hotbar_slot_6(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    select_slot(@ptrCast(@alignCast(ctx)), 5);
+}
+fn on_hotbar_slot_7(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    select_slot(@ptrCast(@alignCast(ctx)), 6);
+}
+fn on_hotbar_slot_8(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    select_slot(@ptrCast(@alignCast(ctx)), 7);
+}
+fn on_hotbar_slot_9(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    select_slot(@ptrCast(@alignCast(ctx)), 8);
+}
+
+/// Mouse scroll wheel: positive value = scroll up = previous slot, negative
+/// = scroll down = next slot. Uses an axis callback because the underlying
+/// mouse_scroll source is a per-frame delta consumed on read.
+fn on_hotbar_scroll(ctx: *anyopaque, value: f32) void {
+    if (value > 0.5) {
+        const self: *Self = @ptrCast(@alignCast(ctx));
+        self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
+    } else if (value < -0.5) {
+        const self: *Self = @ptrCast(@alignCast(ctx));
+        self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
+    }
 }
 
 /// Send a SetBlockToServer packet and flush the writer so the embedded

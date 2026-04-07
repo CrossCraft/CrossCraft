@@ -26,6 +26,7 @@ visible: BitSet,
 cross: BitSet,
 leaf: BitSet,
 fluid: BitSet,
+slab: BitSet,
 face_tiles: [256]FaceTiles,
 
 /// Global registry instance — call init() before use.
@@ -69,6 +70,7 @@ fn defaults() Self {
         .cross = BitSet.initEmpty(),
         .leaf = BitSet.initEmpty(),
         .fluid = BitSet.initEmpty(),
+        .slab = BitSet.initEmpty(),
         .face_tiles = [_]FaceTiles{all(0, 0)} ** 256,
     };
 
@@ -85,8 +87,16 @@ fn defaults() Self {
     self.@"opaque".unset(B.Flower2);
     self.@"opaque".unset(B.Mushroom1);
     self.@"opaque".unset(B.Mushroom2);
+    // Slab is half-height; treating it as opaque would (a) cull neighbors'
+    // faces hidden behind the missing top half and (b) cause its own top
+    // face to be culled by whatever sits above it. Mark non-opaque and let
+    // the dedicated slab path in the mesher handle geometry.
+    self.@"opaque".unset(B.Slab);
     // Clear undefined block IDs 50-255 as non-opaque
     for (50..256) |i| self.@"opaque".unset(i);
+
+    // -- Slab blocks (half-height geometry) --
+    self.slab.set(B.Slab);
 
     // -- Visible: clear invisible blocks --
     self.visible.unset(B.Air);

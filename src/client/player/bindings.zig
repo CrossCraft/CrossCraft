@@ -57,4 +57,35 @@ pub fn init() !void {
     try input.register_action("place", .button);
     try input.bind_action("place", .{ .source = .{ .mouse_button = .Right } });
     try input.bind_action("place", .{ .source = .{ .gamepad_button = .RButton } });
+
+    // ---- hotbar slot cycle ----
+    // D-pad is button-typed (one event per press). Mouse scroll is axis-typed
+    // because get_mouse_scroll() returns a per-frame delta and is consumed on
+    // read -- binding it to two button actions would let only the first fire.
+    try input.register_action("hotbar_left", .button);
+    try input.bind_action("hotbar_left", .{ .source = .{ .gamepad_button = .DpadLeft } });
+    try input.register_action("hotbar_right", .button);
+    try input.bind_action("hotbar_right", .{ .source = .{ .gamepad_button = .DpadRight } });
+    try input.register_action("hotbar_scroll", .axis);
+    try input.bind_action("hotbar_scroll", .{ .source = .{ .mouse_scroll = {} } });
+
+    // ---- direct hotbar slot select (keyboard 1-9) ----
+    try input.register_action("hotbar_slot_1", .button);
+    try input.bind_action("hotbar_slot_1", .{ .source = .{ .key = .Num1 } });
+    try input.register_action("hotbar_slot_2", .button);
+    try input.bind_action("hotbar_slot_2", .{ .source = .{ .key = .Num2 } });
+    try input.register_action("hotbar_slot_3", .button);
+    try input.bind_action("hotbar_slot_3", .{ .source = .{ .key = .Num3 } });
+    try input.register_action("hotbar_slot_4", .button);
+    try input.bind_action("hotbar_slot_4", .{ .source = .{ .key = .Num4 } });
+    try input.register_action("hotbar_slot_5", .button);
+    try input.bind_action("hotbar_slot_5", .{ .source = .{ .key = .Num5 } });
+    try input.register_action("hotbar_slot_6", .button);
+    try input.bind_action("hotbar_slot_6", .{ .source = .{ .key = .Num6 } });
+    try input.register_action("hotbar_slot_7", .button);
+    try input.bind_action("hotbar_slot_7", .{ .source = .{ .key = .Num7 } });
+    try input.register_action("hotbar_slot_8", .button);
+    try input.bind_action("hotbar_slot_8", .{ .source = .{ .key = .Num8 } });
+    try input.register_action("hotbar_slot_9", .button);
+    try input.bind_action("hotbar_slot_9", .{ .source = .{ .key = .Num9 } });
 }
