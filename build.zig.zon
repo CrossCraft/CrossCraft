@@ -9,8 +9,8 @@
             .hash = "ZeeBuffer-0.2.0-RVIQu-7-AQC_98ycQNuJ4hxVxLDGMQkPAvLVvP4DsHz2",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#d801de24705196e6abd7b3c784d3460610ecb2e0",
-            .hash = "Aether-0.0.0-cjG28sq2DQBtB5-XmU549qq4n9D2AgLhVCRMCsWrEtdN",
+            .url = "git+https://github.com/AetherEngine/Aether#e9b2c3bb7eccae086d109a23541bda88398861b5",
+            .hash = "Aether-0.0.0-cjG28v34DQB-07Q6zN8mxWHiQ4knSrPuvdW-T2l4z2X4",
         },
         .resources = .{
             .url = "git+https://github.com/CrossCraft/CrossCraft-Resources#9e024891bf214ee1423ac6a7aab95facabec5bac",

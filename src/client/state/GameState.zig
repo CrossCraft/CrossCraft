@@ -58,7 +58,6 @@ const GameTextures = struct {
         inst.terrain.force_resident();
         inst.clouds = try load_from_pack(pack, "minecraft/textures/clouds");
         inst.gui = try load_from_pack(pack, "minecraft/textures/gui/gui");
-        inst.gui.force_resident();
         // Animation source strips: kept CPU-side only; never bound. We read
         // frames via get_pixel and blit them into the terrain atlas.
         inst.water_still = try load_from_pack(pack, "crosscraft/textures/water_still");

@@ -14,9 +14,10 @@
 //
 // Made with reference to ClassiCube and original CrossCraft source: https://github.com/CrossCraft/CrossCraft-Classic/blob/main/src/Player/BlockRep.cpp
 //
-// Builds a screen-space mesh that LOOKS 3D by hand-projecting cube vertices
-// through Y(45 deg) * X(-30 deg) and dropping the Z component, the same trick
-// ClassiCube's IsometricDrawer uses. No projection matrix, no depth buffer
+// Builds a screen-space mesh that LOOKS 3D by transforming cube vertices
+// through a Math.Mat4 = RotationY(+45 deg) * RotationX(-30 deg) and dropping
+// the Z component, the same trick ClassiCube's IsometricDrawer and the
+// original CrossCraft BlockRep.cpp use. No projection matrix, no depth buffer
 // reasoning per face: the three emitted faces (+X, -Z, +Y) never overlap in
 // screen space within a single block, and every block uses the same Z layer
 // so the GPU draws them in submission order.
@@ -42,16 +43,14 @@ const layout = @import("layout.zig");
 
 const Self = @This();
 
-// Inlined RotateY(+45) * RotateX(-30):
-//   x_screen = cos45 * (vx + vz)
-//   y_object = vx*sin30*sin(-45) + vy*cos30 + vz*sin30*cos(-45)
-// We negate y_object when adding to a logical-pixel center because logical Y
-// is positive-down: a vertex with vy = +h (top of cube) needs a SMALLER y in
-// pixel space so it sits above the cell center.
-const COS30: f32 = 0.8660254;
-const SIN30: f32 = 0.5;
-const COS45: f32 = 0.7071068;
-const SIN30_COS45: f32 = SIN30 * COS45;
+// Iso pose. Same angles as ClassiCube's IsometricDrawer and the original
+// CrossCraft BlockRep -- a 30 deg dimetric, not a true 35.264 deg isometric.
+const ROT_Y_RAD: f32 = std.math.pi * 0.25;
+const ROT_X_RAD: f32 = -std.math.pi / 6.0;
+// Half the projected horizontal width of a unit cube under this transform;
+// the object-space half-extent is half_extent_px / PROJ_HALF so the projected
+// width matches the caller's pixel budget.
+const PROJ_HALF: f32 = 0.7071068; // cos(45)
 
 // Drawn in its own HUD pass between the hotbar background and selector. The
 // z value intentionally stays in the older safe HUD band instead of layers
@@ -70,17 +69,22 @@ pipeline: Rendering.Pipeline.Handle,
 terrain: *const Rendering.Texture,
 atlas: TextureAtlas,
 mesh: Rendering.Mesh(Vertex),
+iso_xform: Math.Mat4,
 
 pub fn init(
     pipeline: Rendering.Pipeline.Handle,
     terrain: *const Rendering.Texture,
     atlas: TextureAtlas,
 ) !Self {
+    // Mat4 uses row-vector convention (v' = v * M), so a.mul(b) means "apply
+    // a first, then b" -- matching the rotateY-then-rotateX order.
+    const iso = Math.Mat4.rotationY(ROT_Y_RAD).mul(Math.Mat4.rotationX(ROT_X_RAD));
     var self: Self = .{
         .pipeline = pipeline,
         .terrain = terrain,
         .atlas = atlas,
         .mesh = try Rendering.Mesh(Vertex).new(pipeline),
+        .iso_xform = iso,
     };
     self.mesh.primitive = .triangles;
     try self.mesh.vertices.ensureTotalCapacity(Util.allocator(.render), VERT_CAPACITY);
@@ -120,10 +124,10 @@ pub fn add_block(
 
     const is_slab = reg.slab.isSet(block);
 
-    // Object-space half-extent: chosen so the projected width along x equals
-    // exactly 2 * half_extent_px after the rotation collapses (vx, vz) to
-    // x_screen = cos45 * (vx + vz).
-    const h: f32 = half_extent_px / COS45;
+    // Object-space half-extent: chosen so the projected screen-x extent of
+    // a unit cube ((+/-h, +/-h, +/-h)) equals 2 * half_extent_px.
+    //   max x_screen = cos45 * 2h = 2 * half_extent_px  ==>  h = half_extent_px / cos45.
+    const h: f32 = half_extent_px / PROJ_HALF;
     const y_top: f32 = if (is_slab) 0.0 else h;
     const y_bot: f32 = -h;
 
@@ -160,26 +164,40 @@ fn face_shading(face: Face) u32 {
     };
 }
 
-fn project_xy(vx: f32, vy: f32, vz: f32, cx: f32, cy: f32) [2]f32 {
-    const x = cx + COS45 * (vx + vz);
-    const y = cy + SIN30_COS45 * (vx - vz) - COS30 * vy;
-    return .{ x, y };
+fn project_xy(self: *const Self, vx: f32, vy: f32, vz: f32, cx: f32, cy: f32) [2]f32 {
+    // Row-vector multiply v * M, only the x and y components -- z is dropped.
+    const m = self.iso_xform.data;
+    const ox = vx * m[0][0] + vy * m[1][0] + vz * m[2][0] + m[3][0];
+    const oy = vx * m[0][1] + vy * m[1][1] + vz * m[2][1] + m[3][1];
+    // Logical pixel space is +y down; the rotation matrix is math y-up, so flip.
+    return .{ cx + ox, cy - oy };
 }
 
+// SNORM has ~32767 steps across the surface, so the float vertex position
+// can go straight to NDC without ever snapping to a logical-pixel grid. That
+// matters here: at the hotbar's half_extent the projected apex sits at 8.34
+// px above center, and rounding to the nearest *logical* pixel collapses it
+// to 8 (squashed top face). Letting the GPU rasterize the float position
+// means the rasterizer rounds in physical-pixel space, where one logical px
+// is ui_scale physical px wide -- a 0.34 logical-px offset stays meaningful.
 fn ndc_xy(px_log: f32, py_log: f32) [2]i16 {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
-    const scale = Scaling.compute(screen_w, screen_h);
-    // logical_to_snorm_* only produces values inside i16 when its input is
-    // in [0, max_l*]; clamping in i16 space alone is not enough because the
-    // helper multiplies by 32767 before dividing by the screen dimension.
-    const max_lx: f32 = @floatFromInt(screen_w / scale);
-    const max_ly: f32 = @floatFromInt(screen_h / scale);
-    const cx_pix = std.math.clamp(@round(px_log), 0.0, max_lx);
-    const cy_pix = std.math.clamp(@round(py_log), 0.0, max_ly);
-    const sx = layout.logical_to_snorm_x(@intFromFloat(cx_pix), screen_w, scale);
-    const sy = layout.logical_to_snorm_y(@intFromFloat(cy_pix), screen_h, scale);
-    return .{ sx, sy };
+    const scale: f32 = @floatFromInt(Scaling.compute(screen_w, screen_h));
+    const sw: f32 = @floatFromInt(screen_w);
+    const sh: f32 = @floatFromInt(screen_h);
+    // Mirror layout.logical_to_snorm_{x,y} but stay in float so the value
+    // keeps its sub-pixel precision down to the SNORM quantisation step.
+    const max_lx: f32 = sw / scale;
+    const max_ly: f32 = sh / scale;
+    const x = std.math.clamp(px_log, 0.0, max_lx);
+    const y = std.math.clamp(py_log, 0.0, max_ly);
+    const fx = (2.0 * x * scale - sw) * 32767.0 / sw;
+    const fy = (sh - 2.0 * y * scale) * 32767.0 / sh;
+    return .{
+        @intFromFloat(@round(std.math.clamp(fx, -32767.0, 32767.0))),
+        @intFromFloat(@round(std.math.clamp(fy, -32767.0, 32767.0))),
+    };
 }
 
 fn emit_iso_face(
@@ -244,7 +262,7 @@ fn emit_iso_face(
 
     var verts: [4]Vertex = undefined;
     inline for (0..4) |i| {
-        const xy = project_xy(corners[i][0], corners[i][1], corners[i][2], cx, cy);
+        const xy = self.project_xy(corners[i][0], corners[i][1], corners[i][2], cx, cy);
         const ndc = ndc_xy(xy[0], xy[1]);
         verts[i] = .{
             .pos = .{ ndc[0], ndc[1], ISO_Z },

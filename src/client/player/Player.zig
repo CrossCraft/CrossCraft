@@ -820,7 +820,7 @@ pub fn draw_ui(
 // makes the cube taller than wide (height ~= 2*cos30/cos45 * half_extent ~=
 // 2.45x); 6 px keeps the projected block ~12 wide x ~14 tall, leaving the
 // 16 px slot interior clear of the surrounding selector frame.
-const HOTBAR_BLOCK_HALF_EXTENT: f32 = 3.75;
+const HOTBAR_BLOCK_HALF_EXTENT: f32 = 3.5;
 
 fn draw_hotbar_blocks(self: *const Self, iso: *IsoBlockDrawer) void {
     const screen_w = Rendering.gfx.surface.get_width();
