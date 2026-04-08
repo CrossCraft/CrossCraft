@@ -42,8 +42,8 @@ pub fn main(init: std.process.Init) !void {
     var state: MenuState = undefined;
     try ae.App.init(init.io, memory, .{
         .memory = game_config.init_memory(),
-        .width = 960,
-        .height = 544,
+        .width = 854,
+        .height = 480,
         .title = "CrossCraft Classic",
         .vsync = false,
         .resizable = if (ae.gfx == .vulkan) false else true, // TODO: Bug in Vulkan :(

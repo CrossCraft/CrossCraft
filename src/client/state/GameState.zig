@@ -18,7 +18,10 @@ const SelectionOutline = @import("../world/SelectionOutline.zig");
 const Player = @import("../player/Player.zig");
 const BlockHand = @import("../player/BlockHand.zig");
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
+const FontBatcher = @import("../ui/FontBatcher.zig");
 const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
+const Inventory = @import("../ui/Inventory.zig");
+const ui_input = @import("../ui/input.zig");
 const Zip = @import("../util/Zip.zig");
 
 const log = std.log.scoped(.game);
@@ -37,6 +40,7 @@ const GameTextures = struct {
     terrain: Rendering.Texture,
     clouds: Rendering.Texture,
     gui: Rendering.Texture,
+    font: Rendering.Texture,
     water_still: Rendering.Texture,
     lava_still: Rendering.Texture,
     atlas: TextureAtlas,
@@ -58,6 +62,9 @@ const GameTextures = struct {
         inst.terrain.force_resident();
         inst.clouds = try load_from_pack(pack, "minecraft/textures/clouds");
         inst.gui = try load_from_pack(pack, "minecraft/textures/gui/gui");
+        // Bitmap font texture used by the inventory tooltip. Same atlas the
+        // load/menu states use.
+        inst.font = try load_from_pack(pack, "minecraft/textures/default");
         // Animation source strips: kept CPU-side only; never bound. We read
         // frames via get_pixel and blit them into the terrain atlas.
         inst.water_still = try load_from_pack(pack, "crosscraft/textures/water_still");
@@ -73,6 +80,7 @@ const GameTextures = struct {
     pub fn deinit() void {
         inst.lava_still.deinit();
         inst.water_still.deinit();
+        inst.font.deinit();
         inst.gui.deinit();
         inst.clouds.deinit();
         inst.terrain.deinit();
@@ -122,7 +130,9 @@ pipeline: Rendering.Pipeline.Handle,
 world: WorldRenderer,
 player: Player,
 ui_batcher: SpriteBatcher,
+font_batcher: FontBatcher,
 iso_blocks: IsoBlockDrawer,
+inventory: Inventory,
 selection: SelectionOutline,
 held: BlockHand,
 
@@ -185,13 +195,25 @@ fn init(ctx: *anyopaque) anyerror!void {
     // UI sprite batcher for HUD overlay (crosshair, hotbar bg, selector).
     self.ui_batcher = try SpriteBatcher.init(self.pipeline);
 
-    // Iso-projected block icons for hotbar slots; draws to the same terrain
-    // atlas as the world.
+    // Font batcher used by the inventory tooltip. The bitmap font texture
+    // sits in GameTextures alongside the rest of the GUI assets.
+    self.font_batcher = try FontBatcher.init(self.pipeline, &GameTextures.inst.font);
+
+    // Iso-projected block icons for hotbar + inventory slots; draws to the
+    // same terrain atlas as the world.
     self.iso_blocks = try IsoBlockDrawer.init(
         self.pipeline,
         &GameTextures.inst.terrain,
         GameTextures.inst.atlas,
     );
+
+    // Inventory overlay (Classic block-picker). MenuState already calls
+    // ensure_registered, but state init order is not load-bearing here, so
+    // call it again -- it is idempotent and guarantees the ui_cursor /
+    // ui_click / ui_confirm / ui_cancel actions exist for the overlay.
+    try ui_input.ensure_registered();
+    ui_input.set_profile(ui_input.default_profile());
+    self.inventory = Inventory.init();
 
     // Block selection outline (line mesh, drawn after the world pass).
     self.selection = try SelectionOutline.init(self.pipeline);
@@ -208,6 +230,7 @@ fn deinit(ctx: *anyopaque) void {
     self.held.deinit();
     self.selection.deinit();
     self.iso_blocks.deinit();
+    self.font_batcher.deinit();
     self.ui_batcher.deinit();
     self.world.deinit();
     GameTextures.deinit();
@@ -223,6 +246,26 @@ fn tick(_: *anyopaque) anyerror!void {
 
 fn update(ctx: *anyopaque, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
+
+    // Drain the ui_input edges every frame so they never accumulate stale
+    // values across an open/close transition. The snapshot is only consumed
+    // by the inventory; when the overlay is closed it just gets discarded.
+    const ui_in = ui_input.build_frame(dt, &self.inventory.ui_repeat);
+
+    if (self.player.inventory_toggle_pending) {
+        self.player.inventory_toggle_pending = false;
+        if (self.inventory.open) {
+            self.inventory.close_overlay(&self.player);
+        } else {
+            self.inventory.open_overlay(&self.player);
+        }
+    }
+
+    if (self.inventory.open) self.inventory.update(&ui_in, &self.player);
+
+    // Player physics keep ticking with the inventory open (matching Classic).
+    // mouse_captured is false while open, so apply_look ignores deltas and
+    // on_break/on_place early-return.
     self.player.update(dt);
     self.world.update(dt, budget, &self.player.camera);
     const slot_block = self.player.hotbar[self.player.selected_slot];
@@ -281,19 +324,26 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     self.held.draw(&GameTextures.inst.terrain, &self.player.camera);
 
     // UI pass: orthographic overlay drawn on top of the 3D scene.
-    // Draw order is hotbar bg -> selector -> iso block icons. The 2D
-    // sprites all batch into one pass; the iso blocks flush last so they
-    // sit on top of the selector frame. A single depth clear between the
-    // sprite flush and the iso flush is enough -- the iso pass needs a
-    // clean depth buffer for its own z-tests.
+    // Draw order is hotbar bg -> selector -> inventory panel -> iso block
+    // icons -> tooltip text. The 2D sprites all batch into one pass; the
+    // iso blocks flush after them so they sit on top of the selector frame
+    // and the inventory panel. The font batcher flushes last for the
+    // tooltip. A depth clear between each pass keeps z-tests clean.
     Rendering.gfx.api.clear_depth();
     self.ui_batcher.clear();
+    self.font_batcher.clear();
     self.iso_blocks.begin();
     self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, &GameTextures.inst.gui);
+    if (self.inventory.open) {
+        self.inventory.draw(&self.ui_batcher, &self.iso_blocks, &self.font_batcher);
+    }
     try self.ui_batcher.flush();
 
     Rendering.gfx.api.clear_depth();
     self.iso_blocks.flush();
+
+    Rendering.gfx.api.clear_depth();
+    try self.font_batcher.flush();
 }
 
 pub fn state(self: *@This()) State {

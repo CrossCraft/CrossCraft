@@ -61,8 +61,9 @@ const ISO_Z: i16 = 32766 - @as(i16, ISO_LAYER);
 // 3 faces * 6 verts per face. Cross/flat blocks emit only 6 verts so we size
 // by the cube worst case.
 const VERTS_PER_BLOCK: usize = 18;
-// Hotbar is 9 slots; reserving up front keeps the per-frame path alloc-free.
-const MAX_BLOCKS: usize = 9;
+// Worst case: 9 hotbar slots + 45 inventory grid slots queued in the same
+// frame. Reserving up front keeps the per-frame path alloc-free.
+const MAX_BLOCKS: usize = 9 + 45;
 const VERT_CAPACITY: usize = MAX_BLOCKS * VERTS_PER_BLOCK;
 
 pipeline: Rendering.Pipeline.Handle,
@@ -274,7 +275,7 @@ fn emit_iso_face(
     self.emit_quad(&verts);
 }
 
-fn add_flat(self: *Self, block: u8, cx: f32, cy: f32, half_extent_px: f32) void {
+fn add_flat(self: *Self, block: u8, cx: f32, cy: f32, scale: f32) void {
     const reg = &BlockRegistry.global;
     const tile = reg.get_face_tile(block, .z_pos);
     const base_u: i32 = self.atlas.tileU(tile.col);
@@ -287,10 +288,13 @@ fn add_flat(self: *Self, block: u8, cx: f32, cy: f32, half_extent_px: f32) void 
     const tv0: i16 = @intCast(base_v);
     const tv1: i16 = @intCast(base_v + th);
 
-    const x0 = cx - half_extent_px;
-    const x1 = cx + half_extent_px;
-    const y0 = cy - half_extent_px;
-    const y1 = cy + half_extent_px;
+    // HACK
+    const plane_scale: f32 = 1 + (scale - 4.5) / 4.5;
+    const flat_half: f32 = 8 * plane_scale;
+    const x0 = cx - flat_half;
+    const x1 = cx + flat_half;
+    const y0 = cy - flat_half;
+    const y1 = cy + flat_half;
 
     const tl = ndc_xy(x0, y0);
     const tr = ndc_xy(x1, y0);

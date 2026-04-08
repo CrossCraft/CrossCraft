@@ -42,8 +42,10 @@ const YAW: f32 = -std.math.pi / 4.0;
 const BASE_X: f32 = 0.56;
 const BASE_Y: f32 = -0.52;
 const BASE_Z: f32 = -0.72;
-// Slabs are half-height; lifted so they sit low instead of floating mid-air.
-const SLAB_Y_LIFT: f32 = 0.1;
+// Slabs are half-height and would otherwise float; cross-plants have their
+// visible content concentrated in the lower portion of the tile and read
+// as hanging too low without a matching boost. Both share the same lift.
+const HELD_Y_LIFT: f32 = 0.1;
 
 // Swing animation.
 const PLACE_PERIOD: f32 = 0.125;
@@ -61,7 +63,8 @@ const DIG_AMP_Z: f32 = -0.2;
 const DIG_YAW_RAD: f32 = 80.0 * std.math.pi / 180.0;
 const DIG_PITCH_RAD: f32 = -20.0 * std.math.pi / 180.0;
 
-// 6 faces * 6 verts per triangle-pair quad.
+// Cube path: 6 faces * 6 verts per triangle-pair quad. Cross-plant path
+// emits 2 double-sided quads (24 verts), so the cube case is the worst.
 const VERT_CAPACITY: usize = 36;
 // Sentinel distinct from any real block id. Classic block ids occupy 0..49;
 // 50..255 are unused, so 0xFF is safely outside the assigned range.
@@ -210,10 +213,25 @@ fn rebuild(self: *Self, block: u8, shadowed: bool) void {
         return;
     }
     const reg = &BlockRegistry.global;
-    const is_slab = reg.slab.isSet(block);
     // Lava ignores shadowing in chunk meshing; mirror that here so a held
     // lava block always reads as glowing.
     const shade = shadowed and block != B.Flowing_Lava and block != B.Still_Lava;
+
+    // Cross-plants (saplings, flowers, mushrooms) have no cube faces -- the
+    // chunk mesher emits two intersecting flat planes for them via
+    // emit_cross. Mirror that here so the held viewmodel reads as a real
+    // sapling/flower/mushroom instead of a cube wrapped in cross-PNG faces.
+    if (reg.cross.isSet(block)) {
+        // All faces of a cross-plant share one tile (registered via `all`),
+        // so the face argument is arbitrary.
+        const tile = reg.get_face_tile(block, .y_pos);
+        face_mod.emit_cross(&self.mesh.vertices, 0, 0, 0, tile, &self.atlas, shade);
+        std.debug.assert(self.mesh.vertices.items.len <= VERT_CAPACITY);
+        self.mesh.update();
+        return;
+    }
+
+    const is_slab = reg.slab.isSet(block);
     const faces = [_]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
     for (faces) |face| {
         const tile = reg.get_face_tile(block, face);
@@ -240,7 +258,11 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
     terrain.bind();
 
     const anim = self.compute_anim();
-    const slab_lift: f32 = if (BlockRegistry.global.slab.isSet(self.cached_block)) SLAB_Y_LIFT else 0;
+    const reg = &BlockRegistry.global;
+    const y_lift: f32 = if (reg.slab.isSet(self.cached_block) or reg.cross.isSet(self.cached_block))
+        HELD_Y_LIFT
+    else
+        0;
 
     // View-space placement: scale the normalised [0, 0.0625] SNORM16 cube
     // to a HELD_SCALE (0.4) world-unit cube, pivot it around its centre,
@@ -258,7 +280,7 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
     // baked into the world view matrix, this reads as a hand-sway.
     const trans = Math.Mat4.translation(
         BASE_X + anim.dx - camera.bob_hor,
-        BASE_Y + anim.dy + slab_lift - camera.bob_ver,
+        BASE_Y + anim.dy + y_lift - camera.bob_ver,
         BASE_Z + anim.dz - camera.bob_hor,
     );
 

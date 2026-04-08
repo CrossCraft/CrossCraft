@@ -1,5 +1,6 @@
 /// Input action registration and default bindings.
 /// Keyboard + mouse on desktop, gamepad/analog + D-pad on PSP.
+const builtin = @import("builtin");
 const ae = @import("aether");
 const input = ae.Core.input;
 
@@ -12,9 +13,9 @@ pub fn init() !void {
     try input.bind_action("move", .{ .source = .{ .key = .A }, .component = .x, .multiplier = -1.0 });
     try input.bind_action("move", .{ .source = .{ .key = .D }, .component = .x, .multiplier = 1.0 });
     // PSP face buttons drive movement (Circle/Square = strafe, Triangle/Cross = forward/back).
-    try input.bind_action("move", .{ .source = .{ .gamepad_button = .B }, .component = .x, .multiplier = 1.0 });  // Circle = right
+    try input.bind_action("move", .{ .source = .{ .gamepad_button = .B }, .component = .x, .multiplier = 1.0 }); // Circle = right
     try input.bind_action("move", .{ .source = .{ .gamepad_button = .X }, .component = .x, .multiplier = -1.0 }); // Square = left
-    try input.bind_action("move", .{ .source = .{ .gamepad_button = .Y }, .component = .y, .multiplier = 1.0 });  // Triangle = forward
+    try input.bind_action("move", .{ .source = .{ .gamepad_button = .Y }, .component = .y, .multiplier = 1.0 }); // Triangle = forward
     try input.bind_action("move", .{ .source = .{ .gamepad_button = .A }, .component = .y, .multiplier = -1.0 }); // Cross = back
 
     // ---- jump / sneak ----
@@ -26,9 +27,19 @@ pub fn init() !void {
     try input.bind_action("sneak", .{ .source = .{ .gamepad_button = .DpadDown } });
 
     // ---- noclip toggle ----
-    try input.register_action("noclip", .button);
-    try input.bind_action("noclip", .{ .source = .{ .gamepad_button = .Back } });
-    try input.bind_action("noclip", .{ .source = .{ .key = .X } });
+    // Debug-only dev tool. Not available in release builds and never on PSP,
+    // so the gamepad Back button stays free for the inventory overlay.
+    if (comptime builtin.mode == .Debug and ae.platform != .psp) {
+        try input.register_action("noclip", .button);
+        try input.bind_action("noclip", .{ .source = .{ .key = .X } });
+    }
+
+    // ---- inventory toggle ----
+    // Opens the Classic block-picker overlay. PSP uses Select (Back); desktop
+    // uses B to match the original Classic key binding.
+    try input.register_action("inventory_toggle", .button);
+    try input.bind_action("inventory_toggle", .{ .source = .{ .key = .B } });
+    try input.bind_action("inventory_toggle", .{ .source = .{ .gamepad_button = .Back } });
 
     // ---- mouse look (delta-based) ----
     try input.register_action("look", .vector2);

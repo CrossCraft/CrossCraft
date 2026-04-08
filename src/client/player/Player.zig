@@ -11,6 +11,7 @@
 // Modifications Copyright (c) 2026 CrossCraft
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
@@ -192,6 +193,11 @@ selected: ?RaycastHit,
 hotbar: [HOTBAR_SLOTS]u8,
 selected_slot: u8,
 
+/// Edge flag set by the inventory_toggle input callback. GameState polls and
+/// clears this each frame so the player struct doesn't need to know about
+/// the inventory overlay's lifetime or its mouse-capture handoff.
+inventory_toggle_pending: bool,
+
 /// Outbound packet sink, owned by the connection layer (FakeConn or
 /// real socket). Used by break/place callbacks to send SetBlockToServer.
 writer: *std.Io.Writer,
@@ -247,6 +253,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .selected = null,
         .hotbar = DEFAULT_HOTBAR,
         .selected_slot = 0,
+        .inventory_toggle_pending = false,
         .writer = writer,
         .particle_sink = null,
         .held_renderer = null,
@@ -266,7 +273,10 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     try input.add_vector2_callback("look", @ptrCast(self), on_look);
     try input.add_vector2_callback("look_stick", @ptrCast(self), on_look_stick);
     try input.add_button_callback("escape", @ptrCast(self), on_escape);
-    try input.add_button_callback("noclip", @ptrCast(self), on_noclip);
+    if (comptime builtin.mode == .Debug and ae.platform != .psp) {
+        try input.add_button_callback("noclip", @ptrCast(self), on_noclip);
+    }
+    try input.add_button_callback("inventory_toggle", @ptrCast(self), on_inventory_toggle);
     try input.add_button_callback("break", @ptrCast(self), on_break);
     try input.add_button_callback("place", @ptrCast(self), on_place);
     try input.add_button_callback("hotbar_left", @ptrCast(self), on_hotbar_left);
@@ -291,10 +301,32 @@ pub fn update(self: *Self, dt: f32) void {
     std.debug.assert(dt >= 0);
     self.apply_look(dt);
 
+    // mouse_captured doubles as the gameplay-input gate. While the inventory
+    // overlay (or escape) has uncaptured the mouse, suppress movement, jump,
+    // and sneak so PSP D-pad / face buttons cannot drive the player through
+    // the world while the picker is up. Save/restore around the physics call
+    // so the held shadow state survives the gated frames -- closing the
+    // overlay while still holding W (or DpadUp) resumes movement immediately
+    // without waiting for a fresh edge.
+    const saved_move = self.move_dir;
+    const saved_jump = self.jumping;
+    const saved_sneak = self.sneaking;
+    if (!self.mouse_captured) {
+        self.move_dir = .{ 0, 0 };
+        self.jumping = false;
+        self.sneaking = false;
+    }
+
     if (self.noclip) {
         self.update_noclip(dt);
     } else {
         self.run_ticks(dt);
+    }
+
+    if (!self.mouse_captured) {
+        self.move_dir = saved_move;
+        self.jumping = saved_jump;
+        self.sneaking = saved_sneak;
     }
 
     self.sync_camera();
@@ -310,8 +342,12 @@ fn apply_look(self: *Self, dt: f32) void {
     }
     self.look_delta = .{ 0, 0 };
 
-    self.camera.yaw -= self.look_rate[0] * self.stick_look_speed * dt;
-    self.camera.pitch += self.look_rate[1] * self.stick_look_speed * dt;
+    // Stick look honours the same gate as mouse look so the PSP analog nub
+    // does not rotate the camera while the inventory overlay is up.
+    if (self.mouse_captured) {
+        self.camera.yaw -= self.look_rate[0] * self.stick_look_speed * dt;
+        self.camera.pitch += self.look_rate[1] * self.stick_look_speed * dt;
+    }
 
     const max_pitch = std.math.pi / 2.0 - 0.01;
     self.camera.pitch = @max(-max_pitch, @min(max_pitch, self.camera.pitch));
@@ -879,6 +915,16 @@ fn on_escape(ctx: *anyopaque, event: input.ButtonEvent) void {
     self.look_delta = .{ 0, 0 };
 }
 
+/// Edge-only signal: GameState polls and clears `inventory_toggle_pending`
+/// each frame and owns the open/close + mouse-capture handoff for the
+/// inventory overlay. Toggling capture here would race the overlay's own
+/// open/close path.
+fn on_inventory_toggle(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.inventory_toggle_pending = true;
+}
+
 fn on_noclip(ctx: *anyopaque, event: input.ButtonEvent) void {
     if (event != .pressed) return;
     const self: *Self = @ptrCast(@alignCast(ctx));
@@ -956,17 +1002,20 @@ fn on_place(ctx: *anyopaque, event: input.ButtonEvent) void {
 fn on_hotbar_left(ctx: *anyopaque, event: input.ButtonEvent) void {
     if (event != .pressed) return;
     const self: *Self = @ptrCast(@alignCast(ctx));
+    if (!self.mouse_captured) return;
     self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
 }
 
 fn on_hotbar_right(ctx: *anyopaque, event: input.ButtonEvent) void {
     if (event != .pressed) return;
     const self: *Self = @ptrCast(@alignCast(ctx));
+    if (!self.mouse_captured) return;
     self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
 }
 
 fn select_slot(self: *Self, slot: u8) void {
     std.debug.assert(slot < HOTBAR_SLOTS);
+    if (!self.mouse_captured) return;
     self.selected_slot = slot;
 }
 
@@ -1011,11 +1060,11 @@ fn on_hotbar_slot_9(ctx: *anyopaque, event: input.ButtonEvent) void {
 /// = scroll down = next slot. Uses an axis callback because the underlying
 /// mouse_scroll source is a per-frame delta consumed on read.
 fn on_hotbar_scroll(ctx: *anyopaque, value: f32) void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    if (!self.mouse_captured) return;
     if (value > HOTBAR_SCROLL_DEADBAND) {
-        const self: *Self = @ptrCast(@alignCast(ctx));
         self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
     } else if (value < -HOTBAR_SCROLL_DEADBAND) {
-        const self: *Self = @ptrCast(@alignCast(ctx));
         self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
     }
 }
