@@ -57,7 +57,6 @@ const GameTextures = struct {
         inst.terrain = try load_from_pack(pack, "minecraft/textures/terrain");
         inst.terrain.force_resident();
         inst.clouds = try load_from_pack(pack, "minecraft/textures/clouds");
-        inst.clouds.force_resident();
         inst.gui = try load_from_pack(pack, "minecraft/textures/gui/gui");
         inst.gui.force_resident();
         // Animation source strips: kept CPU-side only; never bound. We read
