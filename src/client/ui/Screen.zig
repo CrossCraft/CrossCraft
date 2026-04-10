@@ -33,6 +33,15 @@ nav: NavTopology = .stack,
 row_width: u8 = 1,
 hovered: ?u8 = null,
 focused: ?u8 = null,
+/// Text input that is actively receiving keystrokes. Only changes on click
+/// or keyboard navigation, NOT on mouse hover — so moving the mouse over
+/// another component highlights it without stealing typing focus.
+active_input: ?u8 = null,
+/// Set when the PSP OSK should be shown for a text input. The owning
+/// state must read this after draw/flush (when the GE is idle) and call
+/// showOSK, then clear the field. Deferring avoids calling showOSK from
+/// update where the GE command buffer is in an unsafe state.
+osk_request: ?u8 = null,
 focus_source: FocusSource = .mouse,
 /// Set by `update` when ui_cancel was pressed; the owning state reads it
 /// after `update` returns to drive back/pop transitions.
@@ -45,6 +54,8 @@ draw_underlay: ?DrawFn = null,
 pub fn open(self: *Self, seed_focus: bool) void {
     self.hovered = null;
     self.focused = if (seed_focus) self.first_focusable() else null;
+    self.active_input = null;
+    self.osk_request = null;
     self.focus_source = if (seed_focus) .pad else .mouse;
     self.cancel_pressed = false;
 }
@@ -55,38 +66,156 @@ pub fn update(self: *Self, in: *const UiInput) void {
 
     self.cancel_pressed = in.cancel_edge;
 
-    // Mouse hover takes the highlight whenever the cursor moves.
+    const has_active_input = if (self.active_input) |a|
+        self.components[a] == .text_input
+    else
+        false;
+
+    // Mouse hover updates the visual highlight but does NOT change
+    // active_input — that only changes on click or keyboard nav.
     if (in.cursor_available and in.cursor_moved) {
         const hit = self.hover_pick(in.cursor_x, in.cursor_y);
         self.hovered = hit;
-        if (hit) |idx| {
-            self.focused = idx;
-            self.focus_source = .mouse;
-        } else if (self.focus_source == .mouse) {
-            self.focused = null;
+        if (!has_active_input) {
+            if (hit) |idx| {
+                self.focused = idx;
+                self.focus_source = .mouse;
+            } else if (self.focus_source == .mouse) {
+                self.focused = null;
+            }
         }
     }
 
-    // Gamepad/keyboard nav takes the highlight whenever a direction fires.
-    if (in.nav != .none) {
-        self.focus_source = .pad;
-        self.nav_advance(in.nav);
+    // Route typed characters to the active text input. WASD navigation
+    // is suppressed while an input is active (those keys type instead).
+    if (has_active_input) {
+        const typed = self.apply_text_input(in);
+        if (!typed and in.nav != .none) {
+            self.focus_source = .pad;
+            self.nav_advance(in.nav);
+            self.sync_active_to_focus();
+        }
+    } else {
+        if (in.nav != .none) {
+            self.focus_source = .pad;
+            self.nav_advance(in.nav);
+            self.sync_active_to_focus();
+        }
     }
 
-    // Activation: clicks dispatch by cursor position regardless of focus
-    // source; confirm dispatches the focused component.
+    // Click: select the component under the cursor. For text inputs this
+    // makes them the active input; for buttons it activates them.
     if (in.cursor_available and in.click_edge) {
         if (self.hover_pick(in.cursor_x, in.cursor_y)) |idx| {
             self.hovered = idx;
             self.focused = idx;
             self.focus_source = .mouse;
-            self.activate(idx);
+            if (self.components[idx] == .text_input) {
+                self.active_input = idx;
+            } else {
+                self.active_input = null;
+                self.activate(idx);
+            }
             return;
         }
+        // Clicked on empty space — deselect active input.
+        self.active_input = null;
     }
     if (in.confirm_edge) {
-        if (self.activation_target()) |idx| self.activate(idx);
+        if (self.activation_target()) |idx| {
+            if (self.components[idx] == .text_input) {
+                if (ae.platform == .psp) {
+                    self.osk_request = idx;
+                } else {
+                    // Enter on a text input advances focus to the next field.
+                    self.focus_source = .pad;
+                    self.nav_advance(.down);
+                    self.sync_active_to_focus();
+                }
+            } else {
+                self.active_input = null;
+                self.activate(idx);
+            }
+        }
     }
+}
+
+/// After keyboard navigation moves focus, update active_input to match
+/// if the new focus target is a text input (or clear it if not).
+fn sync_active_to_focus(self: *Self) void {
+    if (self.focused) |f| {
+        if (self.components[f] == .text_input) {
+            self.active_input = f;
+        } else {
+            self.active_input = null;
+        }
+    } else {
+        self.active_input = null;
+    }
+}
+
+/// Writes typed characters into the active TextInput buffer. Returns true
+/// if any characters were consumed (used to suppress overlapping nav).
+fn apply_text_input(self: *Self, in: *const UiInput) bool {
+    const idx = self.active_input orelse return false;
+    const ti = switch (self.components[idx]) {
+        .text_input => |t| t,
+        else => return false,
+    };
+
+    var consumed = false;
+
+    // Backspace
+    if (in.backspace and ti.len.* > 0) {
+        ti.len.* -= 1;
+        consumed = true;
+    }
+
+    // Append typed characters
+    for (in.char_buf[0..in.char_count]) |ch| {
+        if (ti.len.* < ti.max_len) {
+            ti.buf[ti.len.*] = ch;
+            ti.len.* += 1;
+            consumed = true;
+        }
+    }
+    return consumed;
+}
+
+/// PSP: opens the system on-screen keyboard for the given TextInput,
+/// blocking until the user confirms or cancels. On confirm, copies the
+/// result back into the component's ASCII buffer. Must be called when the
+/// GE is idle (after draw/flush), not from update.
+pub fn open_psp_osk(self: *Self, idx: u8) void {
+    const ti = switch (self.components[idx]) {
+        .text_input => |t| t,
+        else => return,
+    };
+
+    // Build a UTF-16 description from the placeholder.
+    var desc_buf: [64:0]u16 = .{0} ** 64;
+    for (ti.placeholder, 0..) |ch, i| {
+        if (i >= 63) break;
+        desc_buf[i] = ch;
+    }
+
+    var out_buf: [64]u16 = .{0} ** 64;
+    const limit: c_int = @intCast(ti.max_len);
+    const result = ae.Psp.showOSK(&desc_buf, &out_buf, limit);
+    if (result != 0) return;
+
+    // Copy UTF-16 output back to the ASCII buffer, truncating to max_len.
+    var len: u8 = 0;
+    for (out_buf) |wc| {
+        if (wc == 0) break;
+        if (len >= ti.max_len) break;
+        // Only keep ASCII-range characters.
+        if (wc <= 127) {
+            ti.buf[len] = @intCast(wc);
+            len += 1;
+        }
+    }
+    ti.len.* = len;
 }
 
 fn activate(self: *Self, idx: u8) void {
@@ -202,7 +331,9 @@ pub fn draw(
         draw_underlay(self.ctx, sprites, fonts, gui_tex);
     }
     for (self.components, 0..) |c, i| {
-        c.draw(sprites, fonts, gui_tex, self.is_highlighted(@intCast(i)), self.layer_base);
+        const idx: u8 = @intCast(i);
+        const active = self.active_input != null and self.active_input.? == idx;
+        c.draw(sprites, fonts, gui_tex, self.is_highlighted(idx) or active, self.layer_base);
     }
 }
 

@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init) !void {
         .height = 480,
         .title = "CrossCraft Classic",
         .vsync = false,
-        .resizable = if (ae.gfx == .vulkan) false else true, // TODO: Bug in Vulkan :(
+        .resizable = false, // TODO: Bugs on Vulkan, also weird on tiling WM :(
     }, &state.state());
     defer ae.App.deinit();
     try ae.App.main_loop();

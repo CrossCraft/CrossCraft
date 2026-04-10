@@ -55,8 +55,7 @@ const components = [_]Component{
         .height = 20,
         .pos_x = 0,
         .pos_y = 144,
-        .enabled = false,
-        .on_activate = on_noop,
+        .on_activate = on_multiplayer,
     } },
     .{ .button = .{
         .label = "Mods and Texture Packs",
@@ -77,6 +76,13 @@ const components = [_]Component{
         .on_activate = on_noop,
     } },
 };
+
+/// Set after the "Multiplayer" button is clicked; MenuState reads and clears.
+pub var pending_direct_connect: bool = false;
+
+fn on_multiplayer(_: *anyopaque) void {
+    pending_direct_connect = true;
+}
 
 fn on_singleplayer(ctx: *anyopaque) void {
     _ = ctx;

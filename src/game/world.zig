@@ -167,6 +167,10 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
     rng = Xorshift64.init(new_seed);
 
     load_status = .loading;
+
+    // Let loadscreen catch up
+    try io.sleep(.fromMilliseconds(250), .real);
+
     if (!load()) {
         seed = new_seed;
         const worldgen = @import("worldgen.zig");

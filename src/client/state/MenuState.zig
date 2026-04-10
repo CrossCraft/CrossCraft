@@ -12,6 +12,7 @@ const Zip = @import("../util/Zip.zig");
 const ui_input = @import("../ui/input.zig");
 const Screen = @import("../ui/Screen.zig");
 const MainMenuScreen = @import("../ui/MainMenuScreen.zig");
+const DirectConnectScreen = @import("../ui/DirectConnectScreen.zig");
 
 const MenuTextures = struct {
     dirt: Rendering.Texture,
@@ -56,6 +57,7 @@ time: f32,
 screen: Screen,
 ui_repeat: ui_input.Repeat,
 main_menu_ctx: MainMenuScreen.Context,
+direct_connect_ctx: DirectConnectScreen.Context,
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
 
@@ -79,6 +81,9 @@ fn init(ctx: *anyopaque) anyerror!void {
     self.main_menu_ctx = .{
         .dirt = &MenuTextures.inst.dirt,
         .logo = &MenuTextures.inst.logo,
+    };
+    self.direct_connect_ctx = .{
+        .dirt = &MenuTextures.inst.dirt,
     };
     self.screen = MainMenuScreen.build(&self.main_menu_ctx);
     self.screen.open(!ui_input.profile_uses_pointer());
@@ -105,8 +110,42 @@ fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void 
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
 
+    // PSP: service deferred OSK at the top of update — the previous
+    // frame's end_frame has completed so the GE is idle.
+    if (ae.platform == .psp) {
+        if (self.screen.osk_request) |idx| {
+            self.screen.osk_request = null;
+            self.screen.open_psp_osk(idx);
+        }
+    }
+
     const in = ui_input.build_frame(dt, &self.ui_repeat);
     self.screen.update(&in);
+
+    // Screen-switch signals set by button callbacks.
+    if (MainMenuScreen.pending_direct_connect) {
+        MainMenuScreen.pending_direct_connect = false;
+        self.screen = DirectConnectScreen.build(&self.direct_connect_ctx);
+        self.screen.open(!ui_input.profile_uses_pointer());
+        return;
+    }
+
+    const on_direct_connect = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.direct_connect_ctx);
+    if (on_direct_connect and (DirectConnectScreen.pending_back or self.screen.cancel_pressed)) {
+        DirectConnectScreen.pending_back = false;
+        self.screen = MainMenuScreen.build(&self.main_menu_ctx);
+        self.screen.open(!ui_input.profile_uses_pointer());
+    }
+
+    // PSP: "Join Server" triggers the network configuration dialog.
+    if (ae.platform == .psp) {
+        if (DirectConnectScreen.pending_join) {
+            DirectConnectScreen.pending_join = false;
+            if (ae.Psp.showNetDialog()) {
+                // TODO: connect to server using ip_buf/name_buf.
+            }
+        }
+    }
 }
 
 fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
@@ -119,13 +158,16 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     try self.batcher.flush();
     try self.font_batcher.flush();
 
-    // Draw "Classic!" splash text as an independent transformed mesh.
-    const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;
-    const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 80, .top_center, .top_center, 25, pulse, 2);
+    // Draw "Classic!" splash text only on the main menu.
+    const on_main = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.main_menu_ctx);
+    if (on_main) {
+        const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;
+        const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 80, .top_center, .top_center, 25, pulse, 2);
 
-    Rendering.Pipeline.bind(pipeline);
-    MenuTextures.inst.font.bind();
-    self.splash_mesh.draw(&model);
+        Rendering.Pipeline.bind(pipeline);
+        MenuTextures.inst.font.bind();
+        self.splash_mesh.draw(&model);
+    }
 }
 
 pub fn state(self: *@This()) State {

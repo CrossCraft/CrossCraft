@@ -28,7 +28,11 @@ pub const Repeat = struct {
     /// Order: up, down, left, right.
     timers: [4]f32 = .{ 0, 0, 0, 0 },
     fired_first: [4]bool = .{ false, false, false, false },
+    bs_timer: f32 = 0,
+    bs_fired_first: bool = false,
 };
+
+pub const CHAR_BUF_CAP = 8;
 
 pub const UiInput = struct {
     cursor_x: i16,
@@ -44,6 +48,11 @@ pub const UiInput = struct {
     /// Distinct from cancel so the gamepad B/Circle button (which doubles as a
     /// movement key on PSP) does not toggle pause from gameplay.
     pause_edge: bool,
+    /// Characters typed this frame (for text input fields).
+    char_buf: [CHAR_BUF_CAP]u8,
+    char_count: u8,
+    /// Backspace fired this frame (with autorepeat).
+    backspace: bool,
 };
 
 /// Module-static pending edge/held flags written by Aether action callbacks.
@@ -56,6 +65,9 @@ const Pending = struct {
     held_down: bool = false,
     held_left: bool = false,
     held_right: bool = false,
+    held_backspace: bool = false,
+    char_buf: [CHAR_BUF_CAP]u8 = .{0} ** CHAR_BUF_CAP,
+    char_count: u8 = 0,
     /// Latest cursor position from the ui_cursor vector2 action, in absolute
     /// normalized coords [0..1, 0..1] with Y already top-down (the source
     /// `mouse_relative` axes are Y-flipped in Aether's absolute mode, so the
@@ -155,7 +167,86 @@ pub fn ensure_registered() !void {
     try input.bind_action("ui_cursor", .{ .source = .{ .mouse_relative = .Y }, .component = .y });
     try input.add_vector2_callback("ui_cursor", &runtime.pending, on_cursor);
 
+    // Text-input character keys and backspace.
+    try register_char_keys();
+    try input.register_action("tc_bs", .button);
+    try input.bind_action("tc_bs", .{ .source = .{ .key = .Backspace } });
+    try input.add_button_callback("tc_bs", &runtime.pending, on_backspace);
+
     runtime.registered = true;
+}
+
+/// Key-to-character mapping for text input fields.
+const CharBinding = struct { key: input.Key, char: u8 };
+const char_bindings = [_]CharBinding{
+    .{ .key = .A, .char = 'a' },
+    .{ .key = .B, .char = 'b' },
+    .{ .key = .C, .char = 'c' },
+    .{ .key = .D, .char = 'd' },
+    .{ .key = .E, .char = 'e' },
+    .{ .key = .F, .char = 'f' },
+    .{ .key = .G, .char = 'g' },
+    .{ .key = .H, .char = 'h' },
+    .{ .key = .I, .char = 'i' },
+    .{ .key = .J, .char = 'j' },
+    .{ .key = .K, .char = 'k' },
+    .{ .key = .L, .char = 'l' },
+    .{ .key = .M, .char = 'm' },
+    .{ .key = .N, .char = 'n' },
+    .{ .key = .O, .char = 'o' },
+    .{ .key = .P, .char = 'p' },
+    .{ .key = .Q, .char = 'q' },
+    .{ .key = .R, .char = 'r' },
+    .{ .key = .S, .char = 's' },
+    .{ .key = .T, .char = 't' },
+    .{ .key = .U, .char = 'u' },
+    .{ .key = .V, .char = 'v' },
+    .{ .key = .W, .char = 'w' },
+    .{ .key = .X, .char = 'x' },
+    .{ .key = .Y, .char = 'y' },
+    .{ .key = .Z, .char = 'z' },
+    .{ .key = .Num0, .char = '0' },
+    .{ .key = .Num1, .char = '1' },
+    .{ .key = .Num2, .char = '2' },
+    .{ .key = .Num3, .char = '3' },
+    .{ .key = .Num4, .char = '4' },
+    .{ .key = .Num5, .char = '5' },
+    .{ .key = .Num6, .char = '6' },
+    .{ .key = .Num7, .char = '7' },
+    .{ .key = .Num8, .char = '8' },
+    .{ .key = .Num9, .char = '9' },
+    .{ .key = .Period, .char = '.' },
+    .{ .key = .Minus, .char = '-' },
+    .{ .key = .Semicolon, .char = ':' },
+};
+
+fn char_handler(comptime ch: u8) input.ButtonCallback {
+    return struct {
+        fn handle(_: *anyopaque, ev: input.ButtonEvent) void {
+            if (ev == .pressed) push_char(ch);
+        }
+    }.handle;
+}
+
+fn push_char(ch: u8) void {
+    if (runtime.pending.char_count < CHAR_BUF_CAP) {
+        runtime.pending.char_buf[runtime.pending.char_count] = ch;
+        runtime.pending.char_count += 1;
+    }
+}
+
+fn register_char_keys() !void {
+    @setEvalBranchQuota(10_000);
+    inline for (char_bindings) |cb| {
+        const name = comptime std.fmt.comptimePrint("tc_{d}", .{@intFromEnum(cb.key)});
+        try input.register_action(name, .button);
+        try input.bind_action(name, .{ .source = .{ .key = cb.key } });
+        try input.add_button_callback(name, &runtime.pending, char_handler(cb.char));
+    }
+}
+
+fn on_backspace(_: *anyopaque, ev: input.ButtonEvent) void {
+    runtime.pending.held_backspace = ev == .pressed;
 }
 
 fn on_click(_: *anyopaque, ev: input.ButtonEvent) void {
@@ -203,6 +294,8 @@ pub fn build_frame(dt: f32, repeat: *Repeat) UiInput {
     };
     const nav = resolve_nav(held, dt, repeat);
 
+    const backspace = resolve_backspace(runtime.pending.held_backspace, dt, repeat);
+
     const snap = UiInput{
         .cursor_x = cursor.x,
         .cursor_y = cursor.y,
@@ -213,12 +306,16 @@ pub fn build_frame(dt: f32, repeat: *Repeat) UiInput {
         .confirm_edge = runtime.pending.confirm_edge,
         .cancel_edge = runtime.pending.cancel_edge,
         .pause_edge = runtime.pending.pause_edge,
+        .char_buf = runtime.pending.char_buf,
+        .char_count = runtime.pending.char_count,
+        .backspace = backspace,
     };
 
     runtime.pending.click_edge = false;
     runtime.pending.confirm_edge = false;
     runtime.pending.cancel_edge = false;
     runtime.pending.pause_edge = false;
+    runtime.pending.char_count = 0;
     return snap;
 }
 
@@ -269,4 +366,24 @@ fn resolve_nav(held: [4]bool, dt: f32, repeat: *Repeat) NavDir {
         }
     }
     return fired;
+}
+
+fn resolve_backspace(held: bool, dt: f32, repeat: *Repeat) bool {
+    if (!held) {
+        repeat.bs_timer = 0;
+        repeat.bs_fired_first = false;
+        return false;
+    }
+    if (!repeat.bs_fired_first) {
+        repeat.bs_fired_first = true;
+        repeat.bs_timer = 0;
+        return true;
+    }
+    repeat.bs_timer += dt;
+    const threshold: f32 = REPEAT_DELAY + REPEAT_RATE;
+    if (repeat.bs_timer >= threshold) {
+        repeat.bs_timer -= REPEAT_RATE;
+        return true;
+    }
+    return false;
 }
