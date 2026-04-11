@@ -2,6 +2,7 @@ const std = @import("std");
 const ae = @import("aether");
 const Core = ae.Core;
 const Util = ae.Util;
+const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
@@ -143,24 +144,24 @@ const LoadTextures = struct {
     /// Valid between LoadTextures.init() and LoadTextures.deinit().
     var inst: LoadTextures = undefined;
 
-    fn load_from_pack(pack: *Zip, file: []const u8) !Rendering.Texture {
+    fn load_from_pack(alloc: std.mem.Allocator, pack: *Zip, file: []const u8) !Rendering.Texture {
         var buf: [256]u8 = undefined;
         const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{file});
 
         var stream = try pack.open(path);
         defer pack.closeStream(&stream);
 
-        return try Rendering.Texture.load_from_reader(stream.reader);
+        return try Rendering.Texture.load_from_reader(alloc, stream.reader);
     }
 
-    pub fn init(pack: *Zip) !void {
-        inst.dirt = try load_from_pack(pack, "minecraft/textures/dirt");
-        inst.font = try load_from_pack(pack, "minecraft/textures/default");
+    pub fn init(alloc: std.mem.Allocator, pack: *Zip) !void {
+        inst.dirt = try load_from_pack(alloc, pack, "minecraft/textures/dirt");
+        inst.font = try load_from_pack(alloc, pack, "minecraft/textures/default");
     }
 
-    pub fn deinit() void {
-        inst.font.deinit();
-        inst.dirt.deinit();
+    pub fn deinit(alloc: std.mem.Allocator) void {
+        inst.font.deinit(alloc);
+        inst.dirt.deinit(alloc);
     }
 };
 
@@ -170,6 +171,7 @@ font_batcher: FontBatcher,
 time: f32,
 server_future: std.Io.Future(void),
 server_notified: bool,
+render_alloc: std.mem.Allocator,
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
 var game_state: GameState = undefined;
@@ -182,50 +184,52 @@ var state_inst: State = undefined;
 var load_state: @This() = undefined;
 var load_state_inst: State = undefined;
 
-pub fn transition_here() !void {
+pub fn transition_here(engine: *Engine) !void {
     load_state_inst = load_state.state();
-    try ae.Core.state_machine.transition(&load_state_inst);
+    try ae.Core.state_machine.transition(engine, &load_state_inst);
 }
 
-fn init(ctx: *anyopaque) anyerror!void {
+fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
-    self.pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
-    try LoadTextures.init(self.pack);
+    self.pack = try Zip.init(engine.allocator(.game), engine.io, "pack.zip");
+    const render_alloc = engine.allocator(.render);
+    self.render_alloc = render_alloc;
+    try LoadTextures.init(render_alloc, self.pack);
 
-    self.batcher = try SpriteBatcher.init(pipeline);
-    self.font_batcher = try FontBatcher.init(pipeline, &LoadTextures.inst.font);
+    self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
+    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, &LoadTextures.inst.font);
     self.time = 0;
     self.server_notified = false;
 
-    const io = Util.io();
+    const io = engine.io;
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
     server_ready.store(false, .monotonic);
     session_error = null;
     // TODO: allocator pool budget may need tuning for server + client coexistence
     self.server_future = switch (Session.mode) {
-        .singleplayer => io.async(serverTask, .{ Util.allocator(.user), Util.allocator(.user), seed, io }),
-        .multiplayer => io.async(connectTask, .{ Util.allocator(.user), seed, io }),
+        .singleplayer => io.async(serverTask, .{ engine.allocator(.user), engine.allocator(.user), seed, io }),
+        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), seed, io }),
     };
 
-    Util.report();
+    engine.report();
 }
 
-fn deinit(ctx: *anyopaque) void {
+fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
-    self.server_future.await(Util.io());
+    self.server_future.await(engine.io);
     self.font_batcher.deinit();
     self.batcher.deinit();
 
-    LoadTextures.deinit();
+    LoadTextures.deinit(self.render_alloc);
     self.pack.deinit();
     Rendering.Pipeline.deinit(pipeline);
 }
 
-fn tick(ctx: *anyopaque) anyerror!void {
+fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.server_notified and server_ready.load(.acquire)) {
         self.server_notified = true;
@@ -236,16 +240,16 @@ fn tick(ctx: *anyopaque) anyerror!void {
             return err;
         }
         state_inst = game_state.state();
-        try ae.Core.state_machine.transition(&state_inst);
+        try ae.Core.state_machine.transition(engine, &state_inst);
     }
 }
 
-fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void {
+fn update(ctx: *anyopaque, _: *Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
 }
 
-fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
+fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
 
     const screen_w = Rendering.gfx.surface.get_width();
@@ -366,7 +370,7 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     try self.font_batcher.flush();
     // Throttle to ~20 FPS while server generates on background thread;
     // avoids burning CPU on draw calls that show a static progress bar.
-    try std.Io.sleep(Util.io(), std.Io.Duration.fromMilliseconds(50), .real);
+    try std.Io.sleep(engine.io, std.Io.Duration.fromMilliseconds(50), .real);
 }
 
 pub fn state(self: *@This()) State {

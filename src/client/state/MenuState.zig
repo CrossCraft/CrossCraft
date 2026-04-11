@@ -2,6 +2,7 @@ const std = @import("std");
 const ae = @import("aether");
 const Core = ae.Core;
 const Util = ae.Util;
+const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
@@ -27,29 +28,29 @@ const MenuTextures = struct {
     /// Valid between MenuTextures.init() and MenuTextures.deinit().
     var inst: MenuTextures = undefined;
 
-    fn load_from_pack(pack: *Zip, file: []const u8) !Rendering.Texture {
+    fn load_from_pack(alloc: std.mem.Allocator, pack: *Zip, file: []const u8) !Rendering.Texture {
         var buf: [256]u8 = undefined;
         const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{file});
 
         var stream = try pack.open(path);
         defer pack.closeStream(&stream);
 
-        return try Rendering.Texture.load_from_reader(stream.reader);
+        return try Rendering.Texture.load_from_reader(alloc, stream.reader);
     }
 
-    pub fn init(pack: *Zip) !void {
-        inst.dirt = try load_from_pack(pack, "minecraft/textures/dirt");
-        inst.logo = try load_from_pack(pack, "crosscraft/textures/menu/logo");
+    pub fn init(alloc: std.mem.Allocator, pack: *Zip) !void {
+        inst.dirt = try load_from_pack(alloc, pack, "minecraft/textures/dirt");
+        inst.logo = try load_from_pack(alloc, pack, "crosscraft/textures/menu/logo");
         inst.logo.force_resident();
-        inst.font = try load_from_pack(pack, "minecraft/textures/default");
-        inst.gui = try load_from_pack(pack, "minecraft/textures/gui/gui");
+        inst.font = try load_from_pack(alloc, pack, "minecraft/textures/default");
+        inst.gui = try load_from_pack(alloc, pack, "minecraft/textures/gui/gui");
     }
 
-    pub fn deinit() void {
-        inst.gui.deinit();
-        inst.font.deinit();
-        inst.logo.deinit();
-        inst.dirt.deinit();
+    pub fn deinit(alloc: std.mem.Allocator) void {
+        inst.gui.deinit(alloc);
+        inst.font.deinit(alloc);
+        inst.logo.deinit(alloc);
+        inst.dirt.deinit(alloc);
     }
 };
 
@@ -62,20 +63,24 @@ screen: Screen,
 ui_repeat: ui_input.Repeat,
 main_menu_ctx: MainMenuScreen.Context,
 direct_connect_ctx: DirectConnectScreen.Context,
+render_alloc: std.mem.Allocator,
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
 
-fn init(ctx: *anyopaque) anyerror!void {
+fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
-    self.pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
-    try MenuTextures.init(self.pack);
+    const render_alloc = engine.allocator(.render);
+    self.render_alloc = render_alloc;
 
-    self.batcher = try SpriteBatcher.init(pipeline);
-    self.font_batcher = try FontBatcher.init(pipeline, &MenuTextures.inst.font);
+    self.pack = try Zip.init(engine.allocator(.game), engine.io, "pack.zip");
+    try MenuTextures.init(render_alloc, self.pack);
+
+    self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
+    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, &MenuTextures.inst.font);
     self.splash_mesh = try self.font_batcher.build_mesh("Classic!", .splash_front, .splash_back, 0, 1);
     self.time = 0;
     self.ui_repeat = .{};
@@ -92,25 +97,25 @@ fn init(ctx: *anyopaque) anyerror!void {
     self.screen = MainMenuScreen.build(&self.main_menu_ctx);
     self.screen.open(!ui_input.profile_uses_pointer());
 
-    Util.report();
+    engine.report();
 }
 
-fn deinit(ctx: *anyopaque) void {
+fn deinit(ctx: *anyopaque, _: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
-    self.splash_mesh.deinit();
+    self.splash_mesh.deinit(self.render_alloc);
     self.font_batcher.deinit();
     self.batcher.deinit();
 
-    MenuTextures.deinit();
+    MenuTextures.deinit(self.render_alloc);
     self.pack.deinit();
     Rendering.Pipeline.deinit(pipeline);
 }
 
-fn tick(ctx: *anyopaque) anyerror!void {
+fn tick(ctx: *anyopaque, _: *Engine) anyerror!void {
     _ = ctx;
 }
 
-fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void {
+fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
 
@@ -134,6 +139,16 @@ fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void 
         return;
     }
 
+    if (MainMenuScreen.pending_singleplayer) {
+        MainMenuScreen.pending_singleplayer = false;
+        Session.mode = .singleplayer;
+        Session.set_username("Player");
+        LoadState.transition_here(engine) catch |err| {
+            log.err("transition to LoadState failed: {}", .{err});
+        };
+        return;
+    }
+
     const on_direct_connect = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.direct_connect_ctx);
     if (on_direct_connect and (DirectConnectScreen.pending_back or self.screen.cancel_pressed)) {
         DirectConnectScreen.pending_back = false;
@@ -150,13 +165,13 @@ fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void 
         if (!net_ready) return;
 
         Session.mode = .multiplayer;
-        LoadState.transition_here() catch |err| {
+        LoadState.transition_here(engine) catch |err| {
             log.err("transition to LoadState failed: {}", .{err});
         };
     }
 }
 
-fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
+fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
 
     self.batcher.clear();

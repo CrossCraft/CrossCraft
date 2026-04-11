@@ -1,7 +1,6 @@
 const std = @import("std");
 const ae = @import("aether");
 const Math = ae.Math;
-const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
@@ -24,28 +23,30 @@ cz: u32,
 /// updates the field when the section transitions across the radius and
 /// queues a rebuild so the mesher picks the new state up.
 near_lod: bool,
+allocator: std.mem.Allocator,
 
 const Self = @This();
 
-pub fn init(pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Self {
+pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Self {
     return .{
-        .@"opaque" = try BatchMesh.new(pipeline),
-        .trans = try BatchMesh.new(pipeline),
+        .@"opaque" = try BatchMesh.new(allocator, pipeline),
+        .trans = try BatchMesh.new(allocator, pipeline),
         .cx = cx,
         .sy = sy,
         .cz = cz,
         .near_lod = false,
+        .allocator = allocator,
     };
 }
 
 pub fn deinit(self: *Self) void {
-    self.@"opaque".deinit();
-    self.trans.deinit();
+    self.@"opaque".deinit(self.allocator);
+    self.trans.deinit(self.allocator);
 }
 
 /// Release vertex data but keep GPU handles alive for reuse.
 pub fn clear(self: *Self) void {
-    const a = Util.allocator(.render);
+    const a = self.allocator;
     self.@"opaque".vertices.clearAndFree(a);
     self.trans.vertices.clearAndFree(a);
 }
@@ -55,7 +56,7 @@ pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void 
     mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
     const counts = mesher.count_section(&buf);
 
-    const a = Util.allocator(.render);
+    const a = self.allocator;
 
     self.@"opaque".vertices.clearRetainingCapacity();
     self.trans.vertices.clearRetainingCapacity();

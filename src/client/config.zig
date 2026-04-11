@@ -1,5 +1,6 @@
 const ae = @import("aether");
 const Util = ae.Util;
+const Engine = ae.Engine;
 const build_options = @import("build_options");
 
 const Self = @This();
@@ -81,9 +82,9 @@ pub fn init_memory() Util.MemoryConfig {
     };
 }
 
-pub fn apply_runtime_budgets() void {
-    Util.set_budget(.render, current.rt_render);
-    Util.set_budget(.audio, current.rt_audio);
-    Util.set_budget(.game, current.rt_game);
-    Util.set_budget(.user, current.rt_user);
+pub fn apply_runtime_budgets(engine: *Engine) void {
+    engine.set_budget(.render, current.rt_render);
+    engine.set_budget(.audio, current.rt_audio);
+    engine.set_budget(.game, current.rt_game);
+    engine.set_budget(.user, current.rt_user);
 }

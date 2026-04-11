@@ -51,10 +51,14 @@ sky: Sky,
 particles: ParticleSystem,
 cam_cx: i32,
 cam_cz: i32,
+allocator: std.mem.Allocator,
+io: std.Io,
 
 const GridRef = packed struct { cx: u8, cz: u8, sy: u8 };
 
 pub fn init(
+    allocator: std.mem.Allocator,
+    io: std.Io,
     pipeline: Rendering.Pipeline.Handle,
     terrain: *const Rendering.Texture,
     clouds: *const Rendering.Texture,
@@ -79,10 +83,12 @@ pub fn init(
         .clouds = clouds,
         .atlas = atlas,
         .pipeline = pipeline,
-        .sky = try Sky.init(pipeline),
-        .particles = try ParticleSystem.init(pipeline, atlas),
+        .sky = try Sky.init(allocator, pipeline),
+        .particles = try ParticleSystem.init(allocator, pipeline, atlas),
         .cam_cx = camera_chunk(camera.x),
         .cam_cz = camera_chunk(camera.z),
+        .allocator = allocator,
+        .io = io,
     };
 
     self.recollect(camera);
@@ -90,9 +96,9 @@ pub fn init(
     // Warm up the estimator
     while (self.build_cursor < self.build_end and self.build_estimator.is_warming_up()) {
         const ref = self.build_queue[self.build_cursor];
-        self.build_estimator.begin();
+        self.build_estimator.begin(io);
         self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch break;
-        self.build_estimator.end();
+        self.build_estimator.end(io);
         self.built[ref.cx][ref.cz][ref.sy] = true;
         self.build_cursor += 1;
     }
@@ -146,11 +152,11 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
 
     for (self.build_cursor..end) |i| {
         const ref = self.build_queue[i];
-        self.build_estimator.begin();
+        self.build_estimator.begin(self.io);
         if (self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas)) {
-            self.build_estimator.end();
+            self.build_estimator.end(self.io);
         } else |_| {
-            self.build_estimator.end();
+            self.build_estimator.end(self.io);
             // OOM - evict farthest built section and retry once
             if (self.try_evict_farthest(camera)) {
                 self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch {
@@ -296,6 +302,7 @@ fn init_column(self: *Self, cx: u8, cz: u8, cam: *const Camera) bool {
     var count: u32 = 0;
     for (0..SECTIONS_Y) |sy| {
         self.grid[cx][cz][sy] = ChunkMesh.init(
+            self.allocator,
             self.pipeline,
             @intCast(cx),
             @intCast(sy),

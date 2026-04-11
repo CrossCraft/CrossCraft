@@ -10,8 +10,6 @@ const Rendering = ae.Rendering;
 const component = @import("component.zig");
 const Component = component.Component;
 const Screen = @import("Screen.zig");
-const LoadState = @import("../state/LoadState.zig");
-const Session = @import("../state/Session.zig");
 const Scaling = @import("Scaling.zig");
 const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
@@ -80,18 +78,15 @@ const components = [_]Component{
 
 /// Set after the "Multiplayer" button is clicked; MenuState reads and clears.
 pub var pending_direct_connect: bool = false;
+/// Set after the "Singleplayer" button is clicked; MenuState reads and clears.
+pub var pending_singleplayer: bool = false;
 
 fn on_multiplayer(_: *anyopaque) void {
     pending_direct_connect = true;
 }
 
-fn on_singleplayer(ctx: *anyopaque) void {
-    _ = ctx;
-    Session.mode = .singleplayer;
-    Session.set_username("Player");
-    LoadState.transition_here() catch |err| {
-        log.err("transition to LoadState failed: {}", .{err});
-    };
+fn on_singleplayer(_: *anyopaque) void {
+    pending_singleplayer = true;
 }
 
 fn on_noop(_: *anyopaque) void {}

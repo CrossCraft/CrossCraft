@@ -27,7 +27,6 @@ fn psp_cwd() std.Io.Dir {
 pub const build_options = @import("build_options");
 
 const MenuState = @import("state/MenuState.zig");
-const LoadState = @import("state/LoadState.zig");
 
 pub fn main(init: std.process.Init) !void {
     if (ae.platform == .psp) {
@@ -39,15 +38,19 @@ pub fn main(init: std.process.Init) !void {
     const memory = try init.gpa.alloc(u8, game_config.current.total_memory_mb * 1024 * 1024);
     defer init.gpa.free(memory);
 
-    var state: MenuState = undefined;
-    try ae.App.init(init.io, memory, .{
+    var menu_state: MenuState = undefined;
+    const state = menu_state.state();
+
+    var engine: ae.Engine = undefined;
+    try engine.init(init.io, memory, .{
         .memory = game_config.init_memory(),
         .width = 854,
         .height = 480,
         .title = "CrossCraft Classic",
         .vsync = false,
         .resizable = false, // TODO: Bugs on Vulkan, also weird on tiling WM :(
-    }, &state.state());
-    defer ae.App.deinit();
-    try ae.App.main_loop();
+    }, &state);
+    defer engine.deinit();
+
+    try engine.run();
 }

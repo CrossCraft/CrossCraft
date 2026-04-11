@@ -2,6 +2,7 @@ const std = @import("std");
 const ae = @import("aether");
 const Core = ae.Core;
 const Util = ae.Util;
+const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
@@ -53,26 +54,26 @@ const GameTextures = struct {
     /// Valid between GameTextures.init() and GameTextures.deinit().
     var inst: GameTextures = undefined;
 
-    fn load_from_pack(pack: *Zip, file: []const u8) !Rendering.Texture {
+    fn load_from_pack(alloc: std.mem.Allocator, pack: *Zip, file: []const u8) !Rendering.Texture {
         var buf: [256]u8 = undefined;
         const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{file});
         var stream = try pack.open(path);
         defer pack.closeStream(&stream);
-        return try Rendering.Texture.load_from_reader(stream.reader);
+        return try Rendering.Texture.load_from_reader(alloc, stream.reader);
     }
 
-    pub fn init(pack: *Zip) !void {
-        inst.terrain = try load_from_pack(pack, "minecraft/textures/terrain");
+    pub fn init(alloc: std.mem.Allocator, pack: *Zip) !void {
+        inst.terrain = try load_from_pack(alloc, pack, "minecraft/textures/terrain");
         inst.terrain.force_resident();
-        inst.clouds = try load_from_pack(pack, "minecraft/textures/clouds");
-        inst.gui = try load_from_pack(pack, "minecraft/textures/gui/gui");
+        inst.clouds = try load_from_pack(alloc, pack, "minecraft/textures/clouds");
+        inst.gui = try load_from_pack(alloc, pack, "minecraft/textures/gui/gui");
         // Bitmap font texture used by the inventory tooltip. Same atlas the
         // load/menu states use.
-        inst.font = try load_from_pack(pack, "minecraft/textures/default");
+        inst.font = try load_from_pack(alloc, pack, "minecraft/textures/default");
         // Animation source strips: kept CPU-side only; never bound. We read
         // frames via get_pixel and blit them into the terrain atlas.
-        inst.water_still = try load_from_pack(pack, "crosscraft/textures/water_still");
-        inst.lava_still = try load_from_pack(pack, "crosscraft/textures/lava_still");
+        inst.water_still = try load_from_pack(alloc, pack, "crosscraft/textures/water_still");
+        inst.lava_still = try load_from_pack(alloc, pack, "crosscraft/textures/lava_still");
         std.debug.assert(inst.water_still.width == tile_size);
         std.debug.assert(inst.lava_still.width == tile_size);
         std.debug.assert(inst.water_still.height % tile_size == 0);
@@ -81,13 +82,13 @@ const GameTextures = struct {
         inst.anim_tick = 0;
     }
 
-    pub fn deinit() void {
-        inst.lava_still.deinit();
-        inst.water_still.deinit();
-        inst.font.deinit();
-        inst.gui.deinit();
-        inst.clouds.deinit();
-        inst.terrain.deinit();
+    pub fn deinit(alloc: std.mem.Allocator) void {
+        inst.lava_still.deinit(alloc);
+        inst.water_still.deinit(alloc);
+        inst.font.deinit(alloc);
+        inst.gui.deinit(alloc);
+        inst.clouds.deinit(alloc);
+        inst.terrain.deinit(alloc);
     }
 
     /// Blits one 16x16 frame from a vertical-strip animation source into the
@@ -142,8 +143,9 @@ iso_blocks: IsoBlockDrawer,
 inventory: Inventory,
 selection: SelectionOutline,
 held: BlockHand,
+render_alloc: std.mem.Allocator,
 
-fn init(ctx: *anyopaque) anyerror!void {
+fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.mp_read_future = null;
 
@@ -200,7 +202,7 @@ fn init(ctx: *anyopaque) anyerror!void {
             // Must be `concurrent`, not `async`: PSP's `async` falls back
             // to inline execution when it can't spawn a thread, which
             // would hang GameState.init inside an infinite read loop.
-            self.mp_read_future = try Util.io().concurrent(
+            self.mp_read_future = try engine.io.concurrent(
                 ClientConn.read_loop,
                 .{ &self.conn, &Session.mp_connected },
             );
@@ -208,7 +210,7 @@ fn init(ctx: *anyopaque) anyerror!void {
     }
 
     // Redistribute memory for game state
-    @import("../config.zig").apply_runtime_budgets();
+    @import("../config.zig").apply_runtime_budgets(engine);
 
     // Pipeline
     const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
@@ -233,13 +235,18 @@ fn init(ctx: *anyopaque) anyerror!void {
         try self.player.init(128.0, 44.0, 128.0, player_writer);
     }
 
+    const render_alloc = engine.allocator(.render);
+    self.render_alloc = render_alloc;
+
     // Textures
-    var pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
+    var pack = try Zip.init(engine.allocator(.game), engine.io, "pack.zip");
     defer pack.deinit();
-    try GameTextures.init(pack);
+    try GameTextures.init(render_alloc, pack);
 
     // World renderer
     self.world = try WorldRenderer.init(
+        render_alloc,
+        engine.io,
         self.pipeline,
         &GameTextures.inst.terrain,
         &GameTextures.inst.clouds,
@@ -254,15 +261,16 @@ fn init(ctx: *anyopaque) anyerror!void {
     self.player.particle_sink = &self.world.particles;
 
     // UI sprite batcher for HUD overlay (crosshair, hotbar bg, selector).
-    self.ui_batcher = try SpriteBatcher.init(self.pipeline);
+    self.ui_batcher = try SpriteBatcher.init(render_alloc, self.pipeline);
 
     // Font batcher used by the inventory tooltip. The bitmap font texture
     // sits in GameTextures alongside the rest of the GUI assets.
-    self.font_batcher = try FontBatcher.init(self.pipeline, &GameTextures.inst.font);
+    self.font_batcher = try FontBatcher.init(render_alloc, self.pipeline, &GameTextures.inst.font);
 
     // Iso-projected block icons for hotbar + inventory slots; draws to the
     // same terrain atlas as the world.
     self.iso_blocks = try IsoBlockDrawer.init(
+        render_alloc,
         self.pipeline,
         &GameTextures.inst.terrain,
         GameTextures.inst.atlas,
@@ -277,16 +285,16 @@ fn init(ctx: *anyopaque) anyerror!void {
     self.inventory = Inventory.init();
 
     // Block selection outline (line mesh, drawn after the world pass).
-    self.selection = try SelectionOutline.init(self.pipeline);
+    self.selection = try SelectionOutline.init(render_alloc, self.pipeline);
 
     // Held-block viewmodel. Uses the same terrain atlas as the world.
-    self.held = try BlockHand.init(self.pipeline, GameTextures.inst.atlas);
+    self.held = try BlockHand.init(render_alloc, self.pipeline, GameTextures.inst.atlas);
     self.player.held_renderer = &self.held;
 
-    Util.report();
+    engine.report();
 }
 
-fn deinit(ctx: *anyopaque) void {
+fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.held.deinit();
     self.selection.deinit();
@@ -294,20 +302,20 @@ fn deinit(ctx: *anyopaque) void {
     self.font_batcher.deinit();
     self.ui_batcher.deinit();
     self.world.deinit();
-    GameTextures.deinit();
+    GameTextures.deinit(self.render_alloc);
     Rendering.Pipeline.deinit(self.pipeline);
     switch (Session.mode) {
         .singleplayer => self.fake_conn.connected = false,
         .multiplayer => {
             if (Session.mp_stream) |*s| {
-                s.close(Util.io());
+                s.close(engine.io);
                 Session.mp_stream = null;
             }
         },
     }
 }
 
-fn tick(ctx: *anyopaque) anyerror!void {
+fn tick(ctx: *anyopaque, _: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     // MP updates arrive as packets; no local world tick.
     if (Session.mode == .singleplayer) {
@@ -355,7 +363,7 @@ fn fp_coord(v: f32) u16 {
     return @intFromFloat(scaled);
 }
 
-fn update(ctx: *anyopaque, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
+fn update(ctx: *anyopaque, _: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
 
     // Drain the ui_input edges every frame so they never accumulate stale
@@ -399,14 +407,17 @@ fn player_in_shadow(player: *const Player) bool {
     return !World.is_sunlit(@intCast(bx_i), @intCast(by_i), @intCast(bz_i));
 }
 
-fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
+fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     // SP drains packets on the game thread; MP has the bg read-loop
     // task doing it and just checks the connection flag here.
     if (Session.mode == .singleplayer) {
         self.conn.drain_packets();
     } else if (!Session.mp_connected.load(.acquire)) {
-        ae.App.quit();
+        engine.quit();
+    }
+    if (self.conn.quit_requested) {
+        engine.quit();
     }
     self.player.camera.apply();
     self.world.draw(&self.player.camera);

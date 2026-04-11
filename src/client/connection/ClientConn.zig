@@ -1,5 +1,4 @@
 const std = @import("std");
-const ae = @import("aether");
 const zb = @import("protocol");
 const proto = @import("common").protocol;
 
@@ -21,6 +20,10 @@ world_x: u16,
 world_y: u16,
 world_z: u16,
 handshake_complete: bool,
+/// Set by `on_disconnect` (or other fatal packet paths); GameState polls it
+/// each draw and calls `engine.quit()` when true. Avoids threading an
+/// engine pointer into every packet handler.
+quit_requested: bool,
 
 /// Set by GameState after the world renderer exists. Block-change packets
 /// from the server use it to mark affected sections for rebuild.
@@ -38,6 +41,7 @@ pub fn init(self: *Self, reader: *std.Io.Reader, writer: *std.Io.Writer) void {
     self.world_y = 0;
     self.world_z = 0;
     self.handshake_complete = false;
+    self.quit_requested = false;
     self.world_renderer = null;
     self.protocol = zb.Protocol.init(.server, .Connected, self);
     self.protocol.handles = .{
@@ -187,9 +191,10 @@ fn on_despawn(_: *anyopaque, event: zb.DespawnPlayer) !void {
     log.info("Despawn: pid={d}", .{event.pid});
 }
 
-fn on_disconnect(_: *anyopaque, event: zb.DisconnectPlayer) !void {
+fn on_disconnect(ctx: *anyopaque, event: zb.DisconnectPlayer) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
     log.info("Disconnect: {s}", .{&event.reason});
     // No error screen yet; fall back to ending the app so the user returns
     // to a fresh process instead of a half-connected GameState.
-    ae.App.quit();
+    self.quit_requested = true;
 }

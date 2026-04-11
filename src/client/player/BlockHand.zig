@@ -13,7 +13,6 @@
 const std = @import("std");
 const ae = @import("aether");
 const Math = ae.Math;
-const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const c = @import("common").consts;
@@ -87,12 +86,13 @@ swing_kind: SwingKind,
 swing_time: f32,
 swing_period: f32,
 prev_swing_y: f32,
+allocator: std.mem.Allocator,
 
-pub fn init(pipeline: Rendering.Pipeline.Handle, atlas: TextureAtlas) !Self {
+pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, atlas: TextureAtlas) !Self {
     var self: Self = .{
         .pipeline = pipeline,
         .atlas = atlas,
-        .mesh = try Rendering.Mesh(Vertex).new(pipeline),
+        .mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
         .cached_block = SENTINEL,
         .pending_block = SENTINEL,
         .cached_shadowed = false,
@@ -100,16 +100,17 @@ pub fn init(pipeline: Rendering.Pipeline.Handle, atlas: TextureAtlas) !Self {
         .swing_time = 0,
         .swing_period = 0,
         .prev_swing_y = 0,
+        .allocator = allocator,
     };
     self.mesh.primitive = .triangles;
     // Reserve once at init so rebuild() stays infallible and never touches
     // the allocator on subsequent slot changes.
-    try self.mesh.vertices.ensureTotalCapacity(Util.allocator(.render), VERT_CAPACITY);
+    try self.mesh.vertices.ensureTotalCapacity(allocator, VERT_CAPACITY);
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.mesh.deinit();
+    self.mesh.deinit(self.allocator);
 }
 
 // -- Input hooks -------------------------------------------------------------

@@ -1,7 +1,6 @@
 const std = @import("std");
 const ae = @import("aether");
 const Math = ae.Math;
-const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const World = @import("game").World;
@@ -76,28 +75,30 @@ atlas: TextureAtlas,
 particles: [MAX_PARTICLES]Particle,
 count: u16,
 rng: std.Random.DefaultPrng,
+allocator: std.mem.Allocator,
 
 // -- Lifecycle ---------------------------------------------------------------
 
-pub fn init(pipeline: Rendering.Pipeline.Handle, atlas: TextureAtlas) !Self {
+pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, atlas: TextureAtlas) !Self {
     var self: Self = .{
-        .mesh = try Rendering.Mesh(Vertex).new(pipeline),
+        .mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
         .atlas = atlas,
         .particles = undefined,
         .count = 0,
         // Deterministic seed; "no std.os/std.c" rules out wall-clock seeding.
         .rng = std.Random.DefaultPrng.init(0xC0FFEE),
+        .allocator = allocator,
     };
     // Pre-reserve the CPU vertex buffer so per-frame rebuilds don't allocate.
     try self.mesh.vertices.ensureTotalCapacity(
-        Util.allocator(.render),
+        allocator,
         MAX_PARTICLES * VERTS_PER_PARTICLE,
     );
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.mesh.deinit();
+    self.mesh.deinit(self.allocator);
 }
 
 // -- Spawn -------------------------------------------------------------------

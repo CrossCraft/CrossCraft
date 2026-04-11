@@ -18,18 +18,22 @@ const VERTEX_COUNT: usize = 24; // 12 edges * 2 endpoints
 const Self = @This();
 
 mesh: Rendering.Mesh(Vertex),
+allocator: std.mem.Allocator,
 
-pub fn init(pipeline: Rendering.Pipeline.Handle) !Self {
-    var self: Self = .{ .mesh = try Rendering.Mesh(Vertex).new(pipeline) };
+pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
+    var self: Self = .{
+        .mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
+        .allocator = allocator,
+    };
     self.mesh.primitive = .lines;
-    try build_edges(&self.mesh);
+    try build_edges(allocator, &self.mesh);
     std.debug.assert(self.mesh.vertices.items.len == VERTEX_COUNT);
     self.mesh.update();
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.mesh.deinit();
+    self.mesh.deinit(self.allocator);
 }
 
 /// Draw the outline at `transform`. Caller must have a 3D pipeline bound and
@@ -39,27 +43,27 @@ pub fn draw(self: *Self, transform: *const Transform) void {
     self.mesh.draw(&m);
 }
 
-fn edge(mesh: *Rendering.Mesh(Vertex), x0: i16, y0: i16, z0: i16, x1: i16, y1: i16, z1: i16) !void {
-    try mesh.append(&.{
+fn edge(alloc: std.mem.Allocator, mesh: *Rendering.Mesh(Vertex), x0: i16, y0: i16, z0: i16, x1: i16, y1: i16, z1: i16) !void {
+    try mesh.append(alloc, &.{
         .{ .pos = .{ x0, y0, z0 }, .uv = .{ 0, 0 }, .color = COLOR },
         .{ .pos = .{ x1, y1, z1 }, .uv = .{ 0, 0 }, .color = COLOR },
     });
 }
 
-fn build_edges(mesh: *Rendering.Mesh(Vertex)) !void {
+fn build_edges(alloc: std.mem.Allocator, mesh: *Rendering.Mesh(Vertex)) !void {
     // Bottom rectangle (y = LO)
-    try edge(mesh, LO, LO, LO, HI, LO, LO);
-    try edge(mesh, HI, LO, LO, HI, LO, HI);
-    try edge(mesh, HI, LO, HI, LO, LO, HI);
-    try edge(mesh, LO, LO, HI, LO, LO, LO);
+    try edge(alloc, mesh, LO, LO, LO, HI, LO, LO);
+    try edge(alloc, mesh, HI, LO, LO, HI, LO, HI);
+    try edge(alloc, mesh, HI, LO, HI, LO, LO, HI);
+    try edge(alloc, mesh, LO, LO, HI, LO, LO, LO);
     // Top rectangle (y = HI)
-    try edge(mesh, LO, HI, LO, HI, HI, LO);
-    try edge(mesh, HI, HI, LO, HI, HI, HI);
-    try edge(mesh, HI, HI, HI, LO, HI, HI);
-    try edge(mesh, LO, HI, HI, LO, HI, LO);
+    try edge(alloc, mesh, LO, HI, LO, HI, HI, LO);
+    try edge(alloc, mesh, HI, HI, LO, HI, HI, HI);
+    try edge(alloc, mesh, HI, HI, HI, LO, HI, HI);
+    try edge(alloc, mesh, LO, HI, HI, LO, HI, LO);
     // Vertical pillars
-    try edge(mesh, LO, LO, LO, LO, HI, LO);
-    try edge(mesh, HI, LO, LO, HI, HI, LO);
-    try edge(mesh, HI, LO, HI, HI, HI, HI);
-    try edge(mesh, LO, LO, HI, LO, HI, HI);
+    try edge(alloc, mesh, LO, LO, LO, LO, HI, LO);
+    try edge(alloc, mesh, HI, LO, LO, HI, HI, LO);
+    try edge(alloc, mesh, HI, LO, HI, HI, HI, HI);
+    try edge(alloc, mesh, LO, LO, HI, LO, HI, HI);
 }

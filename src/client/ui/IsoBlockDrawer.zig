@@ -28,7 +28,6 @@
 const std = @import("std");
 const ae = @import("aether");
 const Math = ae.Math;
-const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const c = @import("common").consts;
@@ -71,8 +70,10 @@ terrain: *const Rendering.Texture,
 atlas: TextureAtlas,
 mesh: Rendering.Mesh(Vertex),
 iso_xform: Math.Mat4,
+allocator: std.mem.Allocator,
 
 pub fn init(
+    allocator: std.mem.Allocator,
     pipeline: Rendering.Pipeline.Handle,
     terrain: *const Rendering.Texture,
     atlas: TextureAtlas,
@@ -84,16 +85,17 @@ pub fn init(
         .pipeline = pipeline,
         .terrain = terrain,
         .atlas = atlas,
-        .mesh = try Rendering.Mesh(Vertex).new(pipeline),
+        .mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
         .iso_xform = iso,
+        .allocator = allocator,
     };
     self.mesh.primitive = .triangles;
-    try self.mesh.vertices.ensureTotalCapacity(Util.allocator(.render), VERT_CAPACITY);
+    try self.mesh.vertices.ensureTotalCapacity(allocator, VERT_CAPACITY);
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.mesh.deinit();
+    self.mesh.deinit(self.allocator);
 }
 
 /// Begin a new frame's worth of blocks. Drops everything queued so far.

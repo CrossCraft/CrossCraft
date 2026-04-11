@@ -2,7 +2,6 @@ const std = @import("std");
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
-const Util = ae.Util;
 
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
 const Color = @import("../../graphics/Color.zig").Color;
@@ -31,21 +30,23 @@ const Self = @This();
 plane_mesh: BatchMesh,
 cloud_mesh: BatchMesh,
 scroll: f32,
+allocator: std.mem.Allocator,
 
-pub fn init(pipeline: Rendering.Pipeline.Handle) !Self {
+pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
     var self: Self = .{
-        .plane_mesh = try BatchMesh.new(pipeline),
-        .cloud_mesh = try BatchMesh.new(pipeline),
+        .plane_mesh = try BatchMesh.new(allocator, pipeline),
+        .cloud_mesh = try BatchMesh.new(allocator, pipeline),
         .scroll = 0,
+        .allocator = allocator,
     };
-    try build_plane(&self.plane_mesh);
-    try build_clouds(&self.cloud_mesh);
+    try build_plane(allocator, &self.plane_mesh);
+    try build_clouds(allocator, &self.cloud_mesh);
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.plane_mesh.deinit();
-    self.cloud_mesh.deinit();
+    self.plane_mesh.deinit(self.allocator);
+    self.cloud_mesh.deinit(self.allocator);
 }
 
 pub fn update(self: *Self, dt: f32) void {
@@ -147,8 +148,8 @@ fn cloud_tile_uv(tile: u32) [2]i16 {
     };
 }
 
-fn build_plane(mesh: *BatchMesh) !void {
-    try mesh.vertices.ensureTotalCapacity(Util.allocator(.render), PLANE_GRID * PLANE_GRID * 6);
+fn build_plane(allocator: std.mem.Allocator, mesh: *BatchMesh) !void {
+    try mesh.vertices.ensureTotalCapacity(allocator, PLANE_GRID * PLANE_GRID * 6);
     const color: u32 = @bitCast(Color.game_daytime_zenith);
 
     var zi: u32 = 0;
@@ -161,8 +162,8 @@ fn build_plane(mesh: *BatchMesh) !void {
     mesh.update();
 }
 
-fn build_clouds(mesh: *BatchMesh) !void {
-    try mesh.vertices.ensureTotalCapacity(Util.allocator(.render), CLOUD_GRID * CLOUD_GRID * 6);
+fn build_clouds(allocator: std.mem.Allocator, mesh: *BatchMesh) !void {
+    try mesh.vertices.ensureTotalCapacity(allocator, CLOUD_GRID * CLOUD_GRID * 6);
     const color: u32 = 0xFFFFFFFF;
 
     var zi: u32 = 0;
