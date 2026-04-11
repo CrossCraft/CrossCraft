@@ -13,6 +13,8 @@ const collision = @import("../player/collision.zig");
 const FakeConn = @import("../connection/FakeConn.zig").FakeConn;
 const ClientConn = @import("../connection/ClientConn.zig");
 const Session = @import("Session.zig");
+
+const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const WorldRenderer = @import("../world/world.zig");
@@ -128,11 +130,8 @@ const GameTextures = struct {
 
 fake_conn: FakeConn,
 conn: ClientConn,
-// Background read-loop task for MP mode; owns the TCP read side of the
-// live Stream and pumps packets through ClientConn's callbacks. Left
-// running for the lifetime of the process -- on disconnect the loop
-// exits and sets `Session.mp_connected` to false so the draw path can
-// observe the drop.
+// MP read-loop task: owns the TCP read side, drives ClientConn
+// callbacks, clears `Session.mp_connected` on exit.
 mp_read_future: ?std.Io.Future(void),
 pipeline: Rendering.Pipeline.Handle,
 world: WorldRenderer,
@@ -148,9 +147,8 @@ fn init(ctx: *anyopaque) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.mp_read_future = null;
 
-    // Connection setup: singleplayer uses FakeConn + an in-process server;
-    // multiplayer wraps ClientConn around the live TCP stream that
-    // LoadState opened, skipping the fake ring buffers entirely.
+    // SP uses FakeConn + in-process server; MP wraps ClientConn around the
+    // live TCP stream that LoadState opened.
     switch (Session.mode) {
         .singleplayer => {
             self.fake_conn.init();
@@ -168,18 +166,41 @@ fn init(ctx: *anyopaque) anyerror!void {
             self.conn.drain_packets();
         },
         .multiplayer => {
-            // LoadState.connectTask already sent PlayerIdentification and
-            // consumed through LevelFinalize; the socket is positioned at
-            // whatever the server sent next (typically SpawnPlayer).
+            // Handshake + LevelFinalize were already consumed in
+            // LoadState.connectTask; the socket's now pointed at SpawnPlayer.
             self.conn.init(&Session.mp_reader.interface, &Session.mp_writer.interface);
-
-            // Mirror the server's per-client read-loop task: one Io async
-            // task owns the blocking TCP reads and drives ClientConn's
-            // packet callbacks, so the game thread never blocks on recv.
-            // Callbacks mutate World/WorldRenderer directly, matching
-            // how the server mutates its world from its read tasks.
             Session.mp_connected.store(true, .release);
-            self.mp_read_future = Util.io().async(
+
+            // PSP priority dance, two problems:
+            //   1. pspsdk's `concurrent` spawns the child at current+1
+            //      (lower prio). Read_loop needs to preempt main on packet
+            //      arrival, so we lift main before the spawn so the child
+            //      lands *above* main.
+            //   2. sceNet's callout thread (TCP timers) sits at prio 42,
+            //      below Aether's default main at 0x20 (32). Main thus
+            //      starves the callout and outbound data stalls. After
+            //      spawn, settle main at 50 (below 42) so the callout
+            //      actually runs.
+            // Final layout: read_loop (~23) > sceNet callout (42) > main (50).
+            const PSP_MAIN_PRIO_RUNTIME: i32 = 50;
+            const psp_main_thid = if (ae.platform == .psp)
+                pspsdk.kernel.get_thread_id()
+            else {};
+            const psp_orig_prio: i32 = if (ae.platform == .psp)
+                pspsdk.kernel.get_thread_current_priority()
+            else
+                0;
+            if (ae.platform == .psp) {
+                try pspsdk.kernel.change_thread_priority(psp_main_thid, psp_orig_prio - 10);
+            }
+            defer if (ae.platform == .psp) {
+                pspsdk.kernel.change_thread_priority(psp_main_thid, PSP_MAIN_PRIO_RUNTIME) catch {};
+            };
+
+            // Must be `concurrent`, not `async`: PSP's `async` falls back
+            // to inline execution when it can't spawn a thread, which
+            // would hang GameState.init inside an infinite read loop.
+            self.mp_read_future = try Util.io().concurrent(
                 ClientConn.read_loop,
                 .{ &self.conn, &Session.mp_connected },
             );
@@ -288,9 +309,7 @@ fn deinit(ctx: *anyopaque) void {
 
 fn tick(ctx: *anyopaque) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    // Only the in-process server ticks its own world; in MP, world state
-    // updates arrive as SetBlockToClient packets and ClientConn applies
-    // them from `draw` via drain_packets.
+    // MP updates arrive as packets; no local world tick.
     if (Session.mode == .singleplayer) {
         Server.drain_local_packets();
         Server.tick();
@@ -299,12 +318,8 @@ fn tick(ctx: *anyopaque) anyerror!void {
     send_player_position(&self.player);
 }
 
-/// Emit a PositionAndOrientationToServer using the player's current
-/// feet position + camera. Runs every game tick in both SP and MP -- in
-/// SP it feeds the local server via the FakeConn ring (harmless since
-/// there's only one player), and in MP it's what keeps the remote
-/// server's view of us in sync. Classic's wire format is u16 fixed-point
-/// (world_unit * 32) for position and u8 Fixed8 (one turn = 256) for
+/// Emit PositionAndOrientationToServer every tick. Classic's wire format
+/// is u16 fixed-point (world*32) for position and u8 (turn/256) for
 /// yaw/pitch.
 fn send_player_position(player: *Player) void {
     const tau = std.math.tau;
@@ -313,21 +328,24 @@ fn send_player_position(player: *Player) void {
     const y_fp: u16 = fp_coord(eye_y);
     const z_fp: u16 = fp_coord(player.pos_z);
 
-    // Our camera.yaw rotates counter-clockwise; Classic's u8 yaw rotates
-    // clockwise. Negate to flip handedness; the zero point already lines
-    // up with Classic's yaw=0.
+    // camera.yaw rotates CCW; Classic's u8 yaw rotates CW. Negate to
+    // flip handedness; the zero point already matches.
     const yaw_classic = @mod(-player.camera.yaw, tau);
     const pitch_norm = @mod(player.camera.pitch, tau);
     const yaw_u8: u8 = @intFromFloat(@min(255.0, yaw_classic * (256.0 / tau)));
     const pitch_u8: u8 = @intFromFloat(@min(255.0, pitch_norm * (256.0 / tau)));
 
-    proto.send_position_to_server(player.writer, -1, x_fp, y_fp, z_fp, yaw_u8, pitch_u8) catch |err| {
-        log.err("send position: {}", .{err});
+    // Skip if the Writer is still holding data from a previous failed
+    // flush (transient ENOBUFS on PSP). Retry the flush so pending
+    // block/chat bytes get another chance; stale position history isn't
+    // worth preserving. Real disconnects go through the read_loop.
+    if (Session.mode == .multiplayer and Session.mp_writer.interface.end > 0) {
+        player.writer.flush() catch {};
         return;
-    };
-    player.writer.flush() catch |err| {
-        log.err("flush position: {}", .{err});
-    };
+    }
+
+    proto.send_position_to_server(player.writer, -1, x_fp, y_fp, z_fp, yaw_u8, pitch_u8) catch return;
+    player.writer.flush() catch {};
 }
 
 fn fp_coord(v: f32) u16 {
@@ -383,13 +401,11 @@ fn player_in_shadow(player: *const Player) bool {
 
 fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    // SP: packets arrive on the game thread via the FakeConn ring, so we
-    // have to drain them here. MP: the background read-loop task owns the
-    // TCP reader and pushes through ClientConn's callbacks on its own.
+    // SP drains packets on the game thread; MP has the bg read-loop
+    // task doing it and just checks the connection flag here.
     if (Session.mode == .singleplayer) {
         self.conn.drain_packets();
     } else if (!Session.mp_connected.load(.acquire)) {
-        // Read loop exited (EOF or error): treat as disconnect -> quit.
         ae.App.quit();
     }
     self.player.camera.apply();

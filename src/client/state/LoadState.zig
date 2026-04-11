@@ -17,6 +17,8 @@ const Session = @import("Session.zig");
 const proto = @import("common").protocol;
 const flate = std.compress.flate;
 
+const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
+
 const log = std.log.scoped(.game);
 
 // Module-level: only one LoadState instance may exist at a time.
@@ -48,16 +50,30 @@ fn connectTask(alloc: std.mem.Allocator, seed: u64, io: std.Io) void {
 
 fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io) !void {
     const addr = try Session.parse_server_address();
-    log.info("Connecting to {f}", .{addr});
+    log.info("connecting to {f}", .{addr});
 
     const stream = try addr.connect(io, .{ .mode = .stream });
     Session.mp_stream = stream;
     Session.mp_reader = std.Io.net.Stream.Reader.init(stream, io, &Session.mp_read_buf);
     Session.mp_writer = std.Io.net.Stream.Writer.init(stream, io, &Session.mp_write_buf);
 
+    // PSP: disable Nagle so per-tick packets hit the wire immediately.
+    // Safe because GameState.init drops main thread priority below
+    // sceNet's callout (42), so the callout actually drains segments.
+    if (ae.platform == .psp) {
+        const TCP_NODELAY: i32 = 1;
+        const one: c_int = 1;
+        pspsdk.net.inet_setsockopt(
+            @intCast(stream.socket.handle),
+            pspsdk.extra.net.IPPROTO_TCP,
+            TCP_NODELAY,
+            &one,
+            @sizeOf(c_int),
+        ) catch |err| log.warn("TCP_NODELAY setsockopt failed: {}", .{err});
+    }
+
     try World.init_empty(alloc, io, seed);
 
-    // Send the client handshake.
     try proto.send_player_id_to_server(&Session.mp_writer.interface, Session.username());
     try Session.mp_writer.interface.flush();
 
@@ -80,8 +96,8 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io) !void {
         };
         const buf = try reader.peek(len);
         switch (packet_id) {
-            0x00 => {}, // PlayerIDToClient - don't need the server metadata here
-            0x02 => log.info("LevelInitialize", .{}),
+            0x00 => {},
+            0x02 => {},
             0x03 => {
                 // LevelDataChunk: [id][u16 length BE][1024 bytes data][u8 percent]
                 const length = std.mem.readInt(u16, buf[1..3], .big);
