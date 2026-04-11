@@ -13,6 +13,10 @@ const ui_input = @import("../ui/input.zig");
 const Screen = @import("../ui/Screen.zig");
 const MainMenuScreen = @import("../ui/MainMenuScreen.zig");
 const DirectConnectScreen = @import("../ui/DirectConnectScreen.zig");
+const LoadState = @import("LoadState.zig");
+const Session = @import("Session.zig");
+
+const log = std.log.scoped(.menu);
 
 const MenuTextures = struct {
     dirt: Rendering.Texture,
@@ -137,14 +141,18 @@ fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void 
         self.screen.open(!ui_input.profile_uses_pointer());
     }
 
-    // PSP: "Join Server" triggers the network configuration dialog.
-    if (ae.platform == .psp) {
-        if (DirectConnectScreen.pending_join) {
-            DirectConnectScreen.pending_join = false;
-            if (ae.Psp.showNetDialog()) {
-                // TODO: connect to server using ip_buf/name_buf.
-            }
-        }
+    if (DirectConnectScreen.pending_join) {
+        DirectConnectScreen.pending_join = false;
+
+        // PSP: service the system network config dialog before we try to
+        // connect, so the socket stack is brought up on first use.
+        const net_ready = if (ae.platform == .psp) ae.Psp.showNetDialog() else true;
+        if (!net_ready) return;
+
+        Session.mode = .multiplayer;
+        LoadState.transition_here() catch |err| {
+            log.err("transition to LoadState failed: {}", .{err});
+        };
     }
 }
 

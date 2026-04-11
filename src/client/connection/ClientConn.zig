@@ -1,4 +1,5 @@
 const std = @import("std");
+const ae = @import("aether");
 const zb = @import("protocol");
 const proto = @import("common").protocol;
 
@@ -79,6 +80,41 @@ pub fn drain_packets(self: *Self) void {
     while (self.try_process_packet()) {}
 }
 
+/// Blocking read loop: runs on an Io thread pool task for multiplayer
+/// (mirrors `src/server/main.zig:client_read_loop`). Reads one packet at
+/// a time and hands it to the protocol dispatcher; the callbacks mutate
+/// the shared World singleton and world renderer directly, the same way
+/// the server mutates its world from per-client read tasks.
+///
+/// Exits on `connected.* == false`, which the disconnect handler and any
+/// read/dispatch failure set so the game thread can observe the drop.
+pub fn read_loop(self: *Self, connected: *std.atomic.Value(bool)) void {
+    while (connected.load(.acquire)) {
+        const packet_id = self.reader.peekByte() catch |err| {
+            log.info("read_loop: {} - closing", .{err});
+            connected.store(false, .release);
+            return;
+        };
+        const len = proto.packet_length_to_client(packet_id) catch |err| {
+            log.err("read_loop: unknown packet 0x{x:0>2}: {}", .{ packet_id, err });
+            connected.store(false, .release);
+            return;
+        };
+        const buf = self.reader.peek(len) catch |err| {
+            log.info("read_loop peek: {} - closing", .{err});
+            connected.store(false, .release);
+            return;
+        };
+        @memcpy(self.buffer[0..len], buf);
+        self.reader.toss(len);
+        self.protocol.handle_packet(self.buffer[1..len], self.buffer[0]) catch |err| {
+            log.err("read_loop handle 0x{x:0>2}: {}", .{ self.buffer[0], err });
+            connected.store(false, .release);
+            return;
+        };
+    }
+}
+
 fn on_player_id(_: *anyopaque, event: zb.PlayerIDToClient) !void {
     log.info("PlayerID: version={d}", .{event.protocol_version});
     log.info("  name={s}", .{&event.server_name});
@@ -112,7 +148,10 @@ fn on_spawn(ctx: *anyopaque, event: zb.SpawnPlayer) !void {
 }
 
 fn on_position(_: *anyopaque, event: zb.SetPositionOrientation) !void {
-    log.info("Position: pid={d} pos=({d},{d},{d})", .{ event.pid, event.x, event.y, event.z });
+    // Position broadcasts arrive at the server tick rate for every player,
+    // so logging them drowns the console. No-op; when we have remote
+    // players to render we'll route these into the renderer here.
+    _ = event;
 }
 
 fn on_message(_: *anyopaque, event: zb.Message) !void {
@@ -150,4 +189,7 @@ fn on_despawn(_: *anyopaque, event: zb.DespawnPlayer) !void {
 
 fn on_disconnect(_: *anyopaque, event: zb.DisconnectPlayer) !void {
     log.info("Disconnect: {s}", .{&event.reason});
+    // No error screen yet; fall back to ending the app so the user returns
+    // to a fresh process instead of a half-connected GameState.
+    ae.App.quit();
 }

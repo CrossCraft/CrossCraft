@@ -9,6 +9,7 @@ const Rendering = ae.Rendering;
 const component = @import("component.zig");
 const Component = component.Component;
 const Screen = @import("Screen.zig");
+const Session = @import("../state/Session.zig");
 const Scaling = @import("Scaling.zig");
 const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
@@ -98,6 +99,14 @@ const components = [_]Component{
 pub var pending_join: bool = false;
 
 fn on_join(_: *anyopaque) void {
+    // Copy captured text into Session so LoadState/GameState can read it
+    // without having to reach back into this module's private buffers.
+    Session.set_server(ip_buf[0..ip_len]);
+    if (name_len > 0) {
+        Session.set_username(name_buf[0..name_len]);
+    } else {
+        Session.set_username("Player");
+    }
     pending_join = true;
 }
 

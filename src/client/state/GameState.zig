@@ -8,9 +8,11 @@ const State = Core.State;
 const Server = @import("game").Server;
 const World = @import("game").World;
 const c = @import("common").consts;
+const proto = @import("common").protocol;
 const collision = @import("../player/collision.zig");
 const FakeConn = @import("../connection/FakeConn.zig").FakeConn;
 const ClientConn = @import("../connection/ClientConn.zig");
+const Session = @import("Session.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const WorldRenderer = @import("../world/world.zig");
@@ -126,6 +128,12 @@ const GameTextures = struct {
 
 fake_conn: FakeConn,
 conn: ClientConn,
+// Background read-loop task for MP mode; owns the TCP read side of the
+// live Stream and pumps packets through ClientConn's callbacks. Left
+// running for the lifetime of the process -- on disconnect the loop
+// exits and sets `Session.mp_connected` to false so the draw path can
+// observe the drop.
+mp_read_future: ?std.Io.Future(void),
 pipeline: Rendering.Pipeline.Handle,
 world: WorldRenderer,
 player: Player,
@@ -138,19 +146,45 @@ held: BlockHand,
 
 fn init(ctx: *anyopaque) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    self.fake_conn.init();
+    self.mp_read_future = null;
 
-    _ = Server.local_join(
-        &self.fake_conn.server_reader,
-        &self.fake_conn.server_writer,
-        &self.fake_conn.connected,
-    ) orelse return error.ServerFull;
+    // Connection setup: singleplayer uses FakeConn + an in-process server;
+    // multiplayer wraps ClientConn around the live TCP stream that
+    // LoadState opened, skipping the fake ring buffers entirely.
+    switch (Session.mode) {
+        .singleplayer => {
+            self.fake_conn.init();
 
-    self.conn.init(&self.fake_conn.client_reader, &self.fake_conn.client_writer);
-    try self.conn.join("Player");
+            _ = Server.local_join(
+                &self.fake_conn.server_reader,
+                &self.fake_conn.server_writer,
+                &self.fake_conn.connected,
+            ) orelse return error.ServerFull;
 
-    Server.drain_local_packets();
-    self.conn.drain_packets();
+            self.conn.init(&self.fake_conn.client_reader, &self.fake_conn.client_writer);
+            try self.conn.join(Session.username());
+
+            Server.drain_local_packets();
+            self.conn.drain_packets();
+        },
+        .multiplayer => {
+            // LoadState.connectTask already sent PlayerIdentification and
+            // consumed through LevelFinalize; the socket is positioned at
+            // whatever the server sent next (typically SpawnPlayer).
+            self.conn.init(&Session.mp_reader.interface, &Session.mp_writer.interface);
+
+            // Mirror the server's per-client read-loop task: one Io async
+            // task owns the blocking TCP reads and drives ClientConn's
+            // packet callbacks, so the game thread never blocks on recv.
+            // Callbacks mutate World/WorldRenderer directly, matching
+            // how the server mutates its world from its read tasks.
+            Session.mp_connected.store(true, .release);
+            self.mp_read_future = Util.io().async(
+                ClientConn.read_loop,
+                .{ &self.conn, &Session.mp_connected },
+            );
+        },
+    }
 
     // Redistribute memory for game state
     @import("../config.zig").apply_runtime_budgets();
@@ -160,16 +194,22 @@ fn init(ctx: *anyopaque) anyerror!void {
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     self.pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
-    // Player -- owns the camera; spawn Y is eye-level from the server
+    // Player -- owns the camera; spawn Y is eye-level from the server.
+    // Use whichever writer the active connection drains position packets
+    // into: the FakeConn ring for SP, or the live TCP stream for MP.
+    const player_writer: *std.Io.Writer = switch (Session.mode) {
+        .singleplayer => &self.fake_conn.client_writer,
+        .multiplayer => &Session.mp_writer.interface,
+    };
     if (self.conn.handshake_complete) {
         try self.player.init(
             @as(f32, @floatFromInt(self.conn.spawn_x)) / 32.0,
             @as(f32, @floatFromInt(self.conn.spawn_y)) / 32.0,
             @as(f32, @floatFromInt(self.conn.spawn_z)) / 32.0,
-            &self.fake_conn.client_writer,
+            player_writer,
         );
     } else {
-        try self.player.init(128.0, 44.0, 128.0, &self.fake_conn.client_writer);
+        try self.player.init(128.0, 44.0, 128.0, player_writer);
     }
 
     // Textures
@@ -235,13 +275,66 @@ fn deinit(ctx: *anyopaque) void {
     self.world.deinit();
     GameTextures.deinit();
     Rendering.Pipeline.deinit(self.pipeline);
-    self.fake_conn.connected = false;
+    switch (Session.mode) {
+        .singleplayer => self.fake_conn.connected = false,
+        .multiplayer => {
+            if (Session.mp_stream) |*s| {
+                s.close(Util.io());
+                Session.mp_stream = null;
+            }
+        },
+    }
 }
 
-fn tick(_: *anyopaque) anyerror!void {
-    Server.drain_local_packets();
-    Server.tick();
+fn tick(ctx: *anyopaque) anyerror!void {
+    var self = Util.ctx_to_self(@This(), ctx);
+    // Only the in-process server ticks its own world; in MP, world state
+    // updates arrive as SetBlockToClient packets and ClientConn applies
+    // them from `draw` via drain_packets.
+    if (Session.mode == .singleplayer) {
+        Server.drain_local_packets();
+        Server.tick();
+    }
     GameTextures.tick_animations();
+    send_player_position(&self.player);
+}
+
+/// Emit a PositionAndOrientationToServer using the player's current
+/// feet position + camera. Runs every game tick in both SP and MP -- in
+/// SP it feeds the local server via the FakeConn ring (harmless since
+/// there's only one player), and in MP it's what keeps the remote
+/// server's view of us in sync. Classic's wire format is u16 fixed-point
+/// (world_unit * 32) for position and u8 Fixed8 (one turn = 256) for
+/// yaw/pitch.
+fn send_player_position(player: *Player) void {
+    const tau = std.math.tau;
+    const eye_y = player.pos_y + collision.EYE_HEIGHT;
+    const x_fp: u16 = fp_coord(player.pos_x);
+    const y_fp: u16 = fp_coord(eye_y);
+    const z_fp: u16 = fp_coord(player.pos_z);
+
+    // Our camera.yaw rotates counter-clockwise; Classic's u8 yaw rotates
+    // clockwise. Negate to flip handedness; the zero point already lines
+    // up with Classic's yaw=0.
+    const yaw_classic = @mod(-player.camera.yaw, tau);
+    const pitch_norm = @mod(player.camera.pitch, tau);
+    const yaw_u8: u8 = @intFromFloat(@min(255.0, yaw_classic * (256.0 / tau)));
+    const pitch_u8: u8 = @intFromFloat(@min(255.0, pitch_norm * (256.0 / tau)));
+
+    proto.send_position_to_server(player.writer, -1, x_fp, y_fp, z_fp, yaw_u8, pitch_u8) catch |err| {
+        log.err("send position: {}", .{err});
+        return;
+    };
+    player.writer.flush() catch |err| {
+        log.err("flush position: {}", .{err});
+    };
+}
+
+fn fp_coord(v: f32) u16 {
+    const scaled = v * 32.0;
+    if (scaled < 0.0) return 0;
+    if (scaled > 65535.0) return 65535;
+    return @intFromFloat(scaled);
 }
 
 fn update(ctx: *anyopaque, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
@@ -290,7 +383,15 @@ fn player_in_shadow(player: *const Player) bool {
 
 fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    self.conn.drain_packets();
+    // SP: packets arrive on the game thread via the FakeConn ring, so we
+    // have to drain them here. MP: the background read-loop task owns the
+    // TCP reader and pushes through ClientConn's callbacks on its own.
+    if (Session.mode == .singleplayer) {
+        self.conn.drain_packets();
+    } else if (!Session.mp_connected.load(.acquire)) {
+        // Read loop exited (EOF or error): treat as disconnect -> quit.
+        ae.App.quit();
+    }
     self.player.camera.apply();
     self.world.draw(&self.player.camera);
 

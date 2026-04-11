@@ -11,6 +11,7 @@ const component = @import("component.zig");
 const Component = component.Component;
 const Screen = @import("Screen.zig");
 const LoadState = @import("../state/LoadState.zig");
+const Session = @import("../state/Session.zig");
 const Scaling = @import("Scaling.zig");
 const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
@@ -86,8 +87,9 @@ fn on_multiplayer(_: *anyopaque) void {
 
 fn on_singleplayer(ctx: *anyopaque) void {
     _ = ctx;
-    state_inst = load_state.state();
-    ae.Core.state_machine.transition(&state_inst) catch |err| {
+    Session.mode = .singleplayer;
+    Session.set_username("Player");
+    LoadState.transition_here() catch |err| {
         log.err("transition to LoadState failed: {}", .{err});
     };
 }
@@ -131,11 +133,6 @@ fn draw_underlay(ctx: *anyopaque, sprites: *SpriteBatcher, _: *FontBatcher, _: *
         .origin = .top_center,
     });
 }
-
-// Keep transition state out of MenuState so the root app state remains small
-// on PSP and other constrained targets.
-var load_state: LoadState = undefined;
-var state_inst: ae.Core.State = undefined;
 
 pub fn build(ctx: *Context) Screen {
     return .{
