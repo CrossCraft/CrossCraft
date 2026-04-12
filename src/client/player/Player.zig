@@ -88,6 +88,16 @@ const HOTBAR_SCROLL_DEADBAND: f32 = 0.5;
 
 const Self = @This();
 
+/// A block the client has sent to the server but which has not yet
+/// appeared in the world.  Used as a virtual collision surface so the
+/// player cannot fall through during the tick delay.
+const PendingBlock = struct {
+    x: u16,
+    y: u16,
+    z: u16,
+    block: u8,
+};
+
 // -- Physics constants (blocks/tick, Classic units) --------------------------
 
 const TICK: f32 = 0.05; // 50 ms, 20 TPS
@@ -198,6 +208,23 @@ selected_slot: u8,
 /// the inventory overlay's lifetime or its mouse-capture handoff.
 inventory_toggle_pending: bool,
 
+/// Gamepad shoulder-button state for L+R chord detection.
+/// Break/place are deferred by one frame so a same-frame chord can cancel
+/// them before they execute.
+shoulder_l_held: bool,
+shoulder_r_held: bool,
+pending_shoulder_break: bool,
+pending_shoulder_place: bool,
+
+/// True while the playerlist key/button is held.
+playerlist_held: bool,
+
+/// Virtual block for client-side collision prediction.  Placed by
+/// do_place so the player collides with the block before the server
+/// commits it to the world on its next tick.  Cleared automatically
+/// once the real block appears.
+pending_block: ?PendingBlock,
+
 /// Outbound packet sink, owned by the connection layer (FakeConn or
 /// real socket). Used by break/place callbacks to send SetBlockToServer.
 writer: *std.Io.Writer,
@@ -254,6 +281,12 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .hotbar = DEFAULT_HOTBAR,
         .selected_slot = 0,
         .inventory_toggle_pending = false,
+        .shoulder_l_held = false,
+        .shoulder_r_held = false,
+        .pending_shoulder_break = false,
+        .pending_shoulder_place = false,
+        .playerlist_held = false,
+        .pending_block = null,
         .writer = writer,
         .particle_sink = null,
         .held_renderer = null,
@@ -279,6 +312,9 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     try input.add_button_callback("inventory_toggle", @ptrCast(self), on_inventory_toggle);
     try input.add_button_callback("break", @ptrCast(self), on_break);
     try input.add_button_callback("place", @ptrCast(self), on_place);
+    try input.add_button_callback("shoulder_r", @ptrCast(self), on_shoulder_r);
+    try input.add_button_callback("shoulder_l", @ptrCast(self), on_shoulder_l);
+    try input.add_button_callback("playerlist", @ptrCast(self), on_playerlist);
     try input.add_button_callback("hotbar_left", @ptrCast(self), on_hotbar_left);
     try input.add_button_callback("hotbar_right", @ptrCast(self), on_hotbar_right);
     try input.add_axis_callback("hotbar_scroll", @ptrCast(self), on_hotbar_scroll);
@@ -299,6 +335,18 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
 /// Apply one frame of player movement.
 pub fn update(self: *Self, dt: f32) void {
     std.debug.assert(dt >= 0);
+
+    // Process deferred gamepad shoulder actions. The one-frame delay lets
+    // a same-frame L+R chord cancel the pending break/place before it fires.
+    if (self.pending_shoulder_break) {
+        self.pending_shoulder_break = false;
+        if (!self.shoulder_l_held) self.do_break();
+    }
+    if (self.pending_shoulder_place) {
+        self.pending_shoulder_place = false;
+        if (!self.shoulder_r_held) self.do_place();
+    }
+
     self.apply_look(dt);
 
     // mouse_captured doubles as the gameplay-input gate. While the inventory
@@ -572,7 +620,7 @@ fn frac(v: f32) f32 {
 fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
     const was_on_ground = self.on_ground;
 
-    const result = collision.move_and_collide(
+    var result = collision.move_and_collide(
         self.pos_x,
         self.pos_y,
         self.pos_z,
@@ -606,6 +654,28 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
                 self.on_ground = true;
                 self.vel_y = 0;
                 return;
+            }
+        }
+    }
+
+    // Virtual block collision: clip against a block the client placed
+    // but the server has not yet committed to the world.
+    if (self.pending_block) |pb| {
+        if (World.get_block(pb.x, pb.y, pb.z) != B.Air) {
+            // Server has committed the block; real collision takes over.
+            self.pending_block = null;
+        } else {
+            const bh = collision.block_height(pb.block);
+            const block_top: f32 = @as(f32, @floatFromInt(pb.y)) + bh;
+            const bx0: f32 = @floatFromInt(pb.x);
+            const bz0: f32 = @floatFromInt(pb.z);
+            const xz_over = result.x + collision.HALF_W > bx0 and
+                result.x - collision.HALF_W < bx0 + 1.0 and
+                result.z + collision.HALF_W > bz0 and
+                result.z - collision.HALF_W < bz0 + 1.0;
+            if (xz_over and self.pos_y >= block_top and result.y < block_top) {
+                result.y = block_top;
+                result.on_ground = true;
             }
         }
     }
@@ -952,6 +1022,10 @@ fn on_noclip(ctx: *anyopaque, event: input.ButtonEvent) void {
 fn on_break(ctx: *anyopaque, event: input.ButtonEvent) void {
     if (event != .pressed) return;
     const self: *Self = @ptrCast(@alignCast(ctx));
+    self.do_break();
+}
+
+fn do_break(self: *Self) void {
     if (!self.mouse_captured) return;
     // Swing on every click, regardless of whether we actually struck a block.
     if (self.held_renderer) |hr| hr.trigger_dig();
@@ -989,6 +1063,10 @@ fn derive_break_face(hit: RaycastHit) Face {
 fn on_place(ctx: *anyopaque, event: input.ButtonEvent) void {
     if (event != .pressed) return;
     const self: *Self = @ptrCast(@alignCast(ctx));
+    self.do_place();
+}
+
+fn do_place(self: *Self) void {
     if (!self.mouse_captured) return;
     const hit = self.selected orelse return;
     if (!hit.has_place) return;
@@ -1008,6 +1086,51 @@ fn on_place(ctx: *anyopaque, event: input.ButtonEvent) void {
     if (block == B.Air) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
+
+    // Register a "virtual block" for collision so the player cannot
+    // fall through before the server commits the placement to the
+    // world on its next tick.
+    if (collision.block_height(block) > 0) {
+        self.pending_block = .{
+            .x = hit.place_x,
+            .y = hit.place_y,
+            .z = hit.place_z,
+            .block = block,
+        };
+    }
+}
+
+// -- Gamepad shoulder chord (L+R = inventory) --------------------------------
+
+fn on_shoulder_r(ctx: *anyopaque, event: input.ButtonEvent) void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.shoulder_r_held = (event == .pressed);
+    if (event != .pressed) return;
+    if (self.shoulder_l_held) {
+        self.inventory_toggle_pending = true;
+        self.pending_shoulder_break = false;
+        self.pending_shoulder_place = false;
+        return;
+    }
+    self.pending_shoulder_break = true;
+}
+
+fn on_shoulder_l(ctx: *anyopaque, event: input.ButtonEvent) void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.shoulder_l_held = (event == .pressed);
+    if (event != .pressed) return;
+    if (self.shoulder_r_held) {
+        self.inventory_toggle_pending = true;
+        self.pending_shoulder_break = false;
+        self.pending_shoulder_place = false;
+        return;
+    }
+    self.pending_shoulder_place = true;
+}
+
+fn on_playerlist(ctx: *anyopaque, event: input.ButtonEvent) void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.playerlist_held = (event == .pressed);
 }
 
 fn on_hotbar_left(ctx: *anyopaque, event: input.ButtonEvent) void {

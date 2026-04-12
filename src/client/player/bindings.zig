@@ -35,11 +35,10 @@ pub fn init() !void {
     }
 
     // ---- inventory toggle ----
-    // Opens the Classic block-picker overlay. PSP uses Select (Back); desktop
-    // uses B to match the original Classic key binding.
+    // Opens the Classic block-picker overlay. Desktop uses B; PSP uses L+R
+    // chord (detected in Player via shoulder_l / shoulder_r callbacks).
     try input.register_action("inventory_toggle", .button);
     try input.bind_action("inventory_toggle", .{ .source = .{ .key = .B } });
-    try input.bind_action("inventory_toggle", .{ .source = .{ .gamepad_button = .Back } });
 
     // ---- mouse look (delta-based) ----
     try input.register_action("look", .vector2);
@@ -61,13 +60,26 @@ pub fn init() !void {
     try input.bind_action("escape", .{ .source = .{ .gamepad_button = .Start } });
 
     // ---- break / place ----
-    // Desktop: mouse buttons. PSP: shoulder triggers (L/R map to LButton/RButton).
+    // Desktop: mouse buttons only. Gamepad shoulder buttons are handled
+    // separately via shoulder_l / shoulder_r for L+R chord detection.
     try input.register_action("break", .button);
     try input.bind_action("break", .{ .source = .{ .mouse_button = .Left } });
-    try input.bind_action("break", .{ .source = .{ .gamepad_button = .LButton } });
     try input.register_action("place", .button);
     try input.bind_action("place", .{ .source = .{ .mouse_button = .Right } });
-    try input.bind_action("place", .{ .source = .{ .gamepad_button = .RButton } });
+
+    // ---- gamepad shoulder buttons (L/R) ----
+    // Separate from break/place so the L+R chord can toggle the inventory
+    // without firing a spurious break or place on the same frame.
+    // R = break, L = place, L+R = inventory toggle.
+    try input.register_action("shoulder_r", .button);
+    try input.bind_action("shoulder_r", .{ .source = .{ .gamepad_button = .RButton } });
+    try input.register_action("shoulder_l", .button);
+    try input.bind_action("shoulder_l", .{ .source = .{ .gamepad_button = .LButton } });
+
+    // ---- playerlist (held overlay) ----
+    try input.register_action("playerlist", .button);
+    try input.bind_action("playerlist", .{ .source = .{ .key = .Tab } });
+    try input.bind_action("playerlist", .{ .source = .{ .gamepad_button = .Back } });
 
     // ---- hotbar slot cycle ----
     // D-pad is button-typed (one event per press). Mouse scroll is axis-typed

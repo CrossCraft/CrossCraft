@@ -2,7 +2,7 @@
 //
 // A 9x5 grid of iso-projected block icons drawn over a translucent black
 // panel, with a tooltip naming the focused block. Opens with the
-// `inventory_toggle` action (B on desktop, Select/Back on PSP) and replaces
+// `inventory_toggle` action (B on desktop, L+R on PSP) and replaces
 // the player's currently selected hotbar slot when a cell is confirmed.
 //
 // Cursor hover and gamepad d-pad navigation share the same `focus` field.
