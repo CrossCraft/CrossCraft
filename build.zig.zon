@@ -13,8 +13,7 @@
             .hash = "Aether-0.0.0-cjG28o-JDQDX-e2EQ1EoYttDVWujfhrbmGngRw4ikkov",
         },
         .resources = .{
-            .url = "git+https://github.com/CrossCraft/CrossCraft-Resources#9e024891bf214ee1423ac6a7aab95facabec5bac",
-            .hash = "N-V-__8AABc9ggDFAy8h2-NDLfZGFsaD27VP1jBTg4AG6-FN",
+            .path = "resources",
         },
     },
     .paths = .{
