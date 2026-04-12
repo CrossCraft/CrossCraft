@@ -174,7 +174,7 @@ fn defaults() Self {
     self.face_tiles[B.Slab] = top_side_bot(6, 0, 5, 0, 6, 0);
     self.face_tiles[B.Brick] = all(7, 0);
     self.face_tiles[B.TNT] = top_side_bot(9, 0, 8, 0, 10, 0);
-    self.face_tiles[B.Bookshelf] = top_side_bot(4, 0, 4, 0, 3, 2);
+    self.face_tiles[B.Bookshelf] = top_side_bot(4, 0, 3, 2, 4, 0);
     self.face_tiles[B.Mossy_Rocks] = all(4, 2);
     self.face_tiles[B.Obsidian] = all(5, 2);
 

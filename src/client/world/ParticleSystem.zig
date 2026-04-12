@@ -182,6 +182,13 @@ pub fn update(self: *Self, dt: f32) void {
         step_axis_x(p, p.vx * dt);
         step_axis_y(p, p.vy * dt);
         step_axis_z(p, p.vz * dt);
+        // Kill particles that drift outside the i16-encodable range so
+        // encode() doesn't overflow during rendering.
+        if (!encodable(p.px) or !encodable(p.py) or !encodable(p.pz)) {
+            self.count -= 1;
+            self.particles[i] = self.particles[self.count];
+            continue;
+        }
         i += 1;
     }
 }
@@ -327,8 +334,12 @@ fn make_vertex(wx: f32, wy: f32, wz: f32, u: i16, v: i16, color: u32) Vertex {
     };
 }
 
-fn encode(world: f32) i16 {
+/// True when the world coordinate can be losslessly encoded into an i16.
+fn encodable(world: f32) bool {
     const scaled = @round(world * POS_SCALE);
-    std.debug.assert(scaled >= -32768.0 and scaled <= 32767.0);
-    return @intFromFloat(scaled);
+    return scaled >= -32768.0 and scaled <= 32767.0;
+}
+
+fn encode(world: f32) i16 {
+    return @intFromFloat(@round(world * POS_SCALE));
 }

@@ -435,7 +435,9 @@ fn grid_ref_less_than(cam: *const Camera, a: GridRef, b: GridRef) bool {
 }
 
 fn camera_chunk(pos: f32) i32 {
-    return @intFromFloat(@floor(pos / 16.0));
+    const v = @floor(pos / 16.0);
+    if (v < -2147483648.0 or v > 2147483647.0) return 0;
+    return @intFromFloat(v);
 }
 
 fn set_terrain_fog(submerged: ?collision.Liquid) void {

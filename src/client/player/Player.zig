@@ -688,9 +688,16 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     const oy = self.camera.y;
     const oz = self.camera.z;
 
-    var bx: i32 = @intFromFloat(@floor(ox));
-    var by: i32 = @intFromFloat(@floor(oy));
-    var bz: i32 = @intFromFloat(@floor(oz));
+    const fx = @floor(ox);
+    const fy = @floor(oy);
+    const fz = @floor(oz);
+    // Camera outside representable range — nothing to select.
+    if (fx < -2147483648.0 or fx > 2147483647.0) return null;
+    if (fy < -2147483648.0 or fy > 2147483647.0) return null;
+    if (fz < -2147483648.0 or fz > 2147483647.0) return null;
+    var bx: i32 = @intFromFloat(fx);
+    var by: i32 = @intFromFloat(fy);
+    var bz: i32 = @intFromFloat(fz);
 
     const step_x: i32 = if (dx > 0) 1 else if (dx < 0) -1 else 0;
     const step_y: i32 = if (dy > 0) 1 else if (dy < 0) -1 else 0;

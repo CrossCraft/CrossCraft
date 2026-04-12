@@ -52,6 +52,7 @@ const TOOLTIP_GAP: i16 = 12;
 // blocks (the panel and hotbar bg are geometrically disjoint, so there is no
 // overlap to resolve).
 const PANEL_LAYER: u8 = 247;
+const HIGHLIGHT_LAYER: u8 = 248;
 const TOOLTIP_LAYER: u8 = 252;
 
 // -- The 9x5 grid (top-left to bottom-right) --------------------------------
@@ -254,6 +255,22 @@ pub fn draw(
     }
     if (BLOCKS[self.focus] != B.Air) {
         const center = cell_center(&lay, self.focus);
+
+        // Translucent light square behind the focused block for selection clarity.
+        const highlight_size: i16 = SLOT_STRIDE + SLOT_STRIDE / 5; // ~20% larger
+        const half: i16 = @divTrunc(highlight_size, 2);
+        batcher.add_sprite(&.{
+            .texture = &Rendering.Texture.Default,
+            .pos_offset = .{ .x = @as(i16, @intFromFloat(center[0])) - half, .y = @as(i16, @intFromFloat(center[1])) - half },
+            .pos_extent = .{ .x = highlight_size, .y = highlight_size },
+            .tex_offset = .{ .x = 0, .y = 0 },
+            .tex_extent = .{ .x = 1, .y = 1 },
+            .color = Color.rgba(255, 255, 255, 48),
+            .layer = HIGHLIGHT_LAYER,
+            .reference = .top_left,
+            .origin = .top_left,
+        });
+
         iso.add_block(BLOCKS[self.focus], center[0], center[1], HOVER_HALF_EXTENT);
     }
 

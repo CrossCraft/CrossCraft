@@ -25,6 +25,8 @@ const log = std.log.scoped(.game);
 // Module-level: only one LoadState instance may exist at a time.
 var server_ready: std.atomic.Value(bool) = .init(false);
 var session_error: ?anyerror = null;
+var mp_server_name: [64]u8 = @splat(' ');
+var mp_server_motd: [64]u8 = @splat(' ');
 
 fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, io: std.Io) void {
     // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
@@ -50,6 +52,9 @@ fn connectTask(alloc: std.mem.Allocator, seed: u64, io: std.Io) void {
 }
 
 fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io) !void {
+    mp_server_name = @splat(' ');
+    mp_server_motd = @splat(' ');
+
     const addr = try Session.parse_server_address();
     log.info("connecting to {f}", .{addr});
 
@@ -88,7 +93,10 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io) !void {
         };
         const buf = try reader.peek(len);
         switch (packet_id) {
-            0x00 => {},
+            0x00 => {
+                @memcpy(&mp_server_name, buf[2..66]);
+                @memcpy(&mp_server_motd, buf[66..130]);
+            },
             0x02 => {},
             0x03 => {
                 // LevelDataChunk: [id][u16 length BE][1024 bytes data][u8 percent]
@@ -312,10 +320,17 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.font_batcher.clear();
 
     const load_status = World.load_status;
-    const loading: []const u8 = switch (load_status) {
-        .loading => if (Session.mode == .multiplayer) "Connecting to server" else "Loading level",
-        .generating, .complete => "Generating level",
-        .downloading => "Downloading level",
+    const loading: []const u8 = blk: {
+        if (Session.mode == .multiplayer) {
+            const trimmed = std.mem.trimEnd(u8, &mp_server_name, " ");
+            if (trimmed.len > 0) break :blk trimmed;
+            break :blk "Connecting to server";
+        }
+        break :blk switch (load_status) {
+            .loading => "Loading level",
+            .generating, .complete => "Generating level",
+            .downloading => "Downloading level",
+        };
     };
     self.font_batcher.add_text(&.{
         .str = loading,
@@ -329,22 +344,29 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         .origin = .middle_center,
     });
 
-    const status: []const u8 = switch (load_status) {
-        .loading => if (Session.mode == .multiplayer) "Handshaking..." else "Loading...",
-        .generating => |phase| switch (phase) {
-            .raising => "Raising...",
-            .erosion => "Eroding...",
-            .strata => "Layering...",
-            .caves => "Carving...",
-            .ores => "Placing ores...",
-            .merge => "Merging...",
-            .water => "Flooding water...",
-            .lava => "Flooding lava...",
-            .surface => "Surfacing...",
-            .plants => "Planting...",
-        },
-        .downloading => "Receiving chunks...",
-        .complete => "Done!",
+    const status: []const u8 = blk: {
+        if (Session.mode == .multiplayer) {
+            const trimmed = std.mem.trimEnd(u8, &mp_server_motd, " ");
+            if (trimmed.len > 0) break :blk trimmed;
+            break :blk "Handshaking...";
+        }
+        break :blk switch (load_status) {
+            .loading => "Loading...",
+            .generating => |phase| switch (phase) {
+                .raising => "Raising...",
+                .erosion => "Eroding...",
+                .strata => "Layering...",
+                .caves => "Carving...",
+                .ores => "Placing ores...",
+                .merge => "Merging...",
+                .water => "Flooding water...",
+                .lava => "Flooding lava...",
+                .surface => "Surfacing...",
+                .plants => "Planting...",
+            },
+            .downloading => "Receiving chunks...",
+            .complete => "Done!",
+        };
     };
     self.font_batcher.add_text(&.{
         .str = status,

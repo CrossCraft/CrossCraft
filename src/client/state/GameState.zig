@@ -167,6 +167,22 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             self.conn.drain_packets();
         },
         .multiplayer => {
+            const pspsdk = if (ae.platform == .psp) @import("pspsdk") else {};
+            const PSP_MAIN_PRIO_RUNTIME: i32 = 64;
+            const psp_main_thid = if (ae.platform == .psp)
+                pspsdk.kernel.get_thread_id()
+            else {};
+            const psp_orig_prio: i32 = if (ae.platform == .psp)
+                pspsdk.kernel.get_thread_current_priority()
+            else
+                0;
+            if (ae.platform == .psp) {
+                try pspsdk.kernel.change_thread_priority(psp_main_thid, psp_orig_prio - 10);
+            }
+            defer if (ae.platform == .psp) {
+                pspsdk.kernel.change_thread_priority(psp_main_thid, PSP_MAIN_PRIO_RUNTIME) catch {};
+            };
+
             // Handshake + LevelFinalize were already consumed in
             // LoadState.connectTask; the socket's now pointed at SpawnPlayer.
             self.conn.init(&Session.mp_reader.interface, &Session.mp_writer.interface);
@@ -371,12 +387,15 @@ fn update(ctx: *anyopaque, _: *Engine, dt: f32, budget: *const Util.BudgetContex
 /// teleport) read as lit so the held block never goes dark unexpectedly.
 fn player_in_shadow(player: *const Player) bool {
     const eye_y = player.pos_y + collision.EYE_HEIGHT;
-    const bx_i: i32 = @intFromFloat(@floor(player.pos_x));
-    const by_i: i32 = @intFromFloat(@floor(eye_y));
-    const bz_i: i32 = @intFromFloat(@floor(player.pos_z));
-    if (bx_i < 0 or bx_i >= c.WorldLength or
-        by_i < 0 or by_i >= c.WorldHeight or
-        bz_i < 0 or bz_i >= c.WorldDepth) return false;
+    const fx = @floor(player.pos_x);
+    const fy = @floor(eye_y);
+    const fz = @floor(player.pos_z);
+    if (fx < 0.0 or fx >= @as(f32, @floatFromInt(c.WorldLength))) return false;
+    if (fy < 0.0 or fy >= @as(f32, @floatFromInt(c.WorldHeight))) return false;
+    if (fz < 0.0 or fz >= @as(f32, @floatFromInt(c.WorldDepth))) return false;
+    const bx_i: i32 = @intFromFloat(fx);
+    const by_i: i32 = @intFromFloat(fy);
+    const bz_i: i32 = @intFromFloat(fz);
     return !World.is_sunlit(@intCast(bx_i), @intCast(by_i), @intCast(bz_i));
 }
 

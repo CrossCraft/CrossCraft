@@ -48,12 +48,17 @@ pub const Liquid = enum { water, lava };
 /// Single-point liquid test at the given world coordinate.
 /// Used to detect whether the camera is submerged.
 pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
-    const bx: i32 = @intFromFloat(@floor(px));
-    const by: i32 = @intFromFloat(@floor(py));
-    const bz: i32 = @intFromFloat(@floor(pz));
-    if (bx < 0 or bx >= c.WorldLength) return null;
-    if (by < 0 or by >= c.WorldHeight) return null;
-    if (bz < 0 or bz >= c.WorldDepth) return null;
+    const fx = @floor(px);
+    const fy = @floor(py);
+    const fz = @floor(pz);
+    // Bounds-check as floats first so NaN / extreme values never reach
+    // @intFromFloat (which would panic on un-representable values).
+    if (fx < 0.0 or fx >= @as(f32, @floatFromInt(c.WorldLength))) return null;
+    if (fy < 0.0 or fy >= @as(f32, @floatFromInt(c.WorldHeight))) return null;
+    if (fz < 0.0 or fz >= @as(f32, @floatFromInt(c.WorldDepth))) return null;
+    const bx: i32 = @intFromFloat(fx);
+    const by: i32 = @intFromFloat(fy);
+    const bz: i32 = @intFromFloat(fz);
     const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
     if (block == B.Flowing_Water or block == B.Still_Water) return .water;
     if (block == B.Flowing_Lava or block == B.Still_Lava) return .lava;
@@ -62,14 +67,19 @@ pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
 
 /// Feet zone: the single block-row at floor(py).
 pub fn liquid_feet(px: f32, py: f32, pz: f32) ?Liquid {
-    const by: i32 = @intFromFloat(@floor(py));
+    const fy = @floor(py);
+    if (!safe_for_i32(fy)) return null;
+    const by: i32 = @intFromFloat(fy);
     return zone_liquid(px, pz, by, by);
 }
 
 /// Body/head zone: from floor(py + 1) up to floor(py + HEIGHT).
 pub fn liquid_body(px: f32, py: f32, pz: f32) ?Liquid {
-    const by0: i32 = @intFromFloat(@floor(py + 1.0));
-    const by1: i32 = @intFromFloat(@floor(py + HEIGHT));
+    const fy0 = @floor(py + 1.0);
+    const fy1 = @floor(py + HEIGHT);
+    if (!safe_for_i32(fy0) or !safe_for_i32(fy1)) return null;
+    const by0: i32 = @intFromFloat(fy0);
+    const by1: i32 = @intFromFloat(fy1);
     return zone_liquid(px, pz, by0, by1);
 }
 
@@ -508,7 +518,14 @@ fn overlaps_xyz(a: Aabb, b: Aabb) bool {
     return overlaps_xy(a, b) and a.max_z > b.min_z and a.min_z < b.max_z;
 }
 
+/// True when a floored f32 can be losslessly cast to i32.
+fn safe_for_i32(v: f32) bool {
+    return v >= -2147483648.0 and v <= 2147483647.0;
+}
+
 /// Convert a world coordinate to a block coordinate (handles negatives).
 fn world_coord(v: f32) i32 {
-    return @intFromFloat(@floor(v));
+    const f = @floor(v);
+    if (!safe_for_i32(f)) return if (f < 0.0) std.math.minInt(i32) else std.math.maxInt(i32);
+    return @intFromFloat(f);
 }
