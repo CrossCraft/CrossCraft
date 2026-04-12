@@ -9,7 +9,7 @@ const State = Core.State;
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
-const Zip = @import("../util/Zip.zig");
+const ResourcePack = @import("../ResourcePack.zig");
 const ui_input = @import("../ui/input.zig");
 const Screen = @import("../ui/Screen.zig");
 const MainMenuScreen = @import("../ui/MainMenuScreen.zig");
@@ -19,42 +19,6 @@ const Session = @import("Session.zig");
 
 const log = std.log.scoped(.menu);
 
-const MenuTextures = struct {
-    dirt: Rendering.Texture,
-    logo: Rendering.Texture,
-    font: Rendering.Texture,
-    gui: Rendering.Texture,
-
-    /// Valid between MenuTextures.init() and MenuTextures.deinit().
-    var inst: MenuTextures = undefined;
-
-    fn load_from_pack(alloc: std.mem.Allocator, pack: *Zip, file: []const u8) !Rendering.Texture {
-        var buf: [256]u8 = undefined;
-        const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{file});
-
-        var stream = try pack.open(path);
-        defer pack.closeStream(&stream);
-
-        return try Rendering.Texture.load_from_reader(alloc, stream.reader);
-    }
-
-    pub fn init(alloc: std.mem.Allocator, pack: *Zip) !void {
-        inst.dirt = try load_from_pack(alloc, pack, "minecraft/textures/dirt");
-        inst.logo = try load_from_pack(alloc, pack, "crosscraft/textures/menu/logo");
-        inst.logo.force_resident();
-        inst.font = try load_from_pack(alloc, pack, "minecraft/textures/default");
-        inst.gui = try load_from_pack(alloc, pack, "minecraft/textures/gui/gui");
-    }
-
-    pub fn deinit(alloc: std.mem.Allocator) void {
-        inst.gui.deinit(alloc);
-        inst.font.deinit(alloc);
-        inst.logo.deinit(alloc);
-        inst.dirt.deinit(alloc);
-    }
-};
-
-pack: *Zip,
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 splash_mesh: FontBatcher.BatchMesh,
@@ -76,11 +40,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
 
-    self.pack = try Zip.init(engine.allocator(.game), engine.io, "pack.zip");
-    try MenuTextures.init(render_alloc, self.pack);
+    try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io);
+    errdefer ResourcePack.deinit();
+    try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui });
 
     self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
-    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, &MenuTextures.inst.font);
+    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
     self.splash_mesh = try self.font_batcher.build_mesh("Classic!", .splash_front, .splash_back, 0, 1);
     self.time = 0;
     self.ui_repeat = .{};
@@ -88,11 +53,11 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try ui_input.ensure_registered();
     ui_input.set_profile(ui_input.default_profile());
     self.main_menu_ctx = .{
-        .dirt = &MenuTextures.inst.dirt,
-        .logo = &MenuTextures.inst.logo,
+        .dirt = ResourcePack.get_tex(.dirt),
+        .logo = ResourcePack.get_tex(.logo),
     };
     self.direct_connect_ctx = .{
-        .dirt = &MenuTextures.inst.dirt,
+        .dirt = ResourcePack.get_tex(.dirt),
     };
     self.screen = MainMenuScreen.build(&self.main_menu_ctx);
     self.screen.open(!ui_input.profile_uses_pointer());
@@ -106,8 +71,6 @@ fn deinit(ctx: *anyopaque, _: *Engine) void {
     self.font_batcher.deinit();
     self.batcher.deinit();
 
-    MenuTextures.deinit(self.render_alloc);
-    self.pack.deinit();
     Rendering.Pipeline.deinit(pipeline);
 }
 
@@ -176,7 +139,7 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
 
     self.batcher.clear();
     self.font_batcher.clear();
-    self.screen.draw(&self.batcher, &self.font_batcher, &MenuTextures.inst.gui);
+    self.screen.draw(&self.batcher, &self.font_batcher, ResourcePack.get_tex(.gui));
 
     try self.batcher.flush();
     try self.font_batcher.flush();
@@ -188,7 +151,7 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
         const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 80, .top_center, .top_center, 25, pulse, 2);
 
         Rendering.Pipeline.bind(pipeline);
-        MenuTextures.inst.font.bind();
+        ResourcePack.get_tex(.font).bind();
         self.splash_mesh.draw(&model);
     }
 }

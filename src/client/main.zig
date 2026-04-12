@@ -27,6 +27,7 @@ fn psp_cwd() std.Io.Dir {
 pub const build_options = @import("build_options");
 
 const MenuState = @import("state/MenuState.zig");
+const ResourcePack = @import("ResourcePack.zig");
 
 pub fn main(init: std.process.Init) !void {
     if (ae.platform == .psp) {
@@ -48,9 +49,10 @@ pub fn main(init: std.process.Init) !void {
         .height = 480,
         .title = "CrossCraft Classic",
         .vsync = false,
-        .resizable = false, // TODO: Bugs on Vulkan, also weird on tiling WM :(
+        .resizable = true,
     }, &state);
     defer engine.deinit();
+    defer ResourcePack.deinit();
 
     try engine.run();
 }

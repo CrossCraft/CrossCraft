@@ -15,8 +15,8 @@ const FakeConn = @import("../connection/FakeConn.zig").FakeConn;
 const ClientConn = @import("../connection/ClientConn.zig");
 const Session = @import("Session.zig");
 
+const ResourcePack = @import("../ResourcePack.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
-const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const WorldRenderer = @import("../world/world.zig");
 const SelectionOutline = @import("../world/SelectionOutline.zig");
 const Player = @import("../player/Player.zig");
@@ -28,107 +28,10 @@ const Inventory = @import("../ui/Inventory.zig");
 const BlockNames = @import("../ui/BlockNames.zig");
 const Color = @import("../graphics/Color.zig").Color;
 const ui_input = @import("../ui/input.zig");
-const Zip = @import("../util/Zip.zig");
 
 const log = std.log.scoped(.game);
 
-// Still-water tile sits at atlas (14, 0); still-lava at (14, 1). The animation
-// source PNGs are vertical strips of 16x16 frames.
-const water_tile_col: u32 = 14;
-const water_tile_row: u32 = 0;
-const lava_tile_col: u32 = 14;
-const lava_tile_row: u32 = 1;
-const tile_size: u32 = 16;
-const anim_period_ticks: u32 = 2;
 const selection_depth_nudge: f32 = 1.0 / 160.0;
-
-const GameTextures = struct {
-    terrain: Rendering.Texture,
-    clouds: Rendering.Texture,
-    gui: Rendering.Texture,
-    font: Rendering.Texture,
-    water_still: Rendering.Texture,
-    lava_still: Rendering.Texture,
-    atlas: TextureAtlas,
-    anim_tick: u32,
-
-    /// Valid between GameTextures.init() and GameTextures.deinit().
-    var inst: GameTextures = undefined;
-
-    fn load_from_pack(alloc: std.mem.Allocator, pack: *Zip, file: []const u8) !Rendering.Texture {
-        var buf: [256]u8 = undefined;
-        const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{file});
-        var stream = try pack.open(path);
-        defer pack.closeStream(&stream);
-        return try Rendering.Texture.load_from_reader(alloc, stream.reader);
-    }
-
-    pub fn init(alloc: std.mem.Allocator, pack: *Zip) !void {
-        inst.terrain = try load_from_pack(alloc, pack, "minecraft/textures/terrain");
-        inst.terrain.force_resident();
-        inst.clouds = try load_from_pack(alloc, pack, "minecraft/textures/clouds");
-        inst.gui = try load_from_pack(alloc, pack, "minecraft/textures/gui/gui");
-        // Bitmap font texture used by the inventory tooltip. Same atlas the
-        // load/menu states use.
-        inst.font = try load_from_pack(alloc, pack, "minecraft/textures/default");
-        // Animation source strips: kept CPU-side only; never bound. We read
-        // frames via get_pixel and blit them into the terrain atlas.
-        inst.water_still = try load_from_pack(alloc, pack, "crosscraft/textures/water_still");
-        inst.lava_still = try load_from_pack(alloc, pack, "crosscraft/textures/lava_still");
-        std.debug.assert(inst.water_still.width == tile_size);
-        std.debug.assert(inst.lava_still.width == tile_size);
-        std.debug.assert(inst.water_still.height % tile_size == 0);
-        std.debug.assert(inst.lava_still.height % tile_size == 0);
-        inst.atlas = TextureAtlas.init(256, 256, 16, 16);
-        inst.anim_tick = 0;
-    }
-
-    pub fn deinit(alloc: std.mem.Allocator) void {
-        inst.lava_still.deinit(alloc);
-        inst.water_still.deinit(alloc);
-        inst.font.deinit(alloc);
-        inst.gui.deinit(alloc);
-        inst.clouds.deinit(alloc);
-        inst.terrain.deinit(alloc);
-    }
-
-    /// Blits one 16x16 frame from a vertical-strip animation source into the
-    /// given atlas tile, via get_pixel/set_pixel so that platform-specific
-    /// swizzling and pixel formats are handled correctly.
-    fn blit_frame(
-        src: *const Rendering.Texture,
-        frame: u32,
-        dst_col: u32,
-        dst_row: u32,
-    ) void {
-        const dst_x0 = dst_col * tile_size;
-        const dst_y0 = dst_row * tile_size;
-        const src_y0 = frame * tile_size;
-        var y: u32 = 0;
-        while (y < tile_size) : (y += 1) {
-            var x: u32 = 0;
-            while (x < tile_size) : (x += 1) {
-                const px = src.get_pixel(x, src_y0 + y);
-                inst.terrain.set_pixel(dst_x0 + x, dst_y0 + y, px);
-            }
-        }
-    }
-
-    /// Advance fluid animations. Called every game tick; actually updates
-    /// terrain once every `anim_period_ticks` ticks.
-    pub fn tick_animations() void {
-        inst.anim_tick +%= 1;
-        if (inst.anim_tick % anim_period_ticks != 0) return;
-
-        const water_frames: u32 = inst.water_still.height / tile_size;
-        const lava_frames: u32 = inst.lava_still.height / tile_size;
-        const step = inst.anim_tick / anim_period_ticks;
-
-        blit_frame(&inst.water_still, step % water_frames, water_tile_col, water_tile_row);
-        blit_frame(&inst.lava_still, step % lava_frames, lava_tile_col, lava_tile_row);
-        inst.terrain.update();
-    }
-};
 
 fake_conn: FakeConn,
 conn: ClientConn,
@@ -232,18 +135,16 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.render_alloc = render_alloc;
 
     // Textures
-    var pack = try Zip.init(engine.allocator(.game), engine.io, "pack.zip");
-    defer pack.deinit();
-    try GameTextures.init(render_alloc, pack);
+    try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still });
 
     // World renderer
     self.world = try WorldRenderer.init(
         render_alloc,
         engine.io,
         self.pipeline,
-        &GameTextures.inst.terrain,
-        &GameTextures.inst.clouds,
-        GameTextures.inst.atlas,
+        ResourcePack.get_tex(.terrain),
+        ResourcePack.get_tex(.clouds),
+        ResourcePack.atlas,
         &self.player.camera,
     );
 
@@ -256,17 +157,16 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // UI sprite batcher for HUD overlay (crosshair, hotbar bg, selector).
     self.ui_batcher = try SpriteBatcher.init(render_alloc, self.pipeline);
 
-    // Font batcher used by the inventory tooltip. The bitmap font texture
-    // sits in GameTextures alongside the rest of the GUI assets.
-    self.font_batcher = try FontBatcher.init(render_alloc, self.pipeline, &GameTextures.inst.font);
+    // Font batcher used by the inventory tooltip.
+    self.font_batcher = try FontBatcher.init(render_alloc, self.pipeline, ResourcePack.get_tex(.font));
 
     // Iso-projected block icons for hotbar + inventory slots; draws to the
     // same terrain atlas as the world.
     self.iso_blocks = try IsoBlockDrawer.init(
         render_alloc,
         self.pipeline,
-        &GameTextures.inst.terrain,
-        GameTextures.inst.atlas,
+        ResourcePack.get_tex(.terrain),
+        ResourcePack.atlas,
     );
 
     // Inventory overlay (Classic block-picker). MenuState already calls
@@ -283,7 +183,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.selection = try SelectionOutline.init(render_alloc, self.pipeline);
 
     // Held-block viewmodel. Uses the same terrain atlas as the world.
-    self.held = try BlockHand.init(render_alloc, self.pipeline, GameTextures.inst.atlas);
+    self.held = try BlockHand.init(render_alloc, self.pipeline, ResourcePack.atlas);
     self.player.held_renderer = &self.held;
 
     engine.report();
@@ -297,7 +197,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.font_batcher.deinit();
     self.ui_batcher.deinit();
     self.world.deinit();
-    GameTextures.deinit(self.render_alloc);
     Rendering.Pipeline.deinit(self.pipeline);
     switch (Session.mode) {
         .singleplayer => self.fake_conn.connected = false,
@@ -317,7 +216,7 @@ fn tick(ctx: *anyopaque, _: *Engine) anyerror!void {
         Server.drain_local_packets();
         Server.tick();
     }
-    GameTextures.tick_animations();
+    ResourcePack.tick_animations();
     send_player_position(&self.player);
 }
 
@@ -456,7 +355,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // clears depth internally so it never z-fights against nearby world
     // geometry. Matrices are left in that state on exit; the UI pass
     // below installs its own identity proj/view before drawing.
-    self.held.draw(&GameTextures.inst.terrain, &self.player.camera);
+    self.held.draw(ResourcePack.get_tex(.terrain), &self.player.camera);
 
     // UI pass: orthographic overlay drawn on top of the 3D scene.
     // Draw order is hotbar bg -> selector -> inventory panel -> iso block
@@ -468,7 +367,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.ui_batcher.clear();
     self.font_batcher.clear();
     self.iso_blocks.begin();
-    self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, &GameTextures.inst.gui, self.inventory.open);
+    self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, ResourcePack.get_tex(.gui), self.inventory.open);
     if (self.inventory.open) {
         self.inventory.draw(&self.ui_batcher, &self.iso_blocks, &self.font_batcher);
     }

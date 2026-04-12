@@ -10,7 +10,7 @@ const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
 const Scaling = @import("../ui/Scaling.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
-const Zip = @import("../util/Zip.zig");
+const ResourcePack = @import("../ResourcePack.zig");
 const Server = @import("game").Server;
 const World = @import("game").World;
 const GameState = @import("GameState.zig");
@@ -136,35 +136,6 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io) !void {
     World.finalize_loaded();
 }
 
-const LoadTextures = struct {
-    dirt: Rendering.Texture,
-    font: Rendering.Texture,
-
-    /// Valid between LoadTextures.init() and LoadTextures.deinit().
-    var inst: LoadTextures = undefined;
-
-    fn load_from_pack(alloc: std.mem.Allocator, pack: *Zip, file: []const u8) !Rendering.Texture {
-        var buf: [256]u8 = undefined;
-        const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{file});
-
-        var stream = try pack.open(path);
-        defer pack.closeStream(&stream);
-
-        return try Rendering.Texture.load_from_reader(alloc, stream.reader);
-    }
-
-    pub fn init(alloc: std.mem.Allocator, pack: *Zip) !void {
-        inst.dirt = try load_from_pack(alloc, pack, "minecraft/textures/dirt");
-        inst.font = try load_from_pack(alloc, pack, "minecraft/textures/default");
-    }
-
-    pub fn deinit(alloc: std.mem.Allocator) void {
-        inst.font.deinit(alloc);
-        inst.dirt.deinit(alloc);
-    }
-};
-
-pack: *Zip,
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 time: f32,
@@ -194,13 +165,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
-    self.pack = try Zip.init(engine.allocator(.game), engine.io, "pack.zip");
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
-    try LoadTextures.init(render_alloc, self.pack);
+    try ResourcePack.apply_tex_set(&.{ .dirt, .font });
 
     self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
-    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, &LoadTextures.inst.font);
+    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
     self.time = 0;
     self.server_notified = false;
 
@@ -223,8 +193,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.font_batcher.deinit();
     self.batcher.deinit();
 
-    LoadTextures.deinit(self.render_alloc);
-    self.pack.deinit();
     Rendering.Pipeline.deinit(pipeline);
 }
 
@@ -263,7 +231,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     while (y < extent_y) : (y += tile_size) {
         var x: i16 = 0;
         while (x < extent_x) : (x += tile_size) {
-            const dirt = &LoadTextures.inst.dirt;
+            const dirt = ResourcePack.get_tex(.dirt);
             self.batcher.add_sprite(&.{
                 .texture = dirt,
                 .pos_offset = .{ .x = x, .y = y },
