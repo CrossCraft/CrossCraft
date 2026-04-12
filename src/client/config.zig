@@ -26,7 +26,7 @@ rt_game: u32,
 rt_user: u32,
 
 pub const current: Self = if (ae.platform == .psp and build_options.slim) .{
-    .total_memory_mb = 48,
+    .total_memory_mb = 47,
     .chunk_radius = 4,
     .lod_near_radius_blocks = 28,
     .mesh_pool_mb = 20,
@@ -39,7 +39,7 @@ pub const current: Self = if (ae.platform == .psp and build_options.slim) .{
     .rt_game = 512 * KB,
     .rt_user = 7 * MB,
 } else if (ae.platform == .psp) .{
-    .total_memory_mb = 20,
+    .total_memory_mb = 18,
     .chunk_radius = 3,
     .lod_near_radius_blocks = 28,
     .mesh_pool_mb = 8,

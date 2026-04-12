@@ -10,6 +10,7 @@ const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const ResourcePack = @import("../ResourcePack.zig");
+const SoundManager = @import("../SoundManager.zig");
 const ui_input = @import("../ui/input.zig");
 const Screen = @import("../ui/Screen.zig");
 const MainMenuScreen = @import("../ui/MainMenuScreen.zig");
@@ -43,6 +44,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io);
     errdefer ResourcePack.deinit();
     try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui });
+
+    SoundManager.init(ResourcePack.get_pack());
 
     self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
     self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
@@ -81,6 +84,7 @@ fn tick(ctx: *anyopaque, _: *Engine) anyerror!void {
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
+    SoundManager.update(dt, 0, 0, 0, 0, 0);
 
     // PSP: service deferred OSK at the top of update — the previous
     // frame's end_frame has completed so the GE is idle.

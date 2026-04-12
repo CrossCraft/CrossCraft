@@ -81,6 +81,12 @@ pub fn deinit() void {
     pack.deinit();
 }
 
+// -- pack access -------------------------------------------------------------
+
+pub fn get_pack() *Zip {
+    return pack;
+}
+
 // -- texture access ----------------------------------------------------------
 
 pub fn get_tex(id: Tex) *const Rendering.Texture {

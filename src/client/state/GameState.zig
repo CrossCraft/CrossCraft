@@ -16,6 +16,7 @@ const ClientConn = @import("../connection/ClientConn.zig");
 const Session = @import("Session.zig");
 
 const ResourcePack = @import("../ResourcePack.zig");
+const SoundManager = @import("../SoundManager.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const WorldRenderer = @import("../world/world.zig");
 const SelectionOutline = @import("../world/SelectionOutline.zig");
@@ -281,6 +282,14 @@ fn update(ctx: *anyopaque, _: *Engine, dt: f32, budget: *const Util.BudgetContex
     // on_break/on_place early-return.
     self.player.update(dt);
     self.world.update(dt, budget, &self.player.camera);
+    SoundManager.update(
+        dt,
+        self.player.camera.x,
+        self.player.camera.y,
+        self.player.camera.z,
+        self.player.camera.yaw,
+        self.player.camera.pitch,
+    );
     const slot_block = self.player.hotbar[self.player.selected_slot];
     self.held.update(dt, slot_block, player_in_shadow(&self.player));
 

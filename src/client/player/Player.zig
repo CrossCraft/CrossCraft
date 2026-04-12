@@ -30,6 +30,7 @@ const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
 const Scaling = @import("../ui/Scaling.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
+const SoundManager = @import("../SoundManager.zig");
 const Face = @import("../world/chunk/face.zig").Face;
 
 pub const RaycastHit = struct {
@@ -507,8 +508,19 @@ fn advance_view_bob(self: *Self) void {
     const dist = @sqrt(dx * dx + dz * dz);
 
     if (dist > BOB_WALK_THRESHOLD) {
+        const phase_before = self.walk_phase;
         self.walk_phase += dist * BOB_WALK_PHASE_RATE * TICK;
         self.walk_swing += BOB_SWING_RATE * TICK;
+
+        // Step sound: one footfall per half-bob-cycle (every pi radians).
+        if (self.on_ground) {
+            const prev_idx = @as(u32, @intFromFloat(@floor(phase_before / std.math.pi)));
+            const curr_idx = @as(u32, @intFromFloat(@floor(self.walk_phase / std.math.pi)));
+            if (curr_idx != prev_idx) {
+                const foot = block_under_feet(self);
+                if (foot != B.Air) SoundManager.play_step(foot);
+            }
+        }
     } else {
         self.walk_swing -= BOB_SWING_RATE * TICK;
     }
@@ -613,6 +625,21 @@ fn update_vertical_state(
 fn frac(v: f32) f32 {
     const r = v - @floor(v);
     return if (r < 0) r + 1.0 else r;
+}
+
+/// Block the player is standing on (for step sounds).
+fn block_under_feet(self: *const Self) u8 {
+    const by_f = @floor(self.pos_y - 0.01);
+    const bx_f = @floor(self.pos_x);
+    const bz_f = @floor(self.pos_z);
+    if (by_f < 0 or by_f >= @as(f32, @floatFromInt(c.WorldHeight))) return B.Air;
+    if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(c.WorldLength))) return B.Air;
+    if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(c.WorldDepth))) return B.Air;
+    return World.get_block(
+        @intCast(@as(i32, @intFromFloat(bx_f))),
+        @intCast(@as(i32, @intFromFloat(by_f))),
+        @intCast(@as(i32, @intFromFloat(bz_f))),
+    );
 }
 
 // -- Collision + integration -------------------------------------------------
@@ -1030,11 +1057,12 @@ fn do_break(self: *Self) void {
     // Swing on every click, regardless of whether we actually struck a block.
     if (self.held_renderer) |hr| hr.trigger_dig();
     const hit = self.selected orelse return;
-    if (self.particle_sink) |ps| {
-        const block_id = World.get_block(hit.x, hit.y, hit.z);
-        if (block_id != B.Air) {
+    const block_id = World.get_block(hit.x, hit.y, hit.z);
+    if (block_id != B.Air) {
+        if (self.particle_sink) |ps| {
             ps.spawn_break(block_id, hit.x, hit.y, hit.z, derive_break_face(hit));
         }
+        SoundManager.play_dig(block_id, hit.x, hit.y, hit.z);
     }
     send_block_change(self.writer, hit.x, hit.y, hit.z, 0, B.Air);
 }
@@ -1086,6 +1114,7 @@ fn do_place(self: *Self) void {
     if (block == B.Air) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
+    SoundManager.play_place(block, hit.place_x, hit.place_y, hit.place_z);
 
     // Register a "virtual block" for collision so the player cannot
     // fall through before the server commits the placement to the
