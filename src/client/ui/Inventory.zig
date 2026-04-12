@@ -108,6 +108,9 @@ pub fn close_overlay(self: *Self, player: *Player) void {
     self.open = false;
     player.mouse_captured = self.saved_mouse_captured;
     input.set_mouse_relative_mode(self.saved_mouse_captured);
+    // Discard the spurious delta the input system generates when
+    // snapping the cursor back to center on mode switch.
+    player.look_delta = .{ 0, 0 };
 }
 
 // -- Per-frame update -------------------------------------------------------
