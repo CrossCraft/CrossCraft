@@ -188,6 +188,11 @@ fn accept_loop(listener: *std.Io.net.Server) std.Io.Cancelable!void {
         }
         log.info("Client connected: {}", .{conn.socket.address});
 
+        if (builtin.os.tag == .psp) {
+            sdk.extra.net.disableNagle(@intCast(conn.socket.handle)) catch |err|
+                log.warn("TCP_NODELAY failed: {}", .{err});
+        }
+
         var assigned = false;
         for (0..Consts.MAX_PLAYERS) |i| {
             if (conn_handles[i] != null) continue;

@@ -15,7 +15,6 @@ const FakeConn = @import("../connection/FakeConn.zig").FakeConn;
 const ClientConn = @import("../connection/ClientConn.zig");
 const Session = @import("Session.zig");
 
-const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const WorldRenderer = @import("../world/world.zig");
@@ -172,32 +171,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             // LoadState.connectTask; the socket's now pointed at SpawnPlayer.
             self.conn.init(&Session.mp_reader.interface, &Session.mp_writer.interface);
             Session.mp_connected.store(true, .release);
-
-            // PSP priority dance, two problems:
-            //   1. pspsdk's `concurrent` spawns the child at current+1
-            //      (lower prio). Read_loop needs to preempt main on packet
-            //      arrival, so we lift main before the spawn so the child
-            //      lands *above* main.
-            //   2. sceNet's callout thread (TCP timers) sits at prio 42,
-            //      below Aether's default main at 0x20 (32). Main thus
-            //      starves the callout and outbound data stalls. After
-            //      spawn, settle main at 50 (below 42) so the callout
-            //      actually runs.
-            // Final layout: read_loop (~23) > sceNet callout (42) > main (50).
-            const PSP_MAIN_PRIO_RUNTIME: i32 = 50;
-            const psp_main_thid = if (ae.platform == .psp)
-                pspsdk.kernel.get_thread_id()
-            else {};
-            const psp_orig_prio: i32 = if (ae.platform == .psp)
-                pspsdk.kernel.get_thread_current_priority()
-            else
-                0;
-            if (ae.platform == .psp) {
-                try pspsdk.kernel.change_thread_priority(psp_main_thid, psp_orig_prio - 10);
-            }
-            defer if (ae.platform == .psp) {
-                pspsdk.kernel.change_thread_priority(psp_main_thid, PSP_MAIN_PRIO_RUNTIME) catch {};
-            };
 
             // Must be `concurrent`, not `async`: PSP's `async` falls back
             // to inline execution when it can't spawn a thread, which

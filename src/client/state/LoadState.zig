@@ -59,18 +59,9 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io) !void {
     Session.mp_writer = std.Io.net.Stream.Writer.init(stream, io, &Session.mp_write_buf);
 
     // PSP: disable Nagle so per-tick packets hit the wire immediately.
-    // Safe because GameState.init drops main thread priority below
-    // sceNet's callout (42), so the callout actually drains segments.
     if (ae.platform == .psp) {
-        const TCP_NODELAY: i32 = 1;
-        const one: c_int = 1;
-        pspsdk.net.inet_setsockopt(
-            @intCast(stream.socket.handle),
-            pspsdk.extra.net.IPPROTO_TCP,
-            TCP_NODELAY,
-            &one,
-            @sizeOf(c_int),
-        ) catch |err| log.warn("TCP_NODELAY setsockopt failed: {}", .{err});
+        pspsdk.extra.net.disableNagle(@intCast(stream.socket.handle)) catch |err|
+            log.warn("TCP_NODELAY failed: {}", .{err});
     }
 
     try World.init_empty(alloc, io, seed);
