@@ -809,21 +809,25 @@ pub fn draw_ui(
     batcher: *SpriteBatcher,
     iso: *IsoBlockDrawer,
     gui: *const Rendering.Texture,
+    hide_crosshair: bool,
 ) void {
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
 
     // Crosshair: gui.png (240, 0), 16x16, screen center.
-    batcher.add_sprite(&.{
-        .texture = gui,
-        .pos_offset = .{ .x = 0, .y = 0 },
-        .pos_extent = .{ .x = 16, .y = 16 },
-        .tex_offset = .{ .x = 240, .y = 0 },
-        .tex_extent = .{ .x = 16, .y = 16 },
-        .color = .white,
-        .layer = 255,
-        .reference = .middle_center,
-        .origin = .middle_center,
-    });
+    // Hidden while the block inventory overlay is open.
+    if (!hide_crosshair) {
+        batcher.add_sprite(&.{
+            .texture = gui,
+            .pos_offset = .{ .x = 0, .y = 0 },
+            .pos_extent = .{ .x = 16, .y = 16 },
+            .tex_offset = .{ .x = 240, .y = 0 },
+            .tex_extent = .{ .x = 16, .y = 16 },
+            .color = .white,
+            .layer = 255,
+            .reference = .middle_center,
+            .origin = .middle_center,
+        });
+    }
 
     // Hotbar background. The 1 px upward nudge keeps the selector's bottom
     // row (selector is 24 tall vs the hotbar's 22) from clipping off the

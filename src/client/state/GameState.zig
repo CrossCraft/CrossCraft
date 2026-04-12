@@ -25,6 +25,8 @@ const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
 const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
 const Inventory = @import("../ui/Inventory.zig");
+const BlockNames = @import("../ui/BlockNames.zig");
+const Color = @import("../graphics/Color.zig").Color;
 const ui_input = @import("../ui/input.zig");
 const Zip = @import("../util/Zip.zig");
 
@@ -143,6 +145,8 @@ inventory: Inventory,
 selection: SelectionOutline,
 held: BlockHand,
 render_alloc: std.mem.Allocator,
+hotbar_tooltip_timer: f32,
+prev_selected_slot: u8,
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
@@ -272,6 +276,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try ui_input.ensure_registered();
     ui_input.set_profile(ui_input.default_profile());
     self.inventory = Inventory.init();
+    self.hotbar_tooltip_timer = 0;
+    self.prev_selected_slot = 0;
 
     // Block selection outline (line mesh, drawn after the world pass).
     self.selection = try SelectionOutline.init(render_alloc, self.pipeline);
@@ -378,6 +384,15 @@ fn update(ctx: *anyopaque, _: *Engine, dt: f32, budget: *const Util.BudgetContex
     self.world.update(dt, budget, &self.player.camera);
     const slot_block = self.player.hotbar[self.player.selected_slot];
     self.held.update(dt, slot_block, player_in_shadow(&self.player));
+
+    // Hotbar tooltip: reset timer on slot change, tick down otherwise.
+    if (self.player.selected_slot != self.prev_selected_slot) {
+        self.prev_selected_slot = self.player.selected_slot;
+        self.hotbar_tooltip_timer = 2.0;
+    } else if (self.hotbar_tooltip_timer > 0) {
+        self.hotbar_tooltip_timer -= dt;
+        if (self.hotbar_tooltip_timer < 0) self.hotbar_tooltip_timer = 0;
+    }
 }
 
 /// True when the voxel containing the player's eye is not directly sunlit.
@@ -453,10 +468,38 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.ui_batcher.clear();
     self.font_batcher.clear();
     self.iso_blocks.begin();
-    self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, &GameTextures.inst.gui);
+    self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, &GameTextures.inst.gui, self.inventory.open);
     if (self.inventory.open) {
         self.inventory.draw(&self.ui_batcher, &self.iso_blocks, &self.font_batcher);
     }
+
+    // Hotbar tooltip: block name above the hotbar, fades out over the last 0.5s.
+    if (self.hotbar_tooltip_timer > 0 and !self.inventory.open) {
+        const block = self.player.hotbar[self.player.selected_slot];
+        const name = BlockNames.get(block);
+        if (name.len > 0) {
+            const alpha: u8 = if (self.hotbar_tooltip_timer >= 0.5)
+                255
+            else
+                @intFromFloat(self.hotbar_tooltip_timer / 0.5 * 255.0);
+            const shadow_alpha: u8 = if (self.hotbar_tooltip_timer >= 0.5)
+                255
+            else
+                @intFromFloat(self.hotbar_tooltip_timer / 0.5 * 255.0);
+            self.font_batcher.add_text(&.{
+                .str = name,
+                .pos_x = 0,
+                .pos_y = -26,
+                .color = Color.rgba(255, 255, 255, alpha),
+                .shadow_color = Color.rgba(50, 50, 50, shadow_alpha),
+                .spacing = 0,
+                .layer = 252,
+                .reference = .bottom_center,
+                .origin = .bottom_center,
+            });
+        }
+    }
+
     try self.ui_batcher.flush();
 
     Rendering.gfx.api.clear_depth();
