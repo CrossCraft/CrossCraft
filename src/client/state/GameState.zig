@@ -51,6 +51,7 @@ held: BlockHand,
 render_alloc: std.mem.Allocator,
 hotbar_tooltip_timer: f32,
 prev_selected_slot: u8,
+report_timer: f32,
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
@@ -179,6 +180,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.inventory = Inventory.init();
     self.hotbar_tooltip_timer = 0;
     self.prev_selected_slot = 0;
+    self.report_timer = 0;
 
     // Block selection outline (line mesh, drawn after the world pass).
     self.selection = try SelectionOutline.init(render_alloc, self.pipeline);
@@ -258,7 +260,7 @@ fn fp_coord(v: f32) u16 {
     return @intFromFloat(scaled);
 }
 
-fn update(ctx: *anyopaque, _: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
+fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
 
     // Drain the ui_input edges every frame so they never accumulate stale
@@ -292,6 +294,12 @@ fn update(ctx: *anyopaque, _: *Engine, dt: f32, budget: *const Util.BudgetContex
     );
     const slot_block = self.player.hotbar[self.player.selected_slot];
     self.held.update(dt, slot_block, player_in_shadow(&self.player));
+
+    self.report_timer += dt;
+    if (self.report_timer >= 10.0) {
+        self.report_timer -= 10.0;
+        engine.report();
+    }
 
     // Hotbar tooltip: reset timer on slot change, tick down otherwise.
     if (self.player.selected_slot != self.prev_selected_slot) {
