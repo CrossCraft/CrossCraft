@@ -106,6 +106,15 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             self.conn.init(&Session.mp_reader.interface, &Session.mp_writer.interface);
             Session.mp_connected.store(true, .release);
 
+            // Wire up player_list and chat BEFORE the read loop starts so
+            // that SpawnPlayer packets for already-connected players (sent
+            // by the server right after LevelFinalize) are not silently
+            // dropped due to null pointers.
+            self.player_list = PlayerList.init();
+            self.conn.player_list = &self.player_list;
+            self.chat = Chat.init();
+            self.conn.chat = &self.chat;
+
             // Must be `concurrent`, not `async`: PSP's `async` falls back
             // to inline execution when it can't spawn a thread, which
             // would hang GameState.init inside an infinite read loop.
@@ -187,10 +196,14 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try ui_input.ensure_registered();
     ui_input.set_profile(ui_input.default_profile());
     self.inventory = Inventory.init();
-    self.player_list = PlayerList.init();
-    self.conn.player_list = &self.player_list;
-    self.chat = Chat.init();
-    self.conn.chat = &self.chat;
+    // Multiplayer already initialised player_list and chat before the
+    // read-loop thread was spawned (to avoid losing initial spawn packets).
+    if (Session.mode == .singleplayer) {
+        self.player_list = PlayerList.init();
+        self.conn.player_list = &self.player_list;
+        self.chat = Chat.init();
+        self.conn.chat = &self.chat;
+    }
     self.psp_social_mode = false;
     self.hotbar_tooltip_timer = 0;
     self.prev_selected_slot = 0;
