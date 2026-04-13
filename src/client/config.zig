@@ -1,5 +1,6 @@
 const ae = @import("aether");
 const Util = ae.Util;
+const Engine = ae.Engine;
 const build_options = @import("build_options");
 
 const Self = @This();
@@ -9,6 +10,7 @@ const KB: u32 = 1024;
 
 total_memory_mb: u32,
 chunk_radius: u32, // chunks from camera center (diameter = 2*r+1)
+lod_near_radius_blocks: u32, // sections within this distance get full-detail meshing
 mesh_pool_mb: u32,
 
 // Initial pool layout (used by App.init before any state runs)
@@ -24,32 +26,35 @@ rt_game: u32,
 rt_user: u32,
 
 pub const current: Self = if (ae.platform == .psp and build_options.slim) .{
-    .total_memory_mb = 48,
+    .total_memory_mb = 24,
     .chunk_radius = 4,
+    .lod_near_radius_blocks = 28,
     .mesh_pool_mb = 20,
     .init_render = 4 * MB,
     .init_audio = 2 * MB,
     .init_game = 2 * MB,
     .init_user = 12 * MB,
-    .rt_render = 24 * MB,
-    .rt_audio = 512 * KB,
-    .rt_game = 512 * KB,
+    .rt_render = 16 * MB,
+    .rt_audio = 0 * KB,
+    .rt_game = 256 * KB,
     .rt_user = 7 * MB,
 } else if (ae.platform == .psp) .{
-    .total_memory_mb = 20,
+    .total_memory_mb = 18,
     .chunk_radius = 3,
-    .mesh_pool_mb = 8,
-    .init_render = 4 * MB,
-    .init_audio = 2 * MB,
-    .init_game = 2 * MB,
+    .lod_near_radius_blocks = 0, // Always opaque leaves
+    .mesh_pool_mb = 10,
+    .init_render = 2 * MB,
+    .init_audio = 1 * MB,
+    .init_game = 1 * MB,
     .init_user = 12 * MB,
-    .rt_render = 13 * MB,
-    .rt_audio = 512 * KB,
-    .rt_game = 512 * KB,
+    .rt_render = 10 * MB + 768 * KB,
+    .rt_audio = 0 * KB,
+    .rt_game = 256 * KB,
     .rt_user = 7 * MB,
 } else .{
     .total_memory_mb = 80,
     .chunk_radius = 8,
+    .lod_near_radius_blocks = 72,
     .mesh_pool_mb = 32,
     .init_render = 8 * MB,
     .init_audio = 2 * MB,
@@ -77,9 +82,9 @@ pub fn init_memory() Util.MemoryConfig {
     };
 }
 
-pub fn apply_runtime_budgets() void {
-    Util.set_budget(.render, current.rt_render);
-    Util.set_budget(.audio, current.rt_audio);
-    Util.set_budget(.game, current.rt_game);
-    Util.set_budget(.user, current.rt_user);
+pub fn apply_runtime_budgets(engine: *Engine) void {
+    engine.set_budget(.render, current.rt_render);
+    engine.set_budget(.audio, current.rt_audio);
+    engine.set_budget(.game, current.rt_game);
+    engine.set_budget(.user, current.rt_user);
 }

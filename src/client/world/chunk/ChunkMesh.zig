@@ -1,7 +1,6 @@
 const std = @import("std");
 const ae = @import("aether");
 const Math = ae.Math;
-const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
@@ -11,7 +10,7 @@ const mesher = @import("mesher.zig");
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
 /// One 16x16x16 section with 2 meshes:
-///   opaque -- solid blocks + leaf shell faces
+///   opaque -- solid blocks + buried (solid) leaf faces
 ///   trans  -- outer leaves + water/glass/cross
 /// Each mesh owns its vertex storage via the render allocator.
 @"opaque": BatchMesh,
@@ -19,37 +18,45 @@ trans: BatchMesh,
 cx: u32,
 sy: u32,
 cz: u32,
+/// Whether this section was last rebuilt as "near LOD" (within
+/// LOD_NEAR_RADIUS_BLOCKS of the camera). World owns the value: it
+/// updates the field when the section transitions across the radius and
+/// queues a rebuild so the mesher picks the new state up.
+near_lod: bool,
+allocator: std.mem.Allocator,
 
 const Self = @This();
 
-pub fn init(pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Self {
+pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Self {
     return .{
-        .@"opaque" = try BatchMesh.new(pipeline),
-        .trans = try BatchMesh.new(pipeline),
+        .@"opaque" = try BatchMesh.new(allocator, pipeline),
+        .trans = try BatchMesh.new(allocator, pipeline),
         .cx = cx,
         .sy = sy,
         .cz = cz,
+        .near_lod = false,
+        .allocator = allocator,
     };
 }
 
 pub fn deinit(self: *Self) void {
-    self.@"opaque".deinit();
-    self.trans.deinit();
+    self.@"opaque".deinit(self.allocator);
+    self.trans.deinit(self.allocator);
 }
 
 /// Release vertex data but keep GPU handles alive for reuse.
 pub fn clear(self: *Self) void {
-    const a = Util.allocator(.render);
+    const a = self.allocator;
     self.@"opaque".vertices.clearAndFree(a);
     self.trans.vertices.clearAndFree(a);
 }
 
 pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void {
     var buf: mesher.SectionBuf = undefined;
-    mesher.pack_section(self.cx, self.sy, self.cz, &buf);
+    mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
     const counts = mesher.count_section(&buf);
 
-    const a = Util.allocator(.render);
+    const a = self.allocator;
 
     self.@"opaque".vertices.clearRetainingCapacity();
     self.trans.vertices.clearRetainingCapacity();
@@ -80,20 +87,28 @@ pub fn center_z(self: *const Self) f32 {
 /// Draw opaque geometry only. Call front-to-back.
 pub fn draw_opaque(self: *Self) void {
     if (self.@"opaque".vertices.items.len == 0) return;
-    const m = model_matrix(self);
+    const m = model_matrix(self, scale_opaque);
     self.@"opaque".draw(&m);
 }
 
 /// Draw transparent geometry. Call back-to-front.
 pub fn draw_transparent(self: *Self) void {
     if (self.trans.vertices.items.len == 0) return;
-    const m = model_matrix(self);
+    const m = model_matrix(self, scale_trans);
     self.trans.draw(&m);
 }
 
-fn model_matrix(self: *const Self) Math.Mat4 {
+// SNORM dequant divides by 32768 (not 32767), so encode_pos(16) = 32767
+// maps to 32767/32768 ≈ 0.99997, not 1.0. Over-compensate slightly so
+// chunk edges overlap by a sub-pixel amount rather than leaving a gap.
+// Opaque geometry can use a larger overlap (depth test hides it);
+// translucent needs a tighter fit to avoid double-blend artifacts.
+const scale_opaque: f32 = 16.0 * 32768.0 / 32753.0;
+const scale_trans: f32 = 16.0 * 32768.0 / 32763.0;
+
+fn model_matrix(self: *const Self, s: f32) Math.Mat4 {
     const wx: f32 = @floatFromInt(self.cx * 16);
     const wy: f32 = @floatFromInt(self.sy * 16);
     const wz: f32 = @floatFromInt(self.cz * 16);
-    return Math.Mat4.scaling(16.0, 16.0, 16.0).mul(Math.Mat4.translation(wx, wy, wz));
+    return Math.Mat4.scaling(s, s, s).mul(Math.Mat4.translation(wx, wy, wz));
 }

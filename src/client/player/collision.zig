@@ -12,9 +12,8 @@ pub const HEIGHT: f32 = 1.8; // feet to top of head
 pub const EYE_HEIGHT: f32 = 1.59375; // 51/32, feet to camera
 pub const STEP_HEIGHT: f32 = 0.5;
 
-/// Inset applied to the XZ footprint during Y resolution so that wall
-/// blocks at the player's horizontal edge are not mistaken for floors/ceilings.
-const SKIN: f32 = 0.05;
+/// Used when converting open AABB maxima to inclusive voxel scan ranges.
+const EPSILON: f32 = 0.0001;
 
 // -- Collision solidity table (comptime) -------------------------------------
 
@@ -49,12 +48,17 @@ pub const Liquid = enum { water, lava };
 /// Single-point liquid test at the given world coordinate.
 /// Used to detect whether the camera is submerged.
 pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
-    const bx: i32 = @intFromFloat(@floor(px));
-    const by: i32 = @intFromFloat(@floor(py));
-    const bz: i32 = @intFromFloat(@floor(pz));
-    if (bx < 0 or bx >= c.WorldLength) return null;
-    if (by < 0 or by >= c.WorldHeight) return null;
-    if (bz < 0 or bz >= c.WorldDepth) return null;
+    const fx = @floor(px);
+    const fy = @floor(py);
+    const fz = @floor(pz);
+    // Bounds-check as floats first so NaN / extreme values never reach
+    // @intFromFloat (which would panic on un-representable values).
+    if (fx < 0.0 or fx >= @as(f32, @floatFromInt(c.WorldLength))) return null;
+    if (fy < 0.0 or fy >= @as(f32, @floatFromInt(c.WorldHeight))) return null;
+    if (fz < 0.0 or fz >= @as(f32, @floatFromInt(c.WorldDepth))) return null;
+    const bx: i32 = @intFromFloat(fx);
+    const by: i32 = @intFromFloat(fy);
+    const bz: i32 = @intFromFloat(fz);
     const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
     if (block == B.Flowing_Water or block == B.Still_Water) return .water;
     if (block == B.Flowing_Lava or block == B.Still_Lava) return .lava;
@@ -63,14 +67,19 @@ pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
 
 /// Feet zone: the single block-row at floor(py).
 pub fn liquid_feet(px: f32, py: f32, pz: f32) ?Liquid {
-    const by: i32 = @intFromFloat(@floor(py));
+    const fy = @floor(py);
+    if (!safe_for_i32(fy)) return null;
+    const by: i32 = @intFromFloat(fy);
     return zone_liquid(px, pz, by, by);
 }
 
 /// Body/head zone: from floor(py + 1) up to floor(py + HEIGHT).
 pub fn liquid_body(px: f32, py: f32, pz: f32) ?Liquid {
-    const by0: i32 = @intFromFloat(@floor(py + 1.0));
-    const by1: i32 = @intFromFloat(@floor(py + HEIGHT));
+    const fy0 = @floor(py + 1.0);
+    const fy1 = @floor(py + HEIGHT);
+    if (!safe_for_i32(fy0) or !safe_for_i32(fy1)) return null;
+    const by0: i32 = @intFromFloat(fy0);
+    const by1: i32 = @intFromFloat(fy1);
     return zone_liquid(px, pz, by0, by1);
 }
 
@@ -114,7 +123,7 @@ pub const MoveResult = struct {
 // -- Core collision ----------------------------------------------------------
 
 /// Resolve a proposed movement against the voxel world.
-/// Axes are resolved in Y, X, Z order (matching Classic Minecraft).
+/// Axes are clipped in Y, X, Z order (matching Classic Minecraft).
 pub fn move_and_collide(
     px: f32,
     py: f32,
@@ -123,84 +132,37 @@ pub fn move_and_collide(
     dy: f32,
     dz: f32,
 ) MoveResult {
-    var result = MoveResult{
-        .x = px,
-        .y = py,
-        .z = pz,
-        .on_ground = false,
-        .hit_y_above = false,
-        .hit_x = false,
-        .hit_z = false,
+    var box = player_box(px, py, pz);
+    const original_dx = dx;
+    const original_dy = dy;
+    const original_dz = dz;
+
+    const move_y = clip_y(box, dy);
+    box.offset_y(move_y);
+
+    const move_x = clip_x(box, dx);
+    box.offset_x(move_x);
+
+    const move_z = clip_z(box, dz);
+    box.offset_z(move_z);
+
+    return MoveResult{
+        .x = box.center_x(),
+        .y = box.min_y,
+        .z = box.center_z(),
+        .on_ground = original_dy != move_y and original_dy < 0.0,
+        .hit_y_above = original_dy != move_y and original_dy > 0.0,
+        .hit_x = original_dx != move_x,
+        .hit_z = original_dz != move_z,
     };
-
-    // --- Y axis ---
-    result.y = py + dy;
-    resolve_y(&result, dy, py);
-
-    // --- X axis ---
-    result.x = px + dx;
-    if (overlaps_solid(result.x - HALF_W, result.y, result.z - HALF_W, result.x + HALF_W, result.y + HEIGHT, result.z + HALF_W)) {
-        if (dx > 0) {
-            result.x = snap_lo(result.x + HALF_W) - HALF_W;
-        } else {
-            result.x = snap_hi(result.x - HALF_W) + HALF_W;
-        }
-        result.hit_x = true;
-    }
-
-    // --- Z axis ---
-    result.z = pz + dz;
-    if (overlaps_solid(result.x - HALF_W, result.y, result.z - HALF_W, result.x + HALF_W, result.y + HEIGHT, result.z + HALF_W)) {
-        if (dz > 0) {
-            result.z = snap_lo(result.z + HALF_W) - HALF_W;
-        } else {
-            result.z = snap_hi(result.z - HALF_W) + HALF_W;
-        }
-        result.hit_z = true;
-    }
-
-    // Clamp to world boundaries
-    result.x = @max(HALF_W, @min(255.0 + 1.0 - HALF_W, result.x));
-    result.z = @max(HALF_W, @min(255.0 + 1.0 - HALF_W, result.z));
-    if (result.y < 0) {
-        result.y = 0;
-        result.on_ground = true;
-    }
-
-    return result;
 }
 
 /// Check whether the player is resting on a solid surface.
 pub fn on_ground(px: f32, py: f32, pz: f32) bool {
-    const epsilon: f32 = 0.001;
-    const test_y = py - epsilon;
-    if (test_y < 0) return true;
-
-    const min_bx = world_coord(px - HALF_W);
-    const max_bx = world_coord(px + HALF_W);
-    const min_bz = world_coord(pz - HALF_W);
-    const max_bz = world_coord(pz + HALF_W);
-    const by_raw: i32 = @intFromFloat(@floor(test_y));
-
-    if (by_raw < 0) return true;
-    if (by_raw >= c.WorldHeight) return false;
-    const by: u16 = @intCast(by_raw);
-
-    var bx_i: i32 = min_bx;
-    while (bx_i <= max_bx) : (bx_i += 1) {
-        var bz_i: i32 = min_bz;
-        while (bz_i <= max_bz) : (bz_i += 1) {
-            if (bx_i < 0 or bx_i >= c.WorldLength or bz_i < 0 or bz_i >= c.WorldDepth) continue;
-            const block = World.get_block(@intCast(bx_i), by, @intCast(bz_i));
-            const bh = block_height(block);
-            if (bh == 0.0) continue;
-            // Block top surface
-            const block_top = @as(f32, @floatFromInt(by)) + bh;
-            // Player feet are within epsilon of block top
-            if (@abs(py - block_top) < epsilon + 0.01) return true;
-        }
-    }
-    return false;
+    if (py <= 0.0) return true;
+    var box = player_box(px, py, pz);
+    box.offset_y(-0.001);
+    return overlaps_solid_box(box);
 }
 
 /// Attempt to step up over an obstacle.
@@ -212,10 +174,7 @@ pub fn try_step_up(
     dx: f32,
     dz: f32,
 ) ?struct { x: f32, y: f32, z: f32 } {
-    // Raise the player up by STEP_HEIGHT
     const raised_y = py + STEP_HEIGHT;
-
-    // Check we have headroom to raise
     if (overlaps_solid(
         px - HALF_W,
         raised_y,
@@ -225,190 +184,250 @@ pub fn try_step_up(
         pz + HALF_W,
     )) return null;
 
-    // Try horizontal movement at raised height
-    var test_x = px + dx;
-    var test_z = pz + dz;
+    const moved = move_and_collide(px, raised_y, pz, dx, 0.0, dz);
+    if (moved.x == px and moved.z == pz) return null;
 
-    // Resolve X
-    if (overlaps_solid(test_x - HALF_W, raised_y, pz - HALF_W, test_x + HALF_W, raised_y + HEIGHT, pz + HALF_W)) {
-        test_x = px; // horizontal blocked even when raised -- abort
-    }
+    const landed_y = find_landing_y(moved.x, raised_y, moved.z, STEP_HEIGHT) orelse return null;
 
-    // Resolve Z
-    if (overlaps_solid(test_x - HALF_W, raised_y, test_z - HALF_W, test_x + HALF_W, raised_y + HEIGHT, test_z + HALF_W)) {
-        test_z = pz;
-    }
-
-    // If we didn't move horizontally at all, step-up is pointless
-    if (test_x == px and test_z == pz) return null;
-
-    // Lower back down -- find the highest solid surface under the player
-    const landed_y = sweep_down(test_x, raised_y, test_z, STEP_HEIGHT);
-
-    // Only accept if we actually ended up higher than where we started
     if (landed_y < py) return null;
 
-    return .{ .x = test_x, .y = landed_y, .z = test_z };
+    return .{ .x = moved.x, .y = landed_y, .z = moved.z };
 }
 
 /// Try to snap the player down by up to `max_drop` blocks.
 /// Returns the new Y (feet) or null if no surface found within range.
 pub fn try_snap_down(px: f32, py: f32, pz: f32, max_drop: f32) ?f32 {
-    const target_y = py - max_drop;
-    if (overlaps_solid(px - HALF_W, target_y, pz - HALF_W, px + HALF_W, target_y + HEIGHT, pz + HALF_W)) {
-        // There is solid ground within max_drop -- find exact landing
-        const landed = sweep_down(px, py, pz, max_drop);
-        if (landed < py) return landed;
-    }
+    const landed = find_landing_y(px, py, pz, max_drop) orelse return null;
+    if (landed < py) return landed;
     return null;
 }
 
 // -- Internal helpers --------------------------------------------------------
 
-/// Resolve the Y component of movement, handling both floor and ceiling.
-/// `origin_y` is the player feet Y before this tick's movement.
-fn resolve_y(result: *MoveResult, dy: f32, origin_y: f32) void {
-    const min_x = result.x - HALF_W + SKIN;
-    const max_x = result.x + HALF_W - SKIN;
-    const min_z = result.z - HALF_W + SKIN;
-    const max_z = result.z + HALF_W - SKIN;
+const Aabb = struct {
+    min_x: f32,
+    min_y: f32,
+    min_z: f32,
+    max_x: f32,
+    max_y: f32,
+    max_z: f32,
 
-    if (!overlaps_solid(min_x, result.y, min_z, max_x, result.y + HEIGHT, max_z)) return;
+    fn offset_x(self: *Aabb, x: f32) void {
+        self.min_x += x;
+        self.max_x += x;
+    }
 
-    if (dy < 0) {
-        // Falling -- snap to highest block top at or below where we started
-        result.y = find_floor(min_x, result.y, min_z, max_x, max_z, origin_y);
-        result.on_ground = true;
+    fn offset_y(self: *Aabb, y: f32) void {
+        self.min_y += y;
+        self.max_y += y;
+    }
+
+    fn offset_z(self: *Aabb, z: f32) void {
+        self.min_z += z;
+        self.max_z += z;
+    }
+
+    fn center_x(self: Aabb) f32 {
+        return (self.min_x + self.max_x) * 0.5;
+    }
+
+    fn center_z(self: Aabb) f32 {
+        return (self.min_z + self.max_z) * 0.5;
+    }
+};
+
+fn player_box(px: f32, py: f32, pz: f32) Aabb {
+    return .{
+        .min_x = px - HALF_W,
+        .min_y = py,
+        .min_z = pz - HALF_W,
+        .max_x = px + HALF_W,
+        .max_y = py + HEIGHT,
+        .max_z = pz + HALF_W,
+    };
+}
+
+fn block_box(bx: i32, by: i32, bz: i32, height: f32) Aabb {
+    return .{
+        .min_x = @floatFromInt(bx),
+        .min_y = @floatFromInt(by),
+        .min_z = @floatFromInt(bz),
+        .max_x = @as(f32, @floatFromInt(bx)) + 1.0,
+        .max_y = @as(f32, @floatFromInt(by)) + height,
+        .max_z = @as(f32, @floatFromInt(bz)) + 1.0,
+    };
+}
+
+fn clip_y(box: Aabb, dy: f32) f32 {
+    if (dy == 0.0) return 0.0;
+
+    var clipped = dy;
+    if (dy < 0.0 and box.min_y + dy < 0.0) {
+        clipped = @min(-box.min_y, 0.0);
+    }
+    if (clipped == 0.0) return 0.0;
+
+    var sweep = box;
+    if (clipped > 0.0) {
+        sweep.max_y += clipped;
     } else {
-        // Rising -- snap below the lowest ceiling block
-        result.y = find_ceiling(min_x, result.y, min_z, max_x, result.y + HEIGHT, max_z);
-        // Never push below our starting position (wall-block false positive)
-        result.y = @max(result.y, origin_y);
-        result.hit_y_above = true;
+        sweep.min_y += clipped;
     }
-}
 
-/// Find the highest solid surface the player can land on.
-/// Only accepts surfaces between `proposed_y` and `ceiling_y` (inclusive).
-/// `ceiling_y` is typically the player's pre-movement Y so wall-tops above
-/// the player are not mistaken for floors.
-fn find_floor(
-    min_x: f32,
-    proposed_y: f32,
-    min_z: f32,
-    max_x: f32,
-    max_z: f32,
-    ceiling_y: f32,
-) f32 {
-    var best_y = proposed_y;
-    const bx0 = world_coord(min_x);
-    const bx1 = world_coord(max_x);
-    const bz0 = world_coord(min_z);
-    const bz1 = world_coord(max_z);
-    const by0: i32 = @intFromFloat(@floor(proposed_y));
-    const by1: i32 = @intFromFloat(@floor(ceiling_y));
-
-    var by: i32 = by0;
-    while (by <= by1) : (by += 1) {
+    const range = scan_range(sweep);
+    var by = range.by0;
+    while (by <= range.by1) : (by += 1) {
         if (by < 0 or by >= c.WorldHeight) continue;
-        var bx: i32 = bx0;
-        while (bx <= bx1) : (bx += 1) {
-            if (bx < 0 or bx >= c.WorldLength) continue;
-            var bz: i32 = bz0;
-            while (bz <= bz1) : (bz += 1) {
-                if (bz < 0 or bz >= c.WorldDepth) continue;
-                const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-                const bh = block_height(block);
-                if (bh == 0.0) continue;
-                const block_top = @as(f32, @floatFromInt(by)) + bh;
-                if (block_top > best_y and block_top <= ceiling_y) {
-                    best_y = block_top;
-                }
+        var bx = range.bx0;
+        while (bx <= range.bx1) : (bx += 1) {
+            var bz = range.bz0;
+            while (bz <= range.bz1) : (bz += 1) {
+                clipped = clip_y_block(box, clipped, bx, by, bz);
             }
         }
     }
-    return best_y;
+    return clipped;
 }
 
-/// Find the lowest ceiling that blocks upward movement.
-fn find_ceiling(
-    min_x: f32,
-    proposed_y: f32,
-    min_z: f32,
-    max_x: f32,
-    head_y: f32,
-    max_z: f32,
-) f32 {
-    var best_y = proposed_y;
-    const bx0 = world_coord(min_x);
-    const bx1 = world_coord(max_x);
-    const bz0 = world_coord(min_z);
-    const bz1 = world_coord(max_z);
-    const by0: i32 = @intFromFloat(@floor(proposed_y));
-    const by1: i32 = @intFromFloat(@floor(head_y));
+fn clip_x(box: Aabb, dx: f32) f32 {
+    if (dx == 0.0) return 0.0;
 
-    var by: i32 = by1;
-    while (by >= by0) : (by -= 1) {
+    var clipped = clip_x_world(box, dx);
+    if (clipped == 0.0) return 0.0;
+
+    var sweep = box;
+    if (clipped > 0.0) {
+        sweep.max_x += clipped;
+    } else {
+        sweep.min_x += clipped;
+    }
+
+    const range = scan_range(sweep);
+    var by = range.by0;
+    while (by <= range.by1) : (by += 1) {
         if (by < 0 or by >= c.WorldHeight) continue;
-        var bx: i32 = bx0;
-        while (bx <= bx1) : (bx += 1) {
-            if (bx < 0 or bx >= c.WorldLength) continue;
-            var bz: i32 = bz0;
-            while (bz <= bz1) : (bz += 1) {
-                if (bz < 0 or bz >= c.WorldDepth) continue;
-                const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-                const bh = block_height(block);
-                if (bh == 0.0) continue;
-                const block_bottom: f32 = @floatFromInt(by);
-                // Player head is inside this block
-                if (head_y > block_bottom and proposed_y < block_bottom + bh) {
-                    const clamped = block_bottom - HEIGHT;
-                    if (clamped < best_y) best_y = clamped;
-                }
+        var bx = range.bx0;
+        while (bx <= range.bx1) : (bx += 1) {
+            var bz = range.bz0;
+            while (bz <= range.bz1) : (bz += 1) {
+                clipped = clip_x_block(box, clipped, bx, by, bz);
             }
         }
     }
-    return best_y;
+    return clipped;
 }
 
-/// Sweep the player AABB downward from `start_y` by up to `max_drop`.
-/// Returns the Y where the player rests (or start_y - max_drop if nothing hit).
-fn sweep_down(px: f32, start_y: f32, pz: f32, max_drop: f32) f32 {
+fn clip_z(box: Aabb, dz: f32) f32 {
+    if (dz == 0.0) return 0.0;
+
+    var clipped = clip_z_world(box, dz);
+    if (clipped == 0.0) return 0.0;
+
+    var sweep = box;
+    if (clipped > 0.0) {
+        sweep.max_z += clipped;
+    } else {
+        sweep.min_z += clipped;
+    }
+
+    const range = scan_range(sweep);
+    var by = range.by0;
+    while (by <= range.by1) : (by += 1) {
+        if (by < 0 or by >= c.WorldHeight) continue;
+        var bx = range.bx0;
+        while (bx <= range.bx1) : (bx += 1) {
+            var bz = range.bz0;
+            while (bz <= range.bz1) : (bz += 1) {
+                clipped = clip_z_block(box, clipped, bx, by, bz);
+            }
+        }
+    }
+    return clipped;
+}
+
+fn clip_x_world(box: Aabb, dx: f32) f32 {
+    if (dx > 0.0) {
+        const allowed = @as(f32, @floatFromInt(c.WorldLength)) - box.max_x;
+        if (dx > allowed) return @max(0.0, allowed);
+    } else {
+        const allowed = -box.min_x;
+        if (dx < allowed) return @min(0.0, allowed);
+    }
+    return dx;
+}
+
+fn clip_z_world(box: Aabb, dz: f32) f32 {
+    if (dz > 0.0) {
+        const allowed = @as(f32, @floatFromInt(c.WorldDepth)) - box.max_z;
+        if (dz > allowed) return @max(0.0, allowed);
+    } else {
+        const allowed = -box.min_z;
+        if (dz < allowed) return @min(0.0, allowed);
+    }
+    return dz;
+}
+
+fn clip_y_block(box: Aabb, dy: f32, bx: i32, by: i32, bz: i32) f32 {
+    const height = solid_height_at(bx, by, bz);
+    if (height == 0.0) return dy;
+    const block = block_box(bx, by, bz, height);
+    if (!overlaps_xz(box, block)) return dy;
+    if (dy > 0.0 and block.min_y >= box.max_y) return @min(dy, block.min_y - box.max_y);
+    if (dy < 0.0 and block.max_y <= box.min_y) return @max(dy, block.max_y - box.min_y);
+    return dy;
+}
+
+fn clip_x_block(box: Aabb, dx: f32, bx: i32, by: i32, bz: i32) f32 {
+    const height = solid_height_at(bx, by, bz);
+    if (height == 0.0) return dx;
+    const block = block_box(bx, by, bz, height);
+    if (!overlaps_yz(box, block)) return dx;
+    if (dx > 0.0 and block.min_x >= box.max_x) return @min(dx, block.min_x - box.max_x);
+    if (dx < 0.0 and block.max_x <= box.min_x) return @max(dx, block.max_x - box.min_x);
+    return dx;
+}
+
+fn clip_z_block(box: Aabb, dz: f32, bx: i32, by: i32, bz: i32) f32 {
+    const height = solid_height_at(bx, by, bz);
+    if (height == 0.0) return dz;
+    const block = block_box(bx, by, bz, height);
+    if (!overlaps_xy(box, block)) return dz;
+    if (dz > 0.0 and block.min_z >= box.max_z) return @min(dz, block.min_z - box.max_z);
+    if (dz < 0.0 and block.max_z <= box.min_z) return @max(dz, block.max_z - box.min_z);
+    return dz;
+}
+
+/// Find the highest solid top crossed by a downward sweep.
+fn find_landing_y(px: f32, start_y: f32, pz: f32, max_drop: f32) ?f32 {
+    std.debug.assert(max_drop >= 0.0);
+
     const target_y = start_y - max_drop;
-    const min_x = px - HALF_W;
-    const max_x = px + HALF_W;
-    const min_z = pz - HALF_W;
-    const max_z = pz + HALF_W;
+    const box = player_box(px, start_y, pz);
+    var sweep = box;
+    sweep.min_y = target_y;
 
-    var best_y = target_y;
-
-    const bx0 = world_coord(min_x);
-    const bx1 = world_coord(max_x);
-    const bz0 = world_coord(min_z);
-    const bz1 = world_coord(max_z);
-    const by0: i32 = @intFromFloat(@floor(target_y));
-    const by1: i32 = @intFromFloat(@floor(start_y));
-
-    var by: i32 = by0;
-    while (by <= by1) : (by += 1) {
+    var landed: ?f32 = null;
+    const range = scan_range(sweep);
+    var by: i32 = range.by0;
+    while (by <= range.by1) : (by += 1) {
         if (by < 0 or by >= c.WorldHeight) continue;
-        var bx: i32 = bx0;
-        while (bx <= bx1) : (bx += 1) {
-            if (bx < 0 or bx >= c.WorldLength) continue;
-            var bz: i32 = bz0;
-            while (bz <= bz1) : (bz += 1) {
-                if (bz < 0 or bz >= c.WorldDepth) continue;
-                const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-                const bh = block_height(block);
-                if (bh == 0.0) continue;
-                const block_top = @as(f32, @floatFromInt(by)) + bh;
-                if (block_top > best_y and block_top <= start_y) {
-                    best_y = block_top;
+        var bx: i32 = range.bx0;
+        while (bx <= range.bx1) : (bx += 1) {
+            var bz: i32 = range.bz0;
+            while (bz <= range.bz1) : (bz += 1) {
+                const height = solid_height_at(bx, by, bz);
+                if (height == 0.0) continue;
+                const block = block_box(bx, by, bz, height);
+                if (!overlaps_xz(box, block)) continue;
+                const block_top = block.max_y;
+                if (block_top < target_y or block_top > start_y) continue;
+                if (landed == null or block_top > landed.?) {
+                    landed = block_top;
                 }
             }
         }
     }
-    return best_y;
+    return landed;
 }
 
 /// Test whether any solid block overlaps the given AABB.
@@ -420,50 +439,93 @@ fn overlaps_solid(
     max_y: f32,
     max_z: f32,
 ) bool {
-    const bx0 = world_coord(min_x);
-    const bx1 = world_coord(max_x - 0.001);
-    const bz0 = world_coord(min_z);
-    const bz1 = world_coord(max_z - 0.001);
-    const by0_raw: i32 = @intFromFloat(@floor(min_y));
-    const by1_raw: i32 = @intFromFloat(@floor(max_y - 0.001));
+    return overlaps_solid_box(.{
+        .min_x = min_x,
+        .min_y = min_y,
+        .min_z = min_z,
+        .max_x = max_x,
+        .max_y = max_y,
+        .max_z = max_z,
+    });
+}
 
-    // Below world floor counts as solid
-    if (by0_raw < 0) return true;
+fn overlaps_solid_box(box: Aabb) bool {
+    if (box.min_y < 0.0) return true;
+    if (box.min_x < 0.0 or box.max_x > @as(f32, @floatFromInt(c.WorldLength))) return true;
+    if (box.min_z < 0.0 or box.max_z > @as(f32, @floatFromInt(c.WorldDepth))) return true;
 
-    var by: i32 = by0_raw;
-    while (by <= by1_raw) : (by += 1) {
+    const range = scan_range(box);
+    var by: i32 = range.by0;
+    while (by <= range.by1) : (by += 1) {
         if (by < 0 or by >= c.WorldHeight) continue;
-        var bx: i32 = bx0;
-        while (bx <= bx1) : (bx += 1) {
-            if (bx < 0 or bx >= c.WorldLength) continue;
-            var bz: i32 = bz0;
-            while (bz <= bz1) : (bz += 1) {
-                if (bz < 0 or bz >= c.WorldDepth) continue;
-                const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-                const bh = block_height(block);
-                if (bh == 0.0) continue;
-                // Block AABB: [bx, by, bz] to [bx+1, by+bh, bz+1]
-                const block_top = @as(f32, @floatFromInt(by)) + bh;
-                const block_y: f32 = @floatFromInt(by);
-                if (max_y > block_y and min_y < block_top) return true;
+        var bx: i32 = range.bx0;
+        while (bx <= range.bx1) : (bx += 1) {
+            var bz: i32 = range.bz0;
+            while (bz <= range.bz1) : (bz += 1) {
+                const height = solid_height_at(bx, by, bz);
+                if (height == 0.0) continue;
+                const block = block_box(bx, by, bz, height);
+                if (overlaps_xyz(box, block)) return true;
             }
         }
     }
     return false;
 }
 
-/// Snap an edge back to the block boundary below it (moving in -dir).
-fn snap_lo(edge: f32) f32 {
-    return @floor(edge);
+const ScanRange = struct {
+    bx0: i32,
+    bx1: i32,
+    by0: i32,
+    by1: i32,
+    bz0: i32,
+    bz1: i32,
+};
+
+fn scan_range(box: Aabb) ScanRange {
+    return .{
+        .bx0 = @max(0, world_coord(box.min_x)),
+        .bx1 = @min(c.WorldLength - 1, world_coord(box.max_x - EPSILON)),
+        .by0 = world_coord(box.min_y),
+        .by1 = world_coord(box.max_y - EPSILON),
+        .bz0 = @max(0, world_coord(box.min_z)),
+        .bz1 = @min(c.WorldDepth - 1, world_coord(box.max_z - EPSILON)),
+    };
 }
 
-/// Snap an edge forward to the block boundary above it (moving in +dir).
-fn snap_hi(edge: f32) f32 {
-    return @floor(edge) + 1.0;
+fn solid_height_at(bx: i32, by: i32, bz: i32) f32 {
+    if (bx < 0 or bx >= c.WorldLength) return 0.0;
+    if (by < 0 or by >= c.WorldHeight) return 0.0;
+    if (bz < 0 or bz >= c.WorldDepth) return 0.0;
+    return block_height(World.get_block(@intCast(bx), @intCast(by), @intCast(bz)));
+}
+
+fn overlaps_xz(a: Aabb, b: Aabb) bool {
+    return a.max_x > b.min_x and a.min_x < b.max_x and
+        a.max_z > b.min_z and a.min_z < b.max_z;
+}
+
+fn overlaps_xy(a: Aabb, b: Aabb) bool {
+    return a.max_x > b.min_x and a.min_x < b.max_x and
+        a.max_y > b.min_y and a.min_y < b.max_y;
+}
+
+fn overlaps_yz(a: Aabb, b: Aabb) bool {
+    return a.max_y > b.min_y and a.min_y < b.max_y and
+        a.max_z > b.min_z and a.min_z < b.max_z;
+}
+
+fn overlaps_xyz(a: Aabb, b: Aabb) bool {
+    return overlaps_xy(a, b) and a.max_z > b.min_z and a.min_z < b.max_z;
+}
+
+/// True when a floored f32 can be losslessly cast to i32.
+fn safe_for_i32(v: f32) bool {
+    return v >= -2147483648.0 and v <= 2147483647.0;
 }
 
 /// Convert a world coordinate to a block coordinate (handles negatives).
 fn world_coord(v: f32) i32 {
-    return @intFromFloat(@floor(v));
+    const f = @floor(v);
+    if (!safe_for_i32(f)) return if (f < 0.0) std.math.minInt(i32) else std.math.maxInt(i32);
+    return @intFromFloat(f);
 }
-

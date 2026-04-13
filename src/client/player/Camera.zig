@@ -13,6 +13,14 @@ pitch: f32, // radians, positive = looking up
 fov: f32, // vertical FOV in radians
 frustum: Math.Frustum,
 
+// View-bob state, written by Player.sync_camera and consumed by both
+// the world view matrix (tilt) and the held-block renderer (bob_hor/ver
+// for screen-space sway). Defaults are no-op so anything that doesn't
+// touch them stays unaffected.
+tilt: Math.Mat4,
+bob_hor: f32,
+bob_ver: f32,
+
 pub fn init(x: f32, y: f32, z: f32) Self {
     return .{
         .x = x,
@@ -22,6 +30,9 @@ pub fn init(x: f32, y: f32, z: f32) Self {
         .pitch = 0,
         .fov = 70.0 * std.math.pi / 180.0,
         .frustum = undefined,
+        .tilt = Math.Mat4.identity(),
+        .bob_hor = 0,
+        .bob_ver = 0,
     };
 }
 
@@ -36,7 +47,8 @@ pub fn apply(self: *Self) void {
 
     const view = Math.Mat4.translation(-self.x, -self.y, -self.z)
         .mul(Math.Mat4.rotationY(-self.yaw))
-        .mul(Math.Mat4.rotationX(self.pitch));
+        .mul(Math.Mat4.rotationX(self.pitch))
+        .mul(self.tilt);
     Rendering.gfx.api.set_view_matrix(&view);
 
     // VP for frustum extraction (row-vector convention = V * P)

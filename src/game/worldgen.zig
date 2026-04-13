@@ -1,3 +1,15 @@
+// Portions adapted from ClassiCube[](https://github.com/ClassiCube/ClassiCube) by UnknownShadow200.
+// - Map generation & dig animation: primarily from wiki algorithm descriptions
+//   (https://github.com/ClassiCube/ClassiCube/wiki/Minecraft-Classic-map-generation-algorithm
+//    https://github.com/ClassiCube/ClassiCube/wiki/Dig-animation-details)
+// - Physics & view-bob: cross-referenced in part from source code.
+// - World generation also includes minimal cross-checks against the original BSD code
+//   (e.g. one-line differences).
+// See THIRD-PARTY-NOTICES.md for the full BSD 3-Clause license text.
+//
+// Ported to Zig for CrossCraft (LGPLv3; uses separate Aether-Engine).
+// Modifications Copyright (c) 2026 CrossCraft
+
 //! Minecraft Classic Worldgen
 //! Based on writeup: https://github.com/ClassiCube/ClassiCube/wiki/Minecraft-Classic-map-generation-algorithm
 //!
@@ -57,6 +69,8 @@ const FP_0_2: FP16 = .{ .value = 13107 };
 const FP_0_9: FP16 = .{ .value = 58982 };
 const FP_0_75: FP16 = .{ .value = 49152 };
 const FP_0_25: FP16 = .{ .value = 16384 };
+const FP_1_2: FP16 = .{ .value = 78643 }; // round(1.2 * 65536)
+const FP_3_5: FP16 = .{ .value = 229376 }; // 3.5 * 65536 exact
 
 // RCP means ReCiProcal (1/5, 1/6, 1/8)
 const RCP_5: FP16 = .{ .value = 13107 };
@@ -76,9 +90,6 @@ const DIRT_THICKNESS_OFFSET: i32 = 4;
 
 // -- Cave constants (Step 4) ----------------------------------------------
 const CAVE_COUNT_DIVISOR: u32 = 8192; // total caves = volume / 8192
-const CAVE_LENGTH_MULT: u32 = 200; // caveLength = rand*rand * 200
-const CAVE_RADIUS_MULT = FP16.from(3); // caveRadius = rand*rand * 3 + 1
-const ORE_RADIUS_OFFSET: FP16 = .{ .value = 32768 }; // oreRadius = rand*rand + 0.5
 const WALKER_JITTER_RANGE: u32 = 4; // jitter in [-2, 1] blocks
 const WALKER_JITTER_CENTER: i32 = 2;
 
@@ -89,11 +100,6 @@ const ORE_VEIN_DIVISOR: u32 = 163840; // = 16384 * 10
 const COAL_ABUNDANCE_X10: u32 = 9; // abundance 0.9
 const IRON_ABUNDANCE_X10: u32 = 7; // abundance 0.7
 const GOLD_ABUNDANCE_X10: u32 = 5; // abundance 0.5
-
-// -- Walker radius constants ----------------------------------------------
-const WALKER_HEIGHT_SCALE: i64 = 3; // height_factor = (H - cy)/H * 3 + 1
-const WALKER_HEIGHT_CLAMP: i32 = 4 * 0x10000; // max height factor in FP16
-const ORE_RADIUS_SHRINK: i32 = 2; // ore veins half the cave radius
 
 // -- Flood constants (Steps 7-8) ------------------------------------------
 const WATER_SOURCE_DIVISOR: u32 = 8000; // underground water = area / 8000
@@ -199,22 +205,38 @@ noinline fn runWalker(mask: []u8, mode: MaskMode, rng: *Xorshift64) void {
     var pos_y = FP16.from(@as(i32, @intCast(rng.next_bounded(H))));
     var pos_z = FP16.from(@as(i32, @intCast(rng.next_bounded(D))));
 
+    // phi samples the full [0, 2pi) like theta, per spec.
     var theta: FP16 = .{ .value = @intCast(rng.next() % @as(u64, @intCast(noise.TWO_PI))) };
-    var phi: FP16 = .{ .value = @divTrunc(@as(i32, @intCast(rng.next() & 0xFFFF)) - 0x8000, 4) };
+    var phi: FP16 = .{ .value = @intCast(rng.next() % @as(u64, @intCast(noise.TWO_PI))) };
     var d_theta: FP16 = .{ .value = 0 };
     var d_phi: FP16 = .{ .value = 0 };
 
+    // Caves store raw rand*rand as the per-walker base. Ores ignore base
+    // entirely (walkerRadius derives ore radius from abundance only).
     const cave_radius: FP16 = switch (mode) {
-        .cave => rng.next_float().mul(rng.next_float()).mul(CAVE_RADIUS_MULT).add(FP_ONE),
-        else => rng.next_float().mul(rng.next_float()).add(ORE_RADIUS_OFFSET),
+        .cave => rng.next_float().mul(rng.next_float()),
+        else => .{ .value = 0 },
     };
 
-    const len_fp = rng.next_float().mul(rng.next_float());
-    const cave_len: u32 = @max(1, @as(u32, @intCast(len_fp.value)) * CAVE_LENGTH_MULT / 65536);
+    // Both walker types share the rand*rand length distribution per the
+    // ClassiCube source. Caves multiply by 200; ores multiply by 75*abundance.
+    // (The wiki's "(rand+rand)*200" for caves is incorrect - the C source
+    // uses rand*rand. Following the wiki triples cave coverage, which kills performance)
+    const sq: u64 = blk: {
+        const a: u64 = @intCast(rng.next_float().value);
+        const b: u64 = @intCast(rng.next_float().value);
+        break :blk a * b / 65536;
+    };
+    const cave_len: u32 = switch (mode) {
+        .cave => @max(1, @as(u32, @intCast(sq * 200 / 65536))),
+        .coal => @max(1, @as(u32, @intCast(sq * 75 * COAL_ABUNDANCE_X10 / 10 / 65536))),
+        .iron => @max(1, @as(u32, @intCast(sq * 75 * IRON_ABUNDANCE_X10 / 10 / 65536))),
+        .gold => @max(1, @as(u32, @intCast(sq * 75 * GOLD_ABUNDANCE_X10 / 10 / 65536))),
+    };
 
     var step: u32 = 0;
     while (step < cave_len) : (step += 1) {
-        walkerStep(&pos_x, &pos_y, &pos_z, &theta, &phi, &d_theta, &d_phi, rng);
+        walkerStep(&pos_x, &pos_y, &pos_z, &theta, &phi, &d_theta, &d_phi, rng, mode);
         if (rng.next_float().value < FP_0_25.value) continue;
 
         const jx = @as(i32, @intCast(rng.next_bounded(WALKER_JITTER_RANGE))) - WALKER_JITTER_CENTER;
@@ -229,7 +251,10 @@ noinline fn runWalker(mask: []u8, mode: MaskMode, rng: *Xorshift64) void {
     }
 }
 
-/// This is the per-phase walker step which moves the head of the walker to a new position and modifies the angle by random
+/// Per-step walker advance: moves the head along (theta, phi) and evolves
+/// the heading. Mode controls the two ore-vs-cave divergences from the
+/// ClassiCube source: ores discard the previous theta each step, and ores
+/// use a slower 0.9 decay on d_phi vs the cave's 0.75.
 fn walkerStep(
     px: *FP16,
     py: *FP16,
@@ -239,29 +264,64 @@ fn walkerStep(
     d_theta: *FP16,
     d_phi: *FP16,
     rng: *Xorshift64,
+    mode: MaskMode,
 ) void {
-    px.* = px.add(sin_fp16(theta.*).mul(cos_fp16(phi.*)));
-    py.* = py.add(cos_fp16(theta.*));
-    pz.* = pz.add(sin_fp16(phi.*));
-    theta.* = theta.add(d_theta.mul(FP_0_2));
+    // CrossCraft uses Y as the vertical axis: y gets sin(phi); horizontal
+    // motion (sin(theta), cos(theta)) in XZ is scaled by cos(phi).
+    const cphi = cos_fp16(phi.*);
+    px.* = px.add(sin_fp16(theta.*).mul(cphi));
+    py.* = py.add(sin_fp16(phi.*));
+    pz.* = pz.add(cos_fp16(theta.*).mul(cphi));
+
+    // Theta: caves accumulate, ores replace. d_theta evolves the same way.
+    const dtheta_step = d_theta.mul(FP_0_2);
+    theta.* = switch (mode) {
+        .cave => theta.add(dtheta_step),
+        else => dtheta_step,
+    };
     d_theta.* = d_theta.mul(FP_0_9).add(rng.next_float()).sub(rng.next_float());
+
+    // Phi update is identical for both modes: phi/2 + d_phi/4.
     phi.* = .{ .value = @divTrunc(phi.value, 2) + @divTrunc(d_phi.value, 4) };
-    d_phi.* = d_phi.mul(FP_0_75).add(rng.next_float()).sub(rng.next_float());
+
+    // d_phi decay: cave 0.75, ore 0.9 (slower → wider vertical wobble).
+    const decay = switch (mode) {
+        .cave => FP_0_75,
+        else => FP_0_9,
+    };
+    d_phi.* = d_phi.mul(decay).add(rng.next_float()).sub(rng.next_float());
 }
 
-/// Changes the radius of the walker
+/// Changes the radius of the walker. Cave radius peaks ~5.7 (additive
+/// formula); ore radius peaks at abundance + 1 (~1.9 for coal, 1.5 gold).
 fn walkerRadius(cy: FP16, base: FP16, step: u32, length: u32, mode: MaskMode) i32 {
-    const ht_fp = FP16.from(@as(i32, H));
-    const diff = ht_fp.sub(cy);
-    // height_factor = (H - cy) / H,  scaled by *3+1
-    const hf_raw: i64 = @divTrunc(@as(i64, diff.value) * WALKER_HEIGHT_SCALE, @as(i64, H)) + 0x10000;
-    const height_factor: FP16 = .{ .value = @intCast(std.math.clamp(hf_raw, 0, WALKER_HEIGHT_CLAMP)) };
-    // sin envelope over walk length
+    // Shared sin envelope over walk length.
     const angle: i32 = @intCast(@divTrunc(@as(i64, step) * @as(i64, noise.PI), @as(i64, length)));
     const envelope = sin_fp16(.{ .value = angle });
-    var r = base.mul(height_factor).mul(envelope);
-    // Ore veins are smaller
-    if (mode != .cave) r = .{ .value = @divTrunc(r.value, ORE_RADIUS_SHRINK) };
+
+    const r: FP16 = switch (mode) {
+        // Cave: r = 1.2 + (hf*3.5 + 1) * caveRadius, then * envelope
+        .cave => blk: {
+            const diff = FP16.from(@as(i32, H)).sub(cy);
+            // hf = diff / H. diff.value is FP16; dividing by plain H keeps FP16 units.
+            const hf: FP16 = .{ .value = @intCast(@divTrunc(@as(i64, diff.value), @as(i64, H))) };
+            const inner = hf.mul(FP_3_5).add(FP_ONE);
+            const core = FP_1_2.add(inner.mul(base));
+            break :blk core.mul(envelope);
+        },
+        // Ore: r = abundance * sin(step*pi/length) + 1
+        .coal, .iron, .gold => blk: {
+            const x10: i32 = switch (mode) {
+                .coal => COAL_ABUNDANCE_X10,
+                .iron => IRON_ABUNDANCE_X10,
+                .gold => GOLD_ABUNDANCE_X10,
+                else => unreachable,
+            };
+            // abundance as FP16 = x10 * 65536 / 10 (coal -> 58982 == 0.9)
+            const abundance_fp: FP16 = .{ .value = @divTrunc(x10 * 65536, 10) };
+            break :blk abundance_fp.mul(envelope).add(FP_ONE);
+        },
+    };
     return @max(0, r.int());
 }
 
@@ -395,14 +455,14 @@ fn packCoord(x: u32, y: u32, z: u32) u32 {
     return (x << 18) | (y << 9) | z;
 }
 
-fn bfsFloodDown(blocks: []u8, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: u8) void {
-    const start_idx = blockIdx(sx, sy, sz);
-    if (blocks[start_idx] != B.Air) return;
-    blocks[start_idx] = fluid;
+/// BFS spread from a pre-populated queue. Spreads horizontally (+/- x, +/- z)
+/// and downward (-y) only — water never propagates upward, per spec.
+/// Caller is responsible for marking seeded cells as `fluid` and writing them
+/// into `queue[0..tail_in]` before calling.
+fn floodFromQueue(blocks: []u8, queue: []u32, tail_in: u32, fluid: u8) void {
     const cap: u32 = @intCast(queue.len);
     var head: u32 = 0;
-    var tail: u32 = 1;
-    queue[0] = packCoord(sx, sy, sz);
+    var tail = tail_in;
 
     while (head != tail) {
         const coord = queue[head];
@@ -431,21 +491,55 @@ fn bfsFloodDown(blocks: []u8, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: u8
     }
 }
 
-noinline fn stepFloodWater(blocks: []u8, heightmap: []const i16, rng: *Xorshift64, flood_queue: []u32) void {
-    // Ocean: column fill from heightmap+1 to water level
+/// Single-source flood: seeds one cell and runs the BFS. Used for the random
+/// underground water and lava sources.
+fn bfsFloodDown(blocks: []u8, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: u8) void {
+    const start_idx = blockIdx(sx, sy, sz);
+    if (blocks[start_idx] != B.Air) return;
+    blocks[start_idx] = fluid;
+    queue[0] = packCoord(sx, sy, sz);
+    floodFromQueue(blocks, queue, 1, fluid);
+}
+
+noinline fn stepFloodWater(blocks: []u8, rng: *Xorshift64, flood_queue: []u32) void {
+    // Ocean: spec flood-fills from every map-edge column at y = waterLevel - 1,
+    // spreading horizontally and downward. Pre-seed every border air block at
+    // that height into the BFS queue, then run a single combined BFS. Caves
+    // that open onto the shoreline are flooded in the same pass.
+    const water_y: u32 = @intCast(WATER - 1);
+    const cap: u32 = @intCast(flood_queue.len);
+    var tail: u32 = 0;
+
+    // Top and bottom edges (z = 0 and z = D-1), full x span.
     for (0..W) |xi| {
-        for (0..D) |zi| {
-            const x: u32 = @intCast(xi);
-            const z: u32 = @intCast(zi);
-            const h: u32 = @intCast(heightmap[hmIdx(x, z)]);
-            var y: u32 = h + 1;
-            while (y < @as(u32, @intCast(WATER)) and y < H) : (y += 1) {
-                const idx = blockIdx(x, y, z);
-                if (blocks[idx] == B.Air) blocks[idx] = B.Still_Water;
+        const x: u32 = @intCast(xi);
+        for ([_]u32{ 0, D - 1 }) |z| {
+            const idx = blockIdx(x, water_y, z);
+            if (blocks[idx] == B.Air and tail < cap) {
+                blocks[idx] = B.Still_Water;
+                flood_queue[tail] = packCoord(x, water_y, z);
+                tail += 1;
             }
         }
     }
-    // Underground water sources
+    // Left and right edges (x = 0 and x = W-1), excluding the corners
+    // already covered above.
+    for (1..D - 1) |zi| {
+        const z: u32 = @intCast(zi);
+        for ([_]u32{ 0, W - 1 }) |x| {
+            const idx = blockIdx(x, water_y, z);
+            if (blocks[idx] == B.Air and tail < cap) {
+                blocks[idx] = B.Still_Water;
+                flood_queue[tail] = packCoord(x, water_y, z);
+                tail += 1;
+            }
+        }
+    }
+
+    floodFromQueue(blocks, flood_queue, tail, B.Still_Water);
+
+    // Underground water sources (spec: width * depth / 8000) seeded at
+    // y = waterLevel - 1 or - 2.
     const sources: u32 = MAP_AREA / WATER_SOURCE_DIVISOR;
     for (0..sources) |_| {
         const sx = rng.next_bounded(W);
@@ -646,7 +740,10 @@ pub fn generate(scratch: std.mem.Allocator, blocks: []u8, seed: u64, io: std.Io,
     defer scratch.free(cave_mask);
     const ore_mask = try scratch.alloc(u8, MAP_VOL / 4);
     defer scratch.free(ore_mask);
-    const flood_queue = try scratch.alloc(u32, MAP_AREA);
+    // Sized for the ocean BFS, whose peak frontier can briefly exceed
+    // MAP_AREA on highly fragmented coastlines. Doubling gives headroom
+    // for any plausible map without overflow-truncating the flood.
+    const flood_queue = try scratch.alloc(u32, MAP_AREA * 2);
     defer scratch.free(flood_queue);
 
     var t = std.Io.Clock.Timestamp.now(io, .boot);
@@ -678,7 +775,7 @@ pub fn generate(scratch: std.mem.Allocator, blocks: []u8, seed: u64, io: std.Io,
     t = logStep(io, t, "Merge");
 
     phase.* = .water;
-    stepFloodWater(blocks, heightmap, &rng, flood_queue);
+    stepFloodWater(blocks, &rng, flood_queue);
     t = logStep(io, t, "Water");
 
     phase.* = .lava;

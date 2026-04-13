@@ -2,19 +2,18 @@
     .name = .CrossCraft,
     .version = "0.0.0",
     .fingerprint = 0xe210aad5fbf843a4, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0-dev.3041+3dc5f1398",
+    .minimum_zig_version = "0.16.0-dev.3144+ac6fb0b59",
     .dependencies = .{
         .ZeeBuffer = .{
             .url = "git+https://github.com/IridescentRose/ZeeBuffer#8e1b2d03a905c2a70d4b0430f9a651e31027b181",
             .hash = "ZeeBuffer-0.2.0-RVIQu-7-AQC_98ycQNuJ4hxVxLDGMQkPAvLVvP4DsHz2",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#3641e1df4145356c68e931bd1808651c178c7bfa",
-            .hash = "Aether-0.0.0-cjG28h4BDQBjHhRj6WVFoscjgxq76gaXiA3HtxBRJDFI",
+            .url = "git+https://github.com/AetherEngine/Aether#25529c4757c2947607816b33a1ee9f00719f38a6",
+            .hash = "Aether-0.0.0-cjG28vr-DQDKTQ02QgBTIcUDkYierXoQ4fZMEHiZ78rV",
         },
         .resources = .{
-            .url = "git+https://github.com/CrossCraft/CrossCraft-Resources#61c73e09cf0058a1905f072cf060d33021d80a70",
-            .hash = "N-V-__8AAJj9gQBNmDaOPngCT2G8EGoplWFraz5UsxbWueUK",
+            .path = "resources",
         },
     },
     .paths = .{

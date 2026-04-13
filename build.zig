@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) void {
     const overrides: Aether.Config.Overrides = .{
         .gfx = b.option(Aether.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
         .psp_display_mode = b.option(Aether.PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
+        .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
     };
 
     const slim = b.option(bool, "slim", "Slim mode: reduced memory, smaller render distance (for PSP-1000)") orelse false;
@@ -87,7 +88,6 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption(bool, "slim", slim);
     client_exe.root_module.addImport("build_options", build_options.createModule());
-
 
     Aether.addShader(ae_dep.builder, b, client_exe, config, "basic", .{
         .slang = b.path("src/client/shaders/basic.slang"),

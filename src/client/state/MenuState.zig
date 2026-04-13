@@ -2,207 +2,172 @@ const std = @import("std");
 const ae = @import("aether");
 const Core = ae.Core;
 const Util = ae.Util;
+const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
-const Scaling = @import("../ui/Scaling.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
-const Zip = @import("../util/Zip.zig");
+const ResourcePack = @import("../ResourcePack.zig");
+const SoundManager = @import("../SoundManager.zig");
+const ui_input = @import("../ui/input.zig");
+const Screen = @import("../ui/Screen.zig");
+const MainMenuScreen = @import("../ui/MainMenuScreen.zig");
+const DirectConnectScreen = @import("../ui/DirectConnectScreen.zig");
+const LoadState = @import("LoadState.zig");
+const Session = @import("Session.zig");
 
-const MenuTextures = struct {
-    dirt: Rendering.Texture,
-    logo: Rendering.Texture,
-    font: Rendering.Texture,
-    gui: Rendering.Texture,
+const log = std.log.scoped(.menu);
 
-    /// Valid between MenuTextures.init() and MenuTextures.deinit().
-    var inst: MenuTextures = undefined;
+// Module-level singleton so DisconnectState can transition back here without
+// needing access to the original stack-allocated instance from main().
+var menu_state: @This() = undefined;
+var menu_state_inst: State = undefined;
 
-    fn load_from_pack(pack: *Zip, file: []const u8) !Rendering.Texture {
-        var buf: [256]u8 = undefined;
-        const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{file});
+pub fn transition_here(engine: *Engine) !void {
+    menu_state_inst = menu_state.state();
+    try ae.Core.state_machine.transition(engine, &menu_state_inst);
+}
 
-        var stream = try pack.open(path);
-        defer pack.closeStream(&stream);
-
-        return try Rendering.Texture.load_from_reader(stream.reader);
-    }
-
-    pub fn init(pack: *Zip) !void {
-        inst.dirt = try load_from_pack(pack, "minecraft/textures/dirt");
-        inst.logo = try load_from_pack(pack, "crosscraft/textures/menu/logo");
-        inst.logo.force_resident();
-        inst.font = try load_from_pack(pack, "minecraft/textures/default");
-        inst.gui = try load_from_pack(pack, "minecraft/textures/gui/gui");
-    }
-
-    pub fn deinit() void {
-        inst.gui.deinit();
-        inst.font.deinit();
-        inst.logo.deinit();
-        inst.dirt.deinit();
-    }
-};
-
-pack: *Zip,
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 splash_mesh: FontBatcher.BatchMesh,
 time: f32,
+screen: Screen,
+ui_repeat: ui_input.Repeat,
+main_menu_ctx: MainMenuScreen.Context,
+direct_connect_ctx: DirectConnectScreen.Context,
+render_alloc: std.mem.Allocator,
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
 
-fn init(ctx: *anyopaque) anyerror!void {
+fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
-    self.pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
-    try MenuTextures.init(self.pack);
+    const render_alloc = engine.allocator(.render);
+    self.render_alloc = render_alloc;
 
-    self.batcher = try SpriteBatcher.init(pipeline);
-    self.font_batcher = try FontBatcher.init(pipeline, &MenuTextures.inst.font);
+    try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io);
+    errdefer ResourcePack.deinit();
+    try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui });
+
+    SoundManager.init(ResourcePack.get_pack());
+
+    self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
+    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
     self.splash_mesh = try self.font_batcher.build_mesh("Classic!", .splash_front, .splash_back, 0, 1);
     self.time = 0;
+    self.ui_repeat = .{};
 
-    Util.report();
+    try ui_input.ensure_registered();
+    ui_input.set_profile(ui_input.default_profile());
+    self.main_menu_ctx = .{
+        .dirt = ResourcePack.get_tex(.dirt),
+        .logo = ResourcePack.get_tex(.logo),
+    };
+    self.direct_connect_ctx = .{
+        .dirt = ResourcePack.get_tex(.dirt),
+    };
+    self.screen = MainMenuScreen.build(&self.main_menu_ctx);
+    self.screen.open(!ui_input.profile_uses_pointer());
+
+    engine.report();
 }
 
-fn deinit(ctx: *anyopaque) void {
+fn deinit(ctx: *anyopaque, _: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
-    self.splash_mesh.deinit();
+    self.splash_mesh.deinit(self.render_alloc);
     self.font_batcher.deinit();
     self.batcher.deinit();
 
-    MenuTextures.deinit();
-    self.pack.deinit();
     Rendering.Pipeline.deinit(pipeline);
 }
 
-fn tick(ctx: *anyopaque) anyerror!void {
+fn tick(ctx: *anyopaque, _: *Engine) anyerror!void {
     _ = ctx;
 }
 
-fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void {
+fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
-}
+    SoundManager.update(dt, 0, 0, 0, 0, 0);
 
-fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
-    var self = Util.ctx_to_self(@This(), ctx);
-
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const scale = Scaling.compute(screen_w, screen_h);
-    const extent_x: i16 = @intCast((screen_w + scale - 1) / scale);
-    const extent_y: i16 = @intCast((screen_h + scale - 1) / scale);
-
-    self.batcher.clear();
-    var y: i16 = 0;
-    const tile_size = 32;
-    while (y < extent_y) : (y += tile_size) {
-        var x: i16 = 0;
-        while (x < extent_x) : (x += tile_size) {
-            const dirt = &MenuTextures.inst.dirt;
-            self.batcher.add_sprite(&.{
-                .texture = dirt,
-                .pos_offset = .{ .x = x, .y = y },
-                .pos_extent = .{ .x = tile_size, .y = tile_size },
-                .tex_offset = .{ .x = 0, .y = 0 },
-                .tex_extent = .{ .x = @intCast(dirt.width), .y = @intCast(dirt.height) },
-                .color = .menu_tiles,
-                .layer = 0,
-            });
+    // PSP: service deferred OSK at the top of update — the previous
+    // frame's end_frame has completed so the GE is idle.
+    if (ae.platform == .psp) {
+        if (self.screen.osk_request) |idx| {
+            self.screen.osk_request = null;
+            self.screen.open_psp_osk(idx);
         }
     }
-    const logo = &MenuTextures.inst.logo;
-    self.batcher.add_sprite(&.{
-        .texture = logo,
-        .pos_offset = .{ .x = 0, .y = 24 },
-        .pos_extent = .{ .x = 512, .y = 64 },
-        .tex_offset = .{ .x = 0, .y = 0 },
-        .tex_extent = .{ .x = @intCast(logo.width), .y = @intCast(logo.height) },
-        .color = .white,
-        .layer = 1,
-        .reference = .top_center,
-        .origin = .top_center,
-    });
 
-    // Button sprites: disabled, normal, highlight, and a second normal.
-    const gui = &MenuTextures.inst.gui;
-    const btn_uv = [_]SpriteBatcher.Sprite.Range{
-        .{ .x = 0, .y = 46 }, // disabled
-        .{ .x = 0, .y = 66 }, // normal
-        .{ .x = 0, .y = 86 }, // highlight
-    };
-    const btn_y = [_]i16{ 120, 144, 168, 202 };
-    for (0..4) |i| {
-        self.batcher.add_sprite(&.{
-            .texture = gui,
-            .pos_offset = .{ .x = 0, .y = btn_y[i] },
-            .pos_extent = .{ .x = 200, .y = 20 },
-            .tex_offset = btn_uv[1],
-            .tex_extent = .{ .x = 200, .y = 20 },
-            .color = .white,
-            .layer = 2,
-            .reference = .top_center,
-            .origin = .top_center,
-        });
+    const in = ui_input.build_frame(dt, &self.ui_repeat);
+    self.screen.update(&in);
+
+    // Screen-switch signals set by button callbacks.
+    if (MainMenuScreen.pending_direct_connect) {
+        MainMenuScreen.pending_direct_connect = false;
+        self.screen = DirectConnectScreen.build(&self.direct_connect_ctx);
+        self.screen.open(!ui_input.profile_uses_pointer());
+        return;
     }
+
+    if (MainMenuScreen.pending_singleplayer) {
+        MainMenuScreen.pending_singleplayer = false;
+        Session.mode = .singleplayer;
+        Session.set_username("Player");
+        LoadState.transition_here(engine) catch |err| {
+            log.err("transition to LoadState failed: {}", .{err});
+        };
+        return;
+    }
+
+    const on_direct_connect = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.direct_connect_ctx);
+    if (on_direct_connect and (DirectConnectScreen.pending_back or self.screen.cancel_pressed)) {
+        DirectConnectScreen.pending_back = false;
+        self.screen = MainMenuScreen.build(&self.main_menu_ctx);
+        self.screen.open(!ui_input.profile_uses_pointer());
+    }
+
+    if (DirectConnectScreen.pending_join) {
+        DirectConnectScreen.pending_join = false;
+
+        // PSP: service the system network config dialog before we try to
+        // connect, so the socket stack is brought up on first use.
+        const net_ready = if (ae.platform == .psp) ae.Psp.showNetDialog() else true;
+        if (!net_ready) return;
+
+        Session.mode = .multiplayer;
+        LoadState.transition_here(engine) catch |err| {
+            log.err("transition to LoadState failed: {}", .{err});
+        };
+    }
+}
+
+fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
+    var self = Util.ctx_to_self(@This(), ctx);
+
+    self.batcher.clear();
+    self.font_batcher.clear();
+    self.screen.draw(&self.batcher, &self.font_batcher, ResourcePack.get_tex(.gui));
 
     try self.batcher.flush();
-
-    self.font_batcher.clear();
-    const btn_labels = [_][]const u8{ "Singleplayer", "Multiplayer", "Mods and Texture Packs", "Options..." };
-    for (btn_labels, 0..) |label, i| {
-        self.font_batcher.add_text(&.{
-            .str = label,
-            .pos_x = 0,
-            .pos_y = btn_y[i] + 6,
-            .color = .white,
-            .shadow_color = .menu_gray,
-            .spacing = 0,
-            .layer = 3,
-            .reference = .top_center,
-            .origin = .top_center,
-        });
-    }
-    const version: []const u8 = "CrossCraft Classic v0.1.0";
-    self.font_batcher.add_text(&.{
-        .str = version,
-        .pos_x = 2,
-        .pos_y = 2,
-        .color = .dark_gray,
-        .shadow_color = .menu_version,
-        .spacing = 0,
-        .layer = 2,
-        .reference = .top_left,
-        .origin = .top_left,
-    });
-    const copyleft: []const u8 = "Copyleft CrossCraft Team. Distribute!";
-    self.font_batcher.add_text(&.{
-        .str = copyleft,
-        .pos_x = -2,
-        .pos_y = -2,
-        .color = .white,
-        .shadow_color = .menu_copyright,
-        .spacing = 0,
-        .layer = 2,
-        .reference = .bottom_right,
-        .origin = .bottom_right,
-    });
     try self.font_batcher.flush();
 
-    // Draw "Classic!" splash text as an independent transformed mesh.
-    const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;
-    const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 80, .top_center, .top_center, 25, pulse, 2);
+    // Draw "Classic!" splash text only on the main menu.
+    const on_main = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.main_menu_ctx);
+    if (on_main) {
+        const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;
+        const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 80, .top_center, .top_center, 25, pulse, 2);
 
-    Rendering.Pipeline.bind(pipeline);
-    MenuTextures.inst.font.bind();
-    self.splash_mesh.draw(&model);
+        Rendering.Pipeline.bind(pipeline);
+        ResourcePack.get_tex(.font).bind();
+        self.splash_mesh.draw(&model);
+    }
 }
 
 pub fn state(self: *@This()) State {

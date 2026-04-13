@@ -38,9 +38,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: true
+          lfs: true
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
+
+      - name: Setup macOS SDK (for frameworks)
+        if: matrix.name == 'mac'
+        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
 
       - name: Build server
         run: zig build server -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
@@ -49,5 +56,62 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: server_${{ matrix.name }}
+          path: zig-out/
+          if-no-files-found: error
+
+  build_game:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux-gnu
+            name: linux
+            extra: -Dcpu=x86_64_v3
+          - os: macos-latest
+            target: aarch64-macos
+            name: mac
+            extra:
+          - os: windows-latest
+            target: x86_64-windows-gnu
+            name: windows
+            extra: -Dcpu=x86_64_v3
+          - os: ubuntu-latest
+            target: mipsel-psp
+            name: psp_phat
+            extra:
+          - os: ubuntu-latest
+            target: mipsel-psp
+            name: psp_slim
+            extra: -Dslim=true
+    runs-on: ${{ matrix.os }}
+    name: game (${{ matrix.name }})
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          lfs: true
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Setup macOS SDK (for frameworks)
+        if: matrix.name == 'mac'
+        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
+
+      # macOS links system glfw3 and vulkan loader (see Aether build.zig:150-155);
+      # every other target uses vendored packages and needs no system libs.
+      - name: Install macOS dependencies
+        if: matrix.name == 'mac'
+        run: brew install glfw vulkan-loader
+
+      - name: Build game
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: game_${{ matrix.name }}
           path: zig-out/
           if-no-files-found: error

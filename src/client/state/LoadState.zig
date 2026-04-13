@@ -2,6 +2,7 @@ const std = @import("std");
 const ae = @import("aether");
 const Core = ae.Core;
 const Util = ae.Util;
+const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
@@ -9,113 +10,218 @@ const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
 const Scaling = @import("../ui/Scaling.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
-const Zip = @import("../util/Zip.zig");
+const ResourcePack = @import("../ResourcePack.zig");
 const Server = @import("game").Server;
 const World = @import("game").World;
 const GameState = @import("GameState.zig");
+const DisconnectState = @import("DisconnectState.zig");
+const Session = @import("Session.zig");
+const proto = @import("common").protocol;
+const flate = std.compress.flate;
+
+const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
 
 const log = std.log.scoped(.game);
 
 // Module-level: only one LoadState instance may exist at a time.
 var server_ready: std.atomic.Value(bool) = .init(false);
+var session_error: ?anyerror = null;
+var mp_server_name: [64]u8 = @splat(' ');
+var mp_server_motd: [64]u8 = @splat(' ');
 
 fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, io: std.Io) void {
     // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
     Server.init(alloc, scratch, seed, io) catch |err| {
         log.err("server init failed: {}", .{err});
+        session_error = err;
         return;
     };
     server_ready.store(true, .release);
 }
 
-const LoadTextures = struct {
-    dirt: Rendering.Texture,
-    font: Rendering.Texture,
+fn connectTask(alloc: std.mem.Allocator, seed: u64, io: std.Io) void {
+    connect_inner(alloc, seed, io) catch |err| {
+        log.err("multiplayer connect failed: {}", .{err});
+        session_error = err;
+        // Close any partially-opened socket so GameState never tries to use it.
+        if (Session.mp_stream) |*s| {
+            s.close(io);
+            Session.mp_stream = null;
+        }
+    };
+    server_ready.store(true, .release);
+}
 
-    /// Valid between LoadTextures.init() and LoadTextures.deinit().
-    var inst: LoadTextures = undefined;
+fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io) !void {
+    mp_server_name = @splat(' ');
+    mp_server_motd = @splat(' ');
 
-    fn load_from_pack(pack: *Zip, file: []const u8) !Rendering.Texture {
-        var buf: [256]u8 = undefined;
-        const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{file});
+    const addr = try Session.parse_server_address();
+    log.info("connecting to {f}", .{addr});
 
-        var stream = try pack.open(path);
-        defer pack.closeStream(&stream);
+    const stream = try addr.connect(io, .{ .mode = .stream });
+    Session.mp_stream = stream;
+    Session.mp_reader = std.Io.net.Stream.Reader.init(stream, io, &Session.mp_read_buf);
+    Session.mp_writer = std.Io.net.Stream.Writer.init(stream, io, &Session.mp_write_buf);
 
-        return try Rendering.Texture.load_from_reader(stream.reader);
+    // PSP: disable Nagle so per-tick packets hit the wire immediately.
+    if (ae.platform == .psp) {
+        pspsdk.extra.net.disableNagle(@intCast(stream.socket.handle)) catch |err|
+            log.warn("TCP_NODELAY failed: {}", .{err});
     }
 
-    pub fn init(pack: *Zip) !void {
-        inst.dirt = try load_from_pack(pack, "minecraft/textures/dirt");
-        inst.font = try load_from_pack(pack, "minecraft/textures/default");
+    try World.init_empty(alloc, io, seed);
+
+    try proto.send_player_id_to_server(&Session.mp_writer.interface, Session.username());
+    try Session.mp_writer.interface.flush();
+
+    // Accumulate the gzipped LevelDataChunk payloads into a scratch buffer,
+    // then decompress once on LevelFinalize. A 2 MiB bound is comfortable
+    // for any reasonable 4 MiB Classic world (typical compression ratio is
+    // 4-8x) and keeps the peak the same size as `raw_blocks` itself.
+    const compressed_cap: usize = 2 * 1024 * 1024;
+    const compressed = try alloc.alloc(u8, compressed_cap);
+    defer alloc.free(compressed);
+    var compressed_end: usize = 0;
+
+    const reader = &Session.mp_reader.interface;
+
+    done: while (true) {
+        const packet_id = try reader.peekByte();
+        const len = proto.packet_length_to_client(packet_id) catch |err| {
+            log.err("handshake got unknown packet 0x{x:0>2}: {}", .{ packet_id, err });
+            return err;
+        };
+        const buf = try reader.peek(len);
+        switch (packet_id) {
+            0x00 => {
+                @memcpy(&mp_server_name, buf[2..66]);
+                @memcpy(&mp_server_motd, buf[66..130]);
+            },
+            0x02 => {},
+            0x03 => {
+                // LevelDataChunk: [id][u16 length BE][1024 bytes data][u8 percent]
+                const length = std.mem.readInt(u16, buf[1..3], .big);
+                if (length > 1024) return error.InvalidChunkLength;
+                if (compressed_end + length > compressed.len) return error.LevelDataOverflow;
+                @memcpy(compressed[compressed_end..][0..length], buf[3 .. 3 + @as(usize, length)]);
+                compressed_end += length;
+                const percent = buf[1027];
+                World.load_status = .{ .downloading = percent };
+            },
+            0x04 => {
+                reader.toss(len);
+                break :done;
+            },
+            else => log.warn("unexpected packet 0x{x:0>2} during handshake", .{packet_id}),
+        }
+        reader.toss(len);
     }
 
-    pub fn deinit() void {
-        inst.font.deinit();
-        inst.dirt.deinit();
-    }
-};
+    // Decompress the accumulated gzip stream into raw_blocks. The server
+    // uses `.gzip` in game/client.zig:reset_compressor, so match here.
+    var src = std.Io.Reader.fixed(compressed[0..compressed_end]);
+    var window_buf: [flate.max_window_len]u8 = undefined;
+    var decompress = flate.Decompress.init(&src, .gzip, &window_buf);
 
-pack: *Zip,
+    var dst = std.Io.Writer.fixed(World.raw_blocks);
+    _ = decompress.reader.streamRemaining(&dst) catch |err| {
+        log.err("level decompress failed: {}", .{err});
+        return err;
+    };
+    if (dst.end != World.raw_blocks.len) {
+        log.err("level data truncated: got {d}, expected {d}", .{ dst.end, World.raw_blocks.len });
+        return error.TruncatedLevelData;
+    }
+
+    World.finalize_loaded();
+}
+
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 time: f32,
 server_future: std.Io.Future(void),
 server_notified: bool,
+render_alloc: std.mem.Allocator,
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
 var game_state: GameState = undefined;
 var state_inst: State = undefined;
 
-fn init(ctx: *anyopaque) anyerror!void {
+// Keep the LoadState instance itself out of MenuState so the root app state
+// stays small on PSP and other memory-constrained targets. Both the
+// singleplayer and multiplayer entry points call `transition_here` to land
+// in this state.
+var load_state: @This() = undefined;
+var load_state_inst: State = undefined;
+
+pub fn transition_here(engine: *Engine) !void {
+    load_state_inst = load_state.state();
+    try ae.Core.state_machine.transition(engine, &load_state_inst);
+}
+
+fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
-    self.pack = try Zip.init(Util.allocator(.game), Util.io(), "pack.zip");
-    try LoadTextures.init(self.pack);
+    const render_alloc = engine.allocator(.render);
+    self.render_alloc = render_alloc;
+    try ResourcePack.apply_tex_set(&.{ .dirt, .font });
 
-    self.batcher = try SpriteBatcher.init(pipeline);
-    self.font_batcher = try FontBatcher.init(pipeline, &LoadTextures.inst.font);
+    self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
+    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
     self.time = 0;
     self.server_notified = false;
 
-    const io = Util.io();
+    const io = engine.io;
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
     server_ready.store(false, .monotonic);
+    session_error = null;
     // TODO: allocator pool budget may need tuning for server + client coexistence
-    self.server_future = io.async(serverTask, .{ Util.allocator(.user), Util.allocator(.user), seed, io });
+    self.server_future = switch (Session.mode) {
+        .singleplayer => io.async(serverTask, .{ engine.allocator(.user), engine.allocator(.user), seed, io }),
+        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), seed, io }),
+    };
 
-    Util.report();
+    engine.report();
 }
 
-fn deinit(ctx: *anyopaque) void {
+fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
-    self.server_future.await(Util.io());
+    self.server_future.await(engine.io);
     self.font_batcher.deinit();
     self.batcher.deinit();
 
-    LoadTextures.deinit();
-    self.pack.deinit();
     Rendering.Pipeline.deinit(pipeline);
 }
 
-fn tick(ctx: *anyopaque) anyerror!void {
+fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.server_notified and server_ready.load(.acquire)) {
         self.server_notified = true;
+        if (session_error) |err| {
+            log.err("session start failed: {}", .{err});
+            const reason: []const u8 = switch (Session.mode) {
+                .singleplayer => "Failed to start server",
+                .multiplayer => "Failed to connect to server",
+            };
+            Session.set_disconnect_reason(reason);
+            try DisconnectState.transition_here(engine);
+            return;
+        }
         state_inst = game_state.state();
-        try ae.Core.state_machine.transition(&state_inst);
+        try ae.Core.state_machine.transition(engine, &state_inst);
     }
 }
 
-fn update(ctx: *anyopaque, dt: f32, _: *const Util.BudgetContext) anyerror!void {
+fn update(ctx: *anyopaque, _: *Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
 }
 
-fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
+fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
 
     const screen_w = Rendering.gfx.surface.get_width();
@@ -130,7 +236,7 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     while (y < extent_y) : (y += tile_size) {
         var x: i16 = 0;
         while (x < extent_x) : (x += tile_size) {
-            const dirt = &LoadTextures.inst.dirt;
+            const dirt = ResourcePack.get_tex(.dirt);
             self.batcher.add_sprite(&.{
                 .texture = dirt,
                 .pos_offset = .{ .x = x, .y = y },
@@ -150,6 +256,7 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     const progress: f32 = switch (World.load_status) {
         .loading => @min(self.time / 3.0, 1.0),
         .generating => |phase| @as(f32, @floatFromInt(@intFromEnum(phase))) / 10.0,
+        .downloading => |pct| @as(f32, @floatFromInt(pct)) / 100.0,
         .complete => 1.0,
     };
     const default_tex = &Rendering.Texture.Default;
@@ -186,9 +293,17 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     self.font_batcher.clear();
 
     const load_status = World.load_status;
-    const loading: []const u8 = switch (load_status) {
-        .loading => "Loading level",
-        .generating, .complete => "Generating level",
+    const loading: []const u8 = blk: {
+        if (Session.mode == .multiplayer) {
+            const trimmed = std.mem.trimEnd(u8, &mp_server_name, " ");
+            if (trimmed.len > 0) break :blk trimmed;
+            break :blk "Connecting to server";
+        }
+        break :blk switch (load_status) {
+            .loading => "Loading level",
+            .generating, .complete => "Generating level",
+            .downloading => "Downloading level",
+        };
     };
     self.font_batcher.add_text(&.{
         .str = loading,
@@ -202,21 +317,29 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
         .origin = .middle_center,
     });
 
-    const status: []const u8 = switch (load_status) {
-        .loading => "Loading...",
-        .generating => |phase| switch (phase) {
-            .raising => "Raising...",
-            .erosion => "Eroding...",
-            .strata => "Layering...",
-            .caves => "Carving...",
-            .ores => "Placing ores...",
-            .merge => "Merging...",
-            .water => "Flooding water...",
-            .lava => "Flooding lava...",
-            .surface => "Surfacing...",
-            .plants => "Planting...",
-        },
-        .complete => "Done!",
+    const status: []const u8 = blk: {
+        if (Session.mode == .multiplayer) {
+            const trimmed = std.mem.trimEnd(u8, &mp_server_motd, " ");
+            if (trimmed.len > 0) break :blk trimmed;
+            break :blk "Handshaking...";
+        }
+        break :blk switch (load_status) {
+            .loading => "Loading...",
+            .generating => |phase| switch (phase) {
+                .raising => "Raising...",
+                .erosion => "Eroding...",
+                .strata => "Layering...",
+                .caves => "Carving...",
+                .ores => "Placing ores...",
+                .merge => "Merging...",
+                .water => "Flooding water...",
+                .lava => "Flooding lava...",
+                .surface => "Surfacing...",
+                .plants => "Planting...",
+            },
+            .downloading => "Receiving chunks...",
+            .complete => "Done!",
+        };
     };
     self.font_batcher.add_text(&.{
         .str = status,
@@ -233,7 +356,7 @@ fn draw(ctx: *anyopaque, _: f32, _: *const Util.BudgetContext) anyerror!void {
     try self.font_batcher.flush();
     // Throttle to ~20 FPS while server generates on background thread;
     // avoids burning CPU on draw calls that show a static progress bar.
-    try std.Io.sleep(Util.io(), std.Io.Duration.fromMilliseconds(50), .real);
+    try std.Io.sleep(engine.io, std.Io.Duration.fromMilliseconds(50), .real);
 }
 
 pub fn state(self: *@This()) State {
