@@ -241,7 +241,7 @@ pub fn draw(self: *Self, camera: *const Camera) void {
     self.particles.draw(camera);
 
     self.clouds.bind();
-    self.sky.draw_clouds();
+    self.sky.draw_clouds(camera);
 }
 
 fn recollect(self: *Self, camera: *const Camera) void {

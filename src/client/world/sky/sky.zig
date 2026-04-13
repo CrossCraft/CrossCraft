@@ -51,8 +51,18 @@ pub fn deinit(self: *Self) void {
 
 pub fn update(self: *Self, dt: f32) void {
     self.scroll += dt * CLOUD_SPEED;
-    // Wrap at one texture tile (256 units) to avoid float precision loss
-    if (self.scroll >= 256.0) self.scroll -= 256.0;
+    if (self.scroll >= 256.0) {
+        self.scroll -= 256.0;
+        // The mesh snaps back 256 units (16 tiles), so each screen position
+        // now maps to a tile whose UV is 16*256 = 4096 SNORM units higher.
+        // Shift all U values by -4096 (wrapping) to compensate; GL_REPEAT
+        // handles negative SNORM16 correctly. Cycles back after 8 wraps.
+        const delta: i16 = -4096;
+        for (self.cloud_mesh.vertices.items) |*v| {
+            v.uv[0] +%= delta;
+        }
+        self.cloud_mesh.update();
+    }
 }
 
 const collision = @import("../../player/collision.zig");
@@ -81,14 +91,16 @@ pub fn draw_plane(self: *Self, camera: *const Camera, submerged: ?collision.Liqu
     self.plane_mesh.draw(&m);
 }
 
-/// Draw cloud layer at fixed Y=80. Call after terrain.
-pub fn draw_clouds(self: *Self) void {
+/// Draw cloud layer at fixed Y=72. Call after terrain.
+/// The mesh follows the camera so it always covers the viewport; the scroll
+/// offset (wrapped to one tile width) slides the baked UVs seamlessly.
+pub fn draw_clouds(self: *Self, camera: *const Camera) void {
     Rendering.gfx.api.set_alpha_blend(true);
     const m = Math.Mat4.scaling(PLANE_SIZE, 1.0, PLANE_SIZE)
         .mul(Math.Mat4.translation(
-        WORLD_CENTER - HALF_SIZE + self.scroll,
+        camera.x - HALF_SIZE + self.scroll,
         CLOUD_Y,
-        WORLD_CENTER - HALF_SIZE,
+        camera.z - HALF_SIZE,
     ));
     self.cloud_mesh.draw(&m);
 }
