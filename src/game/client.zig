@@ -49,7 +49,7 @@ buffer: [1024]u8,
 const ChunkSender = struct {
     interface: std.Io.Writer,
     output: *std.Io.Writer,
-    bytes_sent: u32,
+    raw_written: u32,
     total_raw: u32,
 
     fn init(output: *std.Io.Writer, chunk_buffer: *[1024]u8, total_raw: u32) ChunkSender {
@@ -61,14 +61,14 @@ const ChunkSender = struct {
                 .buffer = chunk_buffer,
             },
             .output = output,
-            .bytes_sent = 0,
+            .raw_written = 0,
             .total_raw = total_raw,
         };
     }
 
     fn percent(cs: *const ChunkSender) u8 {
-        if (cs.total_raw == 0) return 255;
-        const pct = @min((@as(u64, cs.bytes_sent) * 100) / cs.total_raw, 255);
+        if (cs.total_raw == 0) return 100;
+        const pct = @min((@as(u64, cs.raw_written) * 100) / cs.total_raw, 100);
         return @intCast(pct);
     }
 
@@ -92,8 +92,6 @@ const ChunkSender = struct {
             @memcpy(chunk[filled..][0..n], bytes[0..n]);
             filled += n;
         }
-
-        cs.bytes_sent += @intCast(filled);
 
         const end_before = cs.output.end;
         proto.send_level_chunk_to_client(cs.output, @intCast(filled), &chunk, cs.percent()) catch
@@ -168,14 +166,22 @@ fn send_world(self: *Self) !void {
         var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.raw_blocks.len));
         try reset_compressor(&sender.interface);
 
-        try compressor.writer.writeAll(world.raw_blocks);
+        // Feed raw data in measured chunks so raw_written tracks input
+        // progress and LevelDataChunk packets carry accurate percentages.
+        const raw_step: usize = 4096;
+        var raw_offset: usize = 0;
+        while (raw_offset < world.raw_blocks.len) {
+            const end = @min(raw_offset + raw_step, world.raw_blocks.len);
+            try compressor.writer.writeAll(world.raw_blocks[raw_offset..end]);
+            raw_offset = end;
+            sender.raw_written = @intCast(raw_offset);
+        }
         try compressor.finish();
 
         // Send any remaining partial chunk as the final packet.
         if (sender.interface.end > 0) {
             var final_chunk: [1024]u8 = @splat(0);
             @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
-            sender.bytes_sent = @intCast(world.raw_blocks.len);
             try proto.send_level_chunk_to_client(self.writer, @intCast(sender.interface.end), &final_chunk, sender.percent());
             try self.writer.flush();
         }
@@ -357,6 +363,16 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
         world.set_block(event.x, event.y, event.z, 0);
         Server.broadcast_block_change(event.x, event.y, event.z, 0);
     } else {
+        // Placing a slab on top of another slab combines into a double slab.
+        if (event.block == c.Block.Slab and event.y > 0) {
+            const below = world.get_block(event.x, event.y - 1, event.z);
+            if (below == c.Block.Slab) {
+                world.set_block(event.x, event.y - 1, event.z, c.Block.Double_Slab);
+                Server.broadcast_block_change(event.x, event.y - 1, event.z, c.Block.Double_Slab);
+                world.enqueue_neighbors_of(event.x, event.y - 1, event.z);
+                return;
+            }
+        }
         world.set_block(event.x, event.y, event.z, event.block);
         Server.broadcast_block_change(event.x, event.y, event.z, event.block);
     }

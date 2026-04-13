@@ -2,7 +2,6 @@ const std = @import("std");
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
-const Util = ae.Util;
 
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
 const Color = @import("../../graphics/Color.zig").Color;
@@ -19,6 +18,9 @@ const SKY_Y_OFFSET: f32 = 48.0;
 /// Clouds: 64x64 vertex grid, UV tiles at 0.5x (one repeat per 512 units).
 const CLOUD_GRID: u32 = 64;
 const CLOUD_UV_REPEATS: u32 = 1;
+/// Texture appears this many times larger on screen without changing mesh;
+/// UVs span 1/CLOUD_TEX_SCALE of the texture across the grid.
+const CLOUD_TEX_SCALE: u32 = 2;
 const CLOUD_Y: f32 = 72.0;
 const CLOUD_SPEED: f32 = 2.0;
 const WORLD_CENTER: f32 = 128.0;
@@ -28,27 +30,39 @@ const Self = @This();
 plane_mesh: BatchMesh,
 cloud_mesh: BatchMesh,
 scroll: f32,
+allocator: std.mem.Allocator,
 
-pub fn init(pipeline: Rendering.Pipeline.Handle) !Self {
+pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
     var self: Self = .{
-        .plane_mesh = try BatchMesh.new(pipeline),
-        .cloud_mesh = try BatchMesh.new(pipeline),
+        .plane_mesh = try BatchMesh.new(allocator, pipeline),
+        .cloud_mesh = try BatchMesh.new(allocator, pipeline),
         .scroll = 0,
+        .allocator = allocator,
     };
-    try build_plane(&self.plane_mesh);
-    try build_clouds(&self.cloud_mesh);
+    try build_plane(allocator, &self.plane_mesh);
+    try build_clouds(allocator, &self.cloud_mesh);
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.plane_mesh.deinit();
-    self.cloud_mesh.deinit();
+    self.plane_mesh.deinit(self.allocator);
+    self.cloud_mesh.deinit(self.allocator);
 }
 
 pub fn update(self: *Self, dt: f32) void {
     self.scroll += dt * CLOUD_SPEED;
-    // Wrap at one texture tile (256 units) to avoid float precision loss
-    if (self.scroll >= 256.0) self.scroll -= 256.0;
+    if (self.scroll >= 256.0) {
+        self.scroll -= 256.0;
+        // The mesh snaps back 256 units (16 tiles), so each screen position
+        // now maps to a tile whose UV is 16*256 = 4096 SNORM units higher.
+        // Shift all U values by -4096 (wrapping) to compensate; GL_REPEAT
+        // handles negative SNORM16 correctly. Cycles back after 8 wraps.
+        const delta: i16 = -4096;
+        for (self.cloud_mesh.vertices.items) |*v| {
+            v.uv[0] +%= delta;
+        }
+        self.cloud_mesh.update();
+    }
 }
 
 const collision = @import("../../player/collision.zig");
@@ -77,14 +91,16 @@ pub fn draw_plane(self: *Self, camera: *const Camera, submerged: ?collision.Liqu
     self.plane_mesh.draw(&m);
 }
 
-/// Draw cloud layer at fixed Y=80. Call after terrain.
-pub fn draw_clouds(self: *Self) void {
+/// Draw cloud layer at fixed Y=72. Call after terrain.
+/// The mesh follows the camera so it always covers the viewport; the scroll
+/// offset (wrapped to one tile width) slides the baked UVs seamlessly.
+pub fn draw_clouds(self: *Self, camera: *const Camera) void {
     Rendering.gfx.api.set_alpha_blend(true);
     const m = Math.Mat4.scaling(PLANE_SIZE, 1.0, PLANE_SIZE)
         .mul(Math.Mat4.translation(
-        WORLD_CENTER - HALF_SIZE + self.scroll,
+        camera.x - HALF_SIZE + self.scroll,
         CLOUD_Y,
-        WORLD_CENTER - HALF_SIZE,
+        camera.z - HALF_SIZE,
     ));
     self.cloud_mesh.draw(&m);
 }
@@ -136,7 +152,7 @@ fn encode_cloud_pos(i: u32) i16 {
 /// resetting at texture repeat boundaries to avoid SNORM wrap artifacts.
 fn cloud_tile_uv(tile: u32) [2]i16 {
     const tiles_per_repeat = CLOUD_GRID / CLOUD_UV_REPEATS;
-    const scale: i32 = 32768 / tiles_per_repeat;
+    const scale: i32 = 32768 / (tiles_per_repeat * CLOUD_TEX_SCALE);
     const local: i32 = @intCast(tile % tiles_per_repeat);
     return .{
         @intCast(@min(local * scale, 32767)),
@@ -144,8 +160,8 @@ fn cloud_tile_uv(tile: u32) [2]i16 {
     };
 }
 
-fn build_plane(mesh: *BatchMesh) !void {
-    try mesh.vertices.ensureTotalCapacity(Util.allocator(.render), PLANE_GRID * PLANE_GRID * 6);
+fn build_plane(allocator: std.mem.Allocator, mesh: *BatchMesh) !void {
+    try mesh.vertices.ensureTotalCapacity(allocator, PLANE_GRID * PLANE_GRID * 6);
     const color: u32 = @bitCast(Color.game_daytime_zenith);
 
     var zi: u32 = 0;
@@ -158,8 +174,8 @@ fn build_plane(mesh: *BatchMesh) !void {
     mesh.update();
 }
 
-fn build_clouds(mesh: *BatchMesh) !void {
-    try mesh.vertices.ensureTotalCapacity(Util.allocator(.render), CLOUD_GRID * CLOUD_GRID * 6);
+fn build_clouds(allocator: std.mem.Allocator, mesh: *BatchMesh) !void {
+    try mesh.vertices.ensureTotalCapacity(allocator, CLOUD_GRID * CLOUD_GRID * 6);
     const color: u32 = 0xFFFFFFFF;
 
     var zi: u32 = 0;

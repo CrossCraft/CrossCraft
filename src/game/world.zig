@@ -63,10 +63,16 @@ var enqueued_bitmap: []u8 = undefined;
 pub const LoadStatus = union(enum) {
     loading,
     generating: @import("worldgen.zig").GenPhase,
+    downloading: u8,
     complete,
 };
 
 pub var load_status: LoadStatus = .loading;
+
+/// False for worlds streamed from a remote server (multiplayer client).
+/// All save/autosave paths early-return when this is false so an MP client
+/// can never persist a snapshot of somebody else's world as its own.
+pub var owned_locally: bool = false;
 
 pub var backing_allocator: std.mem.Allocator = undefined;
 pub var raw_blocks: []u8 = undefined;
@@ -78,11 +84,14 @@ pub var io: std.Io = undefined;
 var save_counter: u32 = 0;
 
 /// For each (x,z) column, stores Y+1 of the highest light-blocking block.
-/// A value of 0 means the entire column is sunlit.
-pub var height_map: [c.WorldLength * c.WorldDepth]u8 = undefined;
+/// A value of 0 means the entire column is sunlit. Consumed by
+/// `is_sunlit` and tree/grass growth checks, so it describes a light
+/// occlusion map rather than a height/elevation map.
+pub var light_map: [c.WorldLength * c.WorldDepth]u8 = undefined;
 
 /// File header: 3 little-endian u16 (x, y, z), 1 little-endian u64 (seed), then raw block data.
 pub fn save() !void {
+    if (!owned_locally) return;
     const file = std.Io.Dir.cwd().createFile(io, "world.dat", .{}) catch |err| {
         log.err("Failed to create world.dat: {}", .{err});
         return err;
@@ -137,9 +146,15 @@ pub fn load() bool {
     return true;
 }
 
-pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.Io, new_seed: u64) !void {
+/// Allocate tick wheel, bitmap, and `raw_blocks` without populating the
+/// world. Used both by the full singleplayer init (which then generates or
+/// loads and flips `owned_locally` to true) and by the multiplayer client
+/// (which fills `blocks` via the level-data-chunk decompression path and
+/// leaves `owned_locally` false so save/autosave paths are suppressed).
+pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, new_seed: u64) !void {
     backing_allocator = allocator;
     io = _io;
+    owned_locally = false;
 
     node_pool = try allocator.alloc(WheelNode, POOL_CAPACITY);
     // Build free list: each node points to the next, last points to SENTINEL
@@ -165,8 +180,30 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
     std.mem.writeInt(u32, raw_blocks[0..4], size, .big);
 
     rng = Xorshift64.init(new_seed);
+    seed = new_seed;
 
     load_status = .loading;
+}
+
+/// Compute the sunlight height map and mark the world as fully loaded.
+/// Called by both the SP generate/load path and the MP download path once
+/// `blocks` is populated.
+pub fn finalize_loaded() void {
+    compute_light_map();
+    load_status = .complete;
+    log.info("World seed: {d}", .{seed});
+}
+
+pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.Io, new_seed: u64) !void {
+    try init_empty(allocator, _io, new_seed);
+    // Singleplayer owns its world and is allowed to persist it to disk.
+    // This must happen before `load()` so the read side can be symmetric
+    // later if we ever guard reads too.
+    owned_locally = true;
+
+    // Let loadscreen catch up
+    try io.sleep(.fromMilliseconds(250), .real);
+
     if (!load()) {
         seed = new_seed;
         const worldgen = @import("worldgen.zig");
@@ -181,9 +218,7 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
             log.err("failed to save world: {}", .{err});
         };
     }
-    compute_height_map();
-    load_status = .complete;
-    log.info("World seed: {d}", .{seed});
+    finalize_loaded();
 }
 
 pub fn deinit() void {
@@ -219,6 +254,15 @@ pub fn set_block(x: u16, y: u16, z: u16, block: u8) void {
     const idx = get_index(x, y, z);
     blocks[idx] = block;
     update_height_column(x, y, z, block);
+    // The wheel dedup bitmap is keyed by location, not block type. If the
+    // block at this loc was previously something with a slow tick (e.g.
+    // dirt/grass at 100-999 ticks) and is now something fast (water/lava
+    // at 4 ticks), the stale bitmap would prevent try_enqueue from
+    // scheduling the new block at its faster delay until the slow timer
+    // eventually fires (5-50s later). Clearing here lets the next neighbor
+    // pass insert at the correct delay; any orphan wheel entry just no-ops
+    // when it finally fires because process_block_update re-reads the block.
+    bitmap_clear(idx);
 }
 
 // -- Sunlight height map ------------------------------------------------------
@@ -236,11 +280,11 @@ fn column_height(x: u16, z: u16) u8 {
     return 0;
 }
 
-/// Build the full height map. Called once after generation or load.
-pub fn compute_height_map() void {
+/// Build the full light map. Called once after generation or load.
+pub fn compute_light_map() void {
     for (0..c.WorldDepth) |z| {
         for (0..c.WorldLength) |x| {
-            height_map[z * c.WorldLength + x] = column_height(
+            light_map[z * c.WorldLength + x] = column_height(
                 @intCast(x),
                 @intCast(z),
             );
@@ -250,21 +294,21 @@ pub fn compute_height_map() void {
 
 /// O(1) sunlight query: true if no light-blocking block exists above (x,y,z).
 pub fn is_sunlit(x: u16, y: u16, z: u16) bool {
-    return y + 1 >= height_map[@as(u32, z) * c.WorldLength + x];
+    return y + 1 >= light_map[@as(u32, z) * c.WorldLength + x];
 }
 
 /// Incrementally update height map after a block change at (x,y,z).
 fn update_height_column(x: u16, y: u16, z: u16, block: u8) void {
     const col_idx: u32 = @as(u32, z) * c.WorldLength + x;
-    const cur = height_map[col_idx];
+    const cur = light_map[col_idx];
     const blocks_light = block >= light_passes.len or !light_passes[block];
 
     if (blocks_light) {
         const new_h: u8 = @intCast(y + 1);
-        if (new_h > cur) height_map[col_idx] = new_h;
+        if (new_h > cur) light_map[col_idx] = new_h;
     } else if (y + 1 >= cur) {
         // Removed the top blocker; rescan
-        height_map[col_idx] = column_height(x, z);
+        light_map[col_idx] = column_height(x, z);
     }
 }
 

@@ -21,6 +21,40 @@ pub const Location = packed struct(u32) {
     }
 };
 
+/// Axis-aligned bounding box within a voxel, expressed on a 16x16x16 subgrid.
+/// Each coordinate ranges from 0 to 16 (one block = 16 subvoxels per axis).
+pub const SubvoxelBounds = struct {
+    min_x: u5,
+    min_y: u5,
+    min_z: u5,
+    max_x: u5,
+    max_y: u5,
+    max_z: u5,
+
+    pub const full: SubvoxelBounds = .{ .min_x = 0, .min_y = 0, .min_z = 0, .max_x = 16, .max_y = 16, .max_z = 16 };
+    pub const slab: SubvoxelBounds = .{ .min_x = 0, .min_y = 0, .min_z = 0, .max_x = 16, .max_y = 8, .max_z = 16 };
+    pub const dandelion: SubvoxelBounds = .{ .min_x = 6, .min_y = 0, .min_z = 6, .max_x = 10, .max_y = 8, .max_z = 10 };
+    pub const rose: SubvoxelBounds = .{ .min_x = 6, .min_y = 0, .min_z = 6, .max_x = 10, .max_y = 12, .max_z = 10 };
+    pub const mushroom: SubvoxelBounds = .{ .min_x = 5, .min_y = 0, .min_z = 5, .max_x = 11, .max_y = 6, .max_z = 11 };
+    pub const sapling: SubvoxelBounds = .{ .min_x = 2, .min_y = 0, .min_z = 2, .max_x = 14, .max_y = 16, .max_z = 14 };
+
+    pub fn is_full(self: SubvoxelBounds) bool {
+        return self.min_x == 0 and self.min_y == 0 and self.min_z == 0 and
+            self.max_x == 16 and self.max_y == 16 and self.max_z == 16;
+    }
+};
+
+pub fn block_bounds(id: u8) SubvoxelBounds {
+    return switch (id) {
+        Block.Slab => SubvoxelBounds.slab,
+        Block.Flower1 => SubvoxelBounds.dandelion,
+        Block.Flower2 => SubvoxelBounds.rose,
+        Block.Sapling => SubvoxelBounds.sapling,
+        Block.Mushroom1, Block.Mushroom2 => SubvoxelBounds.mushroom,
+        else => SubvoxelBounds.full,
+    };
+}
+
 pub const Block = struct {
     pub const Air = 0;
     pub const Stone = 1;

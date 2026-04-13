@@ -45,6 +45,10 @@ const StreamSlot = struct {
     decompressor: flate.Decompress = undefined,
 
     limited: Io.Reader.Limited = undefined,
+
+    /// Absolute byte offset of the file's raw data inside the zip archive.
+    data_offset: u64 = 0,
+    uncompressed_size: u64 = 0,
 };
 
 pub const Entry = struct {
@@ -59,6 +63,9 @@ pub const Entry = struct {
 pub const Stream = struct {
     slot_index: u32,
     reader: *Io.Reader,
+    /// Absolute byte offset of the file's raw data inside the zip archive.
+    data_offset: u64,
+    uncompressed_size: u64,
 };
 
 pub const Iterator = struct {
@@ -167,6 +174,8 @@ pub fn open(self: *Zip, path: []const u8) !Stream {
         return .{
             .slot_index = slot_index,
             .reader = &slot.limited.interface,
+            .data_offset = slot.data_offset,
+            .uncompressed_size = slot.uncompressed_size,
         };
     }
 
@@ -188,6 +197,9 @@ fn setupStream(self: *Zip, slot: *StreamSlot, entry: *const zip.Iterator.Entry) 
 
     const data_offset: u64 = entry.file_offset + @sizeOf(zip.LocalFileHeader) +
         @as(u64, local_header.filename_len) + @as(u64, local_header.extra_len);
+
+    slot.data_offset = data_offset;
+    slot.uncompressed_size = entry.uncompressed_size;
 
     try slot.stream_file_reader.seekTo(data_offset);
 

@@ -1,7 +1,6 @@
 const std = @import("std");
 const ae = @import("aether");
 const Math = ae.Math;
-const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const Scaling = @import("Scaling.zig");
@@ -54,10 +53,11 @@ last_screen_w: u32,
 last_screen_h: u32,
 mesh: BatchMesh,
 pipeline_handle: Rendering.Pipeline.Handle,
+allocator: std.mem.Allocator,
 
 // --- Public API ---
 
-pub fn init(pipeline: Rendering.Pipeline.Handle, texture: *const Rendering.Texture) !Self {
+pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, texture: *const Rendering.Texture) !Self {
     std.debug.assert(texture.width == 128);
     std.debug.assert(texture.height == 128);
     return .{
@@ -70,13 +70,14 @@ pub fn init(pipeline: Rendering.Pipeline.Handle, texture: *const Rendering.Textu
         .current = 0,
         .last_screen_w = 0,
         .last_screen_h = 0,
-        .mesh = try BatchMesh.new(pipeline),
+        .mesh = try BatchMesh.new(allocator, pipeline),
         .pipeline_handle = pipeline,
+        .allocator = allocator,
     };
 }
 
 pub fn deinit(self: *Self) void {
-    self.mesh.deinit();
+    self.mesh.deinit(self.allocator);
 }
 
 pub fn clear(self: *Self) void {
@@ -145,14 +146,14 @@ pub fn build_mesh(
 ) !BatchMesh {
     std.debug.assert(str.len > 0);
     std.debug.assert(text_scale > 0);
-    var mesh = try BatchMesh.new(self.pipeline_handle);
-    errdefer mesh.deinit();
+    var mesh = try BatchMesh.new(self.allocator, self.pipeline_handle);
+    errdefer mesh.deinit(self.allocator);
 
     const has_shadow = shadow_color.a > 0;
     const n_chars: u32 = @intCast(str.len);
     const mult: u32 = if (has_shadow) 2 else 1;
     try mesh.vertices.ensureTotalCapacity(
-        Util.allocator(.render),
+        self.allocator,
         @as(usize, n_chars * VERTS_PER_CHAR * mult),
     );
 
@@ -248,7 +249,7 @@ fn rebuild(self: *Self, screen_w: u32, screen_h: u32) !void {
     }
 
     self.mesh.vertices.clearRetainingCapacity();
-    try self.mesh.vertices.ensureTotalCapacity(Util.allocator(.render), @as(usize, total_verts));
+    try self.mesh.vertices.ensureTotalCapacity(self.allocator, @as(usize, total_verts));
 
     for (entries) |*e| {
         emit_text(self, &self.mesh, e, screen_w, screen_h, scale);

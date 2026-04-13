@@ -188,6 +188,11 @@ fn accept_loop(listener: *std.Io.net.Server) std.Io.Cancelable!void {
         }
         log.info("Client connected: {}", .{conn.socket.address});
 
+        if (builtin.os.tag == .psp) {
+            sdk.extra.net.disableNagle(@intCast(conn.socket.handle)) catch |err|
+                log.warn("TCP_NODELAY failed: {}", .{err});
+        }
+
         var assigned = false;
         for (0..Consts.MAX_PLAYERS) |i| {
             if (conn_handles[i] != null) continue;
@@ -289,7 +294,10 @@ fn run_server(backing_allocator: std.mem.Allocator, io: std.Io) !void {
     log.info("Starting server on port 25565", .{});
 
     const server_ip = try std.Io.net.IpAddress.parseIp4("0.0.0.0", 25565);
-    var listener = try server_ip.listen(io, .{});
+    // SO_REUSEADDR so a fresh server can rebind immediately after a client
+    // disconnects — otherwise the listening socket sits in TIME_WAIT for
+    // up to a minute and the next `zig build run-server` hits AddressInUse.
+    var listener = try server_ip.listen(io, .{ .reuse_address = true });
     global_listener = &listener;
     defer {
         global_listener = null;

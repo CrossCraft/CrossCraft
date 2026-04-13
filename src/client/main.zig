@@ -11,8 +11,9 @@ comptime {
         asm (sdk.extra.module.module_info("CrossCraft", .{ .mode = .User }, 1, 0));
 }
 
-pub const psp_stack_size: u32 = 256 * 1024;
-pub const psp_async_stack_size: u32 = 256 * 1024;
+pub const psp_stack_size: u32 = 512 * 1024;
+pub const psp_async_stack_size: u32 = 512 * 1024;
+pub const psp_heap_reserve_kb_size: u32 = 3072;
 
 // PSP: override panic/IO handlers that would otherwise pull in posix symbols.
 pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
@@ -26,7 +27,8 @@ fn psp_cwd() std.Io.Dir {
 pub const build_options = @import("build_options");
 
 const MenuState = @import("state/MenuState.zig");
-const LoadState = @import("state/LoadState.zig");
+const ResourcePack = @import("ResourcePack.zig");
+const SoundManager = @import("SoundManager.zig");
 
 pub fn main(init: std.process.Init) !void {
     if (ae.platform == .psp) {
@@ -38,15 +40,21 @@ pub fn main(init: std.process.Init) !void {
     const memory = try init.gpa.alloc(u8, game_config.current.total_memory_mb * 1024 * 1024);
     defer init.gpa.free(memory);
 
-    var state: if (true) LoadState else MenuState = undefined;
-    try ae.App.init(init.io, memory, .{
+    var menu_state: MenuState = undefined;
+    const state = menu_state.state();
+
+    var engine: ae.Engine = undefined;
+    try engine.init(init.io, memory, .{
         .memory = game_config.init_memory(),
-        .width = 960,
-        .height = 544,
+        .width = 854,
+        .height = 480,
         .title = "CrossCraft Classic",
         .vsync = false,
-        .resizable = if (ae.gfx == .vulkan) false else true, // TODO: Bug in Vulkan :(
-    }, &state.state());
-    defer ae.App.deinit();
-    try ae.App.main_loop();
+        .resizable = true,
+    }, &state);
+    defer SoundManager.deinit();
+    defer engine.deinit();
+    defer ResourcePack.deinit();
+
+    try engine.run();
 }

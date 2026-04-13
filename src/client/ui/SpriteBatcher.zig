@@ -1,7 +1,6 @@
 const std = @import("std");
 const ae = @import("aether");
 const Math = ae.Math;
-const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const Scaling = @import("Scaling.zig");
@@ -51,8 +50,9 @@ last_screen_w: u32,
 last_screen_h: u32,
 batches: std.ArrayList(TextureBatch),
 pipeline_handle: Rendering.Pipeline.Handle,
+allocator: std.mem.Allocator,
 
-pub fn init(pipeline: Rendering.Pipeline.Handle) !Self {
+pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
     return Self{
         .sprites = undefined,
         .count = 0,
@@ -60,16 +60,17 @@ pub fn init(pipeline: Rendering.Pipeline.Handle) !Self {
         .current = 0,
         .last_screen_w = 0,
         .last_screen_h = 0,
-        .batches = try std.ArrayList(TextureBatch).initCapacity(Util.allocator(.render), 4),
+        .batches = try std.ArrayList(TextureBatch).initCapacity(allocator, 4),
         .pipeline_handle = pipeline,
+        .allocator = allocator,
     };
 }
 
 pub fn deinit(self: *Self) void {
     for (self.batches.items) |*batch| {
-        batch.mesh.deinit();
+        batch.mesh.deinit(self.allocator);
     }
-    self.batches.deinit(Util.allocator(.render));
+    self.batches.deinit(self.allocator);
 }
 
 pub fn add_sprite(self: *Self, sprite: *const Sprite) void {
@@ -126,15 +127,15 @@ fn rebuild_batches(self: *Self, screen_w: u32, screen_h: u32) !void {
         const group_count: u16 = i - group_start;
 
         if (batch_idx >= self.batches.items.len) {
-            const mesh = try BatchMesh.new(self.pipeline_handle);
-            try self.batches.append(Util.allocator(.render), .{ .texture = tex, .mesh = mesh });
+            const mesh = try BatchMesh.new(self.allocator, self.pipeline_handle);
+            try self.batches.append(self.allocator, .{ .texture = tex, .mesh = mesh });
         }
 
         var batch = &self.batches.items[batch_idx];
         batch.texture = tex;
         batch.mesh.vertices.clearRetainingCapacity();
         try batch.mesh.vertices.ensureTotalCapacity(
-            Util.allocator(.render),
+            self.allocator,
             @as(usize, group_count) * VERTS_PER_SPRITE,
         );
 
@@ -148,7 +149,7 @@ fn rebuild_batches(self: *Self, screen_w: u32, screen_h: u32) !void {
 
     while (self.batches.items.len > batch_idx) {
         var old = self.batches.pop().?;
-        old.mesh.deinit();
+        old.mesh.deinit(self.allocator);
     }
 }
 

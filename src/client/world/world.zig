@@ -12,11 +12,20 @@ const config = @import("../config.zig").current;
 const ChunkMesh = @import("chunk/ChunkMesh.zig");
 const BlockRegistry = @import("block/BlockRegistry.zig");
 const Sky = @import("sky/sky.zig");
+const ParticleSystem = @import("ParticleSystem.zig");
 
 const SECTIONS_Y: u32 = 4;
 const WORLD_CX: u32 = 16;
 const WORLD_CZ: u32 = 16;
 const MAX_ACTIVE: u32 = @import("../config.zig").max_sections();
+
+/// Sections whose center is within this distance of the camera are
+/// considered "near LOD" and meshed at full detail; beyond it the mesher
+/// downgrades them (currently: leaves become fully opaque). Crossing the
+/// boundary in either direction triggers a rebuild via refresh_lod_states.
+/// Per-platform value lives in config.zig.
+const LOD_NEAR_RADIUS_BLOCKS: f32 = @floatFromInt(config.lod_near_radius_blocks);
+const LOD_NEAR_RADIUS_SQ: f32 = LOD_NEAR_RADIUS_BLOCKS * LOD_NEAR_RADIUS_BLOCKS;
 
 const Self = @This();
 
@@ -39,12 +48,17 @@ clouds: *const Rendering.Texture,
 atlas: TextureAtlas,
 pipeline: Rendering.Pipeline.Handle,
 sky: Sky,
+particles: ParticleSystem,
 cam_cx: i32,
 cam_cz: i32,
+allocator: std.mem.Allocator,
+io: std.Io,
 
 const GridRef = packed struct { cx: u8, cz: u8, sy: u8 };
 
 pub fn init(
+    allocator: std.mem.Allocator,
+    io: std.Io,
     pipeline: Rendering.Pipeline.Handle,
     terrain: *const Rendering.Texture,
     clouds: *const Rendering.Texture,
@@ -69,9 +83,12 @@ pub fn init(
         .clouds = clouds,
         .atlas = atlas,
         .pipeline = pipeline,
-        .sky = try Sky.init(pipeline),
+        .sky = try Sky.init(allocator, pipeline),
+        .particles = try ParticleSystem.init(allocator, pipeline, atlas),
         .cam_cx = camera_chunk(camera.x),
         .cam_cz = camera_chunk(camera.z),
+        .allocator = allocator,
+        .io = io,
     };
 
     self.recollect(camera);
@@ -79,9 +96,9 @@ pub fn init(
     // Warm up the estimator
     while (self.build_cursor < self.build_end and self.build_estimator.is_warming_up()) {
         const ref = self.build_queue[self.build_cursor];
-        self.build_estimator.begin();
+        self.build_estimator.begin(io);
         self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch break;
-        self.build_estimator.end();
+        self.build_estimator.end(io);
         self.built[ref.cx][ref.cz][ref.sy] = true;
         self.build_cursor += 1;
     }
@@ -90,6 +107,7 @@ pub fn init(
 }
 
 pub fn deinit(self: *Self) void {
+    self.particles.deinit();
     self.sky.deinit();
     for (0..WORLD_CX) |cx| {
         for (0..WORLD_CZ) |cz| {
@@ -101,6 +119,7 @@ pub fn deinit(self: *Self) void {
 
 pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
     self.sky.update(dt);
+    self.particles.update(dt);
 
     const new_cx = camera_chunk(camera.x);
     const new_cz = camera_chunk(camera.z);
@@ -108,8 +127,16 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
         self.recollect(camera);
     }
 
-    // Re-queue if dirty sections were marked while the queue was empty
-    if (self.dirty and self.build_cursor >= self.build_end) {
+    // Catch LOD transitions that happen mid-chunk (player walking inside the
+    // same column can still cross the 32-block radius for nearby sections).
+    self.refresh_lod_states(camera);
+
+    // Re-queue any newly dirty sections immediately. We can't wait for the
+    // current queue to drain: a player break/place that lands while a heavy
+    // LOD rebuild is in flight would otherwise take many frames to show up,
+    // which looks like a dropped update. queue_unbuilt_sections rescans all
+    // loaded sections, so already-built ones drop out naturally.
+    if (self.dirty) {
         self.queue_unbuilt_sections(camera);
         self.dirty = false;
     }
@@ -125,11 +152,11 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
 
     for (self.build_cursor..end) |i| {
         const ref = self.build_queue[i];
-        self.build_estimator.begin();
+        self.build_estimator.begin(self.io);
         if (self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas)) {
-            self.build_estimator.end();
+            self.build_estimator.end(self.io);
         } else |_| {
-            self.build_estimator.end();
+            self.build_estimator.end(self.io);
             // OOM - evict farthest built section and retry once
             if (self.try_evict_farthest(camera)) {
                 self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch {
@@ -209,8 +236,12 @@ pub fn draw(self: *Self, camera: *const Camera) void {
         Rendering.gfx.api.set_clip_planes(false);
     }
 
+    // Particles ride the same terrain texture binding and use alpha blending
+    // (still on after the transparent pass).
+    self.particles.draw(camera);
+
     self.clouds.bind();
-    self.sky.draw_clouds();
+    self.sky.draw_clouds(camera);
 }
 
 fn recollect(self: *Self, camera: *const Camera) void {
@@ -254,7 +285,7 @@ fn recollect(self: *Self, camera: *const Camera) void {
     for (0..WORLD_CX) |cx| {
         for (0..WORLD_CZ) |cz| {
             if (!self.loaded[cx][cz] and needed[cx][cz]) {
-                if (self.init_column(@intCast(cx), @intCast(cz))) {
+                if (self.init_column(@intCast(cx), @intCast(cz), camera)) {
                     self.loaded[cx][cz] = true;
                 }
                 // If init fails, loaded stays false; will retry next crossing
@@ -267,10 +298,11 @@ fn recollect(self: *Self, camera: *const Camera) void {
     self.queue_unbuilt_sections(camera);
 }
 
-fn init_column(self: *Self, cx: u8, cz: u8) bool {
+fn init_column(self: *Self, cx: u8, cz: u8, cam: *const Camera) bool {
     var count: u32 = 0;
     for (0..SECTIONS_Y) |sy| {
         self.grid[cx][cz][sy] = ChunkMesh.init(
+            self.allocator,
             self.pipeline,
             @intCast(cx),
             @intCast(sy),
@@ -280,6 +312,9 @@ fn init_column(self: *Self, cx: u8, cz: u8) bool {
             for (0..count) |prev| self.grid[cx][cz][prev].deinit();
             return false;
         };
+        // Set the LOD state up front so the first build uses the correct
+        // detail level rather than the default and immediately rebuilding.
+        self.grid[cx][cz][sy].near_lod = target_near_lod(cx, @intCast(sy), cz, cam);
         count += 1;
     }
     return true;
@@ -356,6 +391,26 @@ pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
     self.dirty = true;
 }
 
+/// Walk loaded sections and update their LOD state. Sections that cross
+/// the LOD_NEAR_RADIUS_BLOCKS boundary in either direction get marked
+/// dirty so they re-mesh with the new detail level.
+fn refresh_lod_states(self: *Self, cam: *const Camera) void {
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz]) continue;
+            for (0..SECTIONS_Y) |sy| {
+                const target = target_near_lod(@intCast(cx), @intCast(sy), @intCast(cz), cam);
+                const sec = &self.grid[cx][cz][sy];
+                if (sec.near_lod != target) {
+                    sec.near_lod = target;
+                    self.built[cx][cz][sy] = false;
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+}
+
 fn sort_build_queue(queue: []GridRef, cam: *const Camera) void {
     std.sort.pdq(GridRef, queue, cam, grid_ref_less_than);
 }
@@ -367,12 +422,22 @@ fn grid_ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
     return cam.distance_sq(wx, wy, wz);
 }
 
+/// True when a section's center is within LOD_NEAR_RADIUS_BLOCKS of the camera.
+fn target_near_lod(cx: u8, sy: u8, cz: u8, cam: *const Camera) bool {
+    const wx: f32 = @as(f32, @floatFromInt(@as(u32, cx) * 16)) + 8.0;
+    const wy: f32 = @as(f32, @floatFromInt(@as(u32, sy) * 16)) + 8.0;
+    const wz: f32 = @as(f32, @floatFromInt(@as(u32, cz) * 16)) + 8.0;
+    return cam.distance_sq(wx, wy, wz) <= LOD_NEAR_RADIUS_SQ;
+}
+
 fn grid_ref_less_than(cam: *const Camera, a: GridRef, b: GridRef) bool {
     return grid_ref_dist_sq(a, cam) < grid_ref_dist_sq(b, cam);
 }
 
 fn camera_chunk(pos: f32) i32 {
-    return @intFromFloat(@floor(pos / 16.0));
+    const v = @floor(pos / 16.0);
+    if (v < -2147483648.0 or v > 2147483647.0) return 0;
+    return @intFromFloat(v);
 }
 
 fn set_terrain_fog(submerged: ?collision.Liquid) void {

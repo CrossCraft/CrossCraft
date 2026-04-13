@@ -1,7 +1,6 @@
 const std = @import("std");
 const ae = @import("aether");
 const Math = ae.Math;
-const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
@@ -11,7 +10,7 @@ const mesher = @import("mesher.zig");
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
 /// One 16x16x16 section with 2 meshes:
-///   opaque -- solid blocks + leaf shell faces
+///   opaque -- solid blocks + buried (solid) leaf faces
 ///   trans  -- outer leaves + water/glass/cross
 /// Each mesh owns its vertex storage via the render allocator.
 @"opaque": BatchMesh,
@@ -19,37 +18,45 @@ trans: BatchMesh,
 cx: u32,
 sy: u32,
 cz: u32,
+/// Whether this section was last rebuilt as "near LOD" (within
+/// LOD_NEAR_RADIUS_BLOCKS of the camera). World owns the value: it
+/// updates the field when the section transitions across the radius and
+/// queues a rebuild so the mesher picks the new state up.
+near_lod: bool,
+allocator: std.mem.Allocator,
 
 const Self = @This();
 
-pub fn init(pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Self {
+pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Self {
     return .{
-        .@"opaque" = try BatchMesh.new(pipeline),
-        .trans = try BatchMesh.new(pipeline),
+        .@"opaque" = try BatchMesh.new(allocator, pipeline),
+        .trans = try BatchMesh.new(allocator, pipeline),
         .cx = cx,
         .sy = sy,
         .cz = cz,
+        .near_lod = false,
+        .allocator = allocator,
     };
 }
 
 pub fn deinit(self: *Self) void {
-    self.@"opaque".deinit();
-    self.trans.deinit();
+    self.@"opaque".deinit(self.allocator);
+    self.trans.deinit(self.allocator);
 }
 
 /// Release vertex data but keep GPU handles alive for reuse.
 pub fn clear(self: *Self) void {
-    const a = Util.allocator(.render);
+    const a = self.allocator;
     self.@"opaque".vertices.clearAndFree(a);
     self.trans.vertices.clearAndFree(a);
 }
 
 pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void {
     var buf: mesher.SectionBuf = undefined;
-    mesher.pack_section(self.cx, self.sy, self.cz, &buf);
+    mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
     const counts = mesher.count_section(&buf);
 
-    const a = Util.allocator(.render);
+    const a = self.allocator;
 
     self.@"opaque".vertices.clearRetainingCapacity();
     self.trans.vertices.clearRetainingCapacity();

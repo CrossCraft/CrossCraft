@@ -2,8 +2,8 @@ const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 
-pub const ref_width: u32 = 480;
-pub const ref_height: u32 = 272;
+pub const ref_width: u32 = 400;
+pub const ref_height: u32 = 240;
 
 comptime {
     std.debug.assert(ref_width > 0);
