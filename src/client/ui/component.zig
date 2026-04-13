@@ -164,10 +164,16 @@ fn draw_button(
     else
         Color.white;
     const shadow_color: Color = if (focused) Color.select_back else Color.menu_gray;
+    // Adjust for the button's origin so the label stays vertically centred
+    // regardless of whether the caller uses top_center or middle_center origin.
+    // The sprite is positioned with b.origin; the label text uses top_center,
+    // so we subtract the y component of b.origin to get the button's top edge
+    // relative to the reference, then add the standard centering offset.
+    const btn_origin_y = layout.anchor_point(b.origin, b.width, b.height).y;
     fonts.add_text(&.{
         .str = b.label,
         .pos_x = b.pos_x,
-        .pos_y = b.pos_y + @divTrunc(b.height - 8, 2),
+        .pos_y = b.pos_y - btn_origin_y + @divTrunc(b.height - 8, 2),
         .color = label_color,
         .shadow_color = shadow_color,
         .spacing = 0,

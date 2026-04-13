@@ -6,6 +6,7 @@ const World = @import("game").World;
 const WorldRenderer = @import("../world/world.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
 const Chat = @import("../ui/Chat.zig");
+const Session = @import("../state/Session.zig");
 
 const log = std.log.scoped(.client_conn);
 
@@ -108,16 +109,26 @@ pub fn read_loop(self: *Self, connected: *std.atomic.Value(bool)) void {
     while (connected.load(.acquire)) {
         const packet_id = self.reader.peekByte() catch |err| {
             log.info("read_loop: {} - closing", .{err});
+            // Only set generic reason if on_disconnect didn't already set one.
+            if (Session.disconnect_reason_len == 0) {
+                Session.set_disconnect_reason("Connection lost");
+            }
             connected.store(false, .release);
             return;
         };
         const len = proto.packet_length_to_client(packet_id) catch |err| {
             log.err("read_loop: unknown packet 0x{x:0>2}: {}", .{ packet_id, err });
+            if (Session.disconnect_reason_len == 0) {
+                Session.set_disconnect_reason("Connection lost");
+            }
             connected.store(false, .release);
             return;
         };
         const buf = self.reader.peek(len) catch |err| {
             log.info("read_loop peek: {} - closing", .{err});
+            if (Session.disconnect_reason_len == 0) {
+                Session.set_disconnect_reason("Connection lost");
+            }
             connected.store(false, .release);
             return;
         };
@@ -125,6 +136,9 @@ pub fn read_loop(self: *Self, connected: *std.atomic.Value(bool)) void {
         self.reader.toss(len);
         self.protocol.handle_packet(self.buffer[1..len], self.buffer[0]) catch |err| {
             log.err("read_loop handle 0x{x:0>2}: {}", .{ self.buffer[0], err });
+            if (Session.disconnect_reason_len == 0) {
+                Session.set_disconnect_reason("Connection lost");
+            }
             connected.store(false, .release);
             return;
         };
@@ -213,7 +227,9 @@ fn on_despawn(ctx: *anyopaque, event: zb.DespawnPlayer) !void {
 fn on_disconnect(ctx: *anyopaque, event: zb.DisconnectPlayer) !void {
     const self: *Self = @ptrCast(@alignCast(ctx));
     log.info("Disconnect: {s}", .{&event.reason});
-    // No error screen yet; fall back to ending the app so the user returns
-    // to a fresh process instead of a half-connected GameState.
+    // Save trimmed reason so DisconnectState can display it. Written before
+    // quit_requested is set; the game thread reads it after observing quit_requested.
+    const trimmed = std.mem.trimEnd(u8, &event.reason, " ");
+    Session.set_disconnect_reason(trimmed);
     self.quit_requested = true;
 }

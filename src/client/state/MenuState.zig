@@ -20,6 +20,16 @@ const Session = @import("Session.zig");
 
 const log = std.log.scoped(.menu);
 
+// Module-level singleton so DisconnectState can transition back here without
+// needing access to the original stack-allocated instance from main().
+var menu_state: @This() = undefined;
+var menu_state_inst: State = undefined;
+
+pub fn transition_here(engine: *Engine) !void {
+    menu_state_inst = menu_state.state();
+    try ae.Core.state_machine.transition(engine, &menu_state_inst);
+}
+
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 splash_mesh: FontBatcher.BatchMesh,

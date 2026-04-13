@@ -14,6 +14,7 @@ const ResourcePack = @import("../ResourcePack.zig");
 const Server = @import("game").Server;
 const World = @import("game").World;
 const GameState = @import("GameState.zig");
+const DisconnectState = @import("DisconnectState.zig");
 const Session = @import("Session.zig");
 const proto = @import("common").protocol;
 const flate = std.compress.flate;
@@ -201,10 +202,14 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     if (!self.server_notified and server_ready.load(.acquire)) {
         self.server_notified = true;
         if (session_error) |err| {
-            // Treat load-phase failure the same as a disconnect: log and
-            // quit the process. We don't have a dedicated error screen yet.
-            log.err("session start failed: {}, quitting", .{err});
-            return err;
+            log.err("session start failed: {}", .{err});
+            const reason: []const u8 = switch (Session.mode) {
+                .singleplayer => "Failed to start server",
+                .multiplayer => "Failed to connect to server",
+            };
+            Session.set_disconnect_reason(reason);
+            try DisconnectState.transition_here(engine);
+            return;
         }
         state_inst = game_state.state();
         try ae.Core.state_machine.transition(engine, &state_inst);

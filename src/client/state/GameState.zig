@@ -14,6 +14,7 @@ const collision = @import("../player/collision.zig");
 const FakeConn = @import("../connection/FakeConn.zig").FakeConn;
 const ClientConn = @import("../connection/ClientConn.zig");
 const Session = @import("Session.zig");
+const DisconnectState = @import("DisconnectState.zig");
 
 const ResourcePack = @import("../ResourcePack.zig");
 const SoundManager = @import("../SoundManager.zig");
@@ -207,6 +208,24 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
 fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
+    // Stop the read-loop task before freeing any resources it may still
+    // be accessing (world_renderer, conn.buffer, etc.).
+    switch (Session.mode) {
+        .singleplayer => self.fake_conn.connected = false,
+        .multiplayer => {
+            // Signal the loop to exit, then close the socket to unblock any
+            // pending read, then await the task so we know it has returned.
+            Session.mp_connected.store(false, .release);
+            if (Session.mp_stream) |*s| {
+                s.close(engine.io);
+                Session.mp_stream = null;
+            }
+            if (self.mp_read_future) |*f| {
+                f.await(engine.io);
+                self.mp_read_future = null;
+            }
+        },
+    }
     self.held.deinit();
     self.selection.deinit();
     self.iso_blocks.deinit();
@@ -214,15 +233,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.ui_batcher.deinit();
     self.world.deinit();
     Rendering.Pipeline.deinit(self.pipeline);
-    switch (Session.mode) {
-        .singleplayer => self.fake_conn.connected = false,
-        .multiplayer => {
-            if (Session.mp_stream) |*s| {
-                s.close(engine.io);
-                Session.mp_stream = null;
-            }
-        },
-    }
 }
 
 fn tick(ctx: *anyopaque, _: *Engine) anyerror!void {
@@ -409,10 +419,12 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (Session.mode == .singleplayer) {
         self.conn.drain_packets();
     } else if (!Session.mp_connected.load(.acquire)) {
-        engine.quit();
+        try DisconnectState.transition_here(engine);
+        return;
     }
     if (self.conn.quit_requested) {
-        engine.quit();
+        try DisconnectState.transition_here(engine);
+        return;
     }
     self.player.camera.apply();
     self.world.draw(&self.player.camera);
@@ -473,8 +485,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     const show_playerlist = if (ae.platform == .psp)
         self.psp_social_mode
     else
-        self.player.playerlist_held and Session.mode == .multiplayer
-            and !self.inventory.open and !self.chat.open;
+        self.player.playerlist_held and Session.mode == .multiplayer and !self.inventory.open and !self.chat.open;
     if (show_playerlist) {
         self.player_list.draw(&self.ui_batcher, &self.font_batcher, Session.username());
     }

@@ -60,17 +60,24 @@ const lava_tile_row: u32 = 1;
 const anim_period_ticks: u32 = 2;
 
 var anim_tick: u32 = 0;
+var pack_initialized: bool = false;
 
 // -- lifecycle ---------------------------------------------------------------
 
+/// Open the resource pack and prepare for texture loading. Safe to call
+/// multiple times -- subsequent calls are no-ops so MenuState.init can be
+/// re-entered after a disconnect without leaking the already-open Zip.
 pub fn init(render_alloc: std.mem.Allocator, game_alloc: std.mem.Allocator, io: std.Io) !void {
+    if (pack_initialized) return;
     alloc = render_alloc;
     tex_loaded = 0;
     anim_tick = 0;
     pack = try Zip.init(game_alloc, io, "pack.zip");
+    pack_initialized = true;
 }
 
 pub fn deinit() void {
+    if (!pack_initialized) return;
     var i: u8 = 0;
     while (i < Tex.count) : (i += 1) {
         if (tex_loaded & (@as(u8, 1) << @intCast(i)) != 0) {
@@ -79,6 +86,7 @@ pub fn deinit() void {
     }
     tex_loaded = 0;
     pack.deinit();
+    pack_initialized = false;
 }
 
 // -- pack access -------------------------------------------------------------

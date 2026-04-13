@@ -34,6 +34,27 @@ pub var mp_writer: std.Io.net.Stream.Writer = undefined;
 /// the disconnect handler observe it so the main loop can request quit.
 pub var mp_connected: std.atomic.Value(bool) = .init(false);
 
+// ---------------------------------------------------------------------------
+// Disconnect reason
+// ---------------------------------------------------------------------------
+
+/// Human-readable reason for the last disconnect, set before mp_connected is
+/// cleared (or before quit_requested is set for the DisconnectPlayer packet).
+/// Read by DisconnectState after it is entered. Not atomic -- written from
+/// the read-loop thread under release/acquire ordering on mp_connected.
+pub var disconnect_reason_buf: [64]u8 = undefined;
+pub var disconnect_reason_len: u8 = 0;
+
+pub fn set_disconnect_reason(reason: []const u8) void {
+    const len: u8 = @intCast(@min(reason.len, disconnect_reason_buf.len));
+    @memcpy(disconnect_reason_buf[0..len], reason[0..len]);
+    disconnect_reason_len = len;
+}
+
+pub fn disconnect_reason() []const u8 {
+    return disconnect_reason_buf[0..disconnect_reason_len];
+}
+
 pub fn set_username(name: []const u8) void {
     const len: u8 = @intCast(@min(name.len, USERNAME_MAX));
     @memcpy(username_buf[0..len], name[0..len]);
