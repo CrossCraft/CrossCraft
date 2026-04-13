@@ -102,5 +102,9 @@ fn model_matrix(self: *const Self) Math.Mat4 {
     const wx: f32 = @floatFromInt(self.cx * 16);
     const wy: f32 = @floatFromInt(self.sy * 16);
     const wz: f32 = @floatFromInt(self.cz * 16);
-    return Math.Mat4.scaling(16.0, 16.0, 16.0).mul(Math.Mat4.translation(wx, wy, wz));
+    // SNORM dequant divides by 32768 (not 32767), so encode_pos(16) = 32767
+    // maps to 32767/32768 ≈ 0.99997, not 1.0. Over-compensate slightly so
+    // chunk edges overlap by a sub-pixel amount rather than leaving a gap.
+    const s: f32 = 16.0 * 32768.0 / 32736.0;
+    return Math.Mat4.scaling(s, s, s).mul(Math.Mat4.translation(wx, wy, wz));
 }

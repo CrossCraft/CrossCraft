@@ -829,23 +829,20 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     std.debug.assert(range >= 0.0);
     std.debug.assert(range <= 64.0);
 
-    // Camera-forward in world space. Yaw 0 looks down -Z, positive pitch up.
-    // Derived from Camera.apply(): view = T(-pos) * Ry(-yaw) * Rx(pitch)
-    // (row-vector convention), so the world vector mapping to view -Z is
-    // (-cos(p)*sin(y), -sin(p), -cos(p)*cos(y)).
+    // Camera-forward in world space (unit vector). Only used to derive
+    // a fixed-point direction below — sin/cos are the only float ops.
     const cp = @cos(self.camera.pitch);
-    const dx = -@sin(self.camera.yaw) * cp;
-    const dy = -@sin(self.camera.pitch);
-    const dz = -@cos(self.camera.yaw) * cp;
+    const dir_x = toFP(-@sin(self.camera.yaw) * cp);
+    const dir_y = toFP(-@sin(self.camera.pitch));
+    const dir_z = toFP(-@cos(self.camera.yaw) * cp);
 
-    const ox = self.camera.x;
-    const oy = self.camera.y;
-    const oz = self.camera.z;
+    const fp_ox = toFP(self.camera.x);
+    const fp_oy = toFP(self.camera.y);
+    const fp_oz = toFP(self.camera.z);
 
-    const fx = @floor(ox);
-    const fy = @floor(oy);
-    const fz = @floor(oz);
-    // Camera outside representable range — nothing to select.
+    const fx = @floor(self.camera.x);
+    const fy = @floor(self.camera.y);
+    const fz = @floor(self.camera.z);
     if (fx < -2147483648.0 or fx > 2147483647.0) return null;
     if (fy < -2147483648.0 or fy > 2147483647.0) return null;
     if (fz < -2147483648.0 or fz > 2147483647.0) return null;
@@ -853,24 +850,31 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     var by: i32 = @intFromFloat(fy);
     var bz: i32 = @intFromFloat(fz);
 
-    const step_x: i32 = if (dx > 0) 1 else if (dx < 0) -1 else 0;
-    const step_y: i32 = if (dy > 0) 1 else if (dy < 0) -1 else 0;
-    const step_z: i32 = if (dz > 0) 1 else if (dz < 0) -1 else 0;
+    const step_x: i32 = if (dir_x > 0) 1 else if (dir_x < 0) -1 else 0;
+    const step_y: i32 = if (dir_y > 0) 1 else if (dir_y < 0) -1 else 0;
+    const step_z: i32 = if (dir_z > 0) 1 else if (dir_z < 0) -1 else 0;
 
-    const INF: f32 = std.math.inf(f32);
-    const t_delta_x: f32 = if (dx != 0) @abs(1.0 / dx) else INF;
-    const t_delta_y: f32 = if (dy != 0) @abs(1.0 / dy) else INF;
-    const t_delta_z: f32 = if (dz != 0) @abs(1.0 / dz) else INF;
+    const adx: i32 = @intCast(@abs(dir_x));
+    const ady: i32 = @intCast(@abs(dir_y));
+    const adz: i32 = @intCast(@abs(dir_z));
 
-    var t_max_x: f32 = if (dx != 0) next_boundary(ox, dx) else INF;
-    var t_max_y: f32 = if (dy != 0) next_boundary(oy, dy) else INF;
-    var t_max_z: f32 = if (dz != 0) next_boundary(oz, dz) else INF;
+    // Distance (FP8) from origin to the next grid boundary per axis.
+    // frac = fractional part of origin within the current cell.
+    const frac_x = fp_ox - (bx <<| FRAC);
+    const frac_y = fp_oy - (by <<| FRAC);
+    const frac_z = fp_oz - (bz <<| FRAC);
 
-    // Check the voxel containing the eye first (in case we're inside a block).
+    var dist_x: i32 = if (step_x > 0) ONE - frac_x else if (step_x < 0) frac_x else std.math.maxInt(i32);
+    var dist_y: i32 = if (step_y > 0) ONE - frac_y else if (step_y < 0) frac_y else std.math.maxInt(i32);
+    var dist_z: i32 = if (step_z > 0) ONE - frac_z else if (step_z < 0) frac_z else std.math.maxInt(i32);
+
+    const range_fp: i32 = toFP(range);
+
+    // Check the voxel containing the eye first.
     if (in_world(bx, by, bz)) {
         if (is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) {
             const bounds = c.block_bounds(World.get_block(@intCast(bx), @intCast(by), @intCast(bz)));
-            if (point_in_bounds(ox - @as(f32, @floatFromInt(bx)), oy - @as(f32, @floatFromInt(by)), oz - @as(f32, @floatFromInt(bz)), bounds)) {
+            if (point_in_bounds_fp(frac_x, frac_y, frac_z, bounds)) {
                 return .{
                     .x = @intCast(bx),
                     .y = @intCast(by),
@@ -884,28 +888,27 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
         }
     }
 
-    // Hard cap iterations as defense in depth against numerical edge cases.
     const max_iters: u32 = 64;
     var i: u32 = 0;
     while (i < max_iters) : (i += 1) {
-        const t_min = @min(t_max_x, @min(t_max_y, t_max_z));
-        if (t_min > range) return null;
+        // Range check on whichever axis is closest.
+        if (tExceedsRange(dist_x, adx, dist_y, ady, dist_z, adz, range_fp)) return null;
 
-        // Remember the empty voxel we're stepping out of -- that's where a
-        // place action would put a new block.
         const prev_x = bx;
         const prev_y = by;
         const prev_z = bz;
 
-        if (t_max_x <= t_max_y and t_max_x <= t_max_z) {
+        // Step along the axis with the smallest t_max.
+        // t_max_a <= t_max_b ↔ dist_a * abs_b <= dist_b * abs_a (cross multiply).
+        if (tLE(dist_x, adx, dist_y, ady) and tLE(dist_x, adx, dist_z, adz)) {
             bx += step_x;
-            t_max_x += t_delta_x;
-        } else if (t_max_y <= t_max_z) {
+            dist_x += ONE;
+        } else if (tLE(dist_y, ady, dist_z, adz)) {
             by += step_y;
-            t_max_y += t_delta_y;
+            dist_y += ONE;
         } else {
             bz += step_z;
-            t_max_z += t_delta_z;
+            dist_z += ONE;
         }
 
         if (!in_world(bx, by, bz)) return null;
@@ -915,7 +918,6 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
         const bounds = c.block_bounds(block);
 
         if (bounds.is_full()) {
-            // Full block: original DDA-based placement.
             const has_place = in_world(prev_x, prev_y, prev_z);
             return .{
                 .x = @intCast(bx),
@@ -928,8 +930,8 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
             };
         }
 
-        // Partial block: test ray against the subvoxel AABB.
-        if (ray_sub_aabb(ox, oy, oz, dx, dy, dz, @floatFromInt(bx), @floatFromInt(by), @floatFromInt(bz), bounds, range)) |face| {
+        // Partial block: integer slab test against the subvoxel AABB.
+        if (ray_sub_aabb_fp(fp_ox, fp_oy, fp_oz, dir_x, dir_y, dir_z, bx, by, bz, bounds, range_fp)) |face| {
             const off = face_normal(face);
             const px = bx + off[0];
             const py = by + off[1];
@@ -945,17 +947,35 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
                 .has_place = has_place,
             };
         }
-        // Subvoxel AABB missed — ray passes through empty space, keep stepping.
     }
     return null;
 }
 
-/// Distance along the ray to the next integer grid plane on one axis.
-fn next_boundary(origin: f32, dir: f32) f32 {
-    std.debug.assert(dir != 0);
-    const cell = @floor(origin);
-    const next: f32 = if (dir > 0) cell + 1.0 else cell;
-    return (next - origin) / dir;
+// -- Fixed-point DDA helpers (no float division) -----------------------------
+
+const FRAC: u5 = 8;
+const ONE: i32 = 1 << FRAC; // 256 = one block in FP8
+
+fn toFP(f: f32) i32 {
+    return @intFromFloat(f * @as(f32, @floatFromInt(ONE)));
+}
+
+/// t_a <= t_b without division. t = dist / abs_dir.
+/// When abs_dir == 0 the axis is never stepped (t = ∞).
+fn tLE(dist_a: i32, abs_a: i32, dist_b: i32, abs_b: i32) bool {
+    if (abs_a == 0) return false; // t_a = ∞
+    if (abs_b == 0) return true; // t_b = ∞
+    return @as(i64, dist_a) * @as(i64, abs_b) <= @as(i64, dist_b) * @as(i64, abs_a);
+}
+
+/// True when the smallest t_max across all three axes exceeds range.
+fn tExceedsRange(dx: i32, adx: i32, dy: i32, ady: i32, dz: i32, adz: i32, range_fp: i32) bool {
+    // t_axis = dist / abs_dir > range  ↔  dist * ONE > range_fp * abs_dir
+    // If abs_dir == 0 the axis is infinite and can't be the minimum.
+    const xv = adx != 0 and @as(i64, dx) * ONE <= @as(i64, range_fp) * @as(i64, adx);
+    const yv = ady != 0 and @as(i64, dy) * ONE <= @as(i64, range_fp) * @as(i64, ady);
+    const zv = adz != 0 and @as(i64, dz) * ONE <= @as(i64, range_fp) * @as(i64, adz);
+    return !xv and !yv and !zv;
 }
 
 fn in_world(x: i32, y: i32, z: i32) bool {
@@ -963,9 +983,6 @@ fn in_world(x: i32, y: i32, z: i32) bool {
         x < c.WorldLength and y < c.WorldHeight and z < c.WorldDepth;
 }
 
-/// What counts as "selectable" by the crosshair. Air and fluids are
-/// passed through so the outline lands on the first solid block behind
-/// any water/lava the ray crosses.
 fn is_selectable(x: u16, y: u16, z: u16) bool {
     const id = World.get_block(x, y, z);
     return switch (id) {
@@ -979,53 +996,58 @@ fn is_selectable(x: u16, y: u16, z: u16) bool {
     };
 }
 
-// -- Subvoxel helpers --------------------------------------------------------
+// -- Subvoxel helpers (all integer) ------------------------------------------
 
-/// True when the point (in block-local coords, 0..1) is inside the bounds.
-fn point_in_bounds(lx: f32, ly: f32, lz: f32, b: c.SubvoxelBounds) bool {
-    const Q: f32 = 0.0625;
-    return lx >= @as(f32, @floatFromInt(b.min_x)) * Q and
-        lx < @as(f32, @floatFromInt(b.max_x)) * Q and
-        ly >= @as(f32, @floatFromInt(b.min_y)) * Q and
-        ly < @as(f32, @floatFromInt(b.max_y)) * Q and
-        lz >= @as(f32, @floatFromInt(b.min_z)) * Q and
-        lz < @as(f32, @floatFromInt(b.max_z)) * Q;
+/// Point-in-bounds test using FP8 local coordinates directly.
+fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: c.SubvoxelBounds) bool {
+    // Bounds are in 1/16th-block units. In FP8: 1/16 block = 16 units.
+    const STEP = ONE / 16;
+    return lx >= @as(i32, b.min_x) * STEP and
+        lx < @as(i32, b.max_x) * STEP and
+        ly >= @as(i32, b.min_y) * STEP and
+        ly < @as(i32, b.max_y) * STEP and
+        lz >= @as(i32, b.min_z) * STEP and
+        lz < @as(i32, b.max_z) * STEP;
 }
 
-/// Ray–AABB slab test against a block's subvoxel bounds. Returns the entry
-/// face when the ray hits, or null when it misses (ray passes through the
-/// empty portion of the voxel).
-fn ray_sub_aabb(
-    ox: f32,
-    oy: f32,
-    oz: f32,
-    dx: f32,
-    dy: f32,
-    dz: f32,
-    bx: f32,
-    by: f32,
-    bz: f32,
+/// Integer slab test — returns entry face or null on miss. All arithmetic
+/// is integer (i32/i64), so no FPU exceptions can fire.
+fn ray_sub_aabb_fp(
+    ox: i32,
+    oy: i32,
+    oz: i32,
+    dx: i32,
+    dy: i32,
+    dz: i32,
+    bx: i32,
+    by: i32,
+    bz: i32,
     bounds: c.SubvoxelBounds,
-    max_t: f32,
+    max_t_fp: i32,
 ) ?Face {
-    const Q: f32 = 0.0625;
-    const x0 = bx + @as(f32, @floatFromInt(bounds.min_x)) * Q;
-    const y0 = by + @as(f32, @floatFromInt(bounds.min_y)) * Q;
-    const z0 = bz + @as(f32, @floatFromInt(bounds.min_z)) * Q;
-    const x1 = bx + @as(f32, @floatFromInt(bounds.max_x)) * Q;
-    const y1 = by + @as(f32, @floatFromInt(bounds.max_y)) * Q;
-    const z1 = bz + @as(f32, @floatFromInt(bounds.max_z)) * Q;
+    const STEP = ONE / 16;
+    const bx_fp = bx <<| FRAC;
+    const by_fp = by <<| FRAC;
+    const bz_fp = bz <<| FRAC;
 
-    const INF = std.math.inf(f32);
-    var t_near: f32 = -INF;
-    var t_far: f32 = INF;
+    const x0 = bx_fp + @as(i32, bounds.min_x) * STEP;
+    const y0 = by_fp + @as(i32, bounds.min_y) * STEP;
+    const z0 = bz_fp + @as(i32, bounds.min_z) * STEP;
+    const x1 = bx_fp + @as(i32, bounds.max_x) * STEP;
+    const y1 = by_fp + @as(i32, bounds.max_y) * STEP;
+    const z1 = bz_fp + @as(i32, bounds.max_z) * STEP;
+
+    // t = dist / dir, stored as FP8 via (dist << FRAC) / dir (i64 intermediate).
+    const MAX: i32 = std.math.maxInt(i32);
+    const MIN: i32 = std.math.minInt(i32);
+    var t_near: i32 = MIN;
+    var t_far: i32 = MAX;
     var face: Face = .y_pos;
 
     // X slab
     if (dx != 0) {
-        const inv = 1.0 / dx;
-        const t0 = (x0 - ox) * inv;
-        const t1 = (x1 - ox) * inv;
+        const t0 = fpDiv(x0 - ox, dx);
+        const t1 = fpDiv(x1 - ox, dx);
         const t_lo = @min(t0, t1);
         const t_hi = @max(t0, t1);
         if (t_lo > t_near) {
@@ -1039,9 +1061,8 @@ fn ray_sub_aabb(
 
     // Y slab
     if (dy != 0) {
-        const inv = 1.0 / dy;
-        const t0 = (y0 - oy) * inv;
-        const t1 = (y1 - oy) * inv;
+        const t0 = fpDiv(y0 - oy, dy);
+        const t1 = fpDiv(y1 - oy, dy);
         const t_lo = @min(t0, t1);
         const t_hi = @max(t0, t1);
         if (t_lo > t_near) {
@@ -1055,9 +1076,8 @@ fn ray_sub_aabb(
 
     // Z slab
     if (dz != 0) {
-        const inv = 1.0 / dz;
-        const t0 = (z0 - oz) * inv;
-        const t1 = (z1 - oz) * inv;
+        const t0 = fpDiv(z0 - oz, dz);
+        const t1 = fpDiv(z1 - oz, dz);
         const t_lo = @min(t0, t1);
         const t_hi = @max(t0, t1);
         if (t_lo > t_near) {
@@ -1071,12 +1091,19 @@ fn ray_sub_aabb(
 
     if (t_near > t_far) return null;
     if (t_far < 0) return null;
-    if (t_near > max_t) return null;
+    if (t_near > max_t_fp) return null;
 
     return face;
 }
 
-/// Unit normal of a face as an integer offset for block placement.
+/// Fixed-point division: (num << FRAC) / den, clamped to i32 range.
+/// den == 0 returns signed MAX/MIN. Uses i64 intermediate — no FPU.
+fn fpDiv(num: i32, den: i32) i32 {
+    if (den == 0) return if (num >= 0) std.math.maxInt(i32) else std.math.minInt(i32);
+    const wide = @divTrunc(@as(i64, num) <<| FRAC, @as(i64, den));
+    return @intCast(std.math.clamp(wide, std.math.minInt(i32), std.math.maxInt(i32)));
+}
+
 fn face_normal(face: Face) [3]i32 {
     return switch (face) {
         .x_neg => .{ -1, 0, 0 },
