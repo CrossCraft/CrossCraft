@@ -45,6 +45,11 @@ const Entry = struct {
     active: bool,
     name: [16]u8,
     name_len: u8,
+    x: u16,
+    y: u16,
+    z: u16,
+    yaw: u8,
+    pitch: u8,
 };
 
 entries: [c.MAX_PLAYERS]Entry,
@@ -59,7 +64,7 @@ pub fn init() Self {
 
 /// Register a remote player. `raw` is the 64-byte space-padded name from the
 /// SpawnPlayer packet. Only the first 16 non-space bytes are stored.
-pub fn spawn(self: *Self, pid: i8, raw: []const u8) void {
+pub fn spawn(self: *Self, pid: i8, raw: []const u8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) void {
     if (pid < 0) return;
     const idx: usize = @intCast(pid);
     if (idx >= c.MAX_PLAYERS) return;
@@ -71,6 +76,11 @@ pub fn spawn(self: *Self, pid: i8, raw: []const u8) void {
         if (raw[i] != ' ' and raw[i] != 0) len = @intCast(i + 1);
     }
     self.entries[idx].name_len = len;
+    self.entries[idx].x = x;
+    self.entries[idx].y = y;
+    self.entries[idx].z = z;
+    self.entries[idx].yaw = yaw;
+    self.entries[idx].pitch = pitch;
     self.entries[idx].active = true;
 }
 
@@ -80,6 +90,19 @@ pub fn despawn(self: *Self, pid: i8) void {
     const idx: usize = @intCast(pid);
     if (idx >= c.MAX_PLAYERS) return;
     self.entries[idx].active = false;
+}
+
+/// Update a remote player's position and orientation.
+pub fn update_position(self: *Self, pid: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) void {
+    if (pid < 0) return;
+    const idx: usize = @intCast(pid);
+    if (idx >= c.MAX_PLAYERS) return;
+    if (!self.entries[idx].active) return;
+    self.entries[idx].x = x;
+    self.entries[idx].y = y;
+    self.entries[idx].z = z;
+    self.entries[idx].yaw = yaw;
+    self.entries[idx].pitch = pitch;
 }
 
 // -- Draw -------------------------------------------------------------------

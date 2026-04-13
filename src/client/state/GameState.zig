@@ -21,6 +21,7 @@ const SoundManager = @import("../SoundManager.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const WorldRenderer = @import("../world/world.zig");
 const SelectionOutline = @import("../world/SelectionOutline.zig");
+const SteveModel = @import("../world/SteveModel.zig");
 const Player = @import("../player/Player.zig");
 const BlockHand = @import("../player/BlockHand.zig");
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
@@ -56,6 +57,7 @@ chat: Chat,
 /// OSK completes.
 psp_social_mode: bool,
 selection: SelectionOutline,
+steve: SteveModel,
 held: BlockHand,
 render_alloc: std.mem.Allocator,
 hotbar_tooltip_timer: f32,
@@ -155,7 +157,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.render_alloc = render_alloc;
 
     // Textures
-    try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still });
+    try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still, .char });
 
     // World renderer
     self.world = try WorldRenderer.init(
@@ -212,6 +214,9 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // Block selection outline (line mesh, drawn after the world pass).
     self.selection = try SelectionOutline.init(render_alloc, self.pipeline);
 
+    // Remote player Steve model renderer.
+    self.steve = try SteveModel.init(render_alloc, self.pipeline);
+
     // Held-block viewmodel. Uses the same terrain atlas as the world.
     self.held = try BlockHand.init(render_alloc, self.pipeline, ResourcePack.atlas);
     self.player.held_renderer = &self.held;
@@ -240,6 +245,7 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
         },
     }
     self.held.deinit();
+    self.steve.deinit();
     self.selection.deinit();
     self.iso_blocks.deinit();
     self.font_batcher.deinit();
@@ -378,6 +384,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
     // mouse_captured is false while open, so apply_look ignores deltas and
     // on_break/on_place early-return.
     self.player.update(dt);
+    self.steve.update(dt, &self.player_list, &self.font_batcher);
     self.world.update(dt, budget, &self.player.camera);
     SoundManager.update(
         dt,
@@ -441,6 +448,10 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     }
     self.player.camera.apply();
     self.world.draw(&self.player.camera);
+
+    // Remote player models: drawn in the 3D pass, depth-tested against the world.
+    self.steve.draw(&self.player);
+    self.steve.draw_nametags(&self.player, &self.font_batcher);
 
     // Selection outline: still in the 3D pass, depth-tested against the world.
     // Nudge it slightly toward the camera so it does not z-fight the selected

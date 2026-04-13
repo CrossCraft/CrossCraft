@@ -8,6 +8,7 @@ pub const Color = packed struct(u32) {
         return .{ .r = r, .g = g, .b = b, .a = a };
     }
 
+    pub const none = rgba(0, 0, 0, 0);
     pub const black = rgba(0, 0, 0, 255);
     pub const dark_blue = rgba(0, 0, 170, 255);
     pub const dark_green = rgba(0, 170, 0, 255);

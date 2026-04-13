@@ -177,14 +177,12 @@ fn on_spawn(ctx: *anyopaque, event: zb.SpawnPlayer) !void {
         self.handshake_complete = true;
         return;
     }
-    if (self.player_list) |pl| pl.spawn(event.pid, &event.name);
+    if (self.player_list) |pl| pl.spawn(event.pid, &event.name, event.x, event.y, event.z, event.yaw, event.pitch);
 }
 
-fn on_position(_: *anyopaque, event: zb.SetPositionOrientation) !void {
-    // Position broadcasts arrive at the server tick rate for every player,
-    // so logging them drowns the console. No-op; when we have remote
-    // players to render we'll route these into the renderer here.
-    _ = event;
+fn on_position(ctx: *anyopaque, event: zb.SetPositionOrientation) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    if (self.player_list) |pl| pl.update_position(event.pid, event.x, event.y, event.z, event.yaw, event.pitch);
 }
 
 fn on_message(ctx: *anyopaque, event: zb.Message) !void {

@@ -23,7 +23,7 @@ const GLYPH_SIZE: u32 = 8;
 const SPACE_WIDTH: u8 = 4;
 const DEFAULT_SPACING: i8 = 1;
 const VERTS_PER_CHAR: u32 = 6;
-const MAX_ENTRIES: u16 = if (ae.platform == .psp) 64 else 128;
+const MAX_ENTRIES: u16 = 1024;
 
 // --- Input Primitive ---
 

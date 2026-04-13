@@ -24,6 +24,7 @@ pub const Tex = enum(u8) {
     clouds,
     water_still,
     lava_still,
+    char,
 
     const count = @typeInfo(Tex).@"enum".fields.len;
 };
@@ -38,13 +39,14 @@ fn tex_path(id: Tex) []const u8 {
         .clouds => "minecraft/textures/clouds",
         .water_still => "crosscraft/textures/water_still",
         .lava_still => "crosscraft/textures/lava_still",
+        .char => "minecraft/textures/char",
     };
 }
 
 // -- storage -----------------------------------------------------------------
 
 var textures: [Tex.count]Rendering.Texture = undefined;
-var tex_loaded: u8 = 0;
+var tex_loaded: u16 = 0;
 
 pub var atlas: TextureAtlas = undefined;
 var alloc: std.mem.Allocator = undefined;
@@ -80,7 +82,7 @@ pub fn deinit() void {
     if (!pack_initialized) return;
     var i: u8 = 0;
     while (i < Tex.count) : (i += 1) {
-        if (tex_loaded & (@as(u8, 1) << @intCast(i)) != 0) {
+        if (tex_loaded & (@as(u16, 1) << @intCast(i)) != 0) {
             textures[i].deinit(alloc);
         }
     }
@@ -99,15 +101,15 @@ pub fn get_pack() *Zip {
 
 pub fn get_tex(id: Tex) *const Rendering.Texture {
     const i = @intFromEnum(id);
-    std.debug.assert(tex_loaded & (@as(u8, 1) << @intCast(i)) != 0);
+    std.debug.assert(tex_loaded & (@as(u16, 1) << @intCast(i)) != 0);
     return &textures[i];
 }
 
 pub fn load_tex(id: Tex) !void {
     const i = @intFromEnum(id);
-    if (tex_loaded & (@as(u8, 1) << @intCast(i)) != 0) return;
+    if (tex_loaded & (@as(u16, 1) << @intCast(i)) != 0) return;
     textures[i] = try load_from_zip(id);
-    tex_loaded |= @as(u8, 1) << @intCast(i);
+    tex_loaded |= @as(u16, 1) << @intCast(i);
 
     switch (id) {
         .terrain => {
@@ -121,7 +123,7 @@ pub fn load_tex(id: Tex) !void {
 
 pub fn unload_tex(id: Tex) void {
     const i = @intFromEnum(id);
-    const bit: u8 = @as(u8, 1) << @intCast(i);
+    const bit: u16 = @as(u16, 1) << @intCast(i);
     if (tex_loaded & bit == 0) return;
     textures[i].deinit(alloc);
     tex_loaded &= ~bit;
@@ -151,9 +153,9 @@ pub fn apply_tex_set(set: []const Tex) !void {
 /// Advance fluid tile animations. Called every game tick; actually blits
 /// a new frame once every `anim_period_ticks` ticks.
 pub fn tick_animations() void {
-    const t_bit: u8 = @as(u8, 1) << @intFromEnum(Tex.terrain);
-    const w_bit: u8 = @as(u8, 1) << @intFromEnum(Tex.water_still);
-    const l_bit: u8 = @as(u8, 1) << @intFromEnum(Tex.lava_still);
+    const t_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.terrain);
+    const w_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.water_still);
+    const l_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.lava_still);
     std.debug.assert(tex_loaded & (t_bit | w_bit | l_bit) == (t_bit | w_bit | l_bit));
 
     anim_tick +%= 1;
