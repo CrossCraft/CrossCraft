@@ -87,24 +87,28 @@ pub fn center_z(self: *const Self) f32 {
 /// Draw opaque geometry only. Call front-to-back.
 pub fn draw_opaque(self: *Self) void {
     if (self.@"opaque".vertices.items.len == 0) return;
-    const m = model_matrix(self);
+    const m = model_matrix(self, scale_opaque);
     self.@"opaque".draw(&m);
 }
 
 /// Draw transparent geometry. Call back-to-front.
 pub fn draw_transparent(self: *Self) void {
     if (self.trans.vertices.items.len == 0) return;
-    const m = model_matrix(self);
+    const m = model_matrix(self, scale_trans);
     self.trans.draw(&m);
 }
 
-fn model_matrix(self: *const Self) Math.Mat4 {
+// SNORM dequant divides by 32768 (not 32767), so encode_pos(16) = 32767
+// maps to 32767/32768 ≈ 0.99997, not 1.0. Over-compensate slightly so
+// chunk edges overlap by a sub-pixel amount rather than leaving a gap.
+// Opaque geometry can use a larger overlap (depth test hides it);
+// translucent needs a tighter fit to avoid double-blend artifacts.
+const scale_opaque: f32 = 16.0 * 32768.0 / 32753.0;
+const scale_trans: f32 = 16.0 * 32768.0 / 32763.0;
+
+fn model_matrix(self: *const Self, s: f32) Math.Mat4 {
     const wx: f32 = @floatFromInt(self.cx * 16);
     const wy: f32 = @floatFromInt(self.sy * 16);
     const wz: f32 = @floatFromInt(self.cz * 16);
-    // SNORM dequant divides by 32768 (not 32767), so encode_pos(16) = 32767
-    // maps to 32767/32768 ≈ 0.99997, not 1.0. Over-compensate slightly so
-    // chunk edges overlap by a sub-pixel amount rather than leaving a gap.
-    const s: f32 = 16.0 * 32768.0 / 32736.0;
     return Math.Mat4.scaling(s, s, s).mul(Math.Mat4.translation(wx, wy, wz));
 }
