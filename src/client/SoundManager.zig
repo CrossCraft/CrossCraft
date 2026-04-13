@@ -314,12 +314,6 @@ pub fn play_dig(block: u8, bx: u16, by: u16, bz: u16) void {
     play_material_sound(&dig_entries, &dig_counts, block, bx, by, bz, 1.0);
 }
 
-pub fn play_place(block: u8, bx: u16, by: u16, bz: u16) void {
-    // Glass uses stone sound for placement.
-    const effective = if (block == B.Glass) B.Stone else block;
-    play_material_sound(&dig_entries, &dig_counts, effective, bx, by, bz, 0.8);
-}
-
 pub fn play_step(block: u8) void {
     if (!initialised) return;
     var mat = @intFromEnum(block_material(block));

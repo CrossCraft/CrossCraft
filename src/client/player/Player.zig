@@ -1114,8 +1114,6 @@ fn do_place(self: *Self) void {
     if (block == B.Air) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
-    SoundManager.play_place(block, hit.place_x, hit.place_y, hit.place_z);
-
     // Register a "virtual block" for collision so the player cannot
     // fall through before the server commits the placement to the
     // world on its next tick.
