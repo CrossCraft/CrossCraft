@@ -26,6 +26,8 @@ const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
 const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
 const Inventory = @import("../ui/Inventory.zig");
+const PlayerList = @import("../ui/PlayerList.zig");
+const Chat = @import("../ui/Chat.zig");
 const BlockNames = @import("../ui/BlockNames.zig");
 const Color = @import("../graphics/Color.zig").Color;
 const ui_input = @import("../ui/input.zig");
@@ -46,6 +48,12 @@ ui_batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 iso_blocks: IsoBlockDrawer,
 inventory: Inventory,
+player_list: PlayerList,
+chat: Chat,
+/// PSP only: true while the Select-toggled social overlay (player list +
+/// chat cursor) is visible.  Cleared when Select is pressed again or the
+/// OSK completes.
+psp_social_mode: bool,
 selection: SelectionOutline,
 held: BlockHand,
 render_alloc: std.mem.Allocator,
@@ -178,6 +186,11 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try ui_input.ensure_registered();
     ui_input.set_profile(ui_input.default_profile());
     self.inventory = Inventory.init();
+    self.player_list = PlayerList.init();
+    self.conn.player_list = &self.player_list;
+    self.chat = Chat.init();
+    self.conn.chat = &self.chat;
+    self.psp_social_mode = false;
     self.hotbar_tooltip_timer = 0;
     self.prev_selected_slot = 0;
     self.report_timer = 0;
@@ -263,21 +276,80 @@ fn fp_coord(v: f32) u16 {
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
 
-    // Drain the ui_input edges every frame so they never accumulate stale
-    // values across an open/close transition. The snapshot is only consumed
-    // by the inventory; when the overlay is closed it just gets discarded.
-    const ui_in = ui_input.build_frame(dt, &self.inventory.ui_repeat);
+    // PSP: service a deferred chat OSK request now that the previous frame's
+    // end_frame has completed and the GE is idle.
+    if (ae.platform == .psp and self.chat.psp_osk_pending) {
+        self.chat.psp_osk_pending = false;
+        self.chat.service_psp_osk(&self.player);
+        // OSK either sent or cancelled -- exit social mode either way.
+        self.psp_social_mode = false;
+    }
+
+    // PSP: Select (playerlist_edge) toggles the social overlay -- player list
+    // visible simultaneously with the chat input cursor.  Pressing Select a
+    // second time exits without sending.  Cross (X / psp_osk_edge) arms the
+    // OSK so it fires at the top of the next frame.
+    if (ae.platform == .psp) {
+        if (self.player.playerlist_edge) {
+            self.player.playerlist_edge = false;
+            if (self.psp_social_mode) {
+                self.psp_social_mode = false;
+                self.chat.psp_osk_pending = false;
+                self.chat.close_overlay(&self.player);
+            } else if (Session.mode == .multiplayer and !self.inventory.open) {
+                self.psp_social_mode = true;
+                self.chat.open_overlay_social(&self.player);
+            }
+        }
+        if (self.player.psp_osk_edge) {
+            self.player.psp_osk_edge = false;
+            if (self.psp_social_mode) self.chat.psp_osk_pending = true;
+        }
+    }
+
+    // Drain ui_input edges each frame. Use the active overlay's repeat state
+    // so backspace autorepeat is owned by whichever overlay is open.
+    const active_repeat = if (self.chat.open) &self.chat.ui_repeat else &self.inventory.ui_repeat;
+    const ui_in = ui_input.build_frame(dt, active_repeat);
 
     if (self.player.inventory_toggle_pending) {
         self.player.inventory_toggle_pending = false;
         if (self.inventory.open) {
             self.inventory.close_overlay(&self.player);
-        } else {
+        } else if (!self.chat.open) {
             self.inventory.open_overlay(&self.player);
         }
     }
 
+    // Chat open/close.  Inventory and chat are mutually exclusive; neither
+    // opens while the other is active.
+    if (self.player.chat_open_pending) {
+        self.player.chat_open_pending = false;
+        if (!self.chat.open and !self.inventory.open) {
+            self.chat.open_overlay(&self.player, false);
+        }
+    }
+    if (self.player.chat_cmd_pending) {
+        self.player.chat_cmd_pending = false;
+        if (!self.chat.open and !self.inventory.open) {
+            self.chat.open_overlay(&self.player, true);
+        }
+    }
+
     if (self.inventory.open) self.inventory.update(&ui_in, &self.player);
+
+    // Chat update: pass the chat_send flag separately so Enter sends without
+    // Space accidentally triggering a send (Space fires ui_confirm AND types
+    // a space char; chat ignores confirm_edge and uses chat_send_pending).
+    if (self.chat.open) {
+        const send = self.player.chat_send_pending;
+        self.player.chat_send_pending = false;
+        self.chat.update(&ui_in, send, &self.player);
+    } else {
+        self.player.chat_send_pending = false;
+    }
+
+    self.chat.tick(dt);
 
     // Player physics keep ticking with the inventory open (matching Classic).
     // mouse_captured is false while open, so apply_look ignores deltas and
@@ -396,6 +468,17 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (self.inventory.open) {
         self.inventory.draw(&self.ui_batcher, &self.iso_blocks, &self.font_batcher);
     }
+    // Desktop: hold Tab to show player list (hidden while inventory or chat open).
+    // PSP: show during social mode, which coexists with the chat input field.
+    const show_playerlist = if (ae.platform == .psp)
+        self.psp_social_mode
+    else
+        self.player.playerlist_held and Session.mode == .multiplayer
+            and !self.inventory.open and !self.chat.open;
+    if (show_playerlist) {
+        self.player_list.draw(&self.ui_batcher, &self.font_batcher, Session.username());
+    }
+    self.chat.draw(&self.ui_batcher, &self.font_batcher);
 
     // Hotbar tooltip: block name above the hotbar, fades out over the last 0.5s.
     if (self.hotbar_tooltip_timer > 0 and !self.inventory.open) {

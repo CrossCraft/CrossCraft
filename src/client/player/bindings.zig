@@ -81,6 +81,28 @@ pub fn init() !void {
     try input.bind_action("playerlist", .{ .source = .{ .key = .Tab } });
     try input.bind_action("playerlist", .{ .source = .{ .gamepad_button = .Back } });
 
+    // ---- chat ----
+    // chat_open (T): opens a blank input field.
+    // chat_cmd (/): opens with '/' pre-typed for commands.
+    // chat_send (Enter): sends the composed message; kept separate from
+    //   ui_confirm (Enter + Space + A) so Space can type a space character
+    //   without accidentally sending.
+    try input.register_action("chat_open", .button);
+    try input.bind_action("chat_open", .{ .source = .{ .key = .T } });
+    try input.register_action("chat_cmd", .button);
+    try input.bind_action("chat_cmd", .{ .source = .{ .key = .Slash } });
+    try input.register_action("chat_send", .button);
+    try input.bind_action("chat_send", .{ .source = .{ .key = .Enter } });
+
+    // PSP: Cross (X) confirms / launches the OSK while the social overlay is
+    // open.  Shares the same button as the 'move' backward action; that is
+    // intentional -- the OSK service call is blocking so any simultaneous
+    // movement is harmless.
+    if (ae.platform == .psp) {
+        try input.register_action("psp_osk", .button);
+        try input.bind_action("psp_osk", .{ .source = .{ .gamepad_button = .A } }); // Cross
+    }
+
     // ---- hotbar slot cycle ----
     // D-pad is button-typed (one event per press). Mouse scroll is axis-typed
     // because get_mouse_scroll() returns a per-frame delta and is consumed on

@@ -66,6 +66,10 @@ const Pending = struct {
     held_left: bool = false,
     held_right: bool = false,
     held_backspace: bool = false,
+    /// Tracked separately so releasing one Shift key while the other is held
+    /// does not prematurely clear the shifted state.
+    shift_l_held: bool = false,
+    shift_r_held: bool = false,
     char_buf: [CHAR_BUF_CAP]u8 = .{0} ** CHAR_BUF_CAP,
     char_count: u8 = 0,
     /// Latest cursor position from the ui_cursor vector2 action, in absolute
@@ -177,53 +181,62 @@ pub fn ensure_registered() !void {
 }
 
 /// Key-to-character mapping for text input fields.
-const CharBinding = struct { key: input.Key, char: u8 };
+/// `char` is the unshifted value; `char_shifted` is produced when either
+/// Shift key is held.  US QWERTY layout throughout.
+const CharBinding = struct { key: input.Key, char: u8, char_shifted: u8 };
 const char_bindings = [_]CharBinding{
-    .{ .key = .A, .char = 'a' },
-    .{ .key = .B, .char = 'b' },
-    .{ .key = .C, .char = 'c' },
-    .{ .key = .D, .char = 'd' },
-    .{ .key = .E, .char = 'e' },
-    .{ .key = .F, .char = 'f' },
-    .{ .key = .G, .char = 'g' },
-    .{ .key = .H, .char = 'h' },
-    .{ .key = .I, .char = 'i' },
-    .{ .key = .J, .char = 'j' },
-    .{ .key = .K, .char = 'k' },
-    .{ .key = .L, .char = 'l' },
-    .{ .key = .M, .char = 'm' },
-    .{ .key = .N, .char = 'n' },
-    .{ .key = .O, .char = 'o' },
-    .{ .key = .P, .char = 'p' },
-    .{ .key = .Q, .char = 'q' },
-    .{ .key = .R, .char = 'r' },
-    .{ .key = .S, .char = 's' },
-    .{ .key = .T, .char = 't' },
-    .{ .key = .U, .char = 'u' },
-    .{ .key = .V, .char = 'v' },
-    .{ .key = .W, .char = 'w' },
-    .{ .key = .X, .char = 'x' },
-    .{ .key = .Y, .char = 'y' },
-    .{ .key = .Z, .char = 'z' },
-    .{ .key = .Num0, .char = '0' },
-    .{ .key = .Num1, .char = '1' },
-    .{ .key = .Num2, .char = '2' },
-    .{ .key = .Num3, .char = '3' },
-    .{ .key = .Num4, .char = '4' },
-    .{ .key = .Num5, .char = '5' },
-    .{ .key = .Num6, .char = '6' },
-    .{ .key = .Num7, .char = '7' },
-    .{ .key = .Num8, .char = '8' },
-    .{ .key = .Num9, .char = '9' },
-    .{ .key = .Period, .char = '.' },
-    .{ .key = .Minus, .char = '-' },
-    .{ .key = .Semicolon, .char = ':' },
+    .{ .key = .A, .char = 'a', .char_shifted = 'A' },
+    .{ .key = .B, .char = 'b', .char_shifted = 'B' },
+    .{ .key = .C, .char = 'c', .char_shifted = 'C' },
+    .{ .key = .D, .char = 'd', .char_shifted = 'D' },
+    .{ .key = .E, .char = 'e', .char_shifted = 'E' },
+    .{ .key = .F, .char = 'f', .char_shifted = 'F' },
+    .{ .key = .G, .char = 'g', .char_shifted = 'G' },
+    .{ .key = .H, .char = 'h', .char_shifted = 'H' },
+    .{ .key = .I, .char = 'i', .char_shifted = 'I' },
+    .{ .key = .J, .char = 'j', .char_shifted = 'J' },
+    .{ .key = .K, .char = 'k', .char_shifted = 'K' },
+    .{ .key = .L, .char = 'l', .char_shifted = 'L' },
+    .{ .key = .M, .char = 'm', .char_shifted = 'M' },
+    .{ .key = .N, .char = 'n', .char_shifted = 'N' },
+    .{ .key = .O, .char = 'o', .char_shifted = 'O' },
+    .{ .key = .P, .char = 'p', .char_shifted = 'P' },
+    .{ .key = .Q, .char = 'q', .char_shifted = 'Q' },
+    .{ .key = .R, .char = 'r', .char_shifted = 'R' },
+    .{ .key = .S, .char = 's', .char_shifted = 'S' },
+    .{ .key = .T, .char = 't', .char_shifted = 'T' },
+    .{ .key = .U, .char = 'u', .char_shifted = 'U' },
+    .{ .key = .V, .char = 'v', .char_shifted = 'V' },
+    .{ .key = .W, .char = 'w', .char_shifted = 'W' },
+    .{ .key = .X, .char = 'x', .char_shifted = 'X' },
+    .{ .key = .Y, .char = 'y', .char_shifted = 'Y' },
+    .{ .key = .Z, .char = 'z', .char_shifted = 'Z' },
+    .{ .key = .Num0, .char = '0', .char_shifted = ')' },
+    .{ .key = .Num1, .char = '1', .char_shifted = '!' },
+    .{ .key = .Num2, .char = '2', .char_shifted = '@' },
+    .{ .key = .Num3, .char = '3', .char_shifted = '#' },
+    .{ .key = .Num4, .char = '4', .char_shifted = '$' },
+    .{ .key = .Num5, .char = '5', .char_shifted = '%' },
+    .{ .key = .Num6, .char = '6', .char_shifted = '^' },
+    .{ .key = .Num7, .char = '7', .char_shifted = '&' },
+    .{ .key = .Num8, .char = '8', .char_shifted = '*' },
+    .{ .key = .Num9, .char = '9', .char_shifted = '(' },
+    .{ .key = .Period,    .char = '.', .char_shifted = '>' },
+    .{ .key = .Minus,     .char = '-', .char_shifted = '_' },
+    // Semicolon: unshifted ';', shifted ':' (standard US layout).
+    // Previously mapped to ':' always; colon for IP:port now requires Shift.
+    .{ .key = .Semicolon, .char = ';', .char_shifted = ':' },
+    // Space is also bound to jump (gameplay) and ui_confirm (menus); those
+    // callbacks gate on mouse_captured / ignore char_buf, so this is safe.
+    .{ .key = .Space, .char = ' ', .char_shifted = ' ' },
 };
 
-fn char_handler(comptime ch: u8) input.ButtonCallback {
+fn char_handler(comptime ch: u8, comptime ch_shifted: u8) input.ButtonCallback {
     return struct {
         fn handle(_: *anyopaque, ev: input.ButtonEvent) void {
-            if (ev == .pressed) push_char(ch);
+            if (ev != .pressed) return;
+            const shifted = runtime.pending.shift_l_held or runtime.pending.shift_r_held;
+            push_char(if (shifted) ch_shifted else ch);
         }
     }.handle;
 }
@@ -236,17 +249,33 @@ fn push_char(ch: u8) void {
 }
 
 fn register_char_keys() !void {
-    @setEvalBranchQuota(10_000);
+    // Track left and right Shift independently so releasing one does not
+    // clear the shifted state while the other is still held.
+    try input.register_action("tc_shift_l", .button);
+    try input.bind_action("tc_shift_l", .{ .source = .{ .key = .LeftShift } });
+    try input.add_button_callback("tc_shift_l", &runtime.pending, on_shift_l);
+
+    try input.register_action("tc_shift_r", .button);
+    try input.bind_action("tc_shift_r", .{ .source = .{ .key = .RightShift } });
+    try input.add_button_callback("tc_shift_r", &runtime.pending, on_shift_r);
+
+    @setEvalBranchQuota(20_000);
     inline for (char_bindings) |cb| {
         const name = comptime std.fmt.comptimePrint("tc_{d}", .{@intFromEnum(cb.key)});
         try input.register_action(name, .button);
         try input.bind_action(name, .{ .source = .{ .key = cb.key } });
-        try input.add_button_callback(name, &runtime.pending, char_handler(cb.char));
+        try input.add_button_callback(name, &runtime.pending, char_handler(cb.char, cb.char_shifted));
     }
 }
 
 fn on_backspace(_: *anyopaque, ev: input.ButtonEvent) void {
     runtime.pending.held_backspace = ev == .pressed;
+}
+fn on_shift_l(_: *anyopaque, ev: input.ButtonEvent) void {
+    runtime.pending.shift_l_held = ev == .pressed;
+}
+fn on_shift_r(_: *anyopaque, ev: input.ButtonEvent) void {
+    runtime.pending.shift_r_held = ev == .pressed;
 }
 
 fn on_click(_: *anyopaque, ev: input.ButtonEvent) void {

@@ -4,6 +4,8 @@ const proto = @import("common").protocol;
 
 const World = @import("game").World;
 const WorldRenderer = @import("../world/world.zig");
+const PlayerList = @import("../ui/PlayerList.zig");
+const Chat = @import("../ui/Chat.zig");
 
 const log = std.log.scoped(.client_conn);
 
@@ -29,6 +31,14 @@ quit_requested: bool,
 /// from the server use it to mark affected sections for rebuild.
 world_renderer: ?*WorldRenderer,
 
+/// Set by GameState after the player list is initialised. SpawnPlayer /
+/// DespawnPlayer packets for remote players (pid != -1) are forwarded here.
+player_list: ?*PlayerList,
+
+/// Set by GameState after Chat is initialised. Incoming Message packets
+/// are forwarded here so the chat overlay can display them.
+chat: ?*Chat,
+
 buffer: [1028]u8,
 
 pub fn init(self: *Self, reader: *std.Io.Reader, writer: *std.Io.Writer) void {
@@ -43,6 +53,8 @@ pub fn init(self: *Self, reader: *std.Io.Reader, writer: *std.Io.Writer) void {
     self.handshake_complete = false;
     self.quit_requested = false;
     self.world_renderer = null;
+    self.player_list = null;
+    self.chat = null;
     self.protocol = zb.Protocol.init(.server, .Connected, self);
     self.protocol.handles = .{
         .onPlayerIDToClient = on_player_id,
@@ -144,11 +156,14 @@ fn on_level_finalize(ctx: *anyopaque, event: zb.LevelFinalize) !void {
 fn on_spawn(ctx: *anyopaque, event: zb.SpawnPlayer) !void {
     const self: *Self = @ptrCast(@alignCast(ctx));
     log.info("SpawnPlayer: pid={d} pos=({d},{d},{d})", .{ event.pid, event.x, event.y, event.z });
-    if (event.pid != -1) return;
-    self.spawn_x = event.x;
-    self.spawn_y = event.y;
-    self.spawn_z = event.z;
-    self.handshake_complete = true;
+    if (event.pid == -1) {
+        self.spawn_x = event.x;
+        self.spawn_y = event.y;
+        self.spawn_z = event.z;
+        self.handshake_complete = true;
+        return;
+    }
+    if (self.player_list) |pl| pl.spawn(event.pid, &event.name);
 }
 
 fn on_position(_: *anyopaque, event: zb.SetPositionOrientation) !void {
@@ -158,8 +173,10 @@ fn on_position(_: *anyopaque, event: zb.SetPositionOrientation) !void {
     _ = event;
 }
 
-fn on_message(_: *anyopaque, event: zb.Message) !void {
+fn on_message(ctx: *anyopaque, event: zb.Message) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
     log.info("Message: pid={d} {s}", .{ event.pid, &event.message });
+    if (self.chat) |ch| ch.receive(&event.message);
 }
 
 fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
@@ -187,8 +204,10 @@ fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
     if (ly == 15) wr.mark_section_dirty(cx, sy + 1, cz);
 }
 
-fn on_despawn(_: *anyopaque, event: zb.DespawnPlayer) !void {
+fn on_despawn(ctx: *anyopaque, event: zb.DespawnPlayer) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
     log.info("Despawn: pid={d}", .{event.pid});
+    if (self.player_list) |pl| pl.despawn(event.pid);
 }
 
 fn on_disconnect(ctx: *anyopaque, event: zb.DisconnectPlayer) !void {

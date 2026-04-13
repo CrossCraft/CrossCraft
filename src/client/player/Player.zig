@@ -232,8 +232,20 @@ place_held: bool,
 break_repeat_timer: f32,
 place_repeat_timer: f32,
 
-/// True while the playerlist key/button is held.
+/// True while the playerlist key/button is held (desktop: hold-to-show).
 playerlist_held: bool,
+/// Rising edge of the playerlist press; consumed by GameState each frame.
+/// On PSP this drives the social-mode toggle instead of hold-to-show.
+playerlist_edge: bool,
+/// PSP only: Cross (X) pressed while social mode is open -- arm the OSK.
+psp_osk_edge: bool,
+
+/// Edge flags set by the chat action callbacks; GameState polls and clears
+/// them each frame.  chat_open: blank field; chat_cmd: '/' prefix field;
+/// chat_send: Enter key (send pending message).
+chat_open_pending: bool,
+chat_cmd_pending: bool,
+chat_send_pending: bool,
 
 /// Virtual block for client-side collision prediction.  Placed by
 /// do_place so the player collides with the block before the server
@@ -306,6 +318,11 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .break_repeat_timer = 0,
         .place_repeat_timer = 0,
         .playerlist_held = false,
+        .playerlist_edge = false,
+        .psp_osk_edge = false,
+        .chat_open_pending = false,
+        .chat_cmd_pending = false,
+        .chat_send_pending = false,
         .pending_block = null,
         .writer = writer,
         .particle_sink = null,
@@ -335,6 +352,12 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     try input.add_button_callback("shoulder_r", @ptrCast(self), on_shoulder_r);
     try input.add_button_callback("shoulder_l", @ptrCast(self), on_shoulder_l);
     try input.add_button_callback("playerlist", @ptrCast(self), on_playerlist);
+    try input.add_button_callback("chat_open", @ptrCast(self), on_chat_open);
+    try input.add_button_callback("chat_cmd", @ptrCast(self), on_chat_cmd);
+    try input.add_button_callback("chat_send", @ptrCast(self), on_chat_send);
+    if (ae.platform == .psp) {
+        try input.add_button_callback("psp_osk", @ptrCast(self), on_psp_osk);
+    }
     try input.add_button_callback("hotbar_left", @ptrCast(self), on_hotbar_left);
     try input.add_button_callback("hotbar_right", @ptrCast(self), on_hotbar_right);
     try input.add_axis_callback("hotbar_scroll", @ptrCast(self), on_hotbar_scroll);
@@ -1383,6 +1406,33 @@ fn on_shoulder_l(ctx: *anyopaque, event: input.ButtonEvent) void {
 fn on_playerlist(ctx: *anyopaque, event: input.ButtonEvent) void {
     const self: *Self = @ptrCast(@alignCast(ctx));
     self.playerlist_held = (event == .pressed);
+    if (event == .pressed) self.playerlist_edge = true;
+}
+
+fn on_psp_osk(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.psp_osk_edge = true;
+}
+
+fn on_chat_open(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    if (!self.mouse_captured) return;
+    self.chat_open_pending = true;
+}
+
+fn on_chat_cmd(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    if (!self.mouse_captured) return;
+    self.chat_cmd_pending = true;
+}
+
+fn on_chat_send(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.chat_send_pending = true;
 }
 
 fn on_hotbar_left(ctx: *anyopaque, event: input.ButtonEvent) void {
