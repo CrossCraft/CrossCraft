@@ -134,6 +134,12 @@ const LIQUID_ACCEL: f32 = 0.02;
 const WATER_DRAG: f32 = 0.8;
 const LAVA_DRAG: f32 = 0.5;
 
+// -- Hold-to-repeat timing ---------------------------------------------------
+// First action fires immediately on press. After REPEAT_DELAY the action
+// repeats every REPEAT_INTERVAL while the button stays held.
+const REPEAT_DELAY: f32 = 0.20; // seconds before first repeat
+const REPEAT_INTERVAL: f32 = 0.20; // seconds between subsequent repeats (~5/sec)
+
 // -- View bobbing tuning -----------------------------------------------------
 // Drives both the camera sway and the held-block screen-space sway. The
 // underlying state is a walk phase (advanced by horizontal travel), an
@@ -217,6 +223,15 @@ shoulder_r_held: bool,
 pending_shoulder_break: bool,
 pending_shoulder_place: bool,
 
+/// Hold-to-repeat state for break/place. The mouse/keyboard callbacks
+/// set the held flag on press and clear it on release; the shoulder
+/// buttons reuse their existing held flags. The timer accumulates dt
+/// while any source for the action is held.
+break_held: bool,
+place_held: bool,
+break_repeat_timer: f32,
+place_repeat_timer: f32,
+
 /// True while the playerlist key/button is held.
 playerlist_held: bool,
 
@@ -286,6 +301,10 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .shoulder_r_held = false,
         .pending_shoulder_break = false,
         .pending_shoulder_place = false,
+        .break_held = false,
+        .place_held = false,
+        .break_repeat_timer = 0,
+        .place_repeat_timer = 0,
         .playerlist_held = false,
         .pending_block = null,
         .writer = writer,
@@ -341,11 +360,41 @@ pub fn update(self: *Self, dt: f32) void {
     // a same-frame L+R chord cancel the pending break/place before it fires.
     if (self.pending_shoulder_break) {
         self.pending_shoulder_break = false;
-        if (!self.shoulder_l_held) self.do_break();
+        if (!self.shoulder_l_held) {
+            self.break_repeat_timer = 0;
+            self.do_break();
+        }
     }
     if (self.pending_shoulder_place) {
         self.pending_shoulder_place = false;
-        if (!self.shoulder_r_held) self.do_place();
+        if (!self.shoulder_r_held) {
+            self.place_repeat_timer = 0;
+            self.do_place();
+        }
+    }
+
+    // Hold-to-repeat: tick timers while either the mouse/keyboard button
+    // or the corresponding gamepad shoulder button is held. The initial
+    // press already fired via the callback; the timer handles repeats.
+    const break_any_held = self.break_held or (self.shoulder_r_held and !self.shoulder_l_held);
+    const place_any_held = self.place_held or (self.shoulder_l_held and !self.shoulder_r_held);
+    if (break_any_held) {
+        self.break_repeat_timer += dt;
+        if (self.break_repeat_timer >= REPEAT_DELAY) {
+            self.break_repeat_timer -= REPEAT_INTERVAL;
+            self.do_break();
+        }
+    } else {
+        self.break_repeat_timer = 0;
+    }
+    if (place_any_held) {
+        self.place_repeat_timer += dt;
+        if (self.place_repeat_timer >= REPEAT_DELAY) {
+            self.place_repeat_timer -= REPEAT_INTERVAL;
+            self.do_place();
+        }
+    } else {
+        self.place_repeat_timer = 0;
     }
 
     self.apply_look(dt);
@@ -820,15 +869,18 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     // Check the voxel containing the eye first (in case we're inside a block).
     if (in_world(bx, by, bz)) {
         if (is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) {
-            return .{
-                .x = @intCast(bx),
-                .y = @intCast(by),
-                .z = @intCast(bz),
-                .place_x = @intCast(bx),
-                .place_y = @intCast(by),
-                .place_z = @intCast(bz),
-                .has_place = false,
-            };
+            const bounds = c.block_bounds(World.get_block(@intCast(bx), @intCast(by), @intCast(bz)));
+            if (point_in_bounds(ox - @as(f32, @floatFromInt(bx)), oy - @as(f32, @floatFromInt(by)), oz - @as(f32, @floatFromInt(bz)), bounds)) {
+                return .{
+                    .x = @intCast(bx),
+                    .y = @intCast(by),
+                    .z = @intCast(bz),
+                    .place_x = @intCast(bx),
+                    .place_y = @intCast(by),
+                    .place_z = @intCast(bz),
+                    .has_place = false,
+                };
+            }
         }
     }
 
@@ -857,7 +909,13 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
         }
 
         if (!in_world(bx, by, bz)) return null;
-        if (is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) {
+        if (!is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) continue;
+
+        const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
+        const bounds = c.block_bounds(block);
+
+        if (bounds.is_full()) {
+            // Full block: original DDA-based placement.
             const has_place = in_world(prev_x, prev_y, prev_z);
             return .{
                 .x = @intCast(bx),
@@ -869,6 +927,25 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
                 .has_place = has_place,
             };
         }
+
+        // Partial block: test ray against the subvoxel AABB.
+        if (ray_sub_aabb(ox, oy, oz, dx, dy, dz, @floatFromInt(bx), @floatFromInt(by), @floatFromInt(bz), bounds, range)) |face| {
+            const off = face_normal(face);
+            const px = bx + off[0];
+            const py = by + off[1];
+            const pz = bz + off[2];
+            const has_place = in_world(px, py, pz);
+            return .{
+                .x = @intCast(bx),
+                .y = @intCast(by),
+                .z = @intCast(bz),
+                .place_x = if (has_place) @intCast(px) else @intCast(bx),
+                .place_y = if (has_place) @intCast(py) else @intCast(by),
+                .place_z = if (has_place) @intCast(pz) else @intCast(bz),
+                .has_place = has_place,
+            };
+        }
+        // Subvoxel AABB missed — ray passes through empty space, keep stepping.
     }
     return null;
 }
@@ -899,6 +976,115 @@ fn is_selectable(x: u16, y: u16, z: u16) bool {
         B.Still_Lava,
         => false,
         else => true,
+    };
+}
+
+// -- Subvoxel helpers --------------------------------------------------------
+
+/// True when the point (in block-local coords, 0..1) is inside the bounds.
+fn point_in_bounds(lx: f32, ly: f32, lz: f32, b: c.SubvoxelBounds) bool {
+    const Q: f32 = 0.0625;
+    return lx >= @as(f32, @floatFromInt(b.min_x)) * Q and
+        lx < @as(f32, @floatFromInt(b.max_x)) * Q and
+        ly >= @as(f32, @floatFromInt(b.min_y)) * Q and
+        ly < @as(f32, @floatFromInt(b.max_y)) * Q and
+        lz >= @as(f32, @floatFromInt(b.min_z)) * Q and
+        lz < @as(f32, @floatFromInt(b.max_z)) * Q;
+}
+
+/// Ray–AABB slab test against a block's subvoxel bounds. Returns the entry
+/// face when the ray hits, or null when it misses (ray passes through the
+/// empty portion of the voxel).
+fn ray_sub_aabb(
+    ox: f32,
+    oy: f32,
+    oz: f32,
+    dx: f32,
+    dy: f32,
+    dz: f32,
+    bx: f32,
+    by: f32,
+    bz: f32,
+    bounds: c.SubvoxelBounds,
+    max_t: f32,
+) ?Face {
+    const Q: f32 = 0.0625;
+    const x0 = bx + @as(f32, @floatFromInt(bounds.min_x)) * Q;
+    const y0 = by + @as(f32, @floatFromInt(bounds.min_y)) * Q;
+    const z0 = bz + @as(f32, @floatFromInt(bounds.min_z)) * Q;
+    const x1 = bx + @as(f32, @floatFromInt(bounds.max_x)) * Q;
+    const y1 = by + @as(f32, @floatFromInt(bounds.max_y)) * Q;
+    const z1 = bz + @as(f32, @floatFromInt(bounds.max_z)) * Q;
+
+    const INF = std.math.inf(f32);
+    var t_near: f32 = -INF;
+    var t_far: f32 = INF;
+    var face: Face = .y_pos;
+
+    // X slab
+    if (dx != 0) {
+        const inv = 1.0 / dx;
+        const t0 = (x0 - ox) * inv;
+        const t1 = (x1 - ox) * inv;
+        const t_lo = @min(t0, t1);
+        const t_hi = @max(t0, t1);
+        if (t_lo > t_near) {
+            t_near = t_lo;
+            face = if (dx > 0) .x_neg else .x_pos;
+        }
+        t_far = @min(t_far, t_hi);
+    } else {
+        if (ox < x0 or ox >= x1) return null;
+    }
+
+    // Y slab
+    if (dy != 0) {
+        const inv = 1.0 / dy;
+        const t0 = (y0 - oy) * inv;
+        const t1 = (y1 - oy) * inv;
+        const t_lo = @min(t0, t1);
+        const t_hi = @max(t0, t1);
+        if (t_lo > t_near) {
+            t_near = t_lo;
+            face = if (dy > 0) .y_neg else .y_pos;
+        }
+        t_far = @min(t_far, t_hi);
+    } else {
+        if (oy < y0 or oy >= y1) return null;
+    }
+
+    // Z slab
+    if (dz != 0) {
+        const inv = 1.0 / dz;
+        const t0 = (z0 - oz) * inv;
+        const t1 = (z1 - oz) * inv;
+        const t_lo = @min(t0, t1);
+        const t_hi = @max(t0, t1);
+        if (t_lo > t_near) {
+            t_near = t_lo;
+            face = if (dz > 0) .z_neg else .z_pos;
+        }
+        t_far = @min(t_far, t_hi);
+    } else {
+        if (oz < z0 or oz >= z1) return null;
+    }
+
+    if (t_near > t_far) return null;
+    if (t_far < 0) return null;
+    if (t_near > max_t) return null;
+
+    return face;
+}
+
+/// Unit normal of a face as an integer offset for block placement.
+fn face_normal(face: Face) [3]i32 {
+    return switch (face) {
+        .x_neg => .{ -1, 0, 0 },
+        .x_pos => .{ 1, 0, 0 },
+        .y_neg => .{ 0, -1, 0 },
+        .y_pos => .{ 0, 1, 0 },
+        .z_neg => .{ 0, 0, -1 },
+        .z_pos => .{ 0, 0, 1 },
     };
 }
 
@@ -1055,8 +1241,10 @@ fn on_noclip(ctx: *anyopaque, event: input.ButtonEvent) void {
 }
 
 fn on_break(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
     const self: *Self = @ptrCast(@alignCast(ctx));
+    self.break_held = (event == .pressed);
+    if (event != .pressed) return;
+    self.break_repeat_timer = 0;
     self.do_break();
 }
 
@@ -1097,8 +1285,10 @@ fn derive_break_face(hit: RaycastHit) Face {
 }
 
 fn on_place(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
     const self: *Self = @ptrCast(@alignCast(ctx));
+    self.place_held = (event == .pressed);
+    if (event != .pressed) return;
+    self.place_repeat_timer = 0;
     self.do_place();
 }
 

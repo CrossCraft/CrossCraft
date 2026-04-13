@@ -363,6 +363,16 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
         world.set_block(event.x, event.y, event.z, 0);
         Server.broadcast_block_change(event.x, event.y, event.z, 0);
     } else {
+        // Placing a slab on top of another slab combines into a double slab.
+        if (event.block == c.Block.Slab and event.y > 0) {
+            const below = world.get_block(event.x, event.y - 1, event.z);
+            if (below == c.Block.Slab) {
+                world.set_block(event.x, event.y - 1, event.z, c.Block.Double_Slab);
+                Server.broadcast_block_change(event.x, event.y - 1, event.z, c.Block.Double_Slab);
+                world.enqueue_neighbors_of(event.x, event.y - 1, event.z);
+                return;
+            }
+        }
         world.set_block(event.x, event.y, event.z, event.block);
         Server.broadcast_block_change(event.x, event.y, event.z, event.block);
     }

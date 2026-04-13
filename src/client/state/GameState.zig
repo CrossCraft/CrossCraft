@@ -348,6 +348,8 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // Selection outline: still in the 3D pass, depth-tested against the world.
     // Nudge it slightly toward the camera so it does not z-fight the selected
     // block face, without making it show through other geometry.
+    // The outline shape matches the block's subvoxel bounds (e.g. half-height
+    // for slabs, small box for flowers/mushrooms).
     if (self.player.selected) |hit| {
         Rendering.Texture.Default.bind();
         var t = Rendering.Transform.new();
@@ -357,14 +359,20 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
             .y = @sin(self.player.camera.pitch),
             .z = @cos(self.player.camera.yaw) * cp,
         };
+        const bounds = c.block_bounds(World.get_block(hit.x, hit.y, hit.z));
+        const Q: f32 = 0.0625;
         t.pos = .{
-            .x = @as(f32, @floatFromInt(hit.x)) + toward_camera.x * selection_depth_nudge,
-            .y = @as(f32, @floatFromInt(hit.y)) + toward_camera.y * selection_depth_nudge,
-            .z = @as(f32, @floatFromInt(hit.z)) + toward_camera.z * selection_depth_nudge,
+            .x = @as(f32, @floatFromInt(hit.x)) + @as(f32, @floatFromInt(bounds.min_x)) * Q + toward_camera.x * selection_depth_nudge,
+            .y = @as(f32, @floatFromInt(hit.y)) + @as(f32, @floatFromInt(bounds.min_y)) * Q + toward_camera.y * selection_depth_nudge,
+            .z = @as(f32, @floatFromInt(hit.z)) + @as(f32, @floatFromInt(bounds.min_z)) * Q + toward_camera.z * selection_depth_nudge,
         };
         // Vertices live in SNORM16 block-units (1 block = 2048 / 32768);
-        // scale by 16 to recover world units, matching ChunkMesh.
-        t.scale = .{ .x = 16.0, .y = 16.0, .z = 16.0 };
+        // (max - min) * 1.0 gives the correct world-unit scale per axis.
+        t.scale = .{
+            .x = @as(f32, @floatFromInt(bounds.max_x - bounds.min_x)),
+            .y = @as(f32, @floatFromInt(bounds.max_y - bounds.min_y)),
+            .z = @as(f32, @floatFromInt(bounds.max_z - bounds.min_z)),
+        };
         self.selection.draw(&t);
     }
 

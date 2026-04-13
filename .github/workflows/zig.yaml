@@ -45,6 +45,10 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
 
+      - name: Setup macOS SDK (for frameworks)
+        if: matrix.name == 'mac'
+        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
+
       - name: Build server
         run: zig build server -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
 
@@ -91,6 +95,10 @@ jobs:
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
+
+      - name: Setup macOS SDK (for frameworks)
+        if: matrix.name == 'mac'
+        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
 
       # macOS links system glfw3 and vulkan loader (see Aether build.zig:150-155);
       # every other target uses vendored packages and needs no system libs.
