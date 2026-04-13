@@ -334,10 +334,14 @@ fn make_vertex(wx: f32, wy: f32, wz: f32, u: i16, v: i16, color: u32) Vertex {
     };
 }
 
-/// True when the world coordinate can be losslessly encoded into an i16.
+/// True when the world coordinate — plus billboard offsets — can be
+/// losslessly encoded into an i16.  The billboard corners are at most
+/// 2 * HALF_SIZE away from the particle center on any axis, so we
+/// shrink the safe window by that margin.
 fn encodable(world: f32) bool {
+    const margin = 2.0 * HALF_SIZE * POS_SCALE; // billboard corner offset in scaled units
     const scaled = @round(world * POS_SCALE);
-    return scaled >= -32768.0 and scaled <= 32767.0;
+    return scaled >= -32768.0 + margin and scaled <= 32767.0 - margin;
 }
 
 fn encode(world: f32) i16 {
