@@ -196,7 +196,7 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
     const on_main = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.main_menu_ctx);
     if (on_main) {
         const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;
-        const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 80, .top_center, .top_center, 25, pulse, 2);
+        const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 72, .top_center, .top_center, 22, pulse, 2);
 
         Rendering.Pipeline.bind(pipeline);
         ResourcePack.get_tex(.font).bind();

@@ -12,6 +12,7 @@ pub fn build(b: *std.Build) void {
     };
 
     const slim = b.option(bool, "slim", "Slim mode: reduced memory, smaller render distance (for PSP-1000)") orelse false;
+    const skip_pack = b.option(bool, "skip-pack", "Skip zipping resources into pack.zip (for CI builds without LFS assets)") orelse false;
 
     const config = Aether.Config.resolve(target, overrides);
 
@@ -46,28 +47,32 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Resource packing: ZIP the default resource pack at build time
-    const resources = b.dependency("resources", .{});
-
-    const pack_tool = b.addExecutable(.{
-        .name = "pack_zip",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/pack_zip.zig"),
-            .target = b.graph.host,
-        }),
-    });
-
-    var pack_cmd = b.addRunArtifact(pack_tool);
-    pack_cmd.addDirectoryArg(resources.path("default"));
-    const pack_zip = pack_cmd.addOutputFileArg("pack.zip");
-
     const psp_client_dir = "CrossCraft-Classic-PSP";
     const is_psp = target.result.os.tag == .psp;
 
-    const install_pack = b.addInstallFile(
-        pack_zip,
-        if (is_psp) "bin/" ++ psp_client_dir ++ "/pack.zip" else "bin/pack.zip",
-    );
+    // Resource packing: ZIP the default resource pack at build time.
+    // Skipped via -Dskip-pack on CI where the LFS-backed resources submodule
+    // is not fetched, which would otherwise zip up LFS pointer stubs.
+    const install_pack = if (skip_pack) null else blk: {
+        const resources = b.dependency("resources", .{});
+
+        const pack_tool = b.addExecutable(.{
+            .name = "pack_zip",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/pack_zip.zig"),
+                .target = b.graph.host,
+            }),
+        });
+
+        var pack_cmd = b.addRunArtifact(pack_tool);
+        pack_cmd.addDirectoryArg(resources.path("default"));
+        const pack_zip = pack_cmd.addOutputFileArg("pack.zip");
+
+        break :blk b.addInstallFile(
+            pack_zip,
+            if (is_psp) "bin/" ++ psp_client_dir ++ "/pack.zip" else "bin/pack.zip",
+        );
+    };
 
     const ae_dep = b.dependency("engine", .{
         .target = target,
@@ -144,7 +149,7 @@ pub fn build(b: *std.Build) void {
 
     const build_game_step = b.step("game", "Build the game");
     build_game_step.dependOn(&b.addInstallArtifact(client_exe, .{}).step);
-    build_game_step.dependOn(&install_pack.step);
+    if (install_pack) |ip| build_game_step.dependOn(&ip.step);
     if (is_psp) {
         // exportArtifact registers PSP pipeline steps (ELF→PRX→EBOOT.PBP)
         // on b.getInstallStep(); wire them into the game step so that
@@ -154,7 +159,7 @@ pub fn build(b: *std.Build) void {
 
     const run_client_step = b.step("run-game", "Run the app");
     const run_client_cmd = b.addRunArtifact(client_exe);
-    run_client_cmd.step.dependOn(&install_pack.step);
+    if (install_pack) |ip| run_client_cmd.step.dependOn(&ip.step);
     run_client_step.dependOn(&run_client_cmd.step);
 
     if (b.args) |args| {

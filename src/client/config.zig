@@ -54,7 +54,7 @@ pub const current: Self = if (ae.platform == .psp and build_options.slim) .{
 } else .{
     .total_memory_mb = 80,
     .chunk_radius = 8,
-    .lod_near_radius_blocks = 72,
+    .lod_near_radius_blocks = 96,
     .mesh_pool_mb = 32,
     .init_render = 8 * MB,
     .init_audio = 2 * MB,

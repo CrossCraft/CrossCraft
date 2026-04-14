@@ -22,7 +22,7 @@ const CLOUD_UV_REPEATS: u32 = 1;
 /// UVs span 1/CLOUD_TEX_SCALE of the texture across the grid.
 const CLOUD_TEX_SCALE: u32 = 2;
 const CLOUD_Y: f32 = 72.0;
-const CLOUD_SPEED: f32 = 2.0;
+const CLOUD_SPEED: f32 = 0.175;
 const WORLD_CENTER: f32 = 128.0;
 
 const Self = @This();

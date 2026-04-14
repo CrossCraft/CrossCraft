@@ -40,7 +40,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
-          lfs: true
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -91,7 +90,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
-          lfs: true
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -107,7 +105,7 @@ jobs:
         run: brew install glfw vulkan-loader
 
       - name: Build game
-        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe -Dskip-pack=true ${{ matrix.extra }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -19,7 +19,7 @@ const collision = @import("../player/collision.zig");
 /// Hard cap on simultaneously alive particles. 6 verts each => 3072 verts.
 const MAX_PARTICLES: u16 = 512;
 /// Particles emitted per block break (clamped by remaining capacity).
-const PER_BREAK: u16 = 32;
+const PER_BREAK: u16 = 48;
 /// Particle lifetime range in seconds. Each spawn picks uniformly within
 /// this window so a burst doesn't vanish all at once.
 const LIFETIME_MIN: f32 = 0.6;
@@ -139,7 +139,7 @@ pub fn spawn_break(self: *Self, block_id: u8, bx: u16, by: u16, bz: u16, face: F
         // small jitter so neighboring particles don't fly in lockstep.
         // The outward speed scales with offset magnitude (corner spawns fly
         // faster than near-center ones), giving a natural radial burst.
-        const burst_speed: f32 = 2.0;
+        const burst_speed: f32 = 2.5;
         const jitter: f32 = 0.4;
         const upward_bias: f32 = 0.6;
         self.particles[self.count] = .{
