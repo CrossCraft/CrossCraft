@@ -66,6 +66,7 @@ pub const Stream = struct {
     /// Absolute byte offset of the file's raw data inside the zip archive.
     data_offset: u64,
     uncompressed_size: u64,
+    compression_method: zip.CompressionMethod,
 };
 
 pub const Iterator = struct {
@@ -176,6 +177,7 @@ pub fn open(self: *Zip, path: []const u8) !Stream {
             .reader = &slot.limited.interface,
             .data_offset = slot.data_offset,
             .uncompressed_size = slot.uncompressed_size,
+            .compression_method = zip_entry.compression_method,
         };
     }
 

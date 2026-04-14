@@ -158,10 +158,10 @@ const music_paths: [music_count][]const u8 = .{
 
 // -- init / deinit ----------------------------------------------------------
 
-pub fn init(pack: *Zip) void {
+pub fn init(pack: *Zip, path: []const u8) void {
     stored_io = pack.io;
-    stored_file = Io.Dir.cwd().openFile(stored_io, "pack.zip", .{}) catch |err| {
-        log.warn("cannot open pack.zip for audio: {}", .{err});
+    stored_file = Io.Dir.cwd().openFile(stored_io, path, .{}) catch |err| {
+        log.warn("cannot open '{s}' for audio: {}", .{ path, err });
         return;
     };
 
@@ -192,6 +192,20 @@ pub fn deinit() void {
     }
     stored_file.close(stored_io);
     initialised = false;
+
+    stored_file = undefined;
+    stored_io = undefined;
+
+    music_state = .idle;
+    music_index = 0;
+    music_delay_timer = 0;
+    voices = undefined;
+
+    dig_entries = init_entry_grid();
+    dig_counts = .{ 0, 0, 0, 0, 0 };
+    step_entries = init_entry_grid();
+    step_counts = .{ 0, 0, 0, 0, 0 };
+    music_entries = init_entry_row();
 }
 
 fn scan_entries(
@@ -229,9 +243,15 @@ fn scan_music(pack: *Zip) void {
 
 /// Open a WAV from the zip, parse its header, and record where the PCM
 /// data lives in the archive so we can seek straight to it at play time.
+/// Playback reads raw bytes directly from the archive file handle, so the
+/// entry must be stored (not deflated) -- user-supplied texturepacks often
+/// use deflate, in which case we fail the resolve and the sound silently
+/// drops rather than playing compressed bytes as PCM (static noise).
 fn resolve_wav(pack: *Zip, path: []const u8) !SoundEntry {
     var stream = try pack.open(path);
     defer pack.closeStream(&stream);
+
+    if (stream.compression_method != .store) return error.UnsupportedCompression;
 
     const wav = try Audio.wav.open(stream.reader);
     const pcm_size = wav.byte_length orelse return error.UnknownLength;

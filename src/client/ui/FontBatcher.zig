@@ -114,6 +114,18 @@ pub fn deinit(self: *Self) void {
     self.mesh.deinit(self.allocator);
 }
 
+/// Recompute glyph widths from the current `texture` pixel data.
+/// Call after the underlying font texture has been swapped (e.g. resource
+/// pack switch) so that string layout matches the new glyph art.
+pub fn refresh(self: *Self) void {
+    self.glyph_widths = compute_glyph_widths(self.texture);
+    // Force the next flush to rebuild geometry: clear our previous-frame
+    // diff so the entries_equal short-circuit can't keep a stale mesh.
+    self.prev_count = 0;
+    self.last_screen_w = 0;
+    self.last_screen_h = 0;
+}
+
 pub fn clear(self: *Self) void {
     self.prev_count = self.count;
     self.current ^= 1;

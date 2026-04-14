@@ -15,6 +15,7 @@ const ui_input = @import("../ui/input.zig");
 const Screen = @import("../ui/Screen.zig");
 const MainMenuScreen = @import("../ui/MainMenuScreen.zig");
 const DirectConnectScreen = @import("../ui/DirectConnectScreen.zig");
+const TexturePackScreen = @import("../ui/TexturePackScreen.zig");
 const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
 
@@ -38,6 +39,7 @@ screen: Screen,
 ui_repeat: ui_input.Repeat,
 main_menu_ctx: MainMenuScreen.Context,
 direct_connect_ctx: DirectConnectScreen.Context,
+texture_pack_ctx: TexturePackScreen.Context,
 render_alloc: std.mem.Allocator,
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
@@ -51,11 +53,19 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
 
-    try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io);
+    // Ensure the user texturepacks folder exists so players can drop packs
+    // in without having to create the directory themselves.
+    std.Io.Dir.cwd().access(engine.io, "texturepacks", .{}) catch {
+        std.Io.Dir.cwd().createDir(engine.io, "texturepacks", .default_dir) catch |err| {
+            log.warn("failed to create texturepacks/: {}", .{err});
+        };
+    };
+
+    try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, "pack.zip");
     errdefer ResourcePack.deinit();
     try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui });
 
-    SoundManager.init(ResourcePack.get_pack());
+    SoundManager.init(ResourcePack.get_pack(), ResourcePack.get_pack_path());
 
     self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
     self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
@@ -70,6 +80,9 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         .logo = ResourcePack.get_tex(.logo),
     };
     self.direct_connect_ctx = .{
+        .dirt = ResourcePack.get_tex(.dirt),
+    };
+    self.texture_pack_ctx = .{
         .dirt = ResourcePack.get_tex(.dirt),
     };
     self.screen = MainMenuScreen.build(&self.main_menu_ctx);
@@ -126,11 +139,32 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
         return;
     }
 
+    if (MainMenuScreen.pending_texture_packs) {
+        MainMenuScreen.pending_texture_packs = false;
+        TexturePackScreen.refresh(engine.io);
+        self.screen = TexturePackScreen.build(&self.texture_pack_ctx);
+        self.screen.open(!ui_input.profile_uses_pointer());
+        return;
+    }
+
     const on_direct_connect = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.direct_connect_ctx);
     if (on_direct_connect and (DirectConnectScreen.pending_back or self.screen.cancel_pressed)) {
         DirectConnectScreen.pending_back = false;
         self.screen = MainMenuScreen.build(&self.main_menu_ctx);
         self.screen.open(!ui_input.profile_uses_pointer());
+    }
+
+    const on_texture_pack = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.texture_pack_ctx);
+    if (on_texture_pack) {
+        if (TexturePackScreen.pending_select_path) |path| {
+            TexturePackScreen.pending_select_path = null;
+            self.apply_pack(path);
+        }
+        if (TexturePackScreen.pending_back or self.screen.cancel_pressed) {
+            TexturePackScreen.pending_back = false;
+            self.screen = MainMenuScreen.build(&self.main_menu_ctx);
+            self.screen.open(!ui_input.profile_uses_pointer());
+        }
     }
 
     if (DirectConnectScreen.pending_join) {
@@ -168,6 +202,34 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
         ResourcePack.get_tex(.font).bind();
         self.splash_mesh.draw(&model);
     }
+}
+
+/// Swap to a new resource pack and reseat every dependent system. The
+/// underlying texture slots are addressed by stable pointers, so the menu
+/// screens, sprite batcher, and font batcher all keep working without
+/// rebuilding -- only the glyph metric cache and the splash mesh need to
+/// be regenerated to match the new font art.
+fn apply_pack(self: *@This(), path: []const u8) void {
+    ResourcePack.switch_pack(path) catch |err| {
+        log.err("switch_pack('{s}') failed: {}", .{ path, err });
+        return;
+    };
+
+    // SoundManager keeps its own file handle and cached PCM offsets keyed
+    // to the previous zip's layout -- both are stale after the swap, so
+    // tear it down and rescan against the new archive.
+    SoundManager.deinit();
+    SoundManager.init(ResourcePack.get_pack(), ResourcePack.get_pack_path());
+
+    // The font texture pointer is stable but its pixel data changed.
+    self.font_batcher.refresh();
+
+    // Splash mesh was built from the previous font's glyph widths.
+    self.splash_mesh.deinit(self.render_alloc);
+    self.splash_mesh = self.font_batcher.build_mesh("Classic!", .splash_front, .splash_back, 0, 1) catch |err| {
+        log.err("rebuild splash mesh failed: {}", .{err});
+        return;
+    };
 }
 
 pub fn state(self: *@This()) State {
