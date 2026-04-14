@@ -2,15 +2,15 @@
     .name = .CrossCraft,
     .version = "0.0.0",
     .fingerprint = 0xe210aad5fbf843a4, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0-dev.3144+ac6fb0b59",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .ZeeBuffer = .{
             .url = "git+https://github.com/IridescentRose/ZeeBuffer#8e1b2d03a905c2a70d4b0430f9a651e31027b181",
             .hash = "ZeeBuffer-0.2.0-RVIQu-7-AQC_98ycQNuJ4hxVxLDGMQkPAvLVvP4DsHz2",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#fefb190304212aef4d9fb8bfcc14d4a8e11c4636",
-            .hash = "Aether-0.0.0-cjG28iT-DQAiCC7pc316DyR4QD-fwARK39wrKAofMbTf",
+            .url = "git+https://github.com/AetherEngine/Aether#1076f224a94bc611c0ce012fcbddc72894ae7b38",
+            .hash = "Aether-0.0.0-cjG28hH-DQATEn6kA9xZ1IBdpNDtSchWeK7JD5fvuw4X",
         },
         .resources = .{
             .path = "resources",
