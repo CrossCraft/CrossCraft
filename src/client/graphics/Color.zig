@@ -9,22 +9,44 @@ pub const Color = packed struct(u32) {
     }
 
     pub const none = rgba(0, 0, 0, 0);
-    pub const black = rgba(0, 0, 0, 255);
-    pub const dark_blue = rgba(0, 0, 170, 255);
-    pub const dark_green = rgba(0, 170, 0, 255);
-    pub const dark_aqua = rgba(0, 170, 170, 255);
-    pub const dark_red = rgba(170, 0, 0, 255);
-    pub const dark_purple = rgba(170, 0, 170, 255);
     pub const gold = rgba(255, 170, 0, 255);
-    pub const light_gray = rgba(170, 170, 170, 255);
-    pub const dark_gray = rgba(85, 85, 85, 255);
-    pub const blue = rgba(85, 85, 255, 255);
-    pub const green = rgba(85, 255, 85, 255);
-    pub const aqua = rgba(85, 255, 255, 255);
-    pub const red = rgba(255, 85, 85, 255);
-    pub const light_purple = rgba(255, 85, 255, 255);
-    pub const yellow = rgba(255, 255, 85, 255);
-    pub const white = rgba(255, 255, 255, 255);
+
+    // Minecraft Classic chat color palette (foreground / background pairs),
+    // indexed by the '&' code (&0..&f). Names use the "alternate" (HTML-style)
+    // naming.
+    pub const black_fg = rgba(0, 0, 0, 255);
+    pub const black_bg = rgba(0, 0, 0, 255);
+    pub const navy_fg = rgba(0, 0, 170, 255);
+    pub const navy_bg = rgba(0, 0, 42, 255);
+    pub const green_fg = rgba(0, 170, 0, 255);
+    pub const green_bg = rgba(0, 42, 0, 255);
+    pub const teal_fg = rgba(0, 170, 170, 255);
+    pub const teal_bg = rgba(0, 42, 42, 255);
+    pub const maroon_fg = rgba(170, 0, 0, 255);
+    pub const maroon_bg = rgba(42, 0, 0, 255);
+    pub const purple_fg = rgba(170, 0, 170, 255);
+    pub const purple_bg = rgba(42, 0, 42, 255);
+    pub const gold_fg = rgba(170, 170, 0, 255);
+    pub const gold_bg = rgba(42, 42, 0, 255);
+    pub const silver_fg = rgba(170, 170, 170, 255);
+    pub const silver_bg = rgba(42, 42, 42, 255);
+    pub const gray_fg = rgba(85, 85, 85, 255);
+    pub const gray_bg = rgba(21, 21, 21, 255);
+    pub const blue_fg = rgba(85, 85, 255, 255);
+    pub const blue_bg = rgba(21, 21, 63, 255);
+    pub const lime_fg = rgba(85, 255, 85, 255);
+    pub const lime_bg = rgba(21, 63, 21, 255);
+    pub const aqua_fg = rgba(85, 255, 255, 255);
+    pub const aqua_bg = rgba(21, 63, 63, 255);
+    pub const red_fg = rgba(255, 85, 85, 255);
+    pub const red_bg = rgba(63, 21, 21, 255);
+    pub const pink_fg = rgba(255, 85, 255, 255);
+    pub const pink_bg = rgba(63, 21, 63, 255);
+    pub const yellow_fg = rgba(255, 255, 85, 255);
+    pub const yellow_bg = rgba(63, 63, 21, 255);
+    pub const white_fg = rgba(255, 255, 255, 255);
+    pub const white_bg = rgba(63, 63, 63, 255);
+
     pub const be_mtx_gold = rgba(221, 214, 5, 255);
     pub const select_front = rgba(255, 255, 160, 255);
     pub const select_back = rgba(63, 63, 40, 255);

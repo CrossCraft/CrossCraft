@@ -75,18 +75,52 @@ pub fn server() []const u8 {
     return server_buf[0..server_len];
 }
 
-/// Parse the stored server string into an `IpAddress`. Accepts IPv4/IPv6
-/// literals with or without a port ("1.2.3.4", "1.2.3.4:25565", "[::1]:25").
-/// When the port is absent, defaults to `DEFAULT_PORT` (25565). Hostnames
-/// are not supported yet; the caller must provide a literal address.
-pub fn parse_server_address() !std.Io.net.IpAddress {
+/// Either an already-resolved IP literal or a hostname that needs DNS
+/// resolution at connect time. The hostname slice borrows from `server_buf`,
+/// so the endpoint is only valid while `server_buf` is unchanged.
+pub const ServerEndpoint = union(enum) {
+    ip: std.Io.net.IpAddress,
+    host: struct { name: []const u8, port: u16 },
+};
+
+/// Parse the stored server string. Accepts IPv4/IPv6 literals with or
+/// without a port ("1.2.3.4", "1.2.3.4:25565", "[::1]:25") and bare
+/// hostnames ("play.example.com", "play.example.com:25565"). When the port
+/// is absent, defaults to `DEFAULT_PORT` (25565).
+pub fn parse_server_endpoint() !ServerEndpoint {
     const input = server();
     if (input.len == 0) return error.EmptyHost;
 
-    // parseLiteral returns port 0 if the user did not specify one (for IPv4
-    // without a colon, or IPv6 brackets with no trailing :port). Detect that
-    // case and substitute our default so "127.0.0.1" or "[::1]" both work.
-    var addr = try std.Io.net.IpAddress.parseLiteral(input);
-    if (addr.getPort() == 0) addr.setPort(DEFAULT_PORT);
-    return addr;
+    // Try literal IP first. parseLiteral returns port 0 if the user did not
+    // specify one; substitute the default so "127.0.0.1" or "[::1]" work.
+    if (std.Io.net.IpAddress.parseLiteral(input)) |parsed| {
+        var addr = parsed;
+        if (addr.getPort() == 0) addr.setPort(DEFAULT_PORT);
+        return .{ .ip = addr };
+    } else |_| {}
+
+    // Fallback: treat as hostname[:port]. Hostnames cannot contain ':', so
+    // splitting on the last colon is unambiguous (IPv6 literals are handled
+    // by the parseLiteral branch above).
+    var name = input;
+    var port: u16 = DEFAULT_PORT;
+    if (std.mem.lastIndexOfScalar(u8, input, ':')) |i| {
+        if (std.fmt.parseInt(u16, input[i + 1 ..], 10)) |p| {
+            name = input[0..i];
+            port = p;
+        } else |_| {}
+    }
+    if (name.len == 0) return error.EmptyHost;
+    return .{ .host = .{ .name = name, .port = port } };
+}
+
+/// Connect to the parsed endpoint, resolving via DNS if it is a hostname.
+pub fn connect_endpoint(ep: ServerEndpoint, io: std.Io) !std.Io.net.Stream {
+    return switch (ep) {
+        .ip => |addr| addr.connect(io, .{ .mode = .stream }),
+        .host => |h| blk: {
+            const hostname = try std.Io.net.HostName.init(h.name);
+            break :blk hostname.connect(io, h.port, .{ .mode = .stream });
+        },
+    };
 }

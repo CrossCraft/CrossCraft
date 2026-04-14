@@ -334,6 +334,15 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
         dup_buf[i] = event.message[j];
     }
 
+    // Translate Minecraft's alternate '%' color code prefix to '&'
+    // when followed by a valid color code character [0-9a-f].
+    for (0..dup_buf.len - 1) |i| {
+        if (dup_buf[i] != '%') continue;
+        const next = dup_buf[i + 1];
+        const is_color = (next >= '0' and next <= '9') or (next >= 'a' and next <= 'f');
+        if (is_color) dup_buf[i] = '&';
+    }
+
     Server.broadcast_chat_message(self.id, &dup_buf);
 }
 

@@ -18,7 +18,9 @@ pub const Context = struct {
     dirt: *const Rendering.Texture,
 };
 
-const IP_MAX: u8 = 21; // "255.255.255.255:65535"
+// Sized for hostnames (e.g. "play.example.com:25565"), not just dotted-quad
+// literals. Resolution is performed at connect time via DNS.
+const IP_MAX: u8 = 32;
 const NAME_MAX: u8 = 16;
 
 var ip_buf: [IP_MAX]u8 = undefined;
@@ -34,7 +36,7 @@ const components = [_]Component{
         .text = "Direct Connect",
         .pos_x = 0,
         .pos_y = 40,
-        .color = .white,
+        .color = .white_fg,
         .shadow_color = .menu_gray,
         .reference = .top_center,
         .origin = .top_center,
@@ -43,7 +45,7 @@ const components = [_]Component{
         .text = "Server Address",
         .pos_x = 0,
         .pos_y = 64,
-        .color = .light_gray,
+        .color = .silver_fg,
         .shadow_color = .menu_gray,
         .reference = .top_center,
         .origin = .top_center,
@@ -62,7 +64,7 @@ const components = [_]Component{
         .text = "Username",
         .pos_x = 0,
         .pos_y = 102,
-        .color = .light_gray,
+        .color = .silver_fg,
         .shadow_color = .menu_gray,
         .reference = .top_center,
         .origin = .top_center,

@@ -56,10 +56,13 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io) !void {
     mp_server_name = @splat(' ');
     mp_server_motd = @splat(' ');
 
-    const addr = try Session.parse_server_address();
-    log.info("connecting to {f}", .{addr});
+    const ep = try Session.parse_server_endpoint();
+    switch (ep) {
+        .ip => |a| log.info("connecting to {f}", .{a}),
+        .host => |h| log.info("resolving {s}:{d}", .{ h.name, h.port }),
+    }
 
-    const stream = try addr.connect(io, .{ .mode = .stream });
+    const stream = try Session.connect_endpoint(ep, io);
     Session.mp_stream = stream;
     Session.mp_reader = std.Io.net.Stream.Reader.init(stream, io, &Session.mp_read_buf);
     Session.mp_writer = std.Io.net.Stream.Writer.init(stream, io, &Session.mp_write_buf);
@@ -309,7 +312,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         .str = loading,
         .pos_x = 0,
         .pos_y = -16,
-        .color = .white,
+        .color = .white_fg,
         .shadow_color = .menu_gray,
         .spacing = 0,
         .layer = 2,
@@ -345,7 +348,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         .str = status,
         .pos_x = 0,
         .pos_y = 7,
-        .color = .white,
+        .color = .white_fg,
         .shadow_color = .menu_gray,
         .spacing = 0,
         .layer = 2,

@@ -161,7 +161,7 @@ pub fn update(self: *Self, dt: f32, player_list: *const PlayerList, fonts: *cons
             const tw = fonts.string_width(name, 0, 1);
             if (tw > 0) {
                 aspect.* = @as(f32, @floatFromInt(tw)) / 8.0;
-                nt.* = fonts.build_mesh(name, .white, .none, 0, 1) catch null;
+                nt.* = fonts.build_mesh(name, .white_fg, .none, 0, 1) catch null;
             }
         }
 

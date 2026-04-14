@@ -32,7 +32,7 @@ pub const Label = struct {
     text: []const u8,
     pos_x: i16,
     pos_y: i16,
-    color: Color = Color.white,
+    color: Color = Color.white_fg,
     shadow_color: Color = Color.menu_gray,
     reference: Anchor = .top_left,
     origin: Anchor = .top_left,
@@ -151,18 +151,18 @@ fn draw_button(
         .pos_extent = .{ .x = b.width, .y = b.height },
         .tex_offset = .{ .x = 0, .y = tex_y },
         .tex_extent = .{ .x = BTN_TEX_W, .y = BTN_TEX_H },
-        .color = .white,
+        .color = .white_fg,
         .layer = layer_base + 2,
         .reference = b.reference,
         .origin = b.origin,
     });
 
     const label_color: Color = if (!b.enabled)
-        Color.light_gray
+        Color.silver_fg
     else if (focused)
         Color.select_front
     else
-        Color.white;
+        Color.white_fg;
     const shadow_color: Color = if (focused) Color.select_back else Color.menu_gray;
     // Adjust for the button's origin so the label stays vertically centred
     // regardless of whether the caller uses top_center or middle_center origin.
@@ -228,7 +228,7 @@ fn draw_text_input(
             .str = text,
             .pos_x = text_x,
             .pos_y = text_y,
-            .color = Color.white,
+            .color = Color.white_fg,
             .shadow_color = Color.menu_gray,
             .spacing = 0,
             .layer = layer_base + 3,
@@ -241,7 +241,7 @@ fn draw_text_input(
                 .str = "_",
                 .pos_x = text_x + tw + 1,
                 .pos_y = text_y,
-                .color = Color.white,
+                .color = Color.white_fg,
                 .shadow_color = Color.menu_gray,
                 .spacing = 0,
                 .layer = layer_base + 3,
@@ -256,7 +256,7 @@ fn draw_text_input(
             .str = display,
             .pos_x = text_x,
             .pos_y = text_y,
-            .color = if (focused) Color.white else Color.light_gray,
+            .color = if (focused) Color.white_fg else Color.silver_fg,
             .shadow_color = Color.menu_gray,
             .spacing = 0,
             .layer = layer_base + 3,
