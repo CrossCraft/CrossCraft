@@ -132,6 +132,13 @@ pub fn clear(self: *Self) void {
     self.count = 0;
 }
 
+/// Force the next flush to rebuild the mesh regardless of entry equality.
+/// Use when mutable string content at stable pointer addresses may have
+/// changed between frames (e.g. in-place label buffers in the options menu).
+pub fn mark_dirty(self: *Self) void {
+    self.prev_count = 0;
+}
+
 pub fn add_text(self: *Self, entry: *const TextEntry) void {
     std.debug.assert(self.count < MAX_ENTRIES);
     std.debug.assert(entry.str.len > 0);

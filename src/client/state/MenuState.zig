@@ -135,8 +135,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     };
     self.options_ctx = .{
         .dirt = ResourcePack.get_tex(.dirt),
-        .io = engine.io,
-        .data_dir = engine.dirs.data,
     };
     self.screen = MainMenuScreen.build(&self.main_menu_ctx);
     self.screen.open(!ui_input.profile_uses_pointer());
@@ -219,6 +217,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
     const on_options = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.options_ctx);
     if (on_options and (OptionsMenuScreen.pending_done or self.screen.cancel_pressed)) {
         OptionsMenuScreen.pending_done = false;
+        Options.save(engine.io, engine.dirs.data);
         self.screen = MainMenuScreen.build(&self.main_menu_ctx);
         self.screen.open(!ui_input.profile_uses_pointer());
     }
@@ -270,6 +269,13 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
     self.batcher.clear();
     self.font_batcher.clear();
     self.screen.draw(&self.batcher, &self.font_batcher, ResourcePack.get_tex(.gui));
+
+    // Options labels are mutable buffers updated in-place: the FontBatcher
+    // diff compares content at stable pointers and sees no change.  Force a
+    // rebuild every frame the options screen is showing so clicks are instant.
+    if (@intFromPtr(self.screen.ctx) == @intFromPtr(&self.options_ctx)) {
+        self.font_batcher.mark_dirty();
+    }
 
     try self.batcher.flush();
     try self.font_batcher.flush();

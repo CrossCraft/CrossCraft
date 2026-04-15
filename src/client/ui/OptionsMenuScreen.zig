@@ -5,9 +5,9 @@
 /// menu (dim overlay + elevated layer_base). Callers build the correct
 /// variant by populating Context.dirt: non-null = main-menu origin.
 ///
-/// Each option button cycles through a small preset table on click and
-/// persists the change immediately via Options.save. Pending flags follow
-/// the same read-and-clear convention used by every other UI screen.
+/// Clicking an option cycles its value instantly with no disk I/O. The
+/// caller (MenuState / GameState) saves options.json once when the screen
+/// is dismissed, keeping the render loop free of blocking writes.
 const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
@@ -26,8 +26,6 @@ pub const Context = struct {
     /// Non-null when opened from the main menu: used for the dirt-tile underlay.
     /// Null when opened from the pause menu: a dim overlay is drawn instead.
     dirt: ?*const Rendering.Texture,
-    io: std.Io,
-    data_dir: std.Io.Dir,
 };
 
 /// Set by the "Done" button; read and cleared by MenuState / GameState.
@@ -102,7 +100,7 @@ fn refresh_labels() void {
     const c = Options.current;
     fmt_label(&lbl_music, &lbl_music_len, "Music: {d}%", .{pct(c.music_volume)});
     fmt_label(&lbl_sound, &lbl_sound_len, "Sound: {d}%", .{pct(c.sound_volume)});
-    fmt_label(&lbl_rd, &lbl_rd_len, "Render Distance: {d}", .{c.render_distance});
+    fmt_label(&lbl_rd, &lbl_rd_len, "Render Distance: {d}", .{Options.capped_render_distance()});
     fmt_label(&lbl_fancy, &lbl_fancy_len, "Fancy Leaves: {s}", .{bool_str(c.fancy_leaves)});
     fmt_label(&lbl_fov, &lbl_fov_len, "FOV: {d}", .{@as(u32, @intFromFloat(c.fov + 0.5))});
     fmt_label(&lbl_ao, &lbl_ao_len, "Ambient Occlusion: {s}", .{bool_str(c.ambient_occlusion)});
@@ -229,54 +227,46 @@ pub fn refresh() void {
 }
 
 // -- activation callbacks ----------------------------------------------------
+// No disk I/O here: callers (MenuState / GameState) write options.json once
+// when the screen is dismissed, keeping every click free of blocking writes.
 
-fn save_options(ctx: *anyopaque) void {
-    const c: *const Context = @ptrCast(@alignCast(ctx));
-    Options.save(c.io, c.data_dir);
-}
-
-fn on_music(ctx: *anyopaque) void {
+fn on_music(_: *anyopaque) void {
     Options.current.music_volume = nearest_next(&vol_steps, Options.current.music_volume);
     refresh();
-    save_options(ctx);
 }
 
-fn on_sound(ctx: *anyopaque) void {
+fn on_sound(_: *anyopaque) void {
     Options.current.sound_volume = nearest_next(&vol_steps, Options.current.sound_volume);
     refresh();
-    save_options(ctx);
 }
 
-fn on_rd(ctx: *anyopaque) void {
+fn on_rd(_: *anyopaque) void {
     const max: u8 = @intCast(@min(@as(u32, 255), config.current.chunk_radius));
-    const next: u8 = Options.current.render_distance + 1;
-    Options.current.render_distance = if (next > max) 1 else next;
+    // Cycle from the effective (capped) value so a stale stored value above
+    // the platform max does not produce a confusing first-click skip.
+    const cur: u8 = Options.capped_render_distance();
+    Options.current.render_distance = if (cur + 1 > max) 1 else cur + 1;
     refresh();
-    save_options(ctx);
 }
 
-fn on_fancy(ctx: *anyopaque) void {
+fn on_fancy(_: *anyopaque) void {
     Options.current.fancy_leaves = !Options.current.fancy_leaves;
     refresh();
-    save_options(ctx);
 }
 
-fn on_fov(ctx: *anyopaque) void {
+fn on_fov(_: *anyopaque) void {
     Options.current.fov = nearest_next(&fov_steps, Options.current.fov);
     refresh();
-    save_options(ctx);
 }
 
-fn on_ao(ctx: *anyopaque) void {
+fn on_ao(_: *anyopaque) void {
     Options.current.ambient_occlusion = !Options.current.ambient_occlusion;
     refresh();
-    save_options(ctx);
 }
 
-fn on_sens(ctx: *anyopaque) void {
+fn on_sens(_: *anyopaque) void {
     Options.current.sensitivity = nearest_next(&sens_steps, Options.current.sensitivity);
     refresh();
-    save_options(ctx);
 }
 
 fn on_done(_: *anyopaque) void {

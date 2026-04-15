@@ -26,8 +26,9 @@ pub const Options = struct {
     active_texturepack_buf: [max_pack_path]u8 = [_]u8{0} ** max_pack_path,
     active_texturepack_len: u8 = 0,
 
-    /// Chunk render radius.  Default matches the desktop config.zig value.
-    render_distance: u8 = 8,
+    /// Chunk render radius.  Defaults to the platform maximum so PSP builds
+    /// do not write a value larger than they can ever use.
+    render_distance: u8 = @intCast(@min(@as(u32, 8), cfg.current.chunk_radius)),
 
     /// SFX volume multiplier (0.0 = silent, 1.0 = full).
     sound_volume: f32 = 1.0,
@@ -128,7 +129,12 @@ pub fn load(io: Io, dir: Io.Dir) void {
     current.ambient_occlusion = j.ambient_occlusion;
 }
 
-/// Write current options to `options.json` in `dir` via an atomic replace.
+/// Write current options to `options.json` in `dir`.
+/// On non-PSP targets the write goes through an atomic temp-file replace so a
+/// crash mid-write never leaves a truncated file.  On PSP, `dirCreateFileAtomic`
+/// is unimplemented in the pspsdk Io vtable; fall back to a direct `createFile`
+/// write instead.  options.json is ~300 bytes, so load()'s parse-error fallback
+/// to defaults is sufficient protection against the negligible partial-write risk.
 pub fn save(io: Io, dir: Io.Dir) void {
     const j = JsonOptions{
         .active_texturepack = current.active_texturepack(),
@@ -148,6 +154,18 @@ pub fn save(io: Io, dir: Io.Dir) void {
         return;
     };
     const slice = out.buffered();
+
+    if (comptime @import("aether").platform == .psp) {
+        const file = dir.createFile(io, options_file, .{}) catch |err| {
+            log.err("create options.json failed: {}", .{err});
+            return;
+        };
+        defer file.close(io);
+        file.writeStreamingAll(io, slice) catch |err| {
+            log.err("write options.json failed: {}", .{err});
+        };
+        return;
+    }
 
     var atomic = dir.createFileAtomic(io, options_file, .{ .replace = true }) catch |err| {
         log.err("create options.json failed: {}", .{err});

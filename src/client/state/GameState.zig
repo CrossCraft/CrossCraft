@@ -266,11 +266,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.paused = false;
     self.pause_ctx = .{};
     self.in_options = false;
-    self.options_ctx = .{
-        .dirt = null,
-        .io = engine.io,
-        .data_dir = engine.dirs.data,
-    };
+    self.options_ctx = .{ .dirt = null };
     self.pause_ui_repeat = .{};
     self.pause_saved_mouse_captured = true;
     self.pause_screen = PauseMenuScreen.build(&self.pause_ctx, Session.mode == .singleplayer);
@@ -509,6 +505,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             // Options screen is active: Done or Escape returns to pause menu.
             if (OptionsMenuScreen.pending_done or self.pause_screen.cancel_pressed) {
                 OptionsMenuScreen.pending_done = false;
+                Options.save(engine.io, engine.dirs.data);
                 // Re-apply settings that are cached at init time.
                 ae_input.mouse_sensitivity = Options.current.sensitivity;
                 self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
@@ -788,6 +785,13 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         self.pause_batcher.clear();
         self.pause_font_batcher.clear();
         self.pause_screen.draw(&self.pause_batcher, &self.pause_font_batcher, ResourcePack.get_tex(.gui));
+
+        // Options labels are mutable buffers updated in-place: the FontBatcher
+        // diff sees no change across frames.  Force a rebuild while the options
+        // screen is open so button text updates are visible immediately.
+        if (self.in_options) {
+            self.pause_font_batcher.mark_dirty();
+        }
 
         Rendering.gfx.api.clear_depth();
         try self.pause_batcher.flush();
