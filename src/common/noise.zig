@@ -31,7 +31,7 @@ pub fn sin_fp16(angle: FP16) FP16 {
 }
 
 pub fn cos_fp16(angle: FP16) FP16 {
-    return sin_fp16(.{ .value = angle.value + @divTrunc(TWO_PI, 4) });
+    return sin_fp16(.{ .value = angle.value +% @divTrunc(TWO_PI, 4) });
 }
 
 // -- Noise helpers -------------------------------------------------------
