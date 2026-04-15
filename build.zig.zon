@@ -9,8 +9,8 @@
             .hash = "ZeeBuffer-0.2.0-RVIQu-7-AQC_98ycQNuJ4hxVxLDGMQkPAvLVvP4DsHz2",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#5529ed65dbaef4b29c35dd2b22519612a76854fa",
-            .hash = "Aether-0.0.0-cjG28twBDgA0aH9KTeBuhAdn6KpVq2e2ThLYB4CdapZF",
+            .url = "git+https://github.com/AetherEngine/Aether#0c8341c6f4c1f4420e953fe354b73cf4010c61a5",
+            .hash = "Aether-0.0.0-cjG28m8DDgBosG5sIjkyP3eoP14Cad1pTuzM8IaZN_2B",
         },
         .resources = .{
             .path = "resources",

@@ -146,6 +146,9 @@ time: f32,
 server_future: std.Io.Future(void),
 server_notified: bool,
 render_alloc: std.mem.Allocator,
+/// True once `init` ran to completion. Guards `deinit` so a partially
+/// initialised state never frees undefined fields.
+inited: bool,
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
 var game_state: GameState = undefined;
@@ -165,6 +168,7 @@ pub fn transition_here(engine: *Engine) !void {
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
+    self.inited = false;
     const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
@@ -188,16 +192,19 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         .multiplayer => io.async(connectTask, .{ engine.allocator(.user), seed, io }),
     };
 
+    self.inited = true;
     engine.report();
 }
 
 fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
+    if (!self.inited) return;
     self.server_future.await(engine.io);
     self.font_batcher.deinit();
     self.batcher.deinit();
 
     Rendering.Pipeline.deinit(pipeline);
+    self.inited = false;
 }
 
 fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {

@@ -348,7 +348,6 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     try input.add_button_callback("sneak", @ptrCast(self), on_sneak);
     try input.add_vector2_callback("look", @ptrCast(self), on_look);
     try input.add_vector2_callback("look_stick", @ptrCast(self), on_look_stick);
-    try input.add_button_callback("escape", @ptrCast(self), on_escape);
     if (comptime builtin.mode == .Debug and ae.platform != .psp) {
         try input.add_button_callback("noclip", @ptrCast(self), on_noclip);
     }
@@ -1266,14 +1265,6 @@ fn on_look(ctx: *anyopaque, value: [2]f32) void {
 fn on_look_stick(ctx: *anyopaque, value: [2]f32) void {
     const self: *Self = @ptrCast(@alignCast(ctx));
     self.look_rate = value;
-}
-
-fn on_escape(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.mouse_captured = !self.mouse_captured;
-    input.set_mouse_relative_mode(self.mouse_captured);
-    self.look_delta = .{ 0, 0 };
 }
 
 /// Edge-only signal: GameState polls and clears `inventory_toggle_pending`

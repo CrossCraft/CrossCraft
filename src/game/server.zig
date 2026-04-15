@@ -87,6 +87,10 @@ pub fn deinit() void {
     world.deinit();
 
     allocator.deinit();
+
+    // Reset the player table so a subsequent Server.init() starts with no
+    // stale slots (the FAB is module-static and survives re-init).
+    players = .init();
 }
 
 pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bool) ?*Client {

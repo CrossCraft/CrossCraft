@@ -106,6 +106,14 @@ pub fn profile_uses_pointer() bool {
     return runtime.profile == .pointer_and_pad;
 }
 
+/// Marks UI actions as unregistered. Pair with `ae.Core.input.clear()` so
+/// the next `ensure_registered` actually re-registers instead of short-
+/// circuiting on the stale flag.
+pub fn invalidate_registration() void {
+    runtime.registered = false;
+    runtime.pending = .{};
+}
+
 /// Idempotent: registers all UI actions and binds them. Safe to call from
 /// multiple state inits.
 pub fn ensure_registered() !void {
@@ -221,8 +229,8 @@ const char_bindings = [_]CharBinding{
     .{ .key = .Num7, .char = '7', .char_shifted = '&' },
     .{ .key = .Num8, .char = '8', .char_shifted = '*' },
     .{ .key = .Num9, .char = '9', .char_shifted = '(' },
-    .{ .key = .Period,    .char = '.', .char_shifted = '>' },
-    .{ .key = .Minus,     .char = '-', .char_shifted = '_' },
+    .{ .key = .Period, .char = '.', .char_shifted = '>' },
+    .{ .key = .Minus, .char = '-', .char_shifted = '_' },
     // Semicolon: unshifted ';', shifted ':' (standard US layout).
     // Previously mapped to ':' always; colon for IP:port now requires Shift.
     .{ .key = .Semicolon, .char = ';', .char_shifted = ':' },

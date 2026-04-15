@@ -88,3 +88,14 @@ pub fn apply_runtime_budgets(engine: *Engine) void {
     engine.set_budget(.game, current.rt_game);
     engine.set_budget(.user, current.rt_user);
 }
+
+/// Restore the startup pool layout. Called on entry to MenuState so the next
+/// LoadState connect/load has the larger init_user budget back -- after a
+/// GameState session the user pool is shrunk to rt_user, which is too tight
+/// for the MP connect path's 2 MiB scratch + 4 MiB world allocation.
+pub fn apply_init_budgets(engine: *Engine) void {
+    engine.set_budget(.render, current.init_render);
+    engine.set_budget(.audio, current.init_audio);
+    engine.set_budget(.game, current.init_game);
+    engine.set_budget(.user, current.init_user);
+}

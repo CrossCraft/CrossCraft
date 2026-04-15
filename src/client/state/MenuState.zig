@@ -41,11 +41,22 @@ main_menu_ctx: MainMenuScreen.Context,
 direct_connect_ctx: DirectConnectScreen.Context,
 texture_pack_ctx: TexturePackScreen.Context,
 render_alloc: std.mem.Allocator,
+/// True once `init` has run to completion. Guards `deinit` so a partially
+/// initialised state -- e.g. `init` errored on OOM after enough world reload
+/// cycles -- does not crash on undefined sub-allocations from a previous
+/// session that have already been freed.
+inited: bool,
 
 var pipeline: Rendering.Pipeline.Handle = undefined;
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
+    self.inited = false;
+    // Restore the startup pool layout. GameState shrinks user/game/etc. to
+    // their runtime sizes; without this reset, the next LoadState connect
+    // path (which needs ~6 MiB in user for the MP scratch + world buffer)
+    // OOMs against the leftover rt_user budget.
+    @import("../config.zig").apply_init_budgets(engine);
     const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
@@ -86,16 +97,19 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.screen = MainMenuScreen.build(&self.main_menu_ctx);
     self.screen.open(!ui_input.profile_uses_pointer());
 
+    self.inited = true;
     engine.report();
 }
 
 fn deinit(ctx: *anyopaque, _: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
+    if (!self.inited) return;
     self.splash_mesh.deinit(self.render_alloc);
     self.font_batcher.deinit();
     self.batcher.deinit();
 
     Rendering.Pipeline.deinit(pipeline);
+    self.inited = false;
 }
 
 fn tick(ctx: *anyopaque, _: *Engine) anyerror!void {

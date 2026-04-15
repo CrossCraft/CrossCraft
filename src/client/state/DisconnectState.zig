@@ -66,9 +66,13 @@ screen: Screen,
 ui_repeat: ui_input.Repeat,
 ctx: Context,
 render_alloc: std.mem.Allocator,
+/// True once `init` ran to completion. Guards `deinit` so a partially
+/// initialised state never frees undefined fields.
+inited: bool,
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
+    self.inited = false;
     const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
@@ -93,14 +97,17 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     };
     self.screen.open(!ui_input.profile_uses_pointer());
 
+    self.inited = true;
     engine.report();
 }
 
 fn deinit(ctx: *anyopaque, _: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
+    if (!self.inited) return;
     self.font_batcher.deinit();
     self.batcher.deinit();
     Rendering.Pipeline.deinit(pipeline);
+    self.inited = false;
 }
 
 fn tick(_: *anyopaque, _: *Engine) anyerror!void {}
