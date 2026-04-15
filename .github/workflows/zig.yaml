@@ -11,11 +11,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Opt in to Node.js 24 for JavaScript actions. Our pinned actions
-# (checkout@v4, upload-artifact@v4, setup-zig@v2) still ship Node.js
-# 20 binaries, which GitHub deprecated and will hard-disable 2026-09-16.
-# The opt-in flag forces the runner to use its bundled Node 24 instead;
-# drop this once the actions publish Node 24 releases of their own.
+# checkout@v6 and upload-artifact@v7 ship Node 24 natively. setup-zig@v2
+# still ships Node 20, so keep the runner-level Node 24 opt-in until mlugg
+# cuts a Node 24 release; drop this once it does.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -42,7 +40,7 @@ jobs:
     name: dev ${{ matrix.kind }} (${{ matrix.name }})
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: true
 
@@ -85,7 +83,7 @@ jobs:
     name: rel ${{ matrix.kind }} (${{ matrix.name }})
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: true
           # Game builds need real resources to produce a valid pack.zip;
@@ -176,7 +174,7 @@ jobs:
 
       - name: Upload macOS .app
         if: matrix.kind == 'game' && matrix.name == 'mac'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: game_mac
           path: CrossCraft-Classic-macos.zip
@@ -184,7 +182,7 @@ jobs:
 
       - name: Upload artifact
         if: matrix.kind != 'game' || matrix.name != 'mac'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.kind }}_${{ matrix.name }}
           path: zig-out/bin/

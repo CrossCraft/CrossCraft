@@ -191,6 +191,13 @@ pub fn build(b: *std.Build) void {
 
     const build_server_step = b.step("server", "Build the server");
     build_server_step.dependOn(&b.addInstallArtifact(server_exe, .{}).step);
+    if (is_psp) {
+        // exportArtifact wires the PRX -> SFO -> PBP pipeline onto
+        // b.getInstallStep(); without this dep `zig build server` produces
+        // only the raw ELF and CrossCraft-Server-PSP/EBOOT.PBP never
+        // materialises. Mirrors the game step's PSP/macOS handling below.
+        build_server_step.dependOn(b.getInstallStep());
+    }
 
     const run_server_step = b.step("run-server", "Run the server");
     const run_server_cmd = b.addRunArtifact(server_exe);
