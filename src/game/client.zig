@@ -334,6 +334,15 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
         dup_buf[i] = event.message[j];
     }
 
+    // Translate Minecraft's alternate '%' color code prefix to '&'
+    // when followed by a valid color code character [0-9a-f].
+    for (0..dup_buf.len - 1) |i| {
+        if (dup_buf[i] != '%') continue;
+        const next = dup_buf[i + 1];
+        const is_color = (next >= '0' and next <= '9') or (next >= 'a' and next <= 'f');
+        if (is_color) dup_buf[i] = '&';
+    }
+
     Server.broadcast_chat_message(self.id, &dup_buf);
 }
 
@@ -363,10 +372,16 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
         world.set_block(event.x, event.y, event.z, 0);
         Server.broadcast_block_change(event.x, event.y, event.z, 0);
     } else {
-        // Placing a slab on top of another slab combines into a double slab.
+        // Slab-on-slab → double slab. The originating client (and any other
+        // client doing optimistic placement, e.g. ClassiCube) already drew a
+        // slab into (x, y, z); re-assert whatever block actually lives at
+        // that cell so those predictions are reverted, then upgrade the
+        // slab below.
         if (event.block == c.Block.Slab and event.y > 0) {
             const below = world.get_block(event.x, event.y - 1, event.z);
             if (below == c.Block.Slab) {
+                const existing_above = world.get_block(event.x, event.y, event.z);
+                Server.broadcast_block_change(event.x, event.y, event.z, existing_above);
                 world.set_block(event.x, event.y - 1, event.z, c.Block.Double_Slab);
                 Server.broadcast_block_change(event.x, event.y - 1, event.z, c.Block.Double_Slab);
                 world.enqueue_neighbors_of(event.x, event.y - 1, event.z);

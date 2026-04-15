@@ -2,6 +2,17 @@
 
 Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [TigerBeetle's Tiger Style](https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md)
 
+## Scope
+
+These rules are the strict baseline for `src/server` and shared simulation code in
+`src/common` and `src/game`. The client follows the same spirit, but rendering,
+audio, UI, and platform integration may allocate or block during setup, loading,
+resource-pack changes, and other non-frame-critical paths.
+
+For client code, hot paths are the important boundary: per-frame rendering,
+input, chunk meshing, player movement, packet processing, and audio mixing should
+avoid unbounded work, unexpected allocation, and platform-specific leakage.
+
 * #### Assert maximally
 	* Assertions must be enabled in Release (e.g. `ReleaseSafe`)
 	* Assert all function arguments, return values, preconditions, postconditions, and invariants.
@@ -25,15 +36,9 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 * #### Don't Trust Defaults
 	* Always explicitly set your defaults, in case a library changes its expected defaults, such that your code will always work
 * #### No Dynamic Memory Allocation After Initialization
-	* Heap allocation is slow and prone to errors, prefer static allocation when possible
-	* If heap allocation is *required* during initialization, use `GeneralPurposeAllocator` with the fixed memory limit setting enabled.
-		* `GeneralPurposeAllocator` detects w/ traces:
-			* Double Free
-			* Leaks
-		* `GeneralPurposeAllocator` highlights w/ crashes:
-			* Use after free
-			* Pointer math errors
-		* `GeneralPurposeAllocator` is crossplatform, even on freestanding.
+	* Heap allocation is slow and prone to errors, prefer static allocation when possible.
+	* Server and shared game systems must not allocate after initialization.
+	* Client code may allocate during startup, loading, resource-pack swaps, and other explicit setup phases. Client hot paths should reserve capacity ahead of time and avoid first-use growth where practical.
 	* Use `defer` to manage automatic memory deallocation.
 	* No runtime allocations results in easier to follow code, and more statically analyzable code
 * #### Keep Functions Readable
@@ -42,14 +47,16 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 * #### Keep Modules Focused
 	* Each file should have a single, well-defined responsibility
 	* If a function doesn't relate to the file's core purpose, it belongs elsewhere
-	* Group related functionality — physics with physics, protocol with protocol
+	* Group related functionality - physics with physics, protocol with protocol
 * #### Restrict Data Scope
 	* Use global variables sparingly
 	* Use the least number of variables in the scope to reduce the likelihood of misusing a variable.
 * #### Check Return Values
 	* Zig enforces checking return values, or explicitly discarding with `_ = x()`
 * #### Avoid blocking operations
-	* Operations should not block a thread. If an operation is reliant on I/O, it should be non-blocking if possible
+	* Server tick and packet processing code should not block.
+	* Client loading, menu actions, and dedicated I/O tasks may block when the user-visible state already expects waiting.
+	* If an operation is reliant on I/O, prefer non-blocking or bounded behavior where possible.
 * #### Avoid external dependencies
 	* This refers to dependencies external to CrossCraft
 	* The only allowed dependencies are modules controlled by CrossCraft or Iridescence
@@ -64,7 +71,8 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 			* Particularly encouraged: `std.mem`, `std.io`.
 				These implementations are highly generic, and allow for overloading via static polymorphism or runtime VTables, so have no cross-platform concerns (dependency injection)
 		* Disallowed:
-			* `std.os` and `std.c`, alongside `std.posix` (which will be deleted soon)
+			* `std.os`, `std.c`, and `std.posix` in portable gameplay, world, protocol, rendering, UI, and allocator code.
+			* Platform boundary code may use these APIs when Aether does not provide the needed hook, such as server signal handling or socket shutdown. Keep these uses narrow and behind `builtin.os` branches.
 * #### Design with performance in mind
 	* Design is the easiest time to create a good, performant system
 	* Optimize for the slowest resources (Network, Disk, Memory, GPU, CPU)
@@ -78,4 +86,8 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 	* Always reach to explain why something is done, rather than how it is done
 
 ## Code Style
-* Use snake_case for function and variable names. The `_` is the closest you can get to a space and helps with understanding
+* Use snake_case for ordinary functions and variables. The `_` is the closest you can get to a space and helps with understanding.
+* Use PascalCase for type names, type-centric files, and imported module aliases, such as `Player`, `GameState`, `TextureAtlas`, and `ClientConn`.
+* Use SCREAMING_SNAKE_CASE for compile-time constants and fixed limits, such as `MAX_PLAYERS` and `VERTS_PER_SPRITE`.
+* Existing protocol names, external API names, generated identifiers, and compatibility-facing names may keep their source naming.
+* Keep source text ASCII unless a non-ASCII character is required by data or an external format.

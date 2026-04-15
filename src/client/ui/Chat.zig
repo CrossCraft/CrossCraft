@@ -42,7 +42,7 @@ const ROW_H: i16 = 10;      // Height of one message or input row.
 const MSG_W: i16 = 200;     // Width of the per-message background strip.
 const LEFT_PAD: i16 = 2;    // Distance from the screen left edge.
 // The hotbar is 22 px tall and sits 1 px above the bottom, so it occupies
-// the bottom 23 logical pixels.  Add 3 px breathing room → 26 px, matching
+// the bottom 23 logical pixels.  Add 3 px breathing room -> 26 px, matching
 // the hotbar tooltip offset used elsewhere in the codebase.
 const BOTTOM_PAD: i16 = 26; // Baseline distance above the hotbar.
 
@@ -326,7 +326,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher) voi
         .str = prefix,
         .pos_x = text_x,
         .pos_y = -BOTTOM_PAD,
-        .color = .white,
+        .color = .white_fg,
         .shadow_color = .menu_gray,
         .spacing = 0,
         .layer = INPUT_TEXT_LAYER,
@@ -341,7 +341,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher) voi
             .str = self.buf[0..self.len],
             .pos_x = text_x + prefix_w,
             .pos_y = -BOTTOM_PAD,
-            .color = .white,
+            .color = .white_fg,
             .shadow_color = .menu_gray,
             .spacing = 0,
             .layer = INPUT_TEXT_LAYER,
@@ -356,7 +356,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher) voi
         .str = "_",
         .pos_x = text_x + prefix_w + typed_w + 1,
         .pos_y = -BOTTOM_PAD,
-        .color = .white,
+        .color = .white_fg,
         .shadow_color = .menu_gray,
         .spacing = 0,
         .layer = INPUT_TEXT_LAYER,

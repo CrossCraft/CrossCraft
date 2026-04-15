@@ -8,6 +8,7 @@ const Color = @import("../graphics/Color.zig").Color;
 const Camera = @import("../player/Camera.zig");
 const collision = @import("../player/collision.zig");
 const config = @import("../config.zig").current;
+const Options = @import("../Options.zig");
 
 const ChunkMesh = @import("chunk/ChunkMesh.zig");
 const BlockRegistry = @import("block/BlockRegistry.zig");
@@ -190,7 +191,7 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
             self.build_estimator.end(self.io);
         } else |_| {
             self.build_estimator.end(self.io);
-            // OOM – evict the farthest built section to free GPU memory,
+            // OOM - evict the farthest built section to free GPU memory,
             // then stop for this frame. The cursor stays at i so this
             // section is retried first next frame rather than rebuilding it
             // twice in one frame.
@@ -280,8 +281,9 @@ fn recollect(self: *Self, camera: *const Camera) void {
     self.cam_cz = camera_chunk(camera.z);
 
     // Phase 1: compute needed columns
-    const r: i32 = @intCast(config.chunk_radius);
-    const radius_blocks: f32 = @as(f32, @floatFromInt(config.chunk_radius)) * 16.0 + 11.5;
+    const rd: u32 = Options.capped_render_distance();
+    const r: i32 = @intCast(rd);
+    const radius_blocks: f32 = @as(f32, @floatFromInt(rd)) * 16.0 + 11.5;
     const radius_blocks_sq = radius_blocks * radius_blocks;
 
     const row_false = [_]bool{false} ** WORLD_CZ;
@@ -404,7 +406,7 @@ fn flush_dirty_sections(self: *Self, cam: *const Camera) void {
         if (self.built[ref.cx][ref.cz][ref.sy]) continue; // already rebuilt
         if (self.in_queue[ref.cx][ref.cz][ref.sy]) continue; // already queued
         if (self.build_end >= MAX_ACTIVE) {
-            // No room — compact via a full rescan which resets the queue.
+            // No room - compact via a full rescan which resets the queue.
             self.queue_unbuilt_sections(cam);
             return;
         }
@@ -456,7 +458,7 @@ pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
     if (!self.loaded[cx][cz]) return;
     self.built[cx][cz][sy] = false;
     // Section already in the build queue; it will be rebuilt when the queue
-    // reaches it — no need to track it again.
+    // reaches it - no need to track it again.
     if (self.in_queue[cx][cz][sy]) return;
     // Track for incremental insert on the next update(). On overflow, flag a
     // full rescan so no dirty sections are silently dropped.
@@ -501,7 +503,10 @@ fn grid_ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
 }
 
 /// True when a section's center is within LOD_NEAR_RADIUS_BLOCKS of the camera.
+/// Returns false immediately when fancy leaves are disabled so all sections
+/// get the fast/opaque-leaves mesh regardless of distance.
 fn target_near_lod(cx: u8, sy: u8, cz: u8, cam: *const Camera) bool {
+    if (!Options.current.fancy_leaves) return false;
     const wx: f32 = @as(f32, @floatFromInt(@as(u32, cx) * 16)) + 8.0;
     const wy: f32 = @as(f32, @floatFromInt(@as(u32, sy) * 16)) + 8.0;
     const wz: f32 = @as(f32, @floatFromInt(@as(u32, cz) * 16)) + 8.0;
@@ -524,7 +529,10 @@ fn set_terrain_fog(submerged: ?collision.Liquid) void {
         .lava => Color.game_underlava,
     };
     const fog_end: f32 = switch (submerged orelse .water) {
-        .water => if (submerged != null) 16.0 else @as(f32, @floatFromInt(config.chunk_radius * 16 - 16)),
+        .water => if (submerged != null) 16.0 else blk: {
+            const rd: f32 = @floatFromInt(Options.capped_render_distance());
+            break :blk @max(rd * 16.0 - 16.0, 16.0);
+        },
         .lava => 2.0,
     };
     const fog_start: f32 = if (submerged != null) 0.0 else fog_end * 0.4;

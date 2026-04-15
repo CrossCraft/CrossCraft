@@ -27,14 +27,14 @@ const Face = face_mod.Face;
 
 // -- Tuning ------------------------------------------------------------------
 
-// SNORM16 → world scale; emit_face stores a unit cube in [0, 2048].
+// SNORM16 -> world scale; emit_face stores a unit cube in [0, 2048].
 // Matches ChunkMesh / SelectionOutline model-matrix convention.
 const WORLD_UNIT_SCALE: f32 = 16.0;
 const HELD_SCALE: f32 = 0.4;
 
 // Pose (camera-relative, view-space = eye at origin, +X right, +Y up, -Z fwd).
-// Base Y of -0.3 (vs. the Classic reference's -0.72) was tuned for our 70°
-// vertical FOV and 0.72-block distance — at that depth the visible y
+// Base Y of -0.3 (vs. the Classic reference's -0.72) was tuned for our 70 degrees
+// vertical FOV and 0.72-block distance - at that depth the visible y
 // half-range is only ~0.5, so the reference value dropped the cube clean
 // off the bottom of the screen.
 const YAW: f32 = -std.math.pi / 4.0;
@@ -58,7 +58,7 @@ const DIG_AMP_X: f32 = -0.4;
 const DIG_AMP_Y: f32 = 0.2;
 const DIG_AMP_Z: f32 = -0.2;
 // Per the Classic break-animation reference,
-// the Y rotation peaks at +80° and the X rotation at -20°.
+// the Y rotation peaks at +80 degrees and the X rotation at -20 degrees.
 const DIG_YAW_RAD: f32 = 80.0 * std.math.pi / 180.0;
 const DIG_PITCH_RAD: f32 = -20.0 * std.math.pi / 180.0;
 

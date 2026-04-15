@@ -30,7 +30,7 @@ Near-term platforms under consideration (not yet supported): 3DS and Nintendo Sw
 3. Fixed-point worldgen and rendering. Floating point is reserved for a few simulation paths. This keeps results identical across targets and keeps the math cheap on platforms without fast FPUs.
 4. Shared code by default; branching only where versions actually differ.
 
-The full style rules live in `STYLE.MD`. They are inspired by NASA's Power of Ten and TigerBeetle's Tiger Style: assertions on in release builds, bounded loops, sized buffers, explicit-sized integer types, no recursion, no `std.os` / `std.c` / `std.posix`.
+The full style rules live in `STYLE.MD`. They are inspired by NASA's Power of Ten and TigerBeetle's Tiger Style: assertions on in release builds, bounded loops, sized buffers, explicit-sized integer types, no recursion, narrow platform boundaries, and server-first allocation discipline.
 
 ## Performance Notes
 
@@ -91,11 +91,11 @@ Read `STYLE.MD` first. Run `zig fmt` before submitting. Add tests inline with `t
 
 A short summary of the style rules:
 
-- snake_case for functions and variables; PascalCase for type-centric files (`Player.zig`, `GameState.zig`).
+- snake_case for ordinary functions and variables; PascalCase for types, type-centric files, and module aliases (`Player.zig`, `GameState.zig`).
 - Explicit-sized integer types; never `usize` / `isize` for domain values.
 - Assertions on in release builds. Bound loops, size buffers so overflow is impossible.
-- No recursion. No `std.os` / `std.c` / `std.posix`.
-- No runtime allocation on the server after init. Avoid hot-path allocation on the client.
+- No recursion. Avoid `std.os` / `std.c` / `std.posix` outside narrow platform-boundary code.
+- No runtime allocation on the server after init. Avoid unexpected hot-path allocation on the client.
 - One responsibility per file. Functions stay readable (~70 lines as a soft ceiling).
 - ASCII-only source. Comments explain why, not how.
 - No external dependencies beyond the Zig standard library, the Aether / Iridescence ecosystem, and a small set of platform APIs (GLFW, miniaudio, OpenGL, pspsdk).

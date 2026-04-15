@@ -99,7 +99,7 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
 }
 
 /// Flag leaves whose all 6 neighbors are leaf-or-opaque. Such leaves are
-/// treated like opaque for culling and are drawn on the opaque mesh — this
+/// treated like opaque for culling and are drawn on the opaque mesh - this
 /// hides the interior of a leaf cluster while still letting the outer layer
 /// render as a transparent shell with holes.
 ///
@@ -186,7 +186,7 @@ const FaceMasks = struct {
     y_neg: u32,
     z_pos: u32,
     z_neg: u32,
-    // Solid-leaf faces — always emitted to the opaque mesh. Only nonzero where
+    // Solid-leaf faces - always emitted to the opaque mesh. Only nonzero where
     // the neighbor in that direction is an outer leaf (everywhere else the
     // neighbor is opaque-or-solid-leaf and the face is culled by construction).
     sl_xp: u32,
@@ -213,7 +213,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const sleaf = cur.solid_leaf;
 
     // "Effective opaque" = real opaque + solid leaves. Anything in eff acts as
-    // an opaque barrier for face culling — so a dirt block adjacent to a
+    // an opaque barrier for face culling - so a dirt block adjacent to a
     // solid-leaf does not draw its face, just like dirt-against-dirt.
     const n_zp = &buf[by][bz + 1];
     const n_zn = &buf[by][bz - 1];
@@ -234,7 +234,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const z_pos = (std_vis & ~eff_zp) & SECTION_MASK;
     const z_neg = (std_vis & ~eff_zn) & SECTION_MASK;
     // Slab top sits at y+0.5 with a half-block air gap below the next block,
-    // so it can never be occluded by its y+1 neighbor — force-emit unconditionally.
+    // so it can never be occluded by its y+1 neighbor - force-emit unconditionally.
     const y_pos = ((std_vis & ~eff_yp) | slab) & SECTION_MASK;
     const y_neg = (std_vis & ~eff_yn) & SECTION_MASK;
 
@@ -244,13 +244,15 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const flu_xn = (flu & ~(eff_cur << 1) & ~(flu << 1)) & SECTION_MASK;
     const flu_zp = (flu & ~eff_zp & ~n_zp.flu) & SECTION_MASK;
     const flu_zn = (flu & ~eff_zn & ~n_zn.flu) & SECTION_MASK;
-    const flu_yp_bits = (flu & ~eff_yp & ~n_yp.flu) & SECTION_MASK;
+    // Water/lava tops are inset (~0.9 blocks), so they must be emitted even
+    // when the block above is opaque - omitting them leaves a visible gap.
+    const flu_yp_bits = (flu & ~n_yp.flu) & SECTION_MASK;
     const flu_yn = (flu & ~eff_yn & ~n_yn.flu) & SECTION_MASK;
 
     // Solid-leaf faces. By construction, all 6 neighbors of a solid leaf are
     // leaf-or-opaque, so a face is only emitted where the neighbor is an
     // outer leaf (not in eff). That's exactly the boundary you'd see through
-    // the transparent outer leaf — drawn here on the opaque mesh.
+    // the transparent outer leaf - drawn here on the opaque mesh.
     const sl_xp = (sleaf & ~(eff_cur >> 1)) & SECTION_MASK;
     const sl_xn = (sleaf & ~(eff_cur << 1)) & SECTION_MASK;
     const sl_zp = (sleaf & ~eff_zp) & SECTION_MASK;
@@ -435,7 +437,7 @@ pub fn emit_section(
             const bz: u32 = @as(u32, @intCast(lz)) + 1;
             const f = compute_face_masks(by, bz, buf);
 
-            // Standard faces — emit_mask routes opaque blocks to the opaque
+            // Standard faces - emit_mask routes opaque blocks to the opaque
             // mesh and outer leaves / glass / fluids to the transparent mesh.
             if (f.x_pos != 0) emit_mask(f.x_pos, world_y, @intCast(lz), cx, cz, .x_pos, m, atlas);
             if (f.x_neg != 0) emit_mask(f.x_neg, world_y, @intCast(lz), cx, cz, .x_neg, m, atlas);

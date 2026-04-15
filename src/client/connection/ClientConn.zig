@@ -177,14 +177,12 @@ fn on_spawn(ctx: *anyopaque, event: zb.SpawnPlayer) !void {
         self.handshake_complete = true;
         return;
     }
-    if (self.player_list) |pl| pl.spawn(event.pid, &event.name);
+    if (self.player_list) |pl| pl.spawn(event.pid, &event.name, event.x, event.y, event.z, event.yaw, event.pitch);
 }
 
-fn on_position(_: *anyopaque, event: zb.SetPositionOrientation) !void {
-    // Position broadcasts arrive at the server tick rate for every player,
-    // so logging them drowns the console. No-op; when we have remote
-    // players to render we'll route these into the renderer here.
-    _ = event;
+fn on_position(ctx: *anyopaque, event: zb.SetPositionOrientation) !void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    if (self.player_list) |pl| pl.update_position(event.pid, event.x, event.y, event.z, event.yaw, event.pitch);
 }
 
 fn on_message(ctx: *anyopaque, event: zb.Message) !void {
@@ -216,6 +214,24 @@ fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
     if (lz == 15) wr.mark_section_dirty(cx, sy, cz + 1);
     if (ly == 0 and sy > 0) wr.mark_section_dirty(cx, sy - 1, cz);
     if (ly == 15) wr.mark_section_dirty(cx, sy + 1, cz);
+    // Lighting propagation: a sunlight change at (x,y,z) affects every
+    // transparent block below it down to the next light-blocking block.
+    // Mark the section column (and XZ-boundary neighbours) dirty for each
+    // affected level so those meshes pick up the new shading.
+    if (event.y > 0) {
+        var walk_y: u16 = event.y - 1;
+        while (true) {
+            const walk_sy: u8 = @intCast(walk_y >> 4);
+            wr.mark_section_dirty(cx, walk_sy, cz);
+            if (lx == 0 and cx > 0) wr.mark_section_dirty(cx - 1, walk_sy, cz);
+            if (lx == 15) wr.mark_section_dirty(cx + 1, walk_sy, cz);
+            if (lz == 0 and cz > 0) wr.mark_section_dirty(cx, walk_sy, cz - 1);
+            if (lz == 15) wr.mark_section_dirty(cx, walk_sy, cz + 1);
+            if (World.blocks_light(World.get_block(event.x, walk_y, event.z))) break;
+            if (walk_y == 0) break;
+            walk_y -= 1;
+        }
+    }
 }
 
 fn on_despawn(ctx: *anyopaque, event: zb.DespawnPlayer) !void {

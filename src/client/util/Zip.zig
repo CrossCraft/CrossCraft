@@ -66,6 +66,7 @@ pub const Stream = struct {
     /// Absolute byte offset of the file's raw data inside the zip archive.
     data_offset: u64,
     uncompressed_size: u64,
+    compression_method: zip.CompressionMethod,
 };
 
 pub const Iterator = struct {
@@ -89,11 +90,16 @@ pub const Iterator = struct {
     }
 };
 
-pub fn init(allocator: std.mem.Allocator, _io: Io, path: []const u8) !*Zip {
+/// Opens the archive at `path` (resolved against `dir`). Pass the
+/// engine-owned resources or data dir — not `Io.Dir.cwd()`, which is not
+/// guaranteed to match the app root under Finder-launched `.app` bundles.
+pub fn init(allocator: std.mem.Allocator, _io: Io, dir: Io.Dir, path: []const u8) !*Zip {
+    std.debug.assert(path.len > 0);
+
     const self = try allocator.create(Zip);
     errdefer allocator.destroy(self);
 
-    self.file = try Io.Dir.cwd().openFile(_io, path, .{});
+    self.file = try dir.openFile(_io, path, .{});
     errdefer self.file.close(_io);
 
     self.allocator = allocator;
@@ -176,6 +182,7 @@ pub fn open(self: *Zip, path: []const u8) !Stream {
             .reader = &slot.limited.interface,
             .data_offset = slot.data_offset,
             .uncompressed_size = slot.uncompressed_size,
+            .compression_method = zip_entry.compression_method,
         };
     }
 

@@ -23,7 +23,41 @@ const GLYPH_SIZE: u32 = 8;
 const SPACE_WIDTH: u8 = 4;
 const DEFAULT_SPACING: i8 = 1;
 const VERTS_PER_CHAR: u32 = 6;
-const MAX_ENTRIES: u16 = if (ae.platform == .psp) 64 else 128;
+const MAX_ENTRIES: u16 = 1024;
+const COLOR_PREFIX: u8 = '&';
+
+// --- Color codes ---
+
+/// True if `c` is a valid color-code hex digit ('0'-'9' or 'a'-'f').
+fn is_color_hex(c: u8) bool {
+    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
+}
+
+const ColorPair = struct { fg: Color, bg: Color };
+
+/// Maps a color-code hex digit (after '&') to its foreground/background pair.
+/// Caller must have validated `c` with `is_color_hex` first.
+fn color_for_code(c: u8) ColorPair {
+    return switch (c) {
+        '0' => .{ .fg = Color.black_fg, .bg = Color.black_bg },
+        '1' => .{ .fg = Color.navy_fg, .bg = Color.navy_bg },
+        '2' => .{ .fg = Color.green_fg, .bg = Color.green_bg },
+        '3' => .{ .fg = Color.teal_fg, .bg = Color.teal_bg },
+        '4' => .{ .fg = Color.maroon_fg, .bg = Color.maroon_bg },
+        '5' => .{ .fg = Color.purple_fg, .bg = Color.purple_bg },
+        '6' => .{ .fg = Color.gold_fg, .bg = Color.gold_bg },
+        '7' => .{ .fg = Color.silver_fg, .bg = Color.silver_bg },
+        '8' => .{ .fg = Color.gray_fg, .bg = Color.gray_bg },
+        '9' => .{ .fg = Color.blue_fg, .bg = Color.blue_bg },
+        'a' => .{ .fg = Color.lime_fg, .bg = Color.lime_bg },
+        'b' => .{ .fg = Color.aqua_fg, .bg = Color.aqua_bg },
+        'c' => .{ .fg = Color.red_fg, .bg = Color.red_bg },
+        'd' => .{ .fg = Color.pink_fg, .bg = Color.pink_bg },
+        'e' => .{ .fg = Color.yellow_fg, .bg = Color.yellow_bg },
+        'f' => .{ .fg = Color.white_fg, .bg = Color.white_bg },
+        else => unreachable,
+    };
+}
 
 // --- Input Primitive ---
 
@@ -80,10 +114,29 @@ pub fn deinit(self: *Self) void {
     self.mesh.deinit(self.allocator);
 }
 
+/// Recompute glyph widths from the current `texture` pixel data.
+/// Call after the underlying font texture has been swapped (e.g. resource
+/// pack switch) so that string layout matches the new glyph art.
+pub fn refresh(self: *Self) void {
+    self.glyph_widths = compute_glyph_widths(self.texture);
+    // Force the next flush to rebuild geometry: clear our previous-frame
+    // diff so the entries_equal short-circuit can't keep a stale mesh.
+    self.prev_count = 0;
+    self.last_screen_w = 0;
+    self.last_screen_h = 0;
+}
+
 pub fn clear(self: *Self) void {
     self.prev_count = self.count;
     self.current ^= 1;
     self.count = 0;
+}
+
+/// Force the next flush to rebuild the mesh regardless of entry equality.
+/// Use when mutable string content at stable pointer addresses may have
+/// changed between frames (e.g. in-place label buffers in the options menu).
+pub fn mark_dirty(self: *Self) void {
+    self.prev_count = 0;
 }
 
 pub fn add_text(self: *Self, entry: *const TextEntry) void {
@@ -124,10 +177,19 @@ pub fn string_width(self: *const Self, str: []const u8, spacing: i8, text_scale:
     std.debug.assert(text_scale > 0);
     const s: i32 = text_scale;
     var total: i32 = 0;
-    for (str) |byte| {
-        total += @as(i32, self.glyph_widths[byte]) * s;
+    var visible: u32 = 0;
+    var i: usize = 0;
+    while (i < str.len) {
+        if (str[i] == COLOR_PREFIX and i + 1 < str.len and is_color_hex(str[i + 1])) {
+            i += 2;
+            continue;
+        }
+        total += @as(i32, self.glyph_widths[str[i]]) * s;
+        visible += 1;
+        i += 1;
     }
-    const gaps: i32 = @intCast(str.len - 1);
+    if (visible == 0) return 0;
+    const gaps: i32 = @intCast(visible - 1);
     total += gaps * (@as(i32, DEFAULT_SPACING) + @as(i32, spacing)) * s;
     return @intCast(@min(total, std.math.maxInt(i16)));
 }
@@ -168,9 +230,9 @@ pub fn build_mesh(
     const ext_h = text_h + pad;
 
     if (has_shadow) {
-        emit_string_local(self, &mesh, str, spacing, s, s, 32766, @bitCast(shadow_color), ext_w, ext_h, text_scale);
+        emit_string_local(self, &mesh, str, spacing, s, s, 32766, shadow_color, true, ext_w, ext_h, text_scale);
     }
-    emit_string_local(self, &mesh, str, spacing, 0, 0, 32765, @bitCast(color), ext_w, ext_h, text_scale);
+    emit_string_local(self, &mesh, str, spacing, 0, 0, 32765, color, false, ext_w, ext_h, text_scale);
 
     mesh.update();
     return mesh;
@@ -284,9 +346,9 @@ fn emit_text(
     const text_z: i16 = shadow_z - 1;
 
     if (entry.shadow_color.a > 0) {
-        emit_string_screen(self, mesh, str, entry.spacing, @as(i32, base_x) + ts, @as(i32, base_y) + ts, shadow_z, @bitCast(entry.shadow_color), screen_w, screen_h, ui_scale, entry.scale);
+        emit_string_screen(self, mesh, str, entry.spacing, @as(i32, base_x) + ts, @as(i32, base_y) + ts, shadow_z, entry.shadow_color, true, screen_w, screen_h, ui_scale, entry.scale);
     }
-    emit_string_screen(self, mesh, str, entry.spacing, @as(i32, base_x), @as(i32, base_y), text_z, @bitCast(entry.color), screen_w, screen_h, ui_scale, entry.scale);
+    emit_string_screen(self, mesh, str, entry.spacing, @as(i32, base_x), @as(i32, base_y), text_z, entry.color, false, screen_w, screen_h, ui_scale, entry.scale);
 }
 
 fn emit_string_screen(
@@ -297,7 +359,8 @@ fn emit_string_screen(
     start_x: i32,
     start_y: i32,
     z: i16,
-    color: u32,
+    base_color: Color,
+    is_shadow: bool,
     screen_w: u32,
     screen_h: u32,
     ui_scale: u32,
@@ -315,9 +378,21 @@ fn emit_string_screen(
     const sy1 = logical_to_snorm_y(y1, screen_h, ui_scale);
     const advance: i32 = (@as(i32, DEFAULT_SPACING) + @as(i32, spacing)) * ts;
     var cursor: i32 = start_x;
+    var color: u32 = @bitCast(base_color);
 
-    for (str) |byte| {
+    var i: usize = 0;
+    while (i < str.len) {
+        // '&' followed by [0-9a-f] swaps the active color and is not drawn
+        // or advanced past as a glyph.
+        if (str[i] == COLOR_PREFIX and i + 1 < str.len and is_color_hex(str[i + 1])) {
+            const pair = color_for_code(str[i + 1]);
+            color = @bitCast(if (is_shadow) pair.bg else pair.fg);
+            i += 2;
+            continue;
+        }
         if (cursor >= @as(i32, max_lx)) break;
+        const byte = str[i];
+        i += 1;
         const gw = self.glyph_widths[byte];
         if (gw == 0) {
             cursor += advance;
@@ -349,7 +424,8 @@ fn emit_string_local(
     offset_x: i32,
     offset_y: i32,
     z: i16,
-    color: u32,
+    base_color: Color,
+    is_shadow: bool,
     extent_w: i32,
     extent_h: i32,
     text_scale: u8,
@@ -359,8 +435,18 @@ fn emit_string_local(
     const sy0 = local_to_snorm_y(offset_y, extent_h);
     const sy1 = local_to_snorm_y(offset_y + @as(i32, GLYPH_SIZE) * ts, extent_h);
     var cursor: i32 = offset_x;
+    var color: u32 = @bitCast(base_color);
 
-    for (str) |byte| {
+    var i: usize = 0;
+    while (i < str.len) {
+        if (str[i] == COLOR_PREFIX and i + 1 < str.len and is_color_hex(str[i + 1])) {
+            const pair = color_for_code(str[i + 1]);
+            color = @bitCast(if (is_shadow) pair.bg else pair.fg);
+            i += 2;
+            continue;
+        }
+        const byte = str[i];
+        i += 1;
         const gw = self.glyph_widths[byte];
         if (gw == 0) {
             cursor += advance;

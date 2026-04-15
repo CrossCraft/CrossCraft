@@ -188,6 +188,11 @@ prev_z: f32,
 vel_x: f32,
 vel_y: f32,
 vel_z: f32,
+// Previous-tick vertical velocity for sub-tick fall-tilt interpolation.
+// Without this, fall-tilt snaps at tick boundaries; the artefact is invisible
+// on land but very obvious in water, where vel_y oscillates each tick from
+// drag (0.8) + LIQUID_SWIM_UP/LIQUID_GRAVITY pushing it through zero.
+vel_y_prev: f32,
 on_ground: bool,
 hit_horizontal: bool, // horizontal collision last tick (for water exit)
 can_liquid_jump: bool, // one-shot flag for water exit boost
@@ -293,6 +298,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .vel_x = 0,
         .vel_y = 0,
         .vel_z = 0,
+        .vel_y_prev = 0,
         .on_ground = false,
         .hit_horizontal = false,
         .can_liquid_jump = false,
@@ -342,7 +348,6 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     try input.add_button_callback("sneak", @ptrCast(self), on_sneak);
     try input.add_vector2_callback("look", @ptrCast(self), on_look);
     try input.add_vector2_callback("look_stick", @ptrCast(self), on_look_stick);
-    try input.add_button_callback("escape", @ptrCast(self), on_escape);
     if (comptime builtin.mode == .Debug and ae.platform != .psp) {
         try input.add_button_callback("noclip", @ptrCast(self), on_noclip);
     }
@@ -523,6 +528,7 @@ fn physics_tick(self: *Self) void {
     self.prev_x = self.pos_x;
     self.prev_y = self.pos_y;
     self.prev_z = self.pos_z;
+    self.vel_y_prev = self.vel_y;
 
     // 1. Input scaled by 0.98, rotated into world space
     const strafe = self.move_dir[0] * 0.98;
@@ -643,10 +649,12 @@ fn compute_view_bob(self: *const Self, alpha: f32) ViewBob {
     const roll_z = -cosw * swing * tilt_rad * amount;
     const pitch_x = @abs(sinw * swing * tilt_rad) * BOB_TILT_X_GAIN * amount;
 
-    // Fall tilt: small extra X-pitch from vertical velocity. We don't
-    // double-buffer velocity, so use the current value -- the visible
-    // artefact is tiny and avoids touching the existing physics state.
-    const fall = -(self.vel_y + FALL_TILT_GRAVITY_OFFSET) * FALL_TILT_GAIN;
+    // Fall tilt: small extra X-pitch from vertical velocity, interpolated
+    // across the tick to match the position interpolation. Reading raw
+    // vel_y here makes the tilt snap at tick boundaries -- harmless on
+    // land, but very visible in water where vel_y oscillates each tick.
+    const vy = self.vel_y_prev + (self.vel_y - self.vel_y_prev) * alpha;
+    const fall = -(vy + FALL_TILT_GRAVITY_OFFSET) * FALL_TILT_GAIN;
 
     const tilt = Math.Mat4.rotationZ(roll_z)
         .mul(Math.Mat4.rotationX(pitch_x))
@@ -853,7 +861,7 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     std.debug.assert(range <= 64.0);
 
     // Camera-forward in world space (unit vector). Only used to derive
-    // a fixed-point direction below — sin/cos are the only float ops.
+    // a fixed-point direction below - sin/cos are the only float ops.
     const cp = @cos(self.camera.pitch);
     const dir_x = toFP(-@sin(self.camera.yaw) * cp);
     const dir_y = toFP(-@sin(self.camera.pitch));
@@ -922,7 +930,7 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
         const prev_z = bz;
 
         // Step along the axis with the smallest t_max.
-        // t_max_a <= t_max_b ↔ dist_a * abs_b <= dist_b * abs_a (cross multiply).
+        // t_max_a <= t_max_b <-> dist_a * abs_b <= dist_b * abs_a (cross multiply).
         if (tLE(dist_x, adx, dist_y, ady) and tLE(dist_x, adx, dist_z, adz)) {
             bx += step_x;
             dist_x += ONE;
@@ -984,16 +992,16 @@ fn toFP(f: f32) i32 {
 }
 
 /// t_a <= t_b without division. t = dist / abs_dir.
-/// When abs_dir == 0 the axis is never stepped (t = ∞).
+/// When abs_dir == 0 the axis is never stepped (t = infinity).
 fn tLE(dist_a: i32, abs_a: i32, dist_b: i32, abs_b: i32) bool {
-    if (abs_a == 0) return false; // t_a = ∞
-    if (abs_b == 0) return true; // t_b = ∞
+    if (abs_a == 0) return false; // t_a = infinity
+    if (abs_b == 0) return true; // t_b = infinity
     return @as(i64, dist_a) * @as(i64, abs_b) <= @as(i64, dist_b) * @as(i64, abs_a);
 }
 
 /// True when the smallest t_max across all three axes exceeds range.
 fn tExceedsRange(dx: i32, adx: i32, dy: i32, ady: i32, dz: i32, adz: i32, range_fp: i32) bool {
-    // t_axis = dist / abs_dir > range  ↔  dist * ONE > range_fp * abs_dir
+    // t_axis = dist / abs_dir > range  <->  dist * ONE > range_fp * abs_dir
     // If abs_dir == 0 the axis is infinite and can't be the minimum.
     const xv = adx != 0 and @as(i64, dx) * ONE <= @as(i64, range_fp) * @as(i64, adx);
     const yv = ady != 0 and @as(i64, dy) * ONE <= @as(i64, range_fp) * @as(i64, ady);
@@ -1033,7 +1041,7 @@ fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: c.SubvoxelBounds) bool {
         lz < @as(i32, b.max_z) * STEP;
 }
 
-/// Integer slab test — returns entry face or null on miss. All arithmetic
+/// Integer slab test - returns entry face or null on miss. All arithmetic
 /// is integer (i32/i64), so no FPU exceptions can fire.
 fn ray_sub_aabb_fp(
     ox: i32,
@@ -1120,7 +1128,7 @@ fn ray_sub_aabb_fp(
 }
 
 /// Fixed-point division: (num << FRAC) / den, clamped to i32 range.
-/// den == 0 returns signed MAX/MIN. Uses i64 intermediate — no FPU.
+/// den == 0 returns signed MAX/MIN. Uses i64 intermediate - no FPU.
 fn fpDiv(num: i32, den: i32) i32 {
     if (den == 0) return if (num >= 0) std.math.maxInt(i32) else std.math.minInt(i32);
     const wide = @divTrunc(@as(i64, num) <<| FRAC, @as(i64, den));
@@ -1143,7 +1151,7 @@ fn face_normal(face: Face) [3]i32 {
 /// HUD pass: queues every 2D sprite (crosshair, hotbar background, selector
 /// frame) into `batcher`, and queues hotbar block icons into `iso`. Caller
 /// flushes the sprite batcher first, then the iso drawer, so the 3D block
-/// icons land on top of the 2D selector frame in a single sprite pass — no
+/// icons land on top of the 2D selector frame in a single sprite pass - no
 /// second batcher and no extra depth clear needed.
 pub fn draw_ui(
     self: *Self,
@@ -1163,7 +1171,7 @@ pub fn draw_ui(
             .pos_extent = .{ .x = 16, .y = 16 },
             .tex_offset = .{ .x = 240, .y = 0 },
             .tex_extent = .{ .x = 16, .y = 16 },
-            .color = .white,
+            .color = .white_fg,
             .layer = 255,
             .reference = .middle_center,
             .origin = .middle_center,
@@ -1179,7 +1187,7 @@ pub fn draw_ui(
         .pos_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
         .tex_offset = .{ .x = HOTBAR_TEX_X, .y = HOTBAR_TEX_Y },
         .tex_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
-        .color = .white,
+        .color = .white_fg,
         .layer = HOTBAR_BG_LAYER,
         .reference = .bottom_center,
         .origin = .bottom_center,
@@ -1195,7 +1203,7 @@ pub fn draw_ui(
         .pos_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
         .tex_offset = .{ .x = SELECTOR_TEX_X, .y = SELECTOR_TEX_Y },
         .tex_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
-        .color = .white,
+        .color = .white_fg,
         .layer = SELECTOR_LAYER,
         .reference = .bottom_center,
         .origin = .bottom_center,
@@ -1259,14 +1267,6 @@ fn on_look_stick(ctx: *anyopaque, value: [2]f32) void {
     self.look_rate = value;
 }
 
-fn on_escape(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.mouse_captured = !self.mouse_captured;
-    input.set_mouse_relative_mode(self.mouse_captured);
-    self.look_delta = .{ 0, 0 };
-}
-
 /// Edge-only signal: GameState polls and clears `inventory_toggle_pending`
 /// each frame and owns the open/close + mouse-capture handoff for the
 /// inventory overlay. Toggling capture here would race the overlay's own
@@ -1304,6 +1304,7 @@ fn do_break(self: *Self) void {
     if (self.held_renderer) |hr| hr.trigger_dig();
     const hit = self.selected orelse return;
     const block_id = World.get_block(hit.x, hit.y, hit.z);
+    if (block_id == B.Bedrock) return;
     if (block_id != B.Air) {
         if (self.particle_sink) |ps| {
             ps.spawn_break(block_id, hit.x, hit.y, hit.z, derive_break_face(hit));
@@ -1320,7 +1321,7 @@ fn do_break(self: *Self) void {
 /// `raycast_block` advances exactly one axis per DDA iteration, so for a
 /// real hit (`has_place == true`) the place cell differs from the hit cell
 /// by exactly one component. The axis priority below is therefore just
-/// "first non-zero wins", not a tiebreaker — corners can't occur.
+/// "first non-zero wins", not a tiebreaker - corners can't occur.
 fn derive_break_face(hit: RaycastHit) Face {
     if (!hit.has_place) return .y_pos;
     const dx: i32 = @as(i32, hit.place_x) - @as(i32, hit.x);

@@ -9,9 +9,11 @@ pub fn build(b: *std.Build) void {
         .gfx = b.option(Aether.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
         .psp_display_mode = b.option(Aether.PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
+        .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
     };
 
     const slim = b.option(bool, "slim", "Slim mode: reduced memory, smaller render distance (for PSP-1000)") orelse false;
+    const skip_pack = b.option(bool, "skip-pack", "Skip zipping resources into pack.zip (for CI builds without LFS assets)") orelse false;
 
     const config = Aether.Config.resolve(target, overrides);
 
@@ -46,28 +48,61 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Resource packing: ZIP the default resource pack at build time
-    const resources = b.dependency("resources", .{});
-
-    const pack_tool = b.addExecutable(.{
-        .name = "pack_zip",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/pack_zip.zig"),
-            .target = b.graph.host,
-        }),
-    });
-
-    var pack_cmd = b.addRunArtifact(pack_tool);
-    pack_cmd.addDirectoryArg(resources.path("default"));
-    const pack_zip = pack_cmd.addOutputFileArg("pack.zip");
-
     const psp_client_dir = "CrossCraft-Classic-PSP";
     const is_psp = target.result.os.tag == .psp;
+    const is_macos = target.result.os.tag == .macos;
+    const is_desktop = !is_psp and !is_macos;
 
-    const install_pack = b.addInstallFile(
-        pack_zip,
-        if (is_psp) "bin/" ++ psp_client_dir ++ "/pack.zip" else "bin/pack.zip",
-    );
+    // Resource packing: ZIP the default resource pack at build time.
+    // Skipped via -Dskip-pack on CI where the LFS-backed resources submodule
+    // is not fetched, which would otherwise zip up LFS pointer stubs.
+    const pack_zip_path: ?std.Build.LazyPath = if (skip_pack) null else blk: {
+        const resources = b.dependency("resources", .{});
+
+        const pack_tool = b.addExecutable(.{
+            .name = "pack_zip",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/pack_zip.zig"),
+                .target = b.graph.host,
+            }),
+        });
+
+        var pack_cmd = b.addRunArtifact(pack_tool);
+        pack_cmd.addDirectoryArg(resources.path("default"));
+        break :blk pack_cmd.addOutputFileArg("pack.zip");
+    };
+
+    // Whether pack.zip is embedded directly in the Linux/Windows binary.
+    // True for local release builds; false for -Duse-cwd (CI/dev) and all
+    // other platforms.
+    const should_embed = is_desktop and pack_zip_path != null and !(overrides.use_cwd orelse false);
+
+    // Packaging strategy per platform:
+    //   PSP: install into bin/<psp_client_dir>/ for EBOOT layout.
+    //   macOS: routed through Aether.exportArtifact into the .app bundle's
+    //     Contents/Resources/ — see below.
+    //   Desktop, embedding: pack.zip is baked into the binary; no loose file.
+    //   Desktop, -Duse-cwd: copy to project root (run-game) AND to zig-out/bin/
+    //     (distribution zips) so both workflows find the file in CWD.
+    const install_pack: ?*std.Build.Step = if (pack_zip_path) |pack_zip| blk: {
+        if (is_psp) {
+            const psp_install = b.addInstallFile(
+                pack_zip,
+                "bin/" ++ psp_client_dir ++ "/pack.zip",
+            );
+            break :blk &psp_install.step;
+        }
+        if (is_macos) break :blk null; // Aether.exportArtifact installs via opts.resources.
+        if (should_embed) break :blk null; // Baked into binary; no separate file needed.
+
+        // -Duse-cwd path: source-root copy for `zig build run-game`, plus a
+        // bin-dir copy so distribution zips (zig-out/) include the pack.
+        const update = b.addUpdateSourceFiles();
+        update.addCopyFileToSource(pack_zip, "pack.zip");
+        const bin_install = b.addInstallFile(pack_zip, "bin/pack.zip");
+        update.step.dependOn(&bin_install.step);
+        break :blk &update.step;
+    } else null;
 
     const ae_dep = b.dependency("engine", .{
         .target = target,
@@ -85,17 +120,41 @@ pub fn build(b: *std.Build) void {
     client_exe.root_module.addImport("common", common);
     client_exe.root_module.addImport("protocol", protocol);
 
+    // Embed pack.zip directly in the binary on Linux/Windows release builds.
+    // CI and dev builds use -Duse-cwd=true which skips embedding, keeping
+    // artifacts small (pack.zip can be 90+ MB).
+    if (should_embed) {
+        client_exe.root_module.addAnonymousImport("default_pack", .{
+            .root_source_file = pack_zip_path.?,
+        });
+    }
+
     const build_options = b.addOptions();
     build_options.addOption(bool, "slim", slim);
+    build_options.addOption(bool, "embed_pack", should_embed);
     client_exe.root_module.addImport("build_options", build_options.createModule());
 
     Aether.addShader(ae_dep.builder, b, client_exe, config, "basic", .{
         .slang = b.path("src/client/shaders/basic.slang"),
     });
 
+    // On macOS we pipe pack.zip through exportArtifact so it lands in
+    // Contents/Resources/ inside the .app bundle. On PSP/desktop the
+    // install_pack branch above handles placement.
+    const mac_resources: []const Aether.ExportOptions.Resource = if (is_macos and pack_zip_path != null)
+        &.{.{ .path = pack_zip_path.?, .name = "pack.zip" }}
+    else
+        &.{};
+
     Aether.exportArtifact(ae_dep.builder, b, client_exe, config, .{
         .title = "CrossCraft Classic",
         .output_dir = psp_client_dir,
+        .bundle_id = "com.iridescentrose.crosscraft-classic",
+        .resources = mac_resources,
+        // Reusing the Vita icon as a placeholder — 128×128 upscales for
+        // the larger .icns slots but it's serviceable. Swap in a 1024×1024
+        // PNG later if you want sharper Dock/Finder rendering.
+        .icon_png = if (is_macos) b.path("assets/vita/icon0.png") else null,
     });
 
     // The server has no graphics — only use Aether.addGame for PSP
@@ -143,18 +202,24 @@ pub fn build(b: *std.Build) void {
     }
 
     const build_game_step = b.step("game", "Build the game");
-    build_game_step.dependOn(&b.addInstallArtifact(client_exe, .{}).step);
-    build_game_step.dependOn(&install_pack.step);
-    if (is_psp) {
-        // exportArtifact registers PSP pipeline steps (ELF→PRX→EBOOT.PBP)
-        // on b.getInstallStep(); wire them into the game step so that
-        // `zig build game -Dtarget=mipsel-psp` produces the EBOOT.
+    // macOS ships the exe inside CrossCraft-Classic.app (wired by
+    // Aether.exportArtifact onto b.getInstallStep()). Installing a flat
+    // copy alongside would duplicate the binary and confuse downstream
+    // packaging.
+    if (!is_macos) {
+        build_game_step.dependOn(&b.addInstallArtifact(client_exe, .{}).step);
+    }
+    if (install_pack) |ip| build_game_step.dependOn(ip);
+    if (is_psp or is_macos) {
+        // exportArtifact registers pipeline / bundle steps on
+        // b.getInstallStep(); wire them into the game step so
+        // `zig build game -Dtarget=<platform>` produces the artifact.
         build_game_step.dependOn(b.getInstallStep());
     }
 
     const run_client_step = b.step("run-game", "Run the app");
     const run_client_cmd = b.addRunArtifact(client_exe);
-    run_client_cmd.step.dependOn(&install_pack.step);
+    if (install_pack) |ip| run_client_cmd.step.dependOn(ip);
     run_client_step.dependOn(&run_client_cmd.step);
 
     if (b.args) |args| {

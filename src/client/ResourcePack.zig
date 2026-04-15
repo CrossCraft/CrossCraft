@@ -7,6 +7,8 @@
 /// enabling future resource-pack switching (close old, open new, reload).
 const ResourcePack = @This();
 
+const SoundManager = @import("SoundManager.zig");
+
 const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
@@ -24,6 +26,7 @@ pub const Tex = enum(u8) {
     clouds,
     water_still,
     lava_still,
+    char,
 
     const count = @typeInfo(Tex).@"enum".fields.len;
 };
@@ -38,17 +41,31 @@ fn tex_path(id: Tex) []const u8 {
         .clouds => "minecraft/textures/clouds",
         .water_still => "crosscraft/textures/water_still",
         .lava_still => "crosscraft/textures/lava_still",
+        .char => "minecraft/textures/char",
     };
 }
 
 // -- storage -----------------------------------------------------------------
 
 var textures: [Tex.count]Rendering.Texture = undefined;
-var tex_loaded: u8 = 0;
+var tex_loaded: u16 = 0;
 
 pub var atlas: TextureAtlas = undefined;
 var alloc: std.mem.Allocator = undefined;
 var pack: *Zip = undefined;
+
+/// Backing store for the path of the currently-open archive. Owned here so
+/// other systems (e.g. SoundManager) can re-open the same file by absolute
+/// name when they need a private file handle.
+const max_pack_path_len: usize = 256;
+var pack_path_buf: [max_pack_path_len]u8 = undefined;
+var pack_path_len: usize = 0;
+/// Dir the current pack was opened against. Recorded by `init`/`switch_pack`
+/// so later operations (texture reload, audio stream reopen) don't have to
+/// thread a Dir through every call site.
+var pack_dir: std.Io.Dir = undefined;
+
+const log = std.log.scoped(.respack);
 
 // -- animation state ---------------------------------------------------------
 
@@ -64,23 +81,42 @@ var pack_initialized: bool = false;
 
 // -- lifecycle ---------------------------------------------------------------
 
-/// Open the resource pack and prepare for texture loading. Safe to call
-/// multiple times -- subsequent calls are no-ops so MenuState.init can be
-/// re-entered after a disconnect without leaking the already-open Zip.
-pub fn init(render_alloc: std.mem.Allocator, game_alloc: std.mem.Allocator, io: std.Io) !void {
+/// Open the resource pack at `path` (resolved against `dir`) and prepare
+/// for texture loading. Safe to call multiple times -- subsequent calls
+/// are no-ops so MenuState.init can be re-entered after a disconnect
+/// without leaking the already-open Zip.
+///
+/// Pass `engine.dirs.resources` for the bundled default pack or
+/// `engine.dirs.data` (with a `texturepacks/...` path) for a
+/// user-installed pack. `dir` is captured for the lifetime of the pack
+/// so later `switch_pack` calls can rebind without taking a new `dir`
+/// parameter.
+pub fn init(
+    render_alloc: std.mem.Allocator,
+    game_alloc: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    path: []const u8,
+) !void {
     if (pack_initialized) return;
+    std.debug.assert(path.len > 0 and path.len <= max_pack_path_len);
     alloc = render_alloc;
     tex_loaded = 0;
     anim_tick = 0;
-    pack = try Zip.init(game_alloc, io, "pack.zip");
+    pack = try Zip.init(game_alloc, io, dir, path);
+    @memcpy(pack_path_buf[0..path.len], path);
+    pack_path_len = path.len;
+    pack_dir = dir;
     pack_initialized = true;
+    SoundManager.init(pack, dir, pack_path_buf[0..pack_path_len]);
 }
 
 pub fn deinit() void {
     if (!pack_initialized) return;
+    SoundManager.deinit();
     var i: u8 = 0;
     while (i < Tex.count) : (i += 1) {
-        if (tex_loaded & (@as(u8, 1) << @intCast(i)) != 0) {
+        if (tex_loaded & (@as(u16, 1) << @intCast(i)) != 0) {
             textures[i].deinit(alloc);
         }
     }
@@ -95,19 +131,107 @@ pub fn get_pack() *Zip {
     return pack;
 }
 
+pub fn get_pack_path() []const u8 {
+    return pack_path_buf[0..pack_path_len];
+}
+
+/// Replace the active archive at `path` (resolved against `dir`),
+/// transparently re-loading every texture currently in the resident set
+/// so cached `*const Texture` pointers (kept alive in screens, font
+/// batchers, etc.) stay valid -- only the pixel data behind them
+/// changes. The new pack is fully validated and every required texture
+/// is loaded into a temporary array before the swap, so a malformed
+/// pack leaves the prior pack untouched.
+///
+/// Callers pick the dir based on source: `engine.dirs.resources` to go
+/// back to the bundled default pack; `engine.dirs.data` for a
+/// user-installed pack under `texturepacks/`.
+pub fn switch_pack(dir: std.Io.Dir, path: []const u8) !void {
+    std.debug.assert(pack_initialized);
+    std.debug.assert(path.len > 0 and path.len <= max_pack_path_len);
+
+    // Same dir + path -- nothing to do (avoids closing & reopening the file).
+    if (dir.handle == pack_dir.handle and
+        std.mem.eql(u8, path, pack_path_buf[0..pack_path_len])) return;
+
+    const game_alloc = pack.allocator;
+    const io_handle = pack.io;
+
+    var new_pack = try Zip.init(game_alloc, io_handle, dir, path);
+    errdefer new_pack.deinit();
+
+    // Stage replacements for every currently-resident texture before
+    // touching the live array. If any required asset is missing the
+    // previously loaded set stays in place.
+    var staged: [Tex.count]Rendering.Texture = undefined;
+    var staged_mask: u16 = 0;
+
+    const old_pack = pack;
+    pack = new_pack;
+
+    var i: u8 = 0;
+    while (i < Tex.count) : (i += 1) {
+        const bit: u16 = @as(u16, 1) << @intCast(i);
+        if (tex_loaded & bit == 0) continue;
+        staged[i] = load_from_zip(@enumFromInt(i)) catch |err| {
+            log.warn("pack '{s}' missing {s}: {}", .{ path, @tagName(@as(Tex, @enumFromInt(i))), err });
+            // Roll back staged uploads and the pack swap.
+            var j: u8 = 0;
+            while (j < i) : (j += 1) {
+                if (staged_mask & (@as(u16, 1) << @intCast(j)) != 0) {
+                    staged[j].deinit(alloc);
+                }
+            }
+            pack = old_pack;
+            new_pack.deinit();
+            return err;
+        };
+        staged_mask |= bit;
+    }
+
+    // Commit: free old GPU textures, install staged ones, reapply tags
+    // (force_resident, atlas regen) so transient state matches load_tex().
+    i = 0;
+    while (i < Tex.count) : (i += 1) {
+        const bit: u16 = @as(u16, 1) << @intCast(i);
+        if (staged_mask & bit == 0) continue;
+        textures[i].deinit(alloc);
+        textures[i] = staged[i];
+        switch (@as(Tex, @enumFromInt(i))) {
+            .terrain => {
+                textures[i].force_resident();
+                atlas = TextureAtlas.init(256, 256, 16, 16);
+            },
+            .logo => textures[i].force_resident(),
+            else => {},
+        }
+    }
+
+    old_pack.deinit();
+
+    @memcpy(pack_path_buf[0..path.len], path);
+    pack_path_len = path.len;
+    pack_dir = dir;
+
+    SoundManager.deinit();
+    SoundManager.init(pack, dir, pack_path_buf[0..pack_path_len]);
+
+    log.info("switched to pack '{s}'", .{path});
+}
+
 // -- texture access ----------------------------------------------------------
 
 pub fn get_tex(id: Tex) *const Rendering.Texture {
     const i = @intFromEnum(id);
-    std.debug.assert(tex_loaded & (@as(u8, 1) << @intCast(i)) != 0);
+    std.debug.assert(tex_loaded & (@as(u16, 1) << @intCast(i)) != 0);
     return &textures[i];
 }
 
 pub fn load_tex(id: Tex) !void {
     const i = @intFromEnum(id);
-    if (tex_loaded & (@as(u8, 1) << @intCast(i)) != 0) return;
+    if (tex_loaded & (@as(u16, 1) << @intCast(i)) != 0) return;
     textures[i] = try load_from_zip(id);
-    tex_loaded |= @as(u8, 1) << @intCast(i);
+    tex_loaded |= @as(u16, 1) << @intCast(i);
 
     switch (id) {
         .terrain => {
@@ -121,7 +245,7 @@ pub fn load_tex(id: Tex) !void {
 
 pub fn unload_tex(id: Tex) void {
     const i = @intFromEnum(id);
-    const bit: u8 = @as(u8, 1) << @intCast(i);
+    const bit: u16 = @as(u16, 1) << @intCast(i);
     if (tex_loaded & bit == 0) return;
     textures[i].deinit(alloc);
     tex_loaded &= ~bit;
@@ -151,9 +275,9 @@ pub fn apply_tex_set(set: []const Tex) !void {
 /// Advance fluid tile animations. Called every game tick; actually blits
 /// a new frame once every `anim_period_ticks` ticks.
 pub fn tick_animations() void {
-    const t_bit: u8 = @as(u8, 1) << @intFromEnum(Tex.terrain);
-    const w_bit: u8 = @as(u8, 1) << @intFromEnum(Tex.water_still);
-    const l_bit: u8 = @as(u8, 1) << @intFromEnum(Tex.lava_still);
+    const t_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.terrain);
+    const w_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.water_still);
+    const l_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.lava_still);
     std.debug.assert(tex_loaded & (t_bit | w_bit | l_bit) == (t_bit | w_bit | l_bit));
 
     anim_tick +%= 1;
@@ -166,8 +290,16 @@ pub fn tick_animations() void {
     const step = anim_tick / anim_period_ticks;
 
     blit_frame(water, step % water_frames, water_tile_col, water_tile_row);
-    blit_frame(lava, step % lava_frames, lava_tile_col, lava_tile_row);
+    blit_frame(lava, ping_pong_frame(step, lava_frames), lava_tile_col, lava_tile_row);
     textures[@intFromEnum(Tex.terrain)].update();
+}
+
+// Ping-pong sequence: 0,1,...,N-1,N-2,...,1,0,1,... with period 2*(N-1).
+fn ping_pong_frame(step: u32, frames: u32) u32 {
+    if (frames <= 1) return 0;
+    const period = 2 * (frames - 1);
+    const s = step % period;
+    return if (s < frames) s else period - s;
 }
 
 fn blit_frame(

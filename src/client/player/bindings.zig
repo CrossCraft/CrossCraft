@@ -54,11 +54,6 @@ pub fn init() !void {
     try input.bind_action("look_stick", .{ .source = .{ .gamepad_axis = .LeftX }, .component = .x });
     try input.bind_action("look_stick", .{ .source = .{ .gamepad_axis = .LeftY }, .component = .y });
 
-    // ---- escape / menu ----
-    try input.register_action("escape", .button);
-    try input.bind_action("escape", .{ .source = .{ .key = .Escape } });
-    try input.bind_action("escape", .{ .source = .{ .gamepad_button = .Start } });
-
     // ---- break / place ----
     // Desktop: mouse buttons only. Gamepad shoulder buttons are handled
     // separately via shoulder_l / shoulder_r for L+R chord detection.

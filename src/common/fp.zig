@@ -44,7 +44,10 @@ pub fn FP(comptime bits: u16, comptime frac_bits: u16, comptime signed: bool) ty
         }
 
         pub fn div(self: Self, other: Self) Self {
-            return .{ .value = @divTrunc(self.value <<| frac_bits, other.value) };
+            // Widen to i64 before shifting so the dividend doesn't saturate when
+            // `self.value << frac_bits` exceeds IntType. Mirrors `mul` above.
+            const widened: i64 = @as(i64, self.value) << frac_bits;
+            return .{ .value = @intCast(@divTrunc(widened, @as(i64, other.value))) };
         }
 
         pub fn int(self: Self) IntType {

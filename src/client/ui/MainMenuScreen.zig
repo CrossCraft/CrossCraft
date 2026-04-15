@@ -1,7 +1,7 @@
 /// Declarative component array for the main menu, plus activation handlers.
 ///
 /// The component array is module-static so the Screen can hold a stable slice
-/// into it. Activation callbacks own all side effects — currently only
+/// into it. Activation callbacks own all side effects - currently only
 /// `on_singleplayer` is wired, the rest are stubs that no-op.
 const std = @import("std");
 const ae = @import("aether");
@@ -23,10 +23,10 @@ pub const Context = struct {
 
 const components = [_]Component{
     .{ .label = .{
-        .text = "CrossCraft Classic v0.1.0",
+        .text = "CrossCraft Classic v1.0-rc1",
         .pos_x = 2,
         .pos_y = 2,
-        .color = .dark_gray,
+        .color = .gray_fg,
         .shadow_color = .menu_version,
         .reference = .top_left,
         .origin = .top_left,
@@ -35,7 +35,7 @@ const components = [_]Component{
         .text = "Copyleft CrossCraft Team. Distribute!",
         .pos_x = -2,
         .pos_y = -2,
-        .color = .white,
+        .color = .white_fg,
         .shadow_color = .menu_copyright,
         .reference = .bottom_right,
         .origin = .bottom_right,
@@ -62,8 +62,7 @@ const components = [_]Component{
         .height = 20,
         .pos_x = 0,
         .pos_y = 168,
-        .enabled = false,
-        .on_activate = on_noop,
+        .on_activate = on_texture_packs,
     } },
     .{ .button = .{
         .label = "Options...",
@@ -71,8 +70,7 @@ const components = [_]Component{
         .height = 20,
         .pos_x = 0,
         .pos_y = 202,
-        .enabled = false,
-        .on_activate = on_noop,
+        .on_activate = on_options,
     } },
 };
 
@@ -80,6 +78,10 @@ const components = [_]Component{
 pub var pending_direct_connect: bool = false;
 /// Set after the "Singleplayer" button is clicked; MenuState reads and clears.
 pub var pending_singleplayer: bool = false;
+/// Set after the "Mods and Texture Packs" button is clicked; MenuState reads and clears.
+pub var pending_texture_packs: bool = false;
+/// Set after the "Options..." button is clicked; MenuState reads and clears.
+pub var pending_options: bool = false;
 
 fn on_multiplayer(_: *anyopaque) void {
     pending_direct_connect = true;
@@ -87,6 +89,14 @@ fn on_multiplayer(_: *anyopaque) void {
 
 fn on_singleplayer(_: *anyopaque) void {
     pending_singleplayer = true;
+}
+
+fn on_texture_packs(_: *anyopaque) void {
+    pending_texture_packs = true;
+}
+
+fn on_options(_: *anyopaque) void {
+    pending_options = true;
 }
 
 fn on_noop(_: *anyopaque) void {}
@@ -122,7 +132,7 @@ fn draw_underlay(ctx: *anyopaque, sprites: *SpriteBatcher, _: *FontBatcher, _: *
         .pos_extent = .{ .x = 512, .y = 64 },
         .tex_offset = .{ .x = 0, .y = 0 },
         .tex_extent = .{ .x = @intCast(menu.logo.width), .y = @intCast(menu.logo.height) },
-        .color = .white,
+        .color = .white_fg,
         .layer = 1,
         .reference = .top_center,
         .origin = .top_center,

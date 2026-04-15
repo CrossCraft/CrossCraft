@@ -284,7 +284,7 @@ fn walkerStep(
     // Phi update is identical for both modes: phi/2 + d_phi/4.
     phi.* = .{ .value = @divTrunc(phi.value, 2) + @divTrunc(d_phi.value, 4) };
 
-    // d_phi decay: cave 0.75, ore 0.9 (slower → wider vertical wobble).
+    // d_phi decay: cave 0.75, ore 0.9 (slower -> wider vertical wobble).
     const decay = switch (mode) {
         .cave => FP_0_75,
         else => FP_0_9,
@@ -456,7 +456,7 @@ fn packCoord(x: u32, y: u32, z: u32) u32 {
 }
 
 /// BFS spread from a pre-populated queue. Spreads horizontally (+/- x, +/- z)
-/// and downward (-y) only — water never propagates upward, per spec.
+/// and downward (-y) only - water never propagates upward, per spec.
 /// Caller is responsible for marking seeded cells as `fluid` and writing them
 /// into `queue[0..tail_in]` before calling.
 fn floodFromQueue(blocks: []u8, queue: []u32, tail_in: u32, fluid: u8) void {

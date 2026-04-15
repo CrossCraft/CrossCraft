@@ -7,8 +7,8 @@ const log = std.log.scoped(.memory);
 
 const CountingAllocator = @This();
 parent_allocator: mem.Allocator,
-current: u32,
-peak: u32,
+current: u64,
+peak: u64,
 
 pub fn init(parent_allocator: mem.Allocator) CountingAllocator {
     return .{
@@ -40,8 +40,7 @@ pub fn print(self: *const CountingAllocator) void {
 fn alloc(ctx: *anyopaque, len: usize, ptr_align: Alignment, ret_addr: usize) ?[*]u8 {
     const self: *CountingAllocator = @ptrCast(@alignCast(ctx));
     const ptr = self.parent_allocator.rawAlloc(len, ptr_align, ret_addr) orelse return null;
-    const size: u32 = @intCast(len);
-    self.current += size;
+    self.current += len;
     self.peak = @max(self.peak, self.current);
     return ptr;
 }
@@ -49,9 +48,7 @@ fn alloc(ctx: *anyopaque, len: usize, ptr_align: Alignment, ret_addr: usize) ?[*
 fn resize(ctx: *anyopaque, buf: []u8, buf_align: Alignment, new_len: usize, ret_addr: usize) bool {
     const self: *CountingAllocator = @ptrCast(@alignCast(ctx));
     if (!self.parent_allocator.rawResize(buf, buf_align, new_len, ret_addr)) return false;
-    const old: u32 = @intCast(buf.len);
-    const new: u32 = @intCast(new_len);
-    self.current = self.current - old + new;
+    self.current = self.current - buf.len + new_len;
     self.peak = @max(self.peak, self.current);
     return true;
 }
@@ -59,17 +56,14 @@ fn resize(ctx: *anyopaque, buf: []u8, buf_align: Alignment, new_len: usize, ret_
 fn remap(ctx: *anyopaque, buf: []u8, buf_align: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
     const self: *CountingAllocator = @ptrCast(@alignCast(ctx));
     const ptr = self.parent_allocator.rawRemap(buf, buf_align, new_len, ret_addr) orelse return null;
-    const old: u32 = @intCast(buf.len);
-    const new: u32 = @intCast(new_len);
-    self.current = self.current - old + new;
+    self.current = self.current - buf.len + new_len;
     self.peak = @max(self.peak, self.current);
     return ptr;
 }
 
 fn free(ctx: *anyopaque, buf: []u8, buf_align: Alignment, ret_addr: usize) void {
     const self: *CountingAllocator = @ptrCast(@alignCast(ctx));
-    const size: u32 = @intCast(buf.len);
-    assert(self.current >= size);
-    self.current -= size;
+    assert(self.current >= buf.len);
+    self.current -= buf.len;
     self.parent_allocator.rawFree(buf, buf_align, ret_addr);
 }

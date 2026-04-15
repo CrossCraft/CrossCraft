@@ -286,7 +286,7 @@ pub fn draw(
             .str = name,
             .pos_x = 0,
             .pos_y = lay.panel_top + PANEL_PAD,
-            .color = .white,
+            .color = .white_fg,
             .shadow_color = .menu_gray,
             .spacing = 0,
             .layer = TOOLTIP_LAYER,

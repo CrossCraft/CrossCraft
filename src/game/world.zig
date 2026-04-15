@@ -81,6 +81,10 @@ pub var world_size: [3]u16 = undefined;
 pub var seed: u64 = undefined;
 pub var tick_count: u64 = 0;
 pub var io: std.Io = undefined;
+/// Per-user data dir (ae.Core.paths.Dirs.data). world.dat is rooted here
+/// so Finder-launched `.app` bundles and other read-only install layouts
+/// don't try to write into CWD.
+pub var data_dir: std.Io.Dir = undefined;
 var save_counter: u32 = 0;
 
 /// For each (x,z) column, stores Y+1 of the highest light-blocking block.
@@ -92,7 +96,7 @@ pub var light_map: [c.WorldLength * c.WorldDepth]u8 = undefined;
 /// File header: 3 little-endian u16 (x, y, z), 1 little-endian u64 (seed), then raw block data.
 pub fn save() !void {
     if (!owned_locally) return;
-    const file = std.Io.Dir.cwd().createFile(io, "world.dat", .{}) catch |err| {
+    const file = data_dir.createFile(io, "world.dat", .{}) catch |err| {
         log.err("Failed to create world.dat: {}", .{err});
         return err;
     };
@@ -113,7 +117,7 @@ pub fn save() !void {
 }
 
 pub fn load() bool {
-    const file = std.Io.Dir.cwd().openFile(io, "world.dat", .{}) catch {
+    const file = data_dir.openFile(io, "world.dat", .{}) catch {
         return false;
     };
     defer file.close(io);
@@ -151,9 +155,10 @@ pub fn load() bool {
 /// loads and flips `owned_locally` to true) and by the multiplayer client
 /// (which fills `blocks` via the level-data-chunk decompression path and
 /// leaves `owned_locally` false so save/autosave paths are suppressed).
-pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, new_seed: u64) !void {
+pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.Dir, new_seed: u64) !void {
     backing_allocator = allocator;
     io = _io;
+    data_dir = _data_dir;
     owned_locally = false;
 
     node_pool = try allocator.alloc(WheelNode, POOL_CAPACITY);
@@ -194,8 +199,8 @@ pub fn finalize_loaded() void {
     log.info("World seed: {d}", .{seed});
 }
 
-pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.Io, new_seed: u64) !void {
-    try init_empty(allocator, _io, new_seed);
+pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.Dir, new_seed: u64) !void {
+    try init_empty(allocator, _io, _data_dir, new_seed);
     // Singleplayer owns its world and is allowed to persist it to disk.
     // This must happen before `load()` so the read side can be symmetric
     // later if we ever guard reads too.
@@ -297,13 +302,18 @@ pub fn is_sunlit(x: u16, y: u16, z: u16) bool {
     return y + 1 >= light_map[@as(u32, z) * c.WorldLength + x];
 }
 
+/// True when sunlight cannot pass through this block type.
+pub fn blocks_light(block: u8) bool {
+    return block >= light_passes.len or !light_passes[block];
+}
+
 /// Incrementally update height map after a block change at (x,y,z).
 fn update_height_column(x: u16, y: u16, z: u16, block: u8) void {
     const col_idx: u32 = @as(u32, z) * c.WorldLength + x;
     const cur = light_map[col_idx];
-    const blocks_light = block >= light_passes.len or !light_passes[block];
+    const is_blocker = blocks_light(block);
 
-    if (blocks_light) {
+    if (is_blocker) {
         const new_h: u8 = @intCast(y + 1);
         if (new_h > cur) light_map[col_idx] = new_h;
     } else if (y + 1 >= cur) {

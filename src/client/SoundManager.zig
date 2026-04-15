@@ -1,4 +1,4 @@
-/// Streams all audio directly from pack.zip — no PCM buffers in RAM.
+/// Streams all audio directly from pack.zip - no PCM buffers in RAM.
 ///
 /// Each active sound uses a dedicated file reader positioned at the
 /// pre-computed PCM data offset within the archive. The pack uses
@@ -13,6 +13,7 @@ const Audio = ae.Audio;
 const Math = ae.Math;
 const c = @import("common").consts;
 const B = c.Block;
+const Options = @import("Options.zig");
 const Zip = @import("util/Zip.zig");
 
 const Io = std.Io;
@@ -82,8 +83,8 @@ var music_entries: [music_count]SoundEntry = init_entry_row();
 
 // -- streaming voice pool ---------------------------------------------------
 
-const max_voices: u32 = 17;
-const music_slot: u32 = 16;
+const max_voices: u32 = if (ae.platform == .psp) 8 else 17;
+const music_slot: u32 = if (ae.platform == .psp) 7 else 16;
 
 const StreamVoice = struct {
     read_buf: [4096]u8,
@@ -158,10 +159,15 @@ const music_paths: [music_count][]const u8 = .{
 
 // -- init / deinit ----------------------------------------------------------
 
-pub fn init(pack: *Zip) void {
+/// Opens a second handle to the pack archive (stored separately from the
+/// `Zip` used for textures) so music / sfx can stream PCM data while the
+/// main pack reads texture entries without seek contention. `dir` must
+/// match the dir passed to `ResourcePack.init` / `switch_pack` for the
+/// currently-loaded pack.
+pub fn init(pack: *Zip, dir: Io.Dir, path: []const u8) void {
     stored_io = pack.io;
-    stored_file = Io.Dir.cwd().openFile(stored_io, "pack.zip", .{}) catch |err| {
-        log.warn("cannot open pack.zip for audio: {}", .{err});
+    stored_file = dir.openFile(stored_io, path, .{}) catch |err| {
+        log.warn("cannot open '{s}' for audio: {}", .{ path, err });
         return;
     };
 
@@ -192,6 +198,20 @@ pub fn deinit() void {
     }
     stored_file.close(stored_io);
     initialised = false;
+
+    stored_file = undefined;
+    stored_io = undefined;
+
+    music_state = .idle;
+    music_index = 0;
+    music_delay_timer = 0;
+    voices = undefined;
+
+    dig_entries = init_entry_grid();
+    dig_counts = .{ 0, 0, 0, 0, 0 };
+    step_entries = init_entry_grid();
+    step_counts = .{ 0, 0, 0, 0, 0 };
+    music_entries = init_entry_row();
 }
 
 fn scan_entries(
@@ -229,9 +249,15 @@ fn scan_music(pack: *Zip) void {
 
 /// Open a WAV from the zip, parse its header, and record where the PCM
 /// data lives in the archive so we can seek straight to it at play time.
+/// Playback reads raw bytes directly from the archive file handle, so the
+/// entry must be stored (not deflated) -- user-supplied texturepacks often
+/// use deflate, in which case we fail the resolve and the sound silently
+/// drops rather than playing compressed bytes as PCM (static noise).
 fn resolve_wav(pack: *Zip, path: []const u8) !SoundEntry {
     var stream = try pack.open(path);
     defer pack.closeStream(&stream);
+
+    if (stream.compression_method != .store) return error.UnsupportedCompression;
 
     const wav = try Audio.wav.open(stream.reader);
     const pcm_size = wav.byte_length orelse return error.UnknownLength;
@@ -261,15 +287,30 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
         Math.Vec3.new(0, 1, 0),
     );
 
-    // Reap finished SFX voices (not music slot)
+    // Reap finished SFX voices (not music slot).
+    // When sound is muted, actively stop any voices that are still streaming
+    // so we don't burn I/O and CPU on audio no one can hear.
     for (voices[0..music_slot]) |*v| {
-        if (v.active and !Audio.is_playing(v.handle)) v.active = false;
+        if (!v.active) continue;
+        if (Options.current.sound_volume == 0.0) {
+            Audio.stop(v.handle);
+            v.active = false;
+        } else if (!Audio.is_playing(v.handle)) {
+            v.active = false;
+        }
     }
 
     // Music state machine
     switch (music_state) {
         .playing => {
-            if (!Audio.is_playing(voices[music_slot].handle)) {
+            if (Options.current.music_volume == 0.0) {
+                // Muted while playing: stop the stream and park in delay so
+                // music resumes automatically once volume is restored.
+                Audio.stop(voices[music_slot].handle);
+                voices[music_slot].active = false;
+                music_state = .delay;
+                music_delay_timer = 1.0;
+            } else if (!Audio.is_playing(voices[music_slot].handle)) {
                 voices[music_slot].active = false;
                 music_state = .delay;
                 music_delay_timer = min_music_delay +
@@ -279,7 +320,13 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
         .delay => {
             music_delay_timer -= dt;
             if (music_delay_timer <= 0) {
-                advance_and_play_music();
+                if (Options.current.music_volume > 0.0) {
+                    advance_and_play_music();
+                } else {
+                    // Still muted: poll again in 1 s so music starts quickly
+                    // when volume is later restored.
+                    music_delay_timer = 1.0;
+                }
             }
         },
         .idle => {},
@@ -298,7 +345,7 @@ fn advance_and_play_music() void {
         return;
     }
     start_voice(&voices[music_slot], entry, null, .{
-        .volume = 0.5,
+        .volume = 0.5 * Options.current.music_volume,
         .priority = .critical,
     }) catch {
         music_state = .delay;
@@ -316,6 +363,7 @@ pub fn play_dig(block: u8, bx: u16, by: u16, bz: u16) void {
 
 pub fn play_step(block: u8) void {
     if (!initialised) return;
+    if (Options.current.sound_volume == 0.0) return;
     var mat = @intFromEnum(block_material(block));
     var count = step_counts[mat];
     if (count == 0) {
@@ -326,7 +374,7 @@ pub fn play_step(block: u8) void {
     const entry = step_entries[mat][rand_u32(count)];
     if (!entry.valid) return;
     const slot = find_free_sfx() orelse return;
-    start_voice(slot, entry, null, .{ .volume = 0.15, .priority = .low }) catch return;
+    start_voice(slot, entry, null, .{ .volume = 0.15 * Options.current.sound_volume, .priority = .low }) catch return;
 }
 
 fn play_material_sound(
@@ -339,6 +387,7 @@ fn play_material_sound(
     volume: f32,
 ) void {
     if (!initialised) return;
+    if (Options.current.sound_volume == 0.0) return;
     const mat = @intFromEnum(block_material(block));
     const count = counts[mat];
     if (count == 0) return;
@@ -351,7 +400,7 @@ fn play_material_sound(
     );
     const slot = find_free_sfx() orelse return;
     start_voice(slot, entry, pos, .{
-        .volume = volume,
+        .volume = volume * Options.current.sound_volume,
         .priority = .normal,
         .ref_distance = 1.0,
         .max_distance = 16.0,
