@@ -188,6 +188,11 @@ prev_z: f32,
 vel_x: f32,
 vel_y: f32,
 vel_z: f32,
+// Previous-tick vertical velocity for sub-tick fall-tilt interpolation.
+// Without this, fall-tilt snaps at tick boundaries; the artefact is invisible
+// on land but very obvious in water, where vel_y oscillates each tick from
+// drag (0.8) + LIQUID_SWIM_UP/LIQUID_GRAVITY pushing it through zero.
+vel_y_prev: f32,
 on_ground: bool,
 hit_horizontal: bool, // horizontal collision last tick (for water exit)
 can_liquid_jump: bool, // one-shot flag for water exit boost
@@ -293,6 +298,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .vel_x = 0,
         .vel_y = 0,
         .vel_z = 0,
+        .vel_y_prev = 0,
         .on_ground = false,
         .hit_horizontal = false,
         .can_liquid_jump = false,
@@ -523,6 +529,7 @@ fn physics_tick(self: *Self) void {
     self.prev_x = self.pos_x;
     self.prev_y = self.pos_y;
     self.prev_z = self.pos_z;
+    self.vel_y_prev = self.vel_y;
 
     // 1. Input scaled by 0.98, rotated into world space
     const strafe = self.move_dir[0] * 0.98;
@@ -643,10 +650,12 @@ fn compute_view_bob(self: *const Self, alpha: f32) ViewBob {
     const roll_z = -cosw * swing * tilt_rad * amount;
     const pitch_x = @abs(sinw * swing * tilt_rad) * BOB_TILT_X_GAIN * amount;
 
-    // Fall tilt: small extra X-pitch from vertical velocity. We don't
-    // double-buffer velocity, so use the current value -- the visible
-    // artefact is tiny and avoids touching the existing physics state.
-    const fall = -(self.vel_y + FALL_TILT_GRAVITY_OFFSET) * FALL_TILT_GAIN;
+    // Fall tilt: small extra X-pitch from vertical velocity, interpolated
+    // across the tick to match the position interpolation. Reading raw
+    // vel_y here makes the tilt snap at tick boundaries -- harmless on
+    // land, but very visible in water where vel_y oscillates each tick.
+    const vy = self.vel_y_prev + (self.vel_y - self.vel_y_prev) * alpha;
+    const fall = -(vy + FALL_TILT_GRAVITY_OFFSET) * FALL_TILT_GAIN;
 
     const tilt = Math.Mat4.rotationZ(roll_z)
         .mul(Math.Mat4.rotationX(pitch_x))
