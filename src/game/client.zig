@@ -372,10 +372,14 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
         world.set_block(event.x, event.y, event.z, 0);
         Server.broadcast_block_change(event.x, event.y, event.z, 0);
     } else {
-        // Placing a slab on top of another slab combines into a double slab.
+        // Slab-on-slab → double slab. The originating client (and any other
+        // client doing optimistic placement, e.g. ClassiCube) already drew a
+        // slab into (x, y, z); broadcast an explicit air at that cell so
+        // those predictions are reverted, then upgrade the slab below.
         if (event.block == c.Block.Slab and event.y > 0) {
             const below = world.get_block(event.x, event.y - 1, event.z);
             if (below == c.Block.Slab) {
+                Server.broadcast_block_change(event.x, event.y, event.z, c.Block.Air);
                 world.set_block(event.x, event.y - 1, event.z, c.Block.Double_Slab);
                 Server.broadcast_block_change(event.x, event.y - 1, event.z, c.Block.Double_Slab);
                 world.enqueue_neighbors_of(event.x, event.y - 1, event.z);
