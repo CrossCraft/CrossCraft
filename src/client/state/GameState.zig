@@ -300,6 +300,14 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
                 f.await(engine.io);
                 self.mp_read_future = null;
             }
+            // PSP: tear down the networking stack so the next connect cycle
+            // re-runs net dialog + net.init from a clean state. Skipping this
+            // leaves sceNet/Apctl/Resolver loaded and the second connect fails.
+            if (ae.platform == .psp) {
+                const pspsdk = @import("pspsdk");
+                pspsdk.extra.net.disconnect();
+                pspsdk.extra.net.deinit();
+            }
         },
     }
     self.held.deinit();
