@@ -11,6 +11,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Opt in to Node.js 24 for JavaScript actions. Our pinned actions
+# (checkout@v4, upload-artifact@v4, setup-zig@v2) still ship Node.js
+# 20 binaries, which GitHub deprecated and will hard-disable 2026-09-16.
+# The opt-in flag forces the runner to use its bundled Node 24 instead;
+# drop this once the actions publish Node 24 releases of their own.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build_server:
     strategy:
