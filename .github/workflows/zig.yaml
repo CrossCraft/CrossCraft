@@ -66,23 +66,27 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-linux-gnu
             name: linux
-            extra: -Dcpu=x86_64_v3
+            extra: -Dcpu=x86_64_v3 -Dskip-pack=true
           - os: macos-latest
             target: aarch64-macos
             name: mac
+            # mac is the only target that currently produces a shippable
+            # artifact (CrossCraft-Classic.app with pack.zip inside), so
+            # it needs real LFS-backed resources. Other targets just
+            # smoke-test the build and skip the pack.
             extra:
           - os: windows-latest
             target: x86_64-windows-gnu
             name: windows
-            extra: -Dcpu=x86_64_v3
+            extra: -Dcpu=x86_64_v3 -Dskip-pack=true
           - os: ubuntu-latest
             target: mipsel-psp
             name: psp_phat
-            extra:
+            extra: -Dskip-pack=true
           - os: ubuntu-latest
             target: mipsel-psp
             name: psp_slim
-            extra: -Dslim=true
+            extra: -Dslim=true -Dskip-pack=true
     runs-on: ${{ matrix.os }}
     name: game (${{ matrix.name }})
     steps:
@@ -90,6 +94,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
+          # LFS fetch is only needed where we actually zip the resources
+          # pack (see matrix `extra` — any target without -Dskip-pack).
+          # `lfs: true` would otherwise pull ~100 MB of PNG/OGG/WAV on
+          # every job.
+          lfs: ${{ matrix.name == 'mac' }}
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -106,14 +115,22 @@ jobs:
         run: brew install glfw molten-vk
 
       - name: Build game
-        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe -Dskip-pack=true ${{ matrix.extra }}
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
 
       - name: Verify macOS bundle
         if: matrix.name == 'mac'
+        # pack.zip size check guards against LFS regressions: a pointer
+        # stub is ~130 B, a real pack is multi-MB. Fail loudly if we
+        # accidentally zip pointer files.
         run: |
           otool -L zig-out/bin/CrossCraft-Classic.app/Contents/MacOS/CrossCraft-Classic
           otool -l zig-out/bin/CrossCraft-Classic.app/Contents/MacOS/CrossCraft-Classic | grep -A2 LC_RPATH
           codesign --verify --verbose zig-out/bin/CrossCraft-Classic.app
+          pack="zig-out/bin/CrossCraft-Classic.app/Contents/Resources/pack.zip"
+          test -f "$pack" || { echo "missing $pack"; exit 1; }
+          size=$(stat -f%z "$pack")
+          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
+          echo "pack.zip OK ($size bytes)"
 
       - name: Package macOS .app
         if: matrix.name == 'mac'
