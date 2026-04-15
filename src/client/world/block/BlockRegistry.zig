@@ -29,7 +29,7 @@ fluid: BitSet,
 slab: BitSet,
 face_tiles: [256]FaceTiles,
 
-/// Global registry instance — call init() before use.
+/// Global registry instance - call init() before use.
 pub var global: Self = undefined;
 
 pub fn init() void {

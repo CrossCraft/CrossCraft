@@ -99,7 +99,7 @@ pub fn draw_transparent(self: *Self) void {
 }
 
 // SNORM dequant divides by 32768 (not 32767), so encode_pos(16) = 32767
-// maps to 32767/32768 ≈ 0.99997, not 1.0. Over-compensate slightly so
+// maps to 32767/32768 ~= 0.99997, not 1.0. Over-compensate slightly so
 // chunk edges overlap by a sub-pixel amount rather than leaving a gap.
 // Opaque geometry can use a larger overlap (depth test hides it);
 // translucent needs a tighter fit to avoid double-blend artifacts.

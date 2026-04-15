@@ -1,4 +1,4 @@
-/// Streams all audio directly from pack.zip — no PCM buffers in RAM.
+/// Streams all audio directly from pack.zip - no PCM buffers in RAM.
 ///
 /// Each active sound uses a dedicated file reader positioned at the
 /// pre-computed PCM data offset within the archive. The pack uses

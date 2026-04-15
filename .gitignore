@@ -6,3 +6,5 @@ zig-pkg
 .claude
 CLAUDE.md
 *.dat
+.codex
+AGENTS.md

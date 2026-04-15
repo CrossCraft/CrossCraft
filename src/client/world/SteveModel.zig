@@ -2,10 +2,10 @@
 //
 // Geometry is derived from the Minecraft Classic skin layout (64x32 char.png).
 // Six static meshes are built at init and never rebuilt:
-//   torso     – torso only (36 vertices)
-//   head      – head, rotated independently for pitch (36 vertices)
-//   right_arm / left_arm  – idle sway + walk swing (36 vertices each)
-//   right_leg / left_leg  – walk swing (36 vertices each)
+//   torso     - torso only (36 vertices)
+//   head      - head, rotated independently for pitch (36 vertices)
+//   right_arm / left_arm  - idle sway + walk swing (36 vertices each)
+//   right_leg / left_leg  - walk swing (36 vertices each)
 //
 // Left-side limbs mirror the right-side UVs (u0/u1 swapped per face).
 // Positions are interpolated with exponential smoothing so movement looks
@@ -36,7 +36,7 @@ const RENDER_DIST: f32 = 32.0;
 const RENDER_DIST_SQ: f32 = RENDER_DIST * RENDER_DIST;
 
 // Interpolation speed (units: 1/s). At 20 Hz server ticks (50ms apart),
-// a speed of 15 converges ~53% per tick — fast enough to track but smooth
+// a speed of 15 converges ~53% per tick - fast enough to track but smooth
 // enough to hide jitter.
 const INTERP_SPEED: f32 = 15.0;
 

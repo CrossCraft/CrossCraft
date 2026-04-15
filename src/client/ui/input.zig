@@ -42,9 +42,9 @@ pub const UiInput = struct {
     click_edge: bool,
     nav: NavDir,
     confirm_edge: bool,
-    /// In-menu "go back" — bound to keyboard Escape and gamepad B/Start.
+    /// In-menu "go back" - bound to keyboard Escape and gamepad B/Start.
     cancel_edge: bool,
-    /// In-game "open pause menu" — keyboard Escape and gamepad Start only.
+    /// In-game "open pause menu" - keyboard Escape and gamepad Start only.
     /// Distinct from cancel so the gamepad B/Circle button (which doubles as a
     /// movement key on PSP) does not toggle pause from gameplay.
     pause_edge: bool,

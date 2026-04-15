@@ -11,12 +11,12 @@ comptime {
 }
 
 pub const FakeConn = struct {
-    // S→C: server writes (producer), client reads (consumer)
+    // S->C: server writes (producer), client reads (consumer)
     s2c: [RING_SIZE]u8 = undefined,
     s2c_head: std.atomic.Value(u32) = .init(0),
     s2c_tail: std.atomic.Value(u32) = .init(0),
 
-    // C→S: client writes (producer), server reads (consumer)
+    // C->S: client writes (producer), server reads (consumer)
     c2s: [RING_SIZE]u8 = undefined,
     c2s_head: std.atomic.Value(u32) = .init(0),
     c2s_tail: std.atomic.Value(u32) = .init(0),
@@ -24,9 +24,9 @@ pub const FakeConn = struct {
     connected: bool = true,
 
     // Internal buffers - writers accumulate here before draining to ring.
-    // Largest S→C packet is PlayerID at 131 bytes; 1024 is comfortable.
+    // Largest S->C packet is PlayerID at 131 bytes; 1024 is comfortable.
     server_write_buf: [1024]u8 = undefined,
-    // Largest C→S packet is PlayerIDToServer at 131 bytes.
+    // Largest C->S packet is PlayerIDToServer at 131 bytes.
     client_write_buf: [256]u8 = undefined,
 
     // Reader scratch buffers for peek/fill.
@@ -34,12 +34,12 @@ pub const FakeConn = struct {
     client_read_buf: [256]u8 = undefined,
 
     // Server-facing interfaces - passed to local_join.
-    server_writer: std.Io.Writer = undefined, // server writes S→C here
-    server_reader: std.Io.Reader = undefined, // server reads C→S here (unused for local)
+    server_writer: std.Io.Writer = undefined, // server writes S->C here
+    server_reader: std.Io.Reader = undefined, // server reads C->S here (unused for local)
 
     // Client-facing interfaces - GameState uses these.
-    client_writer: std.Io.Writer = undefined, // client writes C→S here
-    client_reader: std.Io.Reader = undefined, // client reads S→C here
+    client_writer: std.Io.Writer = undefined, // client writes C->S here
+    client_reader: std.Io.Reader = undefined, // client reads S->C here
 
     /// Must be called in-place (after the FakeConn reaches its final address)
     /// because writer/reader buffers point into this struct.
@@ -96,7 +96,7 @@ pub const FakeConn = struct {
         return n;
     }
 
-    // -- S→C writer (server_writer → s2c ring) ------------------------------
+    // -- S->C writer (server_writer -> s2c ring) ------------------------------
 
     const s2c_writer_vtable: std.Io.Writer.VTable = .{ .drain = s2c_drain };
 
@@ -121,7 +121,7 @@ pub const FakeConn = struct {
         return w.consume(buf_end + data_written);
     }
 
-    // -- S→C reader (s2c ring → client_reader) ------------------------------
+    // -- S->C reader (s2c ring -> client_reader) ------------------------------
 
     const s2c_reader_vtable: std.Io.Reader.VTable = .{ .stream = s2c_stream };
 
@@ -134,7 +134,7 @@ pub const FakeConn = struct {
         return 0; // data stored in r.buffer; caller serves it from there
     }
 
-    // -- C→S writer (client_writer → c2s ring) ------------------------------
+    // -- C->S writer (client_writer -> c2s ring) ------------------------------
 
     const c2s_writer_vtable: std.Io.Writer.VTable = .{ .drain = c2s_drain };
 
@@ -156,7 +156,7 @@ pub const FakeConn = struct {
         return w.consume(buf_end + data_written);
     }
 
-    // -- C→S reader (c2s ring → server_reader) ------------------------------
+    // -- C->S reader (c2s ring -> server_reader) ------------------------------
 
     const c2s_reader_vtable: std.Io.Reader.VTable = .{ .stream = c2s_stream };
 

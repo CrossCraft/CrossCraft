@@ -107,7 +107,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
     self.time += dt;
     SoundManager.update(dt, 0, 0, 0, 0, 0);
 
-    // PSP: service deferred OSK at the top of update — the previous
+    // PSP: service deferred OSK at the top of update - the previous
     // frame's end_frame has completed so the GE is idle.
     if (ae.platform == .psp) {
         if (self.screen.osk_request) |idx| {

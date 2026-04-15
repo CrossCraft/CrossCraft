@@ -1,7 +1,7 @@
 /// Declarative component array for the main menu, plus activation handlers.
 ///
 /// The component array is module-static so the Screen can hold a stable slice
-/// into it. Activation callbacks own all side effects — currently only
+/// into it. Activation callbacks own all side effects - currently only
 /// `on_singleplayer` is wired, the rest are stubs that no-op.
 const std = @import("std");
 const ae = @import("aether");

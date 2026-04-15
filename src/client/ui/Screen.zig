@@ -34,7 +34,7 @@ row_width: u8 = 1,
 hovered: ?u8 = null,
 focused: ?u8 = null,
 /// Text input that is actively receiving keystrokes. Only changes on click
-/// or keyboard navigation, NOT on mouse hover — so moving the mouse over
+/// or keyboard navigation, NOT on mouse hover - so moving the mouse over
 /// another component highlights it without stealing typing focus.
 active_input: ?u8 = null,
 /// Set when the PSP OSK should be shown for a text input. The owning
@@ -72,7 +72,7 @@ pub fn update(self: *Self, in: *const UiInput) void {
         false;
 
     // Mouse hover updates the visual highlight but does NOT change
-    // active_input — that only changes on click or keyboard nav.
+    // active_input - that only changes on click or keyboard nav.
     if (in.cursor_available and in.cursor_moved) {
         const hit = self.hover_pick(in.cursor_x, in.cursor_y);
         self.hovered = hit;
@@ -118,7 +118,7 @@ pub fn update(self: *Self, in: *const UiInput) void {
             }
             return;
         }
-        // Clicked on empty space — deselect active input.
+        // Clicked on empty space - deselect active input.
         self.active_input = null;
     }
     if (in.confirm_edge) {

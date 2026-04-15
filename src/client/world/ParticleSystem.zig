@@ -130,7 +130,7 @@ pub fn spawn_break(self: *Self, block_id: u8, bx: u16, by: u16, bz: u16, face: F
         const sx: i16 = @intCast(rand.intRangeLessThan(u8, 0, @intCast(SUBTILE_DIV)));
         const sy: i16 = @intCast(rand.intRangeLessThan(u8, 0, @intCast(SUBTILE_DIV)));
 
-        // Spread spawn positions through most of the block volume (±0.45)
+        // Spread spawn positions through most of the block volume (+/-0.45)
         // so the burst visibly fills the cube the player just removed.
         const ox = (rand.float(f32) - 0.5) * 0.9;
         const oy = (rand.float(f32) - 0.5) * 0.9;
@@ -178,7 +178,7 @@ pub fn update(self: *Self, dt: f32) void {
         p.vy -= GRAVITY * dt;
         // Per-axis voxel collision: integrate one axis at a time and revert
         // (zeroing the velocity component) on contact. Treats the particle
-        // as a point — its visual extent is much smaller than a block.
+        // as a point - its visual extent is much smaller than a block.
         step_axis_x(p, p.vx * dt);
         step_axis_y(p, p.vy * dt);
         step_axis_z(p, p.vz * dt);
@@ -334,7 +334,7 @@ fn make_vertex(wx: f32, wy: f32, wz: f32, u: i16, v: i16, color: u32) Vertex {
     };
 }
 
-/// True when the world coordinate — plus billboard offsets — can be
+/// True when the world coordinate - plus billboard offsets - can be
 /// losslessly encoded into an i16.  The billboard corners are at most
 /// 2 * HALF_SIZE away from the particle center on any axis, so we
 /// shrink the safe window by that margin.

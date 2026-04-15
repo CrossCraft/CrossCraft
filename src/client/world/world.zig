@@ -190,7 +190,7 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
             self.build_estimator.end(self.io);
         } else |_| {
             self.build_estimator.end(self.io);
-            // OOM – evict the farthest built section to free GPU memory,
+            // OOM - evict the farthest built section to free GPU memory,
             // then stop for this frame. The cursor stays at i so this
             // section is retried first next frame rather than rebuilding it
             // twice in one frame.
@@ -404,7 +404,7 @@ fn flush_dirty_sections(self: *Self, cam: *const Camera) void {
         if (self.built[ref.cx][ref.cz][ref.sy]) continue; // already rebuilt
         if (self.in_queue[ref.cx][ref.cz][ref.sy]) continue; // already queued
         if (self.build_end >= MAX_ACTIVE) {
-            // No room — compact via a full rescan which resets the queue.
+            // No room - compact via a full rescan which resets the queue.
             self.queue_unbuilt_sections(cam);
             return;
         }
@@ -456,7 +456,7 @@ pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
     if (!self.loaded[cx][cz]) return;
     self.built[cx][cz][sy] = false;
     // Section already in the build queue; it will be rebuilt when the queue
-    // reaches it — no need to track it again.
+    // reaches it - no need to track it again.
     if (self.in_queue[cx][cz][sy]) return;
     // Track for incremental insert on the next update(). On overflow, flag a
     // full rescan so no dirty sections are silently dropped.
