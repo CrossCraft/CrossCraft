@@ -16,6 +16,8 @@ const Scaling = @import("Scaling.zig");
 const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
 
+const Options = @import("../Options.zig");
+
 const log = std.log.scoped(.menu);
 
 pub const Context = struct {
@@ -57,6 +59,10 @@ var label_buf: [max_packs + 1][max_path_len]u8 = undefined;
 var label_lens: [max_packs + 1]u8 = undefined;
 
 var entry_count: u8 = 0;
+/// Index of the currently-active pack entry, or null if none matched.
+/// Set by refresh() from Options and overridden immediately on click so
+/// the button grays out on the same frame the user selects a pack.
+var selected_index: ?u8 = null;
 
 const default_path = "pack.zip";
 
@@ -84,12 +90,34 @@ fn make_select_fn(comptime idx: u8) component.ActivateFn {
                 .dir = dir_buf[idx],
                 .path = path_buf[idx][0..path_lens[idx]],
             };
+            // Gray out the newly-selected entry immediately; MenuState will
+            // persist the change when it processes pending_select.
+            selected_index = idx;
+            rebuild_components();
         }
     }.f;
 }
 
 fn on_back(_: *anyopaque) void {
     pending_back = true;
+}
+
+/// Determine which entry index matches the persisted active pack, if any.
+/// "" in Options means the bundled default (index 0, path "pack.zip");
+/// all other stored paths are compared verbatim against the entry paths.
+fn find_active_index() ?u8 {
+    const saved = Options.current.active_texturepack();
+    var i: u8 = 0;
+    while (i < entry_count) : (i += 1) {
+        const path = path_buf[i][0..path_lens[i]];
+        const is_default_entry = std.mem.eql(u8, path, default_path);
+        if (is_default_entry) {
+            if (saved.len == 0) return i;
+        } else {
+            if (std.mem.eql(u8, path, saved)) return i;
+        }
+    }
+    return null;
 }
 
 // -- scan -------------------------------------------------------------------
@@ -110,6 +138,7 @@ pub fn refresh(io: std.Io, resources_dir: std.Io.Dir, data_dir: std.Io.Dir) void
 
     var dir = data_dir.openDir(io, "texturepacks", .{ .iterate = true }) catch |err| {
         log.warn("texturepacks/ not iterable: {}", .{err});
+        selected_index = find_active_index();
         rebuild_components();
         return;
     };
@@ -129,6 +158,7 @@ pub fn refresh(io: std.Io, resources_dir: std.Io.Dir, data_dir: std.Io.Dir) void
         add_entry(stem, full_path, data_dir);
     }
 
+    selected_index = find_active_index();
     rebuild_components();
 }
 
@@ -166,12 +196,14 @@ fn rebuild_components() void {
     const row_step: i16 = 22;
     const first_y: i16 = 40;
     while (i < entry_count) : (i += 1) {
+        const is_active = if (selected_index) |si| si == i else false;
         components_buf[component_count] = .{ .button = .{
             .label = label_buf[i][0..label_lens[i]],
             .width = button_w,
             .height = button_h,
             .pos_x = 0,
             .pos_y = first_y + @as(i16, @intCast(i)) * row_step,
+            .enabled = !is_active,
             .on_activate = select_fns[i],
         } };
         component_count += 1;

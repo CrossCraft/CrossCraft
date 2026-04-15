@@ -52,7 +52,7 @@ const sp_components = [_]Component{
         .pos_y = -12,
         .reference = .middle_center,
         .origin = .middle_center,
-        .on_activate = on_noop,
+        .on_activate = on_options,
     } },
     .{ .button = .{
         .label = "Save level...",
@@ -130,6 +130,8 @@ const mp_components = [_]Component{
 pub var pending_resume: bool = false;
 pub var pending_quit: bool = false;
 pub var pending_save: bool = false;
+/// Set after the "Options..." button is clicked; GameState reads and clears.
+pub var pending_options: bool = false;
 
 fn on_resume(_: *anyopaque) void {
     pending_resume = true;
@@ -141,6 +143,10 @@ fn on_quit(_: *anyopaque) void {
 
 fn on_save(_: *anyopaque) void {
     pending_save = true;
+}
+
+fn on_options(_: *anyopaque) void {
+    pending_options = true;
 }
 
 fn on_noop(_: *anyopaque) void {}

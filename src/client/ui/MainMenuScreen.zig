@@ -70,8 +70,7 @@ const components = [_]Component{
         .height = 20,
         .pos_x = 0,
         .pos_y = 202,
-        .enabled = false,
-        .on_activate = on_noop,
+        .on_activate = on_options,
     } },
 };
 
@@ -81,6 +80,8 @@ pub var pending_direct_connect: bool = false;
 pub var pending_singleplayer: bool = false;
 /// Set after the "Mods and Texture Packs" button is clicked; MenuState reads and clears.
 pub var pending_texture_packs: bool = false;
+/// Set after the "Options..." button is clicked; MenuState reads and clears.
+pub var pending_options: bool = false;
 
 fn on_multiplayer(_: *anyopaque) void {
     pending_direct_connect = true;
@@ -92,6 +93,10 @@ fn on_singleplayer(_: *anyopaque) void {
 
 fn on_texture_packs(_: *anyopaque) void {
     pending_texture_packs = true;
+}
+
+fn on_options(_: *anyopaque) void {
+    pending_options = true;
 }
 
 fn on_noop(_: *anyopaque) void {}

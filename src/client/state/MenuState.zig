@@ -9,6 +9,7 @@ const State = Core.State;
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const Options = @import("../Options.zig");
 const ResourcePack = @import("../ResourcePack.zig");
 const SoundManager = @import("../SoundManager.zig");
 const ui_input = @import("../ui/input.zig");
@@ -16,6 +17,7 @@ const Screen = @import("../ui/Screen.zig");
 const MainMenuScreen = @import("../ui/MainMenuScreen.zig");
 const DirectConnectScreen = @import("../ui/DirectConnectScreen.zig");
 const TexturePackScreen = @import("../ui/TexturePackScreen.zig");
+const OptionsMenuScreen = @import("../ui/OptionsMenuScreen.zig");
 const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
 
@@ -48,6 +50,7 @@ ui_repeat: ui_input.Repeat,
 main_menu_ctx: MainMenuScreen.Context,
 direct_connect_ctx: DirectConnectScreen.Context,
 texture_pack_ctx: TexturePackScreen.Context,
+options_ctx: OptionsMenuScreen.Context,
 render_alloc: std.mem.Allocator,
 /// True once `init` has run to completion. Guards `deinit` so a partially
 /// initialised state -- e.g. `init` errored on OOM after enough world reload
@@ -100,6 +103,13 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         };
     }
 
+    Options.load(engine.io, engine.dirs.data);
+    // Always write back immediately after loading.  On first run this creates
+    // options.json with the compiled-in defaults; on subsequent runs it keeps
+    // the file in sync with any in-memory changes that were made but not yet
+    // persisted (e.g. settings applied during the previous game session).
+    Options.save(engine.io, engine.dirs.data);
+
     const pack_dir = if (build_options.embed_pack) engine.dirs.data else engine.dirs.resources;
     try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, pack_dir, "pack.zip");
     errdefer ResourcePack.deinit();
@@ -123,8 +133,19 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.texture_pack_ctx = .{
         .dirt = ResourcePack.get_tex(.dirt),
     };
+    self.options_ctx = .{
+        .dirt = ResourcePack.get_tex(.dirt),
+        .io = engine.io,
+        .data_dir = engine.dirs.data,
+    };
     self.screen = MainMenuScreen.build(&self.main_menu_ctx);
     self.screen.open(!ui_input.profile_uses_pointer());
+
+    // Restore the previously-selected texture pack.  Only user packs (stored
+    // as paths under engine.dirs.data) are persisted; the default ("") is
+    // already active at this point from ResourcePack.init above.
+    const saved_pack = Options.current.active_texturepack();
+    if (saved_pack.len > 0) self.apply_pack(engine.dirs.data, saved_pack);
 
     self.inited = true;
     engine.report();
@@ -188,6 +209,20 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
         return;
     }
 
+    if (MainMenuScreen.pending_options) {
+        MainMenuScreen.pending_options = false;
+        self.screen = OptionsMenuScreen.build(&self.options_ctx);
+        self.screen.open(!ui_input.profile_uses_pointer());
+        return;
+    }
+
+    const on_options = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.options_ctx);
+    if (on_options and (OptionsMenuScreen.pending_done or self.screen.cancel_pressed)) {
+        OptionsMenuScreen.pending_done = false;
+        self.screen = MainMenuScreen.build(&self.main_menu_ctx);
+        self.screen.open(!ui_input.profile_uses_pointer());
+    }
+
     const on_direct_connect = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.direct_connect_ctx);
     if (on_direct_connect and (DirectConnectScreen.pending_back or self.screen.cancel_pressed)) {
         DirectConnectScreen.pending_back = false;
@@ -200,6 +235,12 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
         if (TexturePackScreen.pending_select) |sel| {
             TexturePackScreen.pending_select = null;
             self.apply_pack(sel.dir, sel.path);
+            // Persist the selection.  Index 0 in TexturePackScreen is the
+            // bundled default ("pack.zip"); store "" so startup skips the
+            // switch_pack call.  All other entries live under engine.dirs.data.
+            const is_default = std.mem.eql(u8, sel.path, "pack.zip");
+            Options.current.set_active_texturepack(if (is_default) "" else sel.path);
+            Options.save(engine.io, engine.dirs.data);
         }
         if (TexturePackScreen.pending_back or self.screen.cancel_pressed) {
             TexturePackScreen.pending_back = false;

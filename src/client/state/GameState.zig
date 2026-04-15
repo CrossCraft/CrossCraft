@@ -17,6 +17,7 @@ const ClientConn = @import("../connection/ClientConn.zig");
 const Session = @import("Session.zig");
 const DisconnectState = @import("DisconnectState.zig");
 const MenuState = @import("MenuState.zig");
+const Options = @import("../Options.zig");
 
 const ResourcePack = @import("../ResourcePack.zig");
 const SoundManager = @import("../SoundManager.zig");
@@ -36,6 +37,7 @@ const BlockNames = @import("../ui/BlockNames.zig");
 const Color = @import("../graphics/Color.zig").Color;
 const ui_input = @import("../ui/input.zig");
 const PauseMenuScreen = @import("../ui/PauseMenuScreen.zig");
+const OptionsMenuScreen = @import("../ui/OptionsMenuScreen.zig");
 const Screen = @import("../ui/Screen.zig");
 const ae_input = ae.Core.input;
 
@@ -80,6 +82,10 @@ report_timer: f32,
 paused: bool,
 pause_screen: Screen,
 pause_ctx: PauseMenuScreen.Context,
+/// True while the options screen (opened from pause) is visible.  When set,
+/// pause_screen holds the OptionsMenuScreen instead of PauseMenuScreen.
+in_options: bool,
+options_ctx: OptionsMenuScreen.Context,
 pause_ui_repeat: ui_input.Repeat,
 pause_saved_mouse_captured: bool,
 pause_batcher: SpriteBatcher,
@@ -187,6 +193,10 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     } else {
         try self.player.init(128.0, 44.0, 128.0, player_writer);
     }
+    // Apply persisted look settings; Player.init sets hardcoded defaults so
+    // we override immediately after to pick up the options values.
+    ae_input.mouse_sensitivity = Options.current.sensitivity;
+    self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
 
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
@@ -255,12 +265,20 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.pause_font_batcher = try FontBatcher.init(render_alloc, self.pipeline, ResourcePack.get_tex(.font));
     self.paused = false;
     self.pause_ctx = .{};
+    self.in_options = false;
+    self.options_ctx = .{
+        .dirt = null,
+        .io = engine.io,
+        .data_dir = engine.dirs.data,
+    };
     self.pause_ui_repeat = .{};
     self.pause_saved_mouse_captured = true;
     self.pause_screen = PauseMenuScreen.build(&self.pause_ctx, Session.mode == .singleplayer);
     PauseMenuScreen.pending_resume = false;
     PauseMenuScreen.pending_quit = false;
     PauseMenuScreen.pending_save = false;
+    PauseMenuScreen.pending_options = false;
+    OptionsMenuScreen.pending_done = false;
     pause_focus_request = false;
     ae_input.set_lost_focus_callback(&lost_focus_sink, on_lost_focus);
 
@@ -392,6 +410,7 @@ fn noop_lost_focus(_: *anyopaque) void {}
 fn open_pause(self: *@This()) void {
     if (self.paused) return;
     self.paused = true;
+    self.in_options = false;
     self.pause_saved_mouse_captured = self.player.mouse_captured;
     self.player.mouse_captured = false;
     ae_input.set_mouse_relative_mode(false);
@@ -399,12 +418,16 @@ fn open_pause(self: *@This()) void {
     PauseMenuScreen.pending_resume = false;
     PauseMenuScreen.pending_quit = false;
     PauseMenuScreen.pending_save = false;
+    PauseMenuScreen.pending_options = false;
+    OptionsMenuScreen.pending_done = false;
+    self.pause_screen = PauseMenuScreen.build(&self.pause_ctx, Session.mode == .singleplayer);
     self.pause_screen.open(!ui_input.profile_uses_pointer());
 }
 
 fn close_pause(self: *@This()) void {
     if (!self.paused) return;
     self.paused = false;
+    self.in_options = false;
     self.player.mouse_captured = self.pause_saved_mouse_captured;
     ae_input.set_mouse_relative_mode(self.pause_saved_mouse_captured);
     // Discard the spurious cursor delta produced by the relative-mode swap.
@@ -412,6 +435,8 @@ fn close_pause(self: *@This()) void {
     PauseMenuScreen.pending_resume = false;
     PauseMenuScreen.pending_quit = false;
     PauseMenuScreen.pending_save = false;
+    PauseMenuScreen.pending_options = false;
+    OptionsMenuScreen.pending_done = false;
 }
 
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
@@ -479,34 +504,58 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         // opened the menu (which also raises cancel_edge) does not immediately
         // close it.
         if (!just_opened_pause) self.pause_screen.update(&ui_in);
-        if (PauseMenuScreen.pending_save) {
-            PauseMenuScreen.pending_save = false;
-            // World.save no-ops in MP (owned_locally is false there); the
-            // pause menu also disables the button in MP, so this is a
-            // belt-and-braces guard.
-            World.save() catch |err| {
-                log.err("Save level failed: {}", .{err});
-            };
-        }
-        if (PauseMenuScreen.pending_quit) {
-            // SP saves automatically inside Server.deinit -> World.deinit;
-            // do not duplicate the ~4 MB write here. MP's "Disconnect" path
-            // never saves (owned_locally is false).
-            // Quitting straight to the main menu: release the cursor instead
-            // of restoring the saved gameplay capture, otherwise MenuState
-            // inherits a captured-but-invisible cursor.
-            self.paused = false;
-            self.player.mouse_captured = false;
-            ae_input.set_mouse_relative_mode(false);
-            self.player.look_delta = .{ 0, 0 };
-            PauseMenuScreen.pending_resume = false;
-            PauseMenuScreen.pending_quit = false;
-            PauseMenuScreen.pending_save = false;
-            try MenuState.transition_here(engine);
-            return;
-        }
-        if (!just_opened_pause and (PauseMenuScreen.pending_resume or self.pause_screen.cancel_pressed)) {
-            close_pause(self);
+
+        if (self.in_options) {
+            // Options screen is active: Done or Escape returns to pause menu.
+            if (OptionsMenuScreen.pending_done or self.pause_screen.cancel_pressed) {
+                OptionsMenuScreen.pending_done = false;
+                // Re-apply settings that are cached at init time.
+                ae_input.mouse_sensitivity = Options.current.sensitivity;
+                self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
+                self.in_options = false;
+                self.pause_screen = PauseMenuScreen.build(&self.pause_ctx, Session.mode == .singleplayer);
+                self.pause_screen.open(!ui_input.profile_uses_pointer());
+            }
+        } else {
+            // Pause menu is active: dispatch its pending signals.
+            if (PauseMenuScreen.pending_options) {
+                PauseMenuScreen.pending_options = false;
+                self.in_options = true;
+                self.pause_screen = OptionsMenuScreen.build(&self.options_ctx);
+                self.pause_screen.open(!ui_input.profile_uses_pointer());
+            }
+            if (PauseMenuScreen.pending_save) {
+                PauseMenuScreen.pending_save = false;
+                // World.save no-ops in MP (owned_locally is false there); the
+                // pause menu also disables the button in MP, so this is a
+                // belt-and-braces guard.
+                World.save() catch |err| {
+                    log.err("Save level failed: {}", .{err});
+                };
+            }
+            if (PauseMenuScreen.pending_quit) {
+                // SP saves automatically inside Server.deinit -> World.deinit;
+                // do not duplicate the ~4 MB write here. MP's "Disconnect" path
+                // never saves (owned_locally is false).
+                // Quitting straight to the main menu: release the cursor instead
+                // of restoring the saved gameplay capture, otherwise MenuState
+                // inherits a captured-but-invisible cursor.
+                self.paused = false;
+                self.in_options = false;
+                self.player.mouse_captured = false;
+                ae_input.set_mouse_relative_mode(false);
+                self.player.look_delta = .{ 0, 0 };
+                PauseMenuScreen.pending_resume = false;
+                PauseMenuScreen.pending_quit = false;
+                PauseMenuScreen.pending_save = false;
+                PauseMenuScreen.pending_options = false;
+                OptionsMenuScreen.pending_done = false;
+                try MenuState.transition_here(engine);
+                return;
+            }
+            if (!just_opened_pause and (PauseMenuScreen.pending_resume or self.pause_screen.cancel_pressed)) {
+                close_pause(self);
+            }
         }
         // While paused, drop other pending input edges so they do not fire on
         // resume. World/Server ticking continues in `tick()`; only player and

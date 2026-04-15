@@ -13,6 +13,7 @@ const Audio = ae.Audio;
 const Math = ae.Math;
 const c = @import("common").consts;
 const B = c.Block;
+const Options = @import("Options.zig");
 const Zip = @import("util/Zip.zig");
 
 const Io = std.Io;
@@ -286,15 +287,30 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
         Math.Vec3.new(0, 1, 0),
     );
 
-    // Reap finished SFX voices (not music slot)
+    // Reap finished SFX voices (not music slot).
+    // When sound is muted, actively stop any voices that are still streaming
+    // so we don't burn I/O and CPU on audio no one can hear.
     for (voices[0..music_slot]) |*v| {
-        if (v.active and !Audio.is_playing(v.handle)) v.active = false;
+        if (!v.active) continue;
+        if (Options.current.sound_volume == 0.0) {
+            Audio.stop(v.handle);
+            v.active = false;
+        } else if (!Audio.is_playing(v.handle)) {
+            v.active = false;
+        }
     }
 
     // Music state machine
     switch (music_state) {
         .playing => {
-            if (!Audio.is_playing(voices[music_slot].handle)) {
+            if (Options.current.music_volume == 0.0) {
+                // Muted while playing: stop the stream and park in delay so
+                // music resumes automatically once volume is restored.
+                Audio.stop(voices[music_slot].handle);
+                voices[music_slot].active = false;
+                music_state = .delay;
+                music_delay_timer = 1.0;
+            } else if (!Audio.is_playing(voices[music_slot].handle)) {
                 voices[music_slot].active = false;
                 music_state = .delay;
                 music_delay_timer = min_music_delay +
@@ -304,7 +320,13 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
         .delay => {
             music_delay_timer -= dt;
             if (music_delay_timer <= 0) {
-                advance_and_play_music();
+                if (Options.current.music_volume > 0.0) {
+                    advance_and_play_music();
+                } else {
+                    // Still muted: poll again in 1 s so music starts quickly
+                    // when volume is later restored.
+                    music_delay_timer = 1.0;
+                }
             }
         },
         .idle => {},
@@ -323,7 +345,7 @@ fn advance_and_play_music() void {
         return;
     }
     start_voice(&voices[music_slot], entry, null, .{
-        .volume = 0.5,
+        .volume = 0.5 * Options.current.music_volume,
         .priority = .critical,
     }) catch {
         music_state = .delay;
@@ -341,6 +363,7 @@ pub fn play_dig(block: u8, bx: u16, by: u16, bz: u16) void {
 
 pub fn play_step(block: u8) void {
     if (!initialised) return;
+    if (Options.current.sound_volume == 0.0) return;
     var mat = @intFromEnum(block_material(block));
     var count = step_counts[mat];
     if (count == 0) {
@@ -351,7 +374,7 @@ pub fn play_step(block: u8) void {
     const entry = step_entries[mat][rand_u32(count)];
     if (!entry.valid) return;
     const slot = find_free_sfx() orelse return;
-    start_voice(slot, entry, null, .{ .volume = 0.15, .priority = .low }) catch return;
+    start_voice(slot, entry, null, .{ .volume = 0.15 * Options.current.sound_volume, .priority = .low }) catch return;
 }
 
 fn play_material_sound(
@@ -364,6 +387,7 @@ fn play_material_sound(
     volume: f32,
 ) void {
     if (!initialised) return;
+    if (Options.current.sound_volume == 0.0) return;
     const mat = @intFromEnum(block_material(block));
     const count = counts[mat];
     if (count == 0) return;
@@ -376,7 +400,7 @@ fn play_material_sound(
     );
     const slot = find_free_sfx() orelse return;
     start_voice(slot, entry, pos, .{
-        .volume = volume,
+        .volume = volume * Options.current.sound_volume,
         .priority = .normal,
         .ref_distance = 1.0,
         .max_distance = 16.0,

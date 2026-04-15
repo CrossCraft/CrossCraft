@@ -8,6 +8,7 @@ const Color = @import("../graphics/Color.zig").Color;
 const Camera = @import("../player/Camera.zig");
 const collision = @import("../player/collision.zig");
 const config = @import("../config.zig").current;
+const Options = @import("../Options.zig");
 
 const ChunkMesh = @import("chunk/ChunkMesh.zig");
 const BlockRegistry = @import("block/BlockRegistry.zig");
@@ -280,8 +281,9 @@ fn recollect(self: *Self, camera: *const Camera) void {
     self.cam_cz = camera_chunk(camera.z);
 
     // Phase 1: compute needed columns
-    const r: i32 = @intCast(config.chunk_radius);
-    const radius_blocks: f32 = @as(f32, @floatFromInt(config.chunk_radius)) * 16.0 + 11.5;
+    const rd: u32 = Options.capped_render_distance();
+    const r: i32 = @intCast(rd);
+    const radius_blocks: f32 = @as(f32, @floatFromInt(rd)) * 16.0 + 11.5;
     const radius_blocks_sq = radius_blocks * radius_blocks;
 
     const row_false = [_]bool{false} ** WORLD_CZ;
@@ -501,7 +503,10 @@ fn grid_ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
 }
 
 /// True when a section's center is within LOD_NEAR_RADIUS_BLOCKS of the camera.
+/// Returns false immediately when fancy leaves are disabled so all sections
+/// get the fast/opaque-leaves mesh regardless of distance.
 fn target_near_lod(cx: u8, sy: u8, cz: u8, cam: *const Camera) bool {
+    if (!Options.current.fancy_leaves) return false;
     const wx: f32 = @as(f32, @floatFromInt(@as(u32, cx) * 16)) + 8.0;
     const wy: f32 = @as(f32, @floatFromInt(@as(u32, sy) * 16)) + 8.0;
     const wz: f32 = @as(f32, @floatFromInt(@as(u32, cz) * 16)) + 8.0;
@@ -524,7 +529,10 @@ fn set_terrain_fog(submerged: ?collision.Liquid) void {
         .lava => Color.game_underlava,
     };
     const fog_end: f32 = switch (submerged orelse .water) {
-        .water => if (submerged != null) 16.0 else @as(f32, @floatFromInt(config.chunk_radius * 16 - 16)),
+        .water => if (submerged != null) 16.0 else blk: {
+            const rd: f32 = @floatFromInt(Options.capped_render_distance());
+            break :blk @max(rd * 16.0 - 16.0, 16.0);
+        },
         .lava => 2.0,
     };
     const fog_start: f32 = if (submerged != null) 0.0 else fog_end * 0.4;
