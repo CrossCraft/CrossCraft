@@ -74,27 +74,28 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-linux-gnu
             name: linux
-            extra: -Dcpu=x86_64_v3 -Dskip-pack=true
+            extra: -Dcpu=x86_64_v3
+            is_desktop: true
           - os: macos-latest
             target: aarch64-macos
             name: mac
-            # mac is the only target that currently produces a shippable
-            # artifact (CrossCraft-Classic.app with pack.zip inside), so
-            # it needs real LFS-backed resources. Other targets just
-            # smoke-test the build and skip the pack.
             extra:
+            is_desktop: false
           - os: windows-latest
             target: x86_64-windows-gnu
             name: windows
-            extra: -Dcpu=x86_64_v3 -Dskip-pack=true
+            extra: -Dcpu=x86_64_v3
+            is_desktop: true
           - os: ubuntu-latest
             target: mipsel-psp
             name: psp_phat
             extra: -Dskip-pack=true
+            is_desktop: false
           - os: ubuntu-latest
             target: mipsel-psp
             name: psp_slim
             extra: -Dslim=true -Dskip-pack=true
+            is_desktop: false
     runs-on: ${{ matrix.os }}
     name: game (${{ matrix.name }})
     steps:
@@ -102,11 +103,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: true
-          # LFS fetch is only needed where we actually zip the resources
-          # pack (see matrix `extra` — any target without -Dskip-pack).
-          # `lfs: true` would otherwise pull ~100 MB of PNG/OGG/WAV on
-          # every job.
-          lfs: ${{ matrix.name == 'mac' }}
+          # LFS is needed wherever we zip real resources (push/tag only).
+          # PR builds skip packing on all platforms to keep smoke tests fast.
+          lfs: ${{ (matrix.name == 'mac' || matrix.is_desktop) && github.event_name != 'pull_request' }}
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -122,11 +121,18 @@ jobs:
         if: matrix.name == 'mac'
         run: brew install glfw molten-vk
 
+      # PR builds: smoke-test only — skip packing to avoid pulling LFS.
+      - name: Build game (PR)
+        if: (matrix.is_desktop || matrix.name == 'mac') && github.event_name == 'pull_request'
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} -Dskip-pack=true
+
+      # Push/tag builds: full artifact — pack.zip alongside binary via -Duse-cwd.
       - name: Build game
-        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
+        if: "!((matrix.is_desktop || matrix.name == 'mac') && github.event_name == 'pull_request')"
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} ${{ matrix.is_desktop && '-Duse-cwd=true' || '' }}
 
       - name: Verify macOS bundle
-        if: matrix.name == 'mac'
+        if: matrix.name == 'mac' && github.event_name != 'pull_request'
         # pack.zip size check guards against LFS regressions: a pointer
         # stub is ~130 B, a real pack is multi-MB. Fail loudly if we
         # accidentally zip pointer files.
@@ -141,7 +147,7 @@ jobs:
           echo "pack.zip OK ($size bytes)"
 
       - name: Package macOS .app
-        if: matrix.name == 'mac'
+        if: matrix.name == 'mac' && github.event_name != 'pull_request'
         # ditto preserves .app metadata / symlink structure better than zip.
         # GitHub's upload-artifact otherwise re-zips and can mangle bundles.
         run: ditto -c -k --keepParent zig-out/bin/CrossCraft-Classic.app CrossCraft-Classic-macos.zip
@@ -150,5 +156,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: game_${{ matrix.name }}
-          path: ${{ matrix.name == 'mac' && 'CrossCraft-Classic-macos.zip' || 'zig-out/' }}
+          path: ${{ matrix.name == 'mac' && github.event_name != 'pull_request' && 'CrossCraft-Classic-macos.zip' || 'zig-out/' }}
           if-no-files-found: error

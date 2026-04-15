@@ -19,7 +19,15 @@ const TexturePackScreen = @import("../ui/TexturePackScreen.zig");
 const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
 
+const build_options = @import("build_options");
+
 const log = std.log.scoped(.menu);
+
+// Embedded default pack bytes for Linux/Windows release builds (embed_pack=true).
+// The @embedFile branch is dead and unevaluated when embed_pack=false, so the
+// "default_pack" anonymous import need not exist in those builds.
+const embedded_pack: []const u8 =
+    if (build_options.embed_pack) @embedFile("default_pack") else &.{};
 
 // Module-level singleton so DisconnectState can transition back here without
 // needing access to the original stack-allocated instance from main().
@@ -74,7 +82,26 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         };
     };
 
-    try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, engine.dirs.resources, "pack.zip");
+    // On Linux/Windows release builds, extract the embedded pack.zip to the
+    // data dir on first run, then load from there every run.
+    if (build_options.embed_pack) {
+        engine.dirs.data.access(engine.io, "pack.zip", .{}) catch {
+            var atomic = try engine.dirs.data.createFileAtomic(
+                engine.io,
+                "pack.zip",
+                .{ .replace = true },
+            );
+            defer atomic.deinit(engine.io);
+            atomic.file.writeStreamingAll(engine.io, embedded_pack) catch |err| {
+                log.err("failed to extract pack.zip to data dir: {}", .{err});
+                return err;
+            };
+            try atomic.replace(engine.io);
+        };
+    }
+
+    const pack_dir = if (build_options.embed_pack) engine.dirs.data else engine.dirs.resources;
+    try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, pack_dir, "pack.zip");
     errdefer ResourcePack.deinit();
     try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui });
 

@@ -51,6 +51,7 @@ pub fn build(b: *std.Build) void {
     const psp_client_dir = "CrossCraft-Classic-PSP";
     const is_psp = target.result.os.tag == .psp;
     const is_macos = target.result.os.tag == .macos;
+    const is_desktop = !is_psp and !is_macos;
 
     // Resource packing: ZIP the default resource pack at build time.
     // Skipped via -Dskip-pack on CI where the LFS-backed resources submodule
@@ -71,12 +72,18 @@ pub fn build(b: *std.Build) void {
         break :blk pack_cmd.addOutputFileArg("pack.zip");
     };
 
+    // Whether pack.zip is embedded directly in the Linux/Windows binary.
+    // True for local release builds; false for -Duse-cwd (CI/dev) and all
+    // other platforms.
+    const should_embed = is_desktop and pack_zip_path != null and !(overrides.use_cwd orelse false);
+
     // Packaging strategy per platform:
     //   PSP: install into bin/<psp_client_dir>/ for EBOOT layout.
     //   macOS: routed through Aether.exportArtifact into the .app bundle's
     //     Contents/Resources/ — see below.
-    //   Other desktop: copy to project root so `zig build run-game` (CWD =
-    //     project root) and direct launch from zig-out/bin both find it.
+    //   Desktop, embedding: pack.zip is baked into the binary; no loose file.
+    //   Desktop, -Duse-cwd: copy to project root (run-game) AND to zig-out/bin/
+    //     (distribution zips) so both workflows find the file in CWD.
     const install_pack: ?*std.Build.Step = if (pack_zip_path) |pack_zip| blk: {
         if (is_psp) {
             const psp_install = b.addInstallFile(
@@ -86,9 +93,14 @@ pub fn build(b: *std.Build) void {
             break :blk &psp_install.step;
         }
         if (is_macos) break :blk null; // Aether.exportArtifact installs via opts.resources.
+        if (should_embed) break :blk null; // Baked into binary; no separate file needed.
 
+        // -Duse-cwd path: source-root copy for `zig build run-game`, plus a
+        // bin-dir copy so distribution zips (zig-out/) include the pack.
         const update = b.addUpdateSourceFiles();
         update.addCopyFileToSource(pack_zip, "pack.zip");
+        const bin_install = b.addInstallFile(pack_zip, "bin/pack.zip");
+        update.step.dependOn(&bin_install.step);
         break :blk &update.step;
     } else null;
 
@@ -108,8 +120,18 @@ pub fn build(b: *std.Build) void {
     client_exe.root_module.addImport("common", common);
     client_exe.root_module.addImport("protocol", protocol);
 
+    // Embed pack.zip directly in the binary on Linux/Windows release builds.
+    // CI and dev builds use -Duse-cwd=true which skips embedding, keeping
+    // artifacts small (pack.zip can be 90+ MB).
+    if (should_embed) {
+        client_exe.root_module.addAnonymousImport("default_pack", .{
+            .root_source_file = pack_zip_path.?,
+        });
+    }
+
     const build_options = b.addOptions();
     build_options.addOption(bool, "slim", slim);
+    build_options.addOption(bool, "embed_pack", should_embed);
     client_exe.root_module.addImport("build_options", build_options.createModule());
 
     Aether.addShader(ae_dep.builder, b, client_exe, config, "basic", .{
