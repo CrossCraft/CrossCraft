@@ -265,8 +265,16 @@ pub fn tick_animations() void {
     const step = anim_tick / anim_period_ticks;
 
     blit_frame(water, step % water_frames, water_tile_col, water_tile_row);
-    blit_frame(lava, step % lava_frames, lava_tile_col, lava_tile_row);
+    blit_frame(lava, ping_pong_frame(step, lava_frames), lava_tile_col, lava_tile_row);
     textures[@intFromEnum(Tex.terrain)].update();
+}
+
+// Ping-pong sequence: 0,1,...,N-1,N-2,...,1,0,1,... with period 2*(N-1).
+fn ping_pong_frame(step: u32, frames: u32) u32 {
+    if (frames <= 1) return 0;
+    const period = 2 * (frames - 1);
+    const s = step % period;
+    return if (s < frames) s else period - s;
 }
 
 fn blit_frame(
