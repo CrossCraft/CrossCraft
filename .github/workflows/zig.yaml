@@ -98,18 +98,32 @@ jobs:
         if: matrix.name == 'mac'
         run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
 
-      # macOS links system glfw3 and vulkan loader (see Aether build.zig:150-155);
-      # every other target uses vendored packages and needs no system libs.
+      # macOS links MoltenVK directly (no Vulkan loader) and system glfw3;
+      # both get bundled into the .app by Aether.exportArtifact. Other
+      # targets use vendored packages and need no system libs.
       - name: Install macOS dependencies
         if: matrix.name == 'mac'
-        run: brew install glfw vulkan-loader
+        run: brew install glfw molten-vk
 
       - name: Build game
         run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe -Dskip-pack=true ${{ matrix.extra }}
+
+      - name: Verify macOS bundle
+        if: matrix.name == 'mac'
+        run: |
+          otool -L zig-out/bin/CrossCraft-Classic.app/Contents/MacOS/CrossCraft-Classic
+          otool -l zig-out/bin/CrossCraft-Classic.app/Contents/MacOS/CrossCraft-Classic | grep -A2 LC_RPATH
+          codesign --verify --verbose zig-out/bin/CrossCraft-Classic.app
+
+      - name: Package macOS .app
+        if: matrix.name == 'mac'
+        # ditto preserves .app metadata / symlink structure better than zip.
+        # GitHub's upload-artifact otherwise re-zips and can mangle bundles.
+        run: ditto -c -k --keepParent zig-out/bin/CrossCraft-Classic.app CrossCraft-Classic-macos.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: game_${{ matrix.name }}
-          path: zig-out/
+          path: ${{ matrix.name == 'mac' && 'CrossCraft-Classic-macos.zip' || 'zig-out/' }}
           if-no-files-found: error

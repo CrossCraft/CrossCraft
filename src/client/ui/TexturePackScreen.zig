@@ -24,9 +24,15 @@ pub const Context = struct {
 
 // -- selection signals ------------------------------------------------------
 
-/// Set after a pack row is clicked. Holds the absolute path the caller
-/// should hand to `ResourcePack.switch_pack`. MenuState reads and clears.
-pub var pending_select_path: ?[]const u8 = null;
+/// Set after a pack row is clicked. Carries both the dir and the path to
+/// hand to `ResourcePack.switch_pack`. MenuState reads and clears.
+/// The dir differentiates bundled (resources) from user-installed (data)
+/// packs, which live in different places on every platform.
+pub const PendingSelect = struct {
+    dir: std.Io.Dir,
+    path: []const u8,
+};
+pub var pending_select: ?PendingSelect = null;
 /// Set after the "Back" button is clicked. MenuState reads and clears.
 pub var pending_back: bool = false;
 
@@ -36,11 +42,14 @@ const max_packs: u8 = 12;
 /// Long enough for "texturepacks/" + a 64-char filename + ".zip".
 const max_path_len: u8 = 96;
 
-/// Stores the absolute path string used by `switch_pack`. Index 0 is the
-/// bundled default pack, indices 1..pack_count map onto entries scanned
-/// out of the texturepacks folder.
+/// Stores the path string used by `switch_pack` for each entry. Index 0
+/// is the bundled default pack; indices 1.. map onto entries scanned out
+/// of the texturepacks folder.
 var path_buf: [max_packs + 1][max_path_len]u8 = undefined;
 var path_lens: [max_packs + 1]u8 = undefined;
+/// Dir each entry's path is rooted in (resources for default, data for
+/// scanned entries). Kept parallel to `path_buf`.
+var dir_buf: [max_packs + 1]std.Io.Dir = undefined;
 
 /// Display label rendered onto each button. May differ from the path
 /// string (e.g. "Default" vs "pack.zip", or filename vs full path).
@@ -71,7 +80,10 @@ fn make_select_fn(comptime idx: u8) component.ActivateFn {
     return struct {
         fn f(_: *anyopaque) void {
             if (idx >= entry_count) return;
-            pending_select_path = path_buf[idx][0..path_lens[idx]];
+            pending_select = .{
+                .dir = dir_buf[idx],
+                .path = path_buf[idx][0..path_lens[idx]],
+            };
         }
     }.f;
 }
@@ -84,15 +96,19 @@ fn on_back(_: *anyopaque) void {
 
 /// Re-scan the texturepacks folder and rebuild the component layout.
 /// Always seeds entry 0 with the bundled default pack so the player can
-/// fall back even if the folder is missing or empty. Safe to call repeatedly.
-pub fn refresh(io: std.Io) void {
+/// fall back even if the folder is missing or empty. Safe to call
+/// repeatedly.
+///
+/// `resources_dir` is where `pack.zip` lives (bundled assets). `data_dir`
+/// hosts the user-writable `texturepacks/` folder.
+pub fn refresh(io: std.Io, resources_dir: std.Io.Dir, data_dir: std.Io.Dir) void {
     entry_count = 0;
-    pending_select_path = null;
+    pending_select = null;
     pending_back = false;
 
-    add_entry("Default", default_path);
+    add_entry("Default", default_path, resources_dir);
 
-    var dir = std.Io.Dir.cwd().openDir(io, "texturepacks", .{ .iterate = true }) catch |err| {
+    var dir = data_dir.openDir(io, "texturepacks", .{ .iterate = true }) catch |err| {
         log.warn("texturepacks/ not iterable: {}", .{err});
         rebuild_components();
         return;
@@ -110,13 +126,13 @@ pub fn refresh(io: std.Io) void {
         var path_tmp: [max_path_len]u8 = undefined;
         const full_path = std.fmt.bufPrint(&path_tmp, "texturepacks/{s}", .{entry.name}) catch continue;
         const stem = entry.name[0 .. entry.name.len - 4];
-        add_entry(stem, full_path);
+        add_entry(stem, full_path, data_dir);
     }
 
     rebuild_components();
 }
 
-fn add_entry(label: []const u8, path: []const u8) void {
+fn add_entry(label: []const u8, path: []const u8, dir: std.Io.Dir) void {
     if (entry_count >= max_packs + 1) return;
     if (label.len > max_path_len or path.len > max_path_len) return;
 
@@ -125,6 +141,7 @@ fn add_entry(label: []const u8, path: []const u8) void {
 
     @memcpy(path_buf[entry_count][0..path.len], path);
     path_lens[entry_count] = @intCast(path.len);
+    dir_buf[entry_count] = dir;
 
     entry_count += 1;
 }

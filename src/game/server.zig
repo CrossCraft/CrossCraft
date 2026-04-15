@@ -10,6 +10,10 @@ const log = std.log.scoped(.server);
 
 var allocator: StaticAllocator = undefined;
 pub var io: std.Io = undefined;
+/// User-writable data dir (ae.Core.paths.Dirs.data). Used for reading
+/// server.properties and passed through to world.save/load. Set by
+/// `init`.
+pub var data_dir: std.Io.Dir = undefined;
 
 pub var server_name: [64]u8 = pad("CrossCraft Server");
 pub var server_motd: [64]u8 = pad("Welcome to CrossCraft!");
@@ -22,9 +26,10 @@ fn pad(comptime s: []const u8) [64]u8 {
     return buf;
 }
 
-pub fn init(alloc: std.mem.Allocator, scratch_alloc: std.mem.Allocator, seed: u64, _io: std.Io) !void {
+pub fn init(alloc: std.mem.Allocator, scratch_alloc: std.mem.Allocator, seed: u64, _io: std.Io, _data_dir: std.Io.Dir) !void {
     allocator = .init(alloc);
     io = _io;
+    data_dir = _data_dir;
 
     load_config();
 
@@ -32,14 +37,14 @@ pub fn init(alloc: std.mem.Allocator, scratch_alloc: std.mem.Allocator, seed: u6
     var scratch = std.heap.ArenaAllocator.init(scratch_alloc);
     defer scratch.deinit();
 
-    try world.init(allocator.allocator(), scratch.allocator(), io, seed);
+    try world.init(allocator.allocator(), scratch.allocator(), io, data_dir, seed);
     try Client.init_compressor(allocator.allocator());
 
     allocator.transition_from_init_to_static();
 }
 
 fn load_config() void {
-    const file = std.Io.Dir.cwd().openFile(io, "server.properties", .{}) catch {
+    const file = data_dir.openFile(io, "server.properties", .{}) catch {
         log.info("No server.properties found, using defaults", .{});
         return;
     };

@@ -43,7 +43,7 @@ pub fn main(init: std.process.Init) !void {
     const state = menu_state.state();
 
     var engine: ae.Engine = undefined;
-    try engine.init(init.io, memory, .{
+    try engine.init(init.io, init.environ_map, memory, .{
         .memory = game_config.init_memory(),
         .width = 854,
         .height = 480,

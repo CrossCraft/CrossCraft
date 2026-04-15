@@ -60,6 +60,10 @@ var pack: *Zip = undefined;
 const max_pack_path_len: usize = 256;
 var pack_path_buf: [max_pack_path_len]u8 = undefined;
 var pack_path_len: usize = 0;
+/// Dir the current pack was opened against. Recorded by `init`/`switch_pack`
+/// so later operations (texture reload, audio stream reopen) don't have to
+/// thread a Dir through every call site.
+var pack_dir: std.Io.Dir = undefined;
 
 const log = std.log.scoped(.respack);
 
@@ -77,20 +81,34 @@ var pack_initialized: bool = false;
 
 // -- lifecycle ---------------------------------------------------------------
 
-/// Open the resource pack and prepare for texture loading. Safe to call
-/// multiple times -- subsequent calls are no-ops so MenuState.init can be
-/// re-entered after a disconnect without leaking the already-open Zip.
-pub fn init(render_alloc: std.mem.Allocator, game_alloc: std.mem.Allocator, io: std.Io, path: []const u8) !void {
+/// Open the resource pack at `path` (resolved against `dir`) and prepare
+/// for texture loading. Safe to call multiple times -- subsequent calls
+/// are no-ops so MenuState.init can be re-entered after a disconnect
+/// without leaking the already-open Zip.
+///
+/// Pass `engine.dirs.resources` for the bundled default pack or
+/// `engine.dirs.data` (with a `texturepacks/...` path) for a
+/// user-installed pack. `dir` is captured for the lifetime of the pack
+/// so later `switch_pack` calls can rebind without taking a new `dir`
+/// parameter.
+pub fn init(
+    render_alloc: std.mem.Allocator,
+    game_alloc: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    path: []const u8,
+) !void {
     if (pack_initialized) return;
     std.debug.assert(path.len > 0 and path.len <= max_pack_path_len);
     alloc = render_alloc;
     tex_loaded = 0;
     anim_tick = 0;
-    pack = try Zip.init(game_alloc, io, path);
+    pack = try Zip.init(game_alloc, io, dir, path);
     @memcpy(pack_path_buf[0..path.len], path);
     pack_path_len = path.len;
+    pack_dir = dir;
     pack_initialized = true;
-    SoundManager.init(pack, pack_path_buf[0..pack_path_len]);
+    SoundManager.init(pack, dir, pack_path_buf[0..pack_path_len]);
 }
 
 pub fn deinit() void {
@@ -117,23 +135,29 @@ pub fn get_pack_path() []const u8 {
     return pack_path_buf[0..pack_path_len];
 }
 
-/// Replace the active archive at `path`, transparently re-loading every
-/// texture currently in the resident set so cached `*const Texture`
-/// pointers (kept alive in screens, font batchers, etc.) stay valid -- only
-/// the pixel data behind them changes. The new pack is fully validated and
-/// every required texture is loaded into a temporary array before the swap,
-/// so a malformed pack leaves the prior pack untouched.
-pub fn switch_pack(path: []const u8) !void {
+/// Replace the active archive at `path` (resolved against `dir`),
+/// transparently re-loading every texture currently in the resident set
+/// so cached `*const Texture` pointers (kept alive in screens, font
+/// batchers, etc.) stay valid -- only the pixel data behind them
+/// changes. The new pack is fully validated and every required texture
+/// is loaded into a temporary array before the swap, so a malformed
+/// pack leaves the prior pack untouched.
+///
+/// Callers pick the dir based on source: `engine.dirs.resources` to go
+/// back to the bundled default pack; `engine.dirs.data` for a
+/// user-installed pack under `texturepacks/`.
+pub fn switch_pack(dir: std.Io.Dir, path: []const u8) !void {
     std.debug.assert(pack_initialized);
     std.debug.assert(path.len > 0 and path.len <= max_pack_path_len);
 
-    // Same path -- nothing to do (avoids closing & reopening the file).
-    if (std.mem.eql(u8, path, pack_path_buf[0..pack_path_len])) return;
+    // Same dir + path -- nothing to do (avoids closing & reopening the file).
+    if (dir.handle == pack_dir.handle and
+        std.mem.eql(u8, path, pack_path_buf[0..pack_path_len])) return;
 
     const game_alloc = pack.allocator;
     const io_handle = pack.io;
 
-    var new_pack = try Zip.init(game_alloc, io_handle, path);
+    var new_pack = try Zip.init(game_alloc, io_handle, dir, path);
     errdefer new_pack.deinit();
 
     // Stage replacements for every currently-resident texture before
@@ -187,9 +211,10 @@ pub fn switch_pack(path: []const u8) !void {
 
     @memcpy(pack_path_buf[0..path.len], path);
     pack_path_len = path.len;
+    pack_dir = dir;
 
     SoundManager.deinit();
-    SoundManager.init(pack, pack_path_buf[0..pack_path_len]);
+    SoundManager.init(pack, dir, pack_path_buf[0..pack_path_len]);
 
     log.info("switched to pack '{s}'", .{path});
 }

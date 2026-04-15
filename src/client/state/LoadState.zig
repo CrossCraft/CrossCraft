@@ -29,9 +29,9 @@ var session_error: ?anyerror = null;
 var mp_server_name: [64]u8 = @splat(' ');
 var mp_server_motd: [64]u8 = @splat(' ');
 
-fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, io: std.Io) void {
+fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) void {
     // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
-    Server.init(alloc, scratch, seed, io) catch |err| {
+    Server.init(alloc, scratch, seed, io, data_dir) catch |err| {
         log.err("server init failed: {}", .{err});
         session_error = err;
         return;
@@ -39,8 +39,8 @@ fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, i
     server_ready.store(true, .release);
 }
 
-fn connectTask(alloc: std.mem.Allocator, seed: u64, io: std.Io) void {
-    connect_inner(alloc, seed, io) catch |err| {
+fn connectTask(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) void {
+    connect_inner(alloc, seed, io, data_dir) catch |err| {
         log.err("multiplayer connect failed: {}", .{err});
         session_error = err;
         // Close any partially-opened socket so GameState never tries to use it.
@@ -52,7 +52,7 @@ fn connectTask(alloc: std.mem.Allocator, seed: u64, io: std.Io) void {
     server_ready.store(true, .release);
 }
 
-fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io) !void {
+fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) !void {
     mp_server_name = @splat(' ');
     mp_server_motd = @splat(' ');
 
@@ -73,7 +73,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io) !void {
             log.warn("TCP_NODELAY failed: {}", .{err});
     }
 
-    try World.init_empty(alloc, io, seed);
+    try World.init_empty(alloc, io, data_dir, seed);
 
     try proto.send_player_id_to_server(&Session.mp_writer.interface, Session.username());
     try Session.mp_writer.interface.flush();
@@ -188,8 +188,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     session_error = null;
     // TODO: allocator pool budget may need tuning for server + client coexistence
     self.server_future = switch (Session.mode) {
-        .singleplayer => io.async(serverTask, .{ engine.allocator(.user), engine.allocator(.user), seed, io }),
-        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), seed, io }),
+        .singleplayer => io.async(serverTask, .{ engine.allocator(.user), engine.allocator(.user), seed, io, engine.dirs.data }),
+        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), seed, io, engine.dirs.data }),
     };
 
     self.inited = true;

@@ -65,14 +65,16 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.render_alloc = render_alloc;
 
     // Ensure the user texturepacks folder exists so players can drop packs
-    // in without having to create the directory themselves.
-    std.Io.Dir.cwd().access(engine.io, "texturepacks", .{}) catch {
-        std.Io.Dir.cwd().createDir(engine.io, "texturepacks", .default_dir) catch |err| {
+    // in without having to create the directory themselves. Under the
+    // data dir (which resolves to ~/Library/Application Support/<app>/ on
+    // mac, %APPDATA%\<app>\ on Windows, $XDG_DATA_HOME/<app>/ on Linux).
+    engine.dirs.data.access(engine.io, "texturepacks", .{}) catch {
+        engine.dirs.data.createDir(engine.io, "texturepacks", .default_dir) catch |err| {
             log.warn("failed to create texturepacks/: {}", .{err});
         };
     };
 
-    try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, "pack.zip");
+    try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, engine.dirs.resources, "pack.zip");
     errdefer ResourcePack.deinit();
     try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui });
 
@@ -153,7 +155,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
 
     if (MainMenuScreen.pending_texture_packs) {
         MainMenuScreen.pending_texture_packs = false;
-        TexturePackScreen.refresh(engine.io);
+        TexturePackScreen.refresh(engine.io, engine.dirs.resources, engine.dirs.data);
         self.screen = TexturePackScreen.build(&self.texture_pack_ctx);
         self.screen.open(!ui_input.profile_uses_pointer());
         return;
@@ -168,9 +170,9 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
 
     const on_texture_pack = @intFromPtr(self.screen.ctx) == @intFromPtr(&self.texture_pack_ctx);
     if (on_texture_pack) {
-        if (TexturePackScreen.pending_select_path) |path| {
-            TexturePackScreen.pending_select_path = null;
-            self.apply_pack(path);
+        if (TexturePackScreen.pending_select) |sel| {
+            TexturePackScreen.pending_select = null;
+            self.apply_pack(sel.dir, sel.path);
         }
         if (TexturePackScreen.pending_back or self.screen.cancel_pressed) {
             TexturePackScreen.pending_back = false;
@@ -221,8 +223,8 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
 /// screens, sprite batcher, and font batcher all keep working without
 /// rebuilding -- only the glyph metric cache and the splash mesh need to
 /// be regenerated to match the new font art.
-fn apply_pack(self: *@This(), path: []const u8) void {
-    ResourcePack.switch_pack(path) catch |err| {
+fn apply_pack(self: *@This(), dir: std.Io.Dir, path: []const u8) void {
+    ResourcePack.switch_pack(dir, path) catch |err| {
         log.err("switch_pack('{s}') failed: {}", .{ path, err });
         return;
     };

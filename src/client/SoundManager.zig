@@ -158,9 +158,14 @@ const music_paths: [music_count][]const u8 = .{
 
 // -- init / deinit ----------------------------------------------------------
 
-pub fn init(pack: *Zip, path: []const u8) void {
+/// Opens a second handle to the pack archive (stored separately from the
+/// `Zip` used for textures) so music / sfx can stream PCM data while the
+/// main pack reads texture entries without seek contention. `dir` must
+/// match the dir passed to `ResourcePack.init` / `switch_pack` for the
+/// currently-loaded pack.
+pub fn init(pack: *Zip, dir: Io.Dir, path: []const u8) void {
     stored_io = pack.io;
-    stored_file = Io.Dir.cwd().openFile(stored_io, path, .{}) catch |err| {
+    stored_file = dir.openFile(stored_io, path, .{}) catch |err| {
         log.warn("cannot open '{s}' for audio: {}", .{ path, err });
         return;
     };
