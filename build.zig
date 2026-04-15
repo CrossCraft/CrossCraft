@@ -154,6 +154,8 @@ pub fn build(b: *std.Build) void {
         // the larger .icns slots but it's serviceable. Swap in a 1024×1024
         // PNG later if you want sharper Dock/Finder rendering.
         .icon_png = if (is_macos) b.path("assets/vita/icon0.png") else null,
+        .icon0 = if (is_psp) b.path("assets/psp/ICON0.png") else null,
+        .pic1 = if (is_psp) b.path("assets/psp/PIC1.png") else null,
     });
 
     // The server has no graphics — only use Aether.addGame for PSP
@@ -184,7 +186,7 @@ pub fn build(b: *std.Build) void {
         Aether.exportArtifact(ae_dep.builder, b, server_exe, config, .{
             .title = "CrossCraft Classic Server",
             .output_dir = "CrossCraft-Server-PSP",
-            .icon0 = b.path("assets/psp/ICON0.png"),
+            .icon0 = b.path("assets/psp/ICON0_Server.png"),
             .pic1 = b.path("assets/psp/PIC1.png"),
         });
     }
