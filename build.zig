@@ -82,8 +82,8 @@ pub fn build(b: *std.Build) void {
     //   macOS: routed through Aether.exportArtifact into the .app bundle's
     //     Contents/Resources/ — see below.
     //   Desktop, embedding: pack.zip is baked into the binary; no loose file.
-    //   Desktop, -Duse-cwd: copy to project root (run-game) AND to zig-out/bin/
-    //     (distribution zips) so both workflows find the file in CWD.
+    //   Desktop, -Duse-cwd: install to zig-out/bin/ so run-game (which cd's
+    //     into the install dir before exec) and distribution zips both find it.
     const install_pack: ?*std.Build.Step = if (pack_zip_path) |pack_zip| blk: {
         if (is_psp) {
             const psp_install = b.addInstallFile(
@@ -95,13 +95,12 @@ pub fn build(b: *std.Build) void {
         if (is_macos) break :blk null; // Aether.exportArtifact installs via opts.resources.
         if (should_embed) break :blk null; // Baked into binary; no separate file needed.
 
-        // -Duse-cwd path: source-root copy for `zig build run-game`, plus a
-        // bin-dir copy so distribution zips (zig-out/) include the pack.
-        const update = b.addUpdateSourceFiles();
-        update.addCopyFileToSource(pack_zip, "pack.zip");
+        // -Duse-cwd path: install pack.zip alongside the binary in
+        // zig-out/bin/. The run-game step sets cwd to the install dir so
+        // the binary finds it there, and distribution zips (zig-out/) get
+        // the pack for free.
         const bin_install = b.addInstallFile(pack_zip, "bin/pack.zip");
-        update.step.dependOn(&bin_install.step);
-        break :blk &update.step;
+        break :blk &bin_install.step;
     } else null;
 
     const ae_dep = b.dependency("engine", .{
@@ -195,6 +194,11 @@ pub fn build(b: *std.Build) void {
 
     const run_server_step = b.step("run-server", "Run the server");
     const run_server_cmd = b.addRunArtifact(server_exe);
+    // Run from zig-out/bin/ so server.zig's cwd-rooted data files
+    // (world.dat, server.properties) land in the install dir instead of
+    // polluting the source tree.
+    run_server_cmd.setCwd(.{ .cwd_relative = b.getInstallPath(.bin, "") });
+    run_server_cmd.step.dependOn(build_server_step);
     run_server_step.dependOn(&run_server_cmd.step);
 
     if (b.args) |args| {
@@ -219,7 +223,11 @@ pub fn build(b: *std.Build) void {
 
     const run_client_step = b.step("run-game", "Run the app");
     const run_client_cmd = b.addRunArtifact(client_exe);
-    if (install_pack) |ip| run_client_cmd.step.dependOn(ip);
+    // Same cwd reasoning as run-server: under -Duse-cwd=true the binary
+    // finds the installed pack.zip here, and any data it writes
+    // (options.json, texturepacks/) lands alongside it.
+    run_client_cmd.setCwd(.{ .cwd_relative = b.getInstallPath(.bin, "") });
+    run_client_cmd.step.dependOn(build_game_step);
     run_client_step.dependOn(&run_client_cmd.step);
 
     if (b.args) |args| {
