@@ -103,8 +103,8 @@ pub fn draw_transparent(self: *Self) void {
 // chunk edges overlap by a sub-pixel amount rather than leaving a gap.
 // Opaque geometry can use a larger overlap (depth test hides it);
 // translucent needs a tighter fit to avoid double-blend artifacts.
-const scale_opaque: f32 = 16.0 * 32768.0 / 32753.0;
-const scale_trans: f32 = 16.0 * 32768.0 / 32763.0;
+const scale_opaque: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32753.0 else 16.0;
+const scale_trans: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32763.0 else 16.0;
 
 fn model_matrix(self: *const Self, s: f32) Math.Mat4 {
     const wx: f32 = @floatFromInt(self.cx * 16);

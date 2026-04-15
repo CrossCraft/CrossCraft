@@ -297,13 +297,18 @@ pub fn is_sunlit(x: u16, y: u16, z: u16) bool {
     return y + 1 >= light_map[@as(u32, z) * c.WorldLength + x];
 }
 
+/// True when sunlight cannot pass through this block type.
+pub fn blocks_light(block: u8) bool {
+    return block >= light_passes.len or !light_passes[block];
+}
+
 /// Incrementally update height map after a block change at (x,y,z).
 fn update_height_column(x: u16, y: u16, z: u16, block: u8) void {
     const col_idx: u32 = @as(u32, z) * c.WorldLength + x;
     const cur = light_map[col_idx];
-    const blocks_light = block >= light_passes.len or !light_passes[block];
+    const is_blocker = blocks_light(block);
 
-    if (blocks_light) {
+    if (is_blocker) {
         const new_h: u8 = @intCast(y + 1);
         if (new_h > cur) light_map[col_idx] = new_h;
     } else if (y + 1 >= cur) {

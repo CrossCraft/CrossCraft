@@ -28,7 +28,6 @@ pub const build_options = @import("build_options");
 
 const MenuState = @import("state/MenuState.zig");
 const ResourcePack = @import("ResourcePack.zig");
-const SoundManager = @import("SoundManager.zig");
 
 pub fn main(init: std.process.Init) !void {
     if (ae.platform == .psp) {
@@ -52,7 +51,6 @@ pub fn main(init: std.process.Init) !void {
         .vsync = false,
         .resizable = true,
     }, &state);
-    defer SoundManager.deinit();
     defer engine.deinit();
     defer ResourcePack.deinit();
 

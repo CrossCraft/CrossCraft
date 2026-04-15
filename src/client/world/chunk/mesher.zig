@@ -244,7 +244,9 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const flu_xn = (flu & ~(eff_cur << 1) & ~(flu << 1)) & SECTION_MASK;
     const flu_zp = (flu & ~eff_zp & ~n_zp.flu) & SECTION_MASK;
     const flu_zn = (flu & ~eff_zn & ~n_zn.flu) & SECTION_MASK;
-    const flu_yp_bits = (flu & ~eff_yp & ~n_yp.flu) & SECTION_MASK;
+    // Water/lava tops are inset (~0.9 blocks), so they must be emitted even
+    // when the block above is opaque — omitting them leaves a visible gap.
+    const flu_yp_bits = (flu & ~n_yp.flu) & SECTION_MASK;
     const flu_yn = (flu & ~eff_yn & ~n_yn.flu) & SECTION_MASK;
 
     // Solid-leaf faces. By construction, all 6 neighbors of a solid leaf are

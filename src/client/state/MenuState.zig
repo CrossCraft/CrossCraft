@@ -65,8 +65,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     errdefer ResourcePack.deinit();
     try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui });
 
-    SoundManager.init(ResourcePack.get_pack(), ResourcePack.get_pack_path());
-
     self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
     self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
     self.splash_mesh = try self.font_batcher.build_mesh("Classic!", .splash_front, .splash_back, 0, 1);
@@ -214,12 +212,6 @@ fn apply_pack(self: *@This(), path: []const u8) void {
         log.err("switch_pack('{s}') failed: {}", .{ path, err });
         return;
     };
-
-    // SoundManager keeps its own file handle and cached PCM offsets keyed
-    // to the previous zip's layout -- both are stale after the swap, so
-    // tear it down and rescan against the new archive.
-    SoundManager.deinit();
-    SoundManager.init(ResourcePack.get_pack(), ResourcePack.get_pack_path());
 
     // The font texture pointer is stable but its pixel data changed.
     self.font_batcher.refresh();

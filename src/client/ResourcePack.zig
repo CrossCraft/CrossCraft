@@ -90,10 +90,12 @@ pub fn init(render_alloc: std.mem.Allocator, game_alloc: std.mem.Allocator, io: 
     @memcpy(pack_path_buf[0..path.len], path);
     pack_path_len = path.len;
     pack_initialized = true;
+    SoundManager.init(pack, pack_path_buf[0..pack_path_len]);
 }
 
 pub fn deinit() void {
     if (!pack_initialized) return;
+    SoundManager.deinit();
     var i: u8 = 0;
     while (i < Tex.count) : (i += 1) {
         if (tex_loaded & (@as(u16, 1) << @intCast(i)) != 0) {
@@ -185,6 +187,9 @@ pub fn switch_pack(path: []const u8) !void {
 
     @memcpy(pack_path_buf[0..path.len], path);
     pack_path_len = path.len;
+
+    SoundManager.deinit();
+    SoundManager.init(pack, pack_path_buf[0..pack_path_len]);
 
     log.info("switched to pack '{s}'", .{path});
 }

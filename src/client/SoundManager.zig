@@ -82,8 +82,8 @@ var music_entries: [music_count]SoundEntry = init_entry_row();
 
 // -- streaming voice pool ---------------------------------------------------
 
-const max_voices: u32 = 17;
-const music_slot: u32 = 16;
+const max_voices: u32 = if (ae.platform == .psp) 8 else 17;
+const music_slot: u32 = if (ae.platform == .psp) 7 else 16;
 
 const StreamVoice = struct {
     read_buf: [4096]u8,
