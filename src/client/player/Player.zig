@@ -1304,6 +1304,7 @@ fn do_break(self: *Self) void {
     if (self.held_renderer) |hr| hr.trigger_dig();
     const hit = self.selected orelse return;
     const block_id = World.get_block(hit.x, hit.y, hit.z);
+    if (block_id == B.Bedrock) return;
     if (block_id != B.Air) {
         if (self.particle_sink) |ps| {
             ps.spawn_break(block_id, hit.x, hit.y, hit.z, derive_break_face(hit));
