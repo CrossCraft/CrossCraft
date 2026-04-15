@@ -1,6 +1,7 @@
 .zig-cache
 zig-out
 zig-pkg
+pack.zip
 *.log
 *.save
 .claude
@@ -8,3 +9,4 @@ CLAUDE.md
 *.dat
 .codex
 AGENTS.md
+.DS_Store

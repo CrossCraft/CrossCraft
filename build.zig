@@ -68,10 +68,20 @@ pub fn build(b: *std.Build) void {
         pack_cmd.addDirectoryArg(resources.path("default"));
         const pack_zip = pack_cmd.addOutputFileArg("pack.zip");
 
-        break :blk b.addInstallFile(
-            pack_zip,
-            if (is_psp) "bin/" ++ psp_client_dir ++ "/pack.zip" else "bin/pack.zip",
-        );
+        if (is_psp) {
+            const psp_install = b.addInstallFile(
+                pack_zip,
+                "bin/" ++ psp_client_dir ++ "/pack.zip",
+            );
+            break :blk &psp_install.step;
+        }
+
+        // Desktop: drop pack.zip at the project root so the binary finds it
+        // regardless of whether it's launched via `zig build run-game`
+        // (CWD = project root) or directly from zig-out/bin.
+        const update = b.addUpdateSourceFiles();
+        update.addCopyFileToSource(pack_zip, "pack.zip");
+        break :blk &update.step;
     };
 
     const ae_dep = b.dependency("engine", .{
@@ -149,7 +159,7 @@ pub fn build(b: *std.Build) void {
 
     const build_game_step = b.step("game", "Build the game");
     build_game_step.dependOn(&b.addInstallArtifact(client_exe, .{}).step);
-    if (install_pack) |ip| build_game_step.dependOn(&ip.step);
+    if (install_pack) |ip| build_game_step.dependOn(ip);
     if (is_psp) {
         // exportArtifact registers PSP pipeline steps (ELF→PRX→EBOOT.PBP)
         // on b.getInstallStep(); wire them into the game step so that
@@ -159,7 +169,7 @@ pub fn build(b: *std.Build) void {
 
     const run_client_step = b.step("run-game", "Run the app");
     const run_client_cmd = b.addRunArtifact(client_exe);
-    if (install_pack) |ip| run_client_cmd.step.dependOn(&ip.step);
+    if (install_pack) |ip| run_client_cmd.step.dependOn(ip);
     run_client_step.dependOn(&run_client_cmd.step);
 
     if (b.args) |args| {
