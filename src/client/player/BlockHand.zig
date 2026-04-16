@@ -37,7 +37,7 @@ const HELD_SCALE: f32 = 0.4;
 // vertical FOV and 0.72-block distance - at that depth the visible y
 // half-range is only ~0.5, so the reference value dropped the cube clean
 // off the bottom of the screen.
-const YAW: f32 = -std.math.pi / 4.0;
+const YAW: f32 = std.math.pi / 4.0;
 const BASE_X: f32 = 0.56;
 const BASE_Y: f32 = -0.52;
 const BASE_Z: f32 = -0.72;
@@ -227,21 +227,24 @@ fn rebuild(self: *Self, block: u8, shadowed: bool) void {
         // so the face argument is arbitrary.
         const tile = reg.get_face_tile(block, .y_pos);
         face_mod.emit_cross(&self.mesh.vertices, 0, 0, 0, tile, &self.atlas, shade);
-        std.debug.assert(self.mesh.vertices.items.len <= VERT_CAPACITY);
-        self.mesh.update();
-        return;
-    }
-
-    const is_slab = reg.slab.isSet(block);
-    const faces = [_]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
-    for (faces) |face| {
-        const tile = reg.get_face_tile(block, face);
-        if (is_slab) {
-            face_mod.emit_slab_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
-        } else {
-            face_mod.emit_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
+    } else {
+        const is_slab = reg.slab.isSet(block);
+        const faces = [_]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
+        for (faces) |face| {
+            const tile = reg.get_face_tile(block, face);
+            if (is_slab) {
+                face_mod.emit_slab_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
+            } else {
+                face_mod.emit_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
+            }
         }
     }
+
+    const uniform: u32 = if (shade) face_mod.apply_shadow(0xFFFFFFFF) else 0xFFFFFFFF;
+    for (self.mesh.vertices.items) |*v| {
+        v.color = uniform;
+    }
+
     std.debug.assert(self.mesh.vertices.items.len <= VERT_CAPACITY);
     self.mesh.update();
 }
