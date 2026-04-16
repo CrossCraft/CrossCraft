@@ -31,7 +31,6 @@ const ResourcePack = @import("ResourcePack.zig");
 
 pub fn main(init: std.process.Init) !void {
     if (ae.platform == .psp) {
-        sdk.extra.utils.enableHBCB();
         try sdk.power.set_clock_frequency(333, 333, 166);
     }
 
