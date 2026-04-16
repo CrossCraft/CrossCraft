@@ -118,7 +118,7 @@ pub fn init(
     while (self.build_cursor < self.build_end and self.build_estimator.is_warming_up()) {
         const ref = self.build_queue[self.build_cursor];
         self.build_estimator.begin(io);
-        self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch break;
+        self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas, io) catch break;
         self.build_estimator.end(io);
         mark_first_built(&self.grid[ref.cx][ref.cz][ref.sy]);
         self.built[ref.cx][ref.cz][ref.sy] = true;
@@ -140,7 +140,7 @@ pub fn deinit(self: *Self) void {
     }
 }
 
-pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
+pub fn update(self: *Self, dt: f32, _: *const Util.BudgetContext, camera: *const Camera) void {
     self.sky.update(dt);
     self.particles.update(dt);
 
@@ -190,17 +190,14 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
 
     if (self.build_cursor >= self.build_end) return;
 
-    const available = budget.safe_remaining();
-    const n: u32 = if (self.build_estimator.is_warming_up())
-        1
-    else
-        @intCast(@max(1, self.build_estimator.fit_in(available, .p75)));
+    // const available = budget.safe_remaining();
+    const n: u32 = 1;
     const end = @min(self.build_cursor + n, self.build_end);
 
     for (self.build_cursor..end) |i| {
         const ref = self.build_queue[i];
         self.build_estimator.begin(self.io);
-        if (self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas)) {
+        if (self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas, self.io)) {
             self.build_estimator.end(self.io);
         } else |_| {
             self.build_estimator.end(self.io);

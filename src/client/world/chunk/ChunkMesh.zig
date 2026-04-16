@@ -35,7 +35,17 @@ anim_progress: f32,
 first_build: bool,
 allocator: std.mem.Allocator,
 
+const log = std.log.scoped(.mesh);
+
 const Self = @This();
+
+noinline fn logPhase(io: std.Io, prev: std.Io.Clock.Timestamp, name: []const u8) std.Io.Clock.Timestamp {
+    const now = std.Io.Clock.Timestamp.now(io, .real);
+    const elapsed_ns: i64 = @truncate(now.raw.nanoseconds - prev.raw.nanoseconds);
+    const elapsed_us = @divTrunc(elapsed_ns, std.time.ns_per_us);
+    log.info("{s}: {d}us", .{ name, elapsed_us });
+    return now;
+}
 
 pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Self {
     return .{
@@ -73,10 +83,15 @@ pub fn clear(self: *Self) void {
     self.fluid.vertices.clearAndFree(a);
 }
 
-pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void {
+pub fn rebuild(self: *Self, atlas: *const TextureAtlas, io: std.Io) error{OutOfMemory}!void {
+    var t = std.Io.Clock.Timestamp.now(io, .real);
+
     var buf: mesher.SectionBuf = undefined;
     mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
+    t = logPhase(io, t, "pack");
+
     const counts = mesher.count_section(&buf);
+    t = logPhase(io, t, "count");
 
     const a = self.allocator;
 
@@ -87,16 +102,19 @@ pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void 
     try self.@"opaque".vertices.ensureTotalCapacity(a, counts.opaque_verts);
     try self.trans.vertices.ensureTotalCapacity(a, counts.transparent_verts);
     try self.fluid.vertices.ensureTotalCapacity(a, counts.fluid_verts);
+    t = logPhase(io, t, "alloc");
 
     mesher.emit_section(&buf, self.cx, self.sy, self.cz, .{
         .@"opaque" = &self.@"opaque".vertices,
         .transparent = &self.trans.vertices,
         .fluid = &self.fluid.vertices,
     }, atlas);
+    t = logPhase(io, t, "emit");
 
     inline for (&.{ &self.@"opaque", &self.trans, &self.fluid }) |mesh| {
         if (mesh.vertices.items.len > 0) mesh.update();
     }
+    _ = logPhase(io, t, "upload");
 }
 
 pub fn center_x(self: *const Self) f32 {
