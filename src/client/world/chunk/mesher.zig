@@ -60,7 +60,8 @@ pub const SectionBuf = [BUF_Y][BUF_Z]Row;
 
 pub const SectionCounts = struct {
     opaque_verts: u32, // solid blocks + fully-buried leaf faces
-    transparent_verts: u32, // outer leaves + water/glass/cross
+    transparent_verts: u32, // outer leaves + glass/cross
+    fluid_verts: u32, // water/lava
 };
 
 // -- Pack ---------------------------------------------------------------------
@@ -199,8 +200,20 @@ const FaceMasks = struct {
     opq: u32,
     leaf: u32,
     slab: u32,
-    // Fluid y_pos faces needing double-sided emission (extra 6 verts each)
+    // Per-direction fluid masks for separate fluid mesh routing.
+    flu_xp: u32,
+    flu_xn: u32,
     flu_yp: u32,
+    flu_yn: u32,
+    flu_zp: u32,
+    flu_zn: u32,
+    // Transparent blocks with fluid neighbors - emit water overlay on fluid mesh.
+    tfl_xp: u32,
+    tfl_xn: u32,
+    tfl_yp: u32,
+    tfl_yn: u32,
+    tfl_zp: u32,
+    tfl_zn: u32,
 };
 
 fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
@@ -260,6 +273,17 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const sl_yp = (sleaf & ~eff_yp) & SECTION_MASK;
     const sl_yn = (sleaf & ~eff_yn) & SECTION_MASK;
 
+    // Transparent blocks (including slabs) with fluid neighbors. Emit a
+    // water-textured overlay on the fluid mesh so the water surface is
+    // visible from the fluid side.
+    const trans = std_vis & ~opq;
+    const tfl_xp = (trans & (flu >> 1)) & SECTION_MASK;
+    const tfl_xn = (trans & (flu << 1)) & SECTION_MASK;
+    const tfl_zp = (trans & n_zp.flu) & SECTION_MASK;
+    const tfl_zn = (trans & n_zn.flu) & SECTION_MASK;
+    const tfl_yp = (trans & n_yp.flu) & SECTION_MASK;
+    const tfl_yn = (trans & n_yn.flu) & SECTION_MASK;
+
     return .{
         .x_pos = x_pos | flu_xp,
         .x_neg = x_neg | flu_xn,
@@ -277,7 +301,18 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
         .opq = opq,
         .leaf = leaf,
         .slab = slab,
+        .flu_xp = flu_xp,
+        .flu_xn = flu_xn,
         .flu_yp = flu_yp_bits,
+        .flu_yn = flu_yn,
+        .flu_zp = flu_zp,
+        .flu_zn = flu_zn,
+        .tfl_xp = tfl_xp,
+        .tfl_xn = tfl_xn,
+        .tfl_yp = tfl_yp,
+        .tfl_yn = tfl_yn,
+        .tfl_zp = tfl_zp,
+        .tfl_zn = tfl_zn,
     };
 }
 
@@ -295,21 +330,29 @@ fn count_row_faces(by: u32, bz: u32, buf: *const SectionBuf) SectionCounts {
         pop(f.z_pos) + pop(f.z_neg) +
         pop(f.y_pos) + pop(f.y_neg);
     const cross_count = pop(f.cross);
+    const flu_count = pop(f.flu_xp) + pop(f.flu_xn) +
+        pop(f.flu_zp) + pop(f.flu_zn) +
+        pop(f.flu_yp) + pop(f.flu_yn);
     const flu_top_extra = pop(f.flu_yp);
+    const tfl_count = pop(f.tfl_xp) + pop(f.tfl_xn) +
+        pop(f.tfl_zp) + pop(f.tfl_zn) +
+        pop(f.tfl_yp) + pop(f.tfl_yn);
 
     return .{
         .opaque_verts = (opq_count + sl_count) * 6,
-        .transparent_verts = (all_count - opq_count) * 6 + cross_count * 24 + flu_top_extra * 6,
+        .transparent_verts = (all_count - opq_count - flu_count) * 6 + cross_count * 24,
+        .fluid_verts = flu_count * 6 + flu_top_extra * 6 + tfl_count * 6,
     };
 }
 
 pub fn count_section(buf: *const SectionBuf) SectionCounts {
-    var total: SectionCounts = .{ .opaque_verts = 0, .transparent_verts = 0 };
+    var total: SectionCounts = .{ .opaque_verts = 0, .transparent_verts = 0, .fluid_verts = 0 };
     for (1..BUF_Y - 1) |by| {
         for (1..BUF_Z - 1) |bz| {
             const row = count_row_faces(@intCast(by), @intCast(bz), buf);
             total.opaque_verts += row.opaque_verts;
             total.transparent_verts += row.transparent_verts;
+            total.fluid_verts += row.fluid_verts;
         }
     }
     return total;
@@ -324,6 +367,7 @@ fn assert_has_room(verts: *const std.ArrayList(Vertex), n: u32) void {
 pub const Meshes = struct {
     @"opaque": *std.ArrayList(Vertex),
     transparent: *std.ArrayList(Vertex),
+    fluid: *std.ArrayList(Vertex),
 };
 
 fn emit_mask(
@@ -350,12 +394,18 @@ fn emit_mask(
         const tile = reg.get_face_tile(block, face);
 
         const is_slab = reg.slab.isSet(block);
-        const mesh = if (reg.@"opaque".isSet(block) or is_slab) m.@"opaque" else m.transparent;
+        const is_fluid = reg.fluid.isSet(block);
+        const mesh = if (reg.@"opaque".isSet(block) or is_slab)
+            m.@"opaque"
+        else if (is_fluid)
+            m.fluid
+        else
+            m.transparent;
 
         const shadowed = !face_sunlit(wx, y, wz, face) and
             block != B.Flowing_Lava and block != B.Still_Lava;
 
-        if (face == .y_pos and reg.fluid.isSet(block)) {
+        if (face == .y_pos and is_fluid) {
             assert_has_room(mesh, 12);
             face_mod.emit_fluid_top(mesh, lx, local_y, lz, tile, atlas, shadowed);
         } else if (is_slab) {
@@ -421,6 +471,56 @@ fn emit_cross_mask(
     }
 }
 
+/// Emit fluid-overlay faces for transparent blocks adjacent to fluid.
+/// Looks up the neighbor fluid block's tile and emits an inset face on the
+/// fluid mesh so the water surface is visible from the fluid side.
+fn emit_fluid_overlay_mask(
+    mask: u32,
+    y: u32,
+    lz: u32,
+    cx: u32,
+    cz: u32,
+    face: Face,
+    fluid_mesh: *std.ArrayList(Vertex),
+    atlas: *const TextureAtlas,
+) void {
+    const local_y: u32 = y % SECTION_H;
+    const dx: i32 = switch (face) {
+        .x_pos => 1,
+        .x_neg => -1,
+        else => 0,
+    };
+    const dy: i32 = switch (face) {
+        .y_pos => 1,
+        .y_neg => -1,
+        else => 0,
+    };
+    const dz: i32 = switch (face) {
+        .z_pos => 1,
+        .z_neg => -1,
+        else => 0,
+    };
+    var bits = mask;
+    while (bits != 0) {
+        const bit_pos: u5 = @intCast(@ctz(bits));
+        bits &= bits - 1;
+        assert_has_room(fluid_mesh, 6);
+
+        const lx: u32 = @as(u32, bit_pos) - 1;
+        const wx: u16 = @intCast(cx * 16 + lx);
+        const wz: u16 = @intCast(cz * 16 + lz);
+        // Look up the neighboring fluid block's texture.
+        const nx: u16 = @intCast(@as(i32, wx) + dx);
+        const ny: u16 = @intCast(@as(i32, @intCast(y)) + dy);
+        const nz: u16 = @intCast(@as(i32, wz) + dz);
+        const neighbor = World.get_block(nx, ny, nz);
+        const tile = BlockRegistry.global.get_face_tile(neighbor, face);
+        const shadowed = !face_sunlit(wx, y, wz, face) and
+            neighbor != B.Flowing_Lava and neighbor != B.Still_Lava;
+        face_mod.emit_fluid_overlay(fluid_mesh, face, lx, local_y, lz, tile, atlas, shadowed);
+    }
+}
+
 pub fn emit_section(
     buf: *const SectionBuf,
     cx: u32,
@@ -455,6 +555,14 @@ pub fn emit_section(
             if (f.sl_yn != 0) emit_opaque_leaf_mask(f.sl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.@"opaque", atlas);
 
             if (f.cross != 0) emit_cross_mask(f.cross, world_y, @intCast(lz), cx, cz, m.transparent, atlas);
+
+            // Emit fluid-overlay faces for transparent blocks with fluid neighbors.
+            if (f.tfl_xp != 0) emit_fluid_overlay_mask(f.tfl_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.fluid, atlas);
+            if (f.tfl_xn != 0) emit_fluid_overlay_mask(f.tfl_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.fluid, atlas);
+            if (f.tfl_zp != 0) emit_fluid_overlay_mask(f.tfl_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.fluid, atlas);
+            if (f.tfl_zn != 0) emit_fluid_overlay_mask(f.tfl_zn, world_y, @intCast(lz), cx, cz, .z_neg, m.fluid, atlas);
+            if (f.tfl_yp != 0) emit_fluid_overlay_mask(f.tfl_yp, world_y, @intCast(lz), cx, cz, .y_pos, m.fluid, atlas);
+            if (f.tfl_yn != 0) emit_fluid_overlay_mask(f.tfl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.fluid, atlas);
         }
     }
 }

@@ -9,12 +9,14 @@ const mesher = @import("mesher.zig");
 
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
-/// One 16x16x16 section with 2 meshes:
+/// One 16x16x16 section with 3 meshes:
 ///   opaque -- solid blocks + buried (solid) leaf faces
-///   trans  -- outer leaves + water/glass/cross
+///   trans  -- outer leaves + glass/cross
+///   fluid  -- water/lava (drawn last with depth writes off)
 /// Each mesh owns its vertex storage via the render allocator.
 @"opaque": BatchMesh,
 trans: BatchMesh,
+fluid: BatchMesh,
 cx: u32,
 sy: u32,
 cz: u32,
@@ -39,6 +41,7 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, c
     return .{
         .@"opaque" = try BatchMesh.new(allocator, pipeline),
         .trans = try BatchMesh.new(allocator, pipeline),
+        .fluid = try BatchMesh.new(allocator, pipeline),
         .cx = cx,
         .sy = sy,
         .cz = cz,
@@ -59,6 +62,7 @@ pub fn update_animation(self: *Self, dt: f32) void {
 pub fn deinit(self: *Self) void {
     self.@"opaque".deinit(self.allocator);
     self.trans.deinit(self.allocator);
+    self.fluid.deinit(self.allocator);
 }
 
 /// Release vertex data but keep GPU handles alive for reuse.
@@ -66,6 +70,7 @@ pub fn clear(self: *Self) void {
     const a = self.allocator;
     self.@"opaque".vertices.clearAndFree(a);
     self.trans.vertices.clearAndFree(a);
+    self.fluid.vertices.clearAndFree(a);
 }
 
 pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void {
@@ -77,16 +82,19 @@ pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void 
 
     self.@"opaque".vertices.clearRetainingCapacity();
     self.trans.vertices.clearRetainingCapacity();
+    self.fluid.vertices.clearRetainingCapacity();
 
     try self.@"opaque".vertices.ensureTotalCapacity(a, counts.opaque_verts);
     try self.trans.vertices.ensureTotalCapacity(a, counts.transparent_verts);
+    try self.fluid.vertices.ensureTotalCapacity(a, counts.fluid_verts);
 
     mesher.emit_section(&buf, self.cx, self.sy, self.cz, .{
         .@"opaque" = &self.@"opaque".vertices,
         .transparent = &self.trans.vertices,
+        .fluid = &self.fluid.vertices,
     }, atlas);
 
-    inline for (&.{ &self.@"opaque", &self.trans }) |mesh| {
+    inline for (&.{ &self.@"opaque", &self.trans, &self.fluid }) |mesh| {
         if (mesh.vertices.items.len > 0) mesh.update();
     }
 }
@@ -108,11 +116,18 @@ pub fn draw_opaque(self: *Self) void {
     self.@"opaque".draw(&m);
 }
 
-/// Draw transparent geometry. Call back-to-front.
+/// Draw transparent geometry (leaves, glass, cross-plants). Call back-to-front.
 pub fn draw_transparent(self: *Self) void {
     if (self.trans.vertices.items.len == 0) return;
     const m = model_matrix(self, scale_trans);
     self.trans.draw(&m);
+}
+
+/// Draw fluid geometry (water, lava). Call back-to-front with depth writes off.
+pub fn draw_fluid(self: *Self) void {
+    if (self.fluid.vertices.items.len == 0) return;
+    const m = model_matrix(self, scale_trans);
+    self.fluid.draw(&m);
 }
 
 // SNORM dequant divides by 32768 (not 32767), so encode_pos(16) = 32767

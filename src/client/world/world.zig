@@ -274,7 +274,16 @@ pub fn draw(self: *Self, camera: *const Camera) void {
         self.grid[ref.cx][ref.cz][ref.sy].draw_opaque();
     }
 
-    // Transparent pass (back-to-front): far sections first, then closest with clip planes
+    // Clouds are a physical layer at Y=72. Draw after opaque (so terrain
+    // occludes them) but before transparent/fluid (so leaves, glass, and
+    // water alpha-blend against the cloud layer behind them).
+    self.clouds.bind();
+    self.sky.draw_clouds(camera);
+
+    // Transparent pass (back-to-front): non-fluid (leaves, glass, cross-plants).
+    // Depth writes stay on so leaves properly occlude geometry behind them.
+    set_terrain_fog(submerged);
+    self.terrain.bind();
     Rendering.gfx.api.set_alpha_blend(true);
     var ri: u32 = visible_count;
     while (ri > clip_count) {
@@ -290,12 +299,27 @@ pub fn draw(self: *Self, camera: *const Camera) void {
         Rendering.gfx.api.set_clip_planes(false);
     }
 
-    // Particles ride the same terrain texture binding and use alpha blending
-    // (still on after the transparent pass).
+    // Particles between transparent and fluid so they depth-test against
+    // opaque + transparent geometry and blend before water is drawn.
     self.particles.draw(camera);
 
-    self.clouds.bind();
-    self.sky.draw_clouds(camera);
+    // Fluid pass (back-to-front): water/lava drawn with depth writes off so
+    // fluid faces never occlude each other across section borders.
+    Rendering.gfx.api.set_depth_write(false);
+    ri = visible_count;
+    while (ri > clip_count) {
+        ri -= 1;
+        self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_fluid();
+    }
+    if (clip_count > 0) {
+        Rendering.gfx.api.set_clip_planes(true);
+        while (ri > 0) {
+            ri -= 1;
+            self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_fluid();
+        }
+        Rendering.gfx.api.set_clip_planes(false);
+    }
+    Rendering.gfx.api.set_depth_write(true);
 }
 
 fn recollect(self: *Self, camera: *const Camera) void {

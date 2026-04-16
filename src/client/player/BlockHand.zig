@@ -255,6 +255,17 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
     // The existing clear_depth before the UI pass isolates the next layer.
     Rendering.gfx.api.clear_depth();
 
+    // Use a fixed 70-degree vertical FOV for the held block so it looks
+    // consistent regardless of the player's FOV setting.
+    const hand_fov: f32 = 70.0 * std.math.pi / 180.0;
+    if (camera.fov != hand_fov) {
+        const screen_w = Rendering.gfx.surface.get_width();
+        const screen_h = Rendering.gfx.surface.get_height();
+        const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
+        const proj = Math.Mat4.perspectiveFovRh(hand_fov, aspect, if (ae.platform == .psp) 0.3 else 0.1, 128.0);
+        Rendering.gfx.api.set_proj_matrix(&proj);
+    }
+
     Rendering.Pipeline.bind(self.pipeline);
     terrain.bind();
 
@@ -299,6 +310,15 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
         .mul(view_ry_inv)
         .mul(view_t_inv);
     self.mesh.draw(&model);
+
+    // Restore the camera's actual projection matrix.
+    if (camera.fov != hand_fov) {
+        const screen_w = Rendering.gfx.surface.get_width();
+        const screen_h = Rendering.gfx.surface.get_height();
+        const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
+        const proj = Math.Mat4.perspectiveFovRh(camera.fov, aspect, if (ae.platform == .psp) 0.3 else 0.1, 128.0);
+        Rendering.gfx.api.set_proj_matrix(&proj);
+    }
 }
 
 const Anim = struct {

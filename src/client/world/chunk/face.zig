@@ -222,6 +222,83 @@ pub fn emit_fluid_top(
     ));
 }
 
+/// Emit a fluid-overlay face on a transparent block's boundary with fluid.
+/// Inset 1/256 block past the boundary toward the fluid so the face sits
+/// just in front of the transparent block's own face when viewed from the
+/// fluid side, passing the depth test. Perpendicular axes are expanded by
+/// the same amount to close hairline seams at block corners. (6 vertices)
+pub fn emit_fluid_overlay(
+    vertices: *std.ArrayList(Vertex),
+    face: Face,
+    x: u32,
+    y: u32,
+    z: u32,
+    tile: BlockRegistry.Tile,
+    atlas: *const TextureAtlas,
+    shadowed: bool,
+) void {
+    const base = face_color(face);
+    const color = if (shadowed) apply_shadow(base) else base;
+    const uv = tile_uvs(tile, atlas);
+
+    var px = encode_pos(x);
+    var px1 = encode_pos(x + 1);
+    var py = encode_pos(y);
+    var py1 = encode_pos(y + 1);
+    var pz = encode_pos(z);
+    var pz1 = encode_pos(z + 1);
+
+    // Shift the face plane 1/256 block past the boundary (toward the fluid)
+    // and expand perpendicular axes by the same amount to close corner seams.
+    const INSET: i16 = 8; // 1/256 block in SNORM16 encoding
+    switch (face) {
+        .x_pos => {
+            px1 = px1 +| INSET;
+            py = py -| INSET;
+            py1 = py1 +| INSET;
+            pz = pz -| INSET;
+            pz1 = pz1 +| INSET;
+        },
+        .x_neg => {
+            px = px -| INSET;
+            py = py -| INSET;
+            py1 = py1 +| INSET;
+            pz = pz -| INSET;
+            pz1 = pz1 +| INSET;
+        },
+        .y_pos => {
+            py1 = py1 +| INSET;
+            px = px -| INSET;
+            px1 = px1 +| INSET;
+            pz = pz -| INSET;
+            pz1 = pz1 +| INSET;
+        },
+        .y_neg => {
+            py = py -| INSET;
+            px = px -| INSET;
+            px1 = px1 +| INSET;
+            pz = pz -| INSET;
+            pz1 = pz1 +| INSET;
+        },
+        .z_pos => {
+            pz1 = pz1 +| INSET;
+            px = px -| INSET;
+            px1 = px1 +| INSET;
+            py = py -| INSET;
+            py1 = py1 +| INSET;
+        },
+        .z_neg => {
+            pz = pz -| INSET;
+            px = px -| INSET;
+            px1 = px1 +| INSET;
+            py = py -| INSET;
+            py1 = py1 +| INSET;
+        },
+    }
+
+    emit_quad(vertices, make_quad(face, px, px1, py, py1, pz, pz1, uv.tu0, uv.tv0, uv.tu1, uv.tv1, color));
+}
+
 /// Emit two intersecting diagonal planes for cross-plants (24 vertices).
 pub fn emit_cross(
     vertices: *std.ArrayList(Vertex),
