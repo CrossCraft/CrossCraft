@@ -60,6 +60,13 @@ jobs:
       - name: Build (smoke)
         run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} -Dskip-pack=true
 
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dev-${{ matrix.kind }}_${{ matrix.name }}
+          path: zig-out/bin/
+          if-no-files-found: error
+
   # Full release-style builds on push to main / v* tags. Pulls LFS for game
   # builds so pack.zip ships with real resources, runs per-platform artifact
   # verification, and uploads each (kind, target) as a separate workflow
