@@ -253,4 +253,17 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(zip_tests).step);
+
+    // Standalone build step for the pack_zip host tool.
+    // Usage: zig build pack-tool
+    // Produces zig-out/bin/pack_zip (host-native binary).
+    const pack_tool_step = b.step("pack-tool", "Build the pack_zip resource packing tool");
+    const pack_tool_exe = b.addExecutable(.{
+        .name = "pack_zip",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/pack_zip.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    pack_tool_step.dependOn(&b.addInstallArtifact(pack_tool_exe, .{}).step);
 }
