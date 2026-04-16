@@ -21,12 +21,15 @@ pub const FaceTiles = struct {
 
 const Self = @This();
 
-pub const PROP_OPAQUE: u8 = 1 << 0;
-pub const PROP_VISIBLE: u8 = 1 << 1;
-pub const PROP_FLUID: u8 = 1 << 2;
-pub const PROP_CROSS: u8 = 1 << 3;
-pub const PROP_LEAF: u8 = 1 << 4;
-pub const PROP_SLAB: u8 = 1 << 5;
+pub const Props = packed struct(u8) {
+    @"opaque": bool = false,
+    visible: bool = false,
+    fluid: bool = false,
+    cross: bool = false,
+    leaf: bool = false,
+    slab: bool = false,
+    _reserved: u2 = 0,
+};
 
 @"opaque": BitSet,
 visible: BitSet,
@@ -35,8 +38,8 @@ leaf: BitSet,
 fluid: BitSet,
 slab: BitSet,
 face_tiles: [256]FaceTiles,
-/// Packed per-block property byte. One lookup replaces 6 BitSet checks.
-props: [256]u8,
+/// Packed per-block properties. One lookup replaces 6 BitSet checks.
+props: [256]Props,
 
 /// Global registry instance - call init() before use.
 pub var global: Self = undefined;
@@ -81,7 +84,7 @@ fn defaults() Self {
         .fluid = BitSet.initEmpty(),
         .slab = BitSet.initEmpty(),
         .face_tiles = [_]FaceTiles{all(0, 0)} ** 256,
-        .props = [_]u8{0} ** 256,
+        .props = [_]Props{.{}} ** 256,
     };
 
     // -- Opaque: clear non-opaque blocks --
@@ -190,14 +193,14 @@ fn defaults() Self {
 
     // Pack all BitSet properties into a single byte per block.
     for (0..256) |i| {
-        var p: u8 = 0;
-        if (self.@"opaque".isSet(i)) p |= PROP_OPAQUE;
-        if (self.visible.isSet(i)) p |= PROP_VISIBLE;
-        if (self.fluid.isSet(i)) p |= PROP_FLUID;
-        if (self.cross.isSet(i)) p |= PROP_CROSS;
-        if (self.leaf.isSet(i)) p |= PROP_LEAF;
-        if (self.slab.isSet(i)) p |= PROP_SLAB;
-        self.props[i] = p;
+        self.props[i] = .{
+            .@"opaque" = self.@"opaque".isSet(i),
+            .visible = self.visible.isSet(i),
+            .fluid = self.fluid.isSet(i),
+            .cross = self.cross.isSet(i),
+            .leaf = self.leaf.isSet(i),
+            .slab = self.slab.isSet(i),
+        };
     }
 
     return self;

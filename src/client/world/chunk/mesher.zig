@@ -94,12 +94,12 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
         const block = if (i >= 1 and i <= 16) chunk_row[i - 1] else World.get_block(@intCast(wx_raw), wy, wz);
         const p = BlockRegistry.global.props[block];
         const bit: u32 = @as(u32, 1) << @intCast(i);
-        if (p & BlockRegistry.PROP_OPAQUE != 0) opq |= bit;
-        if (p & BlockRegistry.PROP_VISIBLE != 0) vis |= bit;
-        if (p & BlockRegistry.PROP_FLUID != 0) flu |= bit;
-        if (p & BlockRegistry.PROP_CROSS != 0) cross |= bit;
-        if (p & BlockRegistry.PROP_LEAF != 0) leaf |= bit;
-        if (p & BlockRegistry.PROP_SLAB != 0) slab |= bit;
+        if (p.@"opaque") opq |= bit;
+        if (p.visible) vis |= bit;
+        if (p.fluid) flu |= bit;
+        if (p.cross) cross |= bit;
+        if (p.leaf) leaf |= bit;
+        if (p.slab) slab |= bit;
     }
     return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .solid_leaf = 0 };
 }
@@ -216,12 +216,12 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
 inline fn classify_block(block: u8, bit_pos: u5, opq: *u32, vis: *u32, flu: *u32, cross_: *u32, leaf_: *u32, slab_: *u32) void {
     const p = BlockRegistry.global.props[block];
     const bit: u32 = @as(u32, 1) << bit_pos;
-    if (p & BlockRegistry.PROP_OPAQUE != 0) opq.* |= bit;
-    if (p & BlockRegistry.PROP_VISIBLE != 0) vis.* |= bit;
-    if (p & BlockRegistry.PROP_FLUID != 0) flu.* |= bit;
-    if (p & BlockRegistry.PROP_CROSS != 0) cross_.* |= bit;
-    if (p & BlockRegistry.PROP_LEAF != 0) leaf_.* |= bit;
-    if (p & BlockRegistry.PROP_SLAB != 0) slab_.* |= bit;
+    if (p.@"opaque") opq.* |= bit;
+    if (p.visible) vis.* |= bit;
+    if (p.fluid) flu.* |= bit;
+    if (p.cross) cross_.* |= bit;
+    if (p.leaf) leaf_.* |= bit;
+    if (p.slab) slab_.* |= bit;
 }
 
 // -- Count --------------------------------------------------------------------
