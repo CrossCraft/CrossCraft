@@ -1,21 +1,22 @@
-/// Streams all audio directly from pack.zip - no PCM buffers in RAM.
-///
-/// Each active sound uses a dedicated file reader positioned at the
-/// pre-computed PCM data offset within the archive. The pack uses
-/// store-only compression, so reads are plain sequential I/O. File
-/// readers use positional mode (pread) for thread safety with the
-/// audio callback.
+/// Streams all audio directly from pack.zip — no PCM buffers in RAM
+/// for STORE entries. DEFLATE entries are decompressed on the main
+/// thread into per-voice ring buffers; the audio callback reads only
+/// from those buffers, keeping the decompressor off the audio thread's
+/// small stack.
 const SoundManager = @This();
 
 const std = @import("std");
 const ae = @import("aether");
 const Audio = ae.Audio;
 const Math = ae.Math;
+const Util = ae.Util;
+const Estimator = Util.Estimator;
 const c = @import("common").consts;
 const B = c.Block;
 const Options = @import("Options.zig");
 const Zip = @import("util/Zip.zig");
 
+const flate = std.compress.flate;
 const Io = std.Io;
 const File = Io.File;
 
@@ -55,9 +56,11 @@ pub fn block_material(id: u8) Material {
 // -- sound entry (location of PCM data inside pack.zip) ---------------------
 
 const SoundEntry = struct {
-    pcm_offset: u64 = 0,
+    data_offset: u64 = 0,
+    header_skip: u64 = 0,
     pcm_size: u64 = 0,
     format: Audio.PcmFormat = .{ .sample_rate = 44100, .channels = 1, .bit_depth = 16 },
+    deflated: bool = false,
     valid: bool = false,
 };
 
@@ -86,30 +89,137 @@ var music_entries: [music_count]SoundEntry = init_entry_row();
 const max_voices: u32 = if (ae.platform == .psp) 8 else 17;
 const music_slot: u32 = if (ae.platform == .psp) 7 else 16;
 
+/// Ring buffer size per voice for DEFLATE PCM staging. Must be a power
+/// of two so the mask trick works for cheap modular arithmetic.
+const pcm_buf_shift = 15;
+const pcm_buf_size: u32 = 1 << pcm_buf_shift; // 32 KiB
+const pcm_buf_mask: u32 = pcm_buf_size - 1;
+
 const StreamVoice = struct {
-    read_buf: [4096]u8,
+    read_buf: [8192]u8,
     file_reader: File.Reader,
+    flate_buf: [flate.max_window_len]u8,
+    decompressor: flate.Decompress,
+    /// Pre-decoded PCM ring buffer. The main thread writes decompressed
+    /// PCM here; the audio callback reads from it via `ring_reader`.
+    pcm_buf: [pcm_buf_size]u8,
+    /// Write cursor (advanced by main thread after decompressing).
+    pcm_write: u32,
+    /// Read cursor (advanced by audio callback after consuming).
+    pcm_read: u32,
+    /// Remaining uncompressed PCM bytes the decompressor has yet to
+    /// produce. Zero means the main thread has finished inflating.
+    pcm_remaining: u64,
+    /// Io.Reader backed by `pcm_buf` for the audio callback.
+    ring_reader: Io.Reader,
     limited: Io.Reader.Limited,
     handle: Audio.SoundHandle,
     active: bool,
+    deflated: bool,
 };
 
 fn init_voices() [max_voices]StreamVoice {
     var v: [max_voices]StreamVoice = undefined;
     for (&v) |*slot| {
         slot.active = false;
+        slot.deflated = false;
         slot.handle = 0;
+        slot.pcm_write = 0;
+        slot.pcm_read = 0;
+        slot.pcm_remaining = 0;
     }
     return v;
 }
 
 var voices: [max_voices]StreamVoice = init_voices();
 
+// -- ring buffer reader (audio callback side) -------------------------------
+
+/// VTable for the ring-buffer reader consumed by the audio callback.
+/// All decompression happens on the main thread; this reader only does
+/// memcpy from the pre-filled `pcm_buf`.
+const ring_vtable: Io.Reader.VTable = .{
+    .stream = ringStream,
+};
+
+fn ringStream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
+    const v: *StreamVoice = @alignCast(@fieldParentPtr("ring_reader", r));
+
+    const rp: u32 = v.pcm_read;
+    const wp: u32 = @atomicLoad(u32, &v.pcm_write, .acquire);
+
+    const avail: u32 = (wp -% rp) & pcm_buf_mask;
+    if (avail == 0) {
+        // Buffer empty -- check whether the decompressor is truly done.
+        if (v.pcm_remaining == 0)
+            return error.EndOfStream;
+        // Temporary underrun: write silence so the voice stays alive
+        // while the main thread catches up.
+        const n: u32 = @intCast(limit.minInt(pcm_buf_size / 4));
+        const zeroes = [_]u8{0} ** 256;
+        var left: u32 = n;
+        while (left > 0) {
+            const chunk: u32 = @min(left, zeroes.len);
+            try w.writeAll(zeroes[0..chunk]);
+            left -= chunk;
+        }
+        return n;
+    }
+
+    const n: u32 = @intCast(limit.minInt(avail));
+    const first: u32 = @min(n, pcm_buf_size - rp);
+
+    try w.writeAll(v.pcm_buf[rp..][0..first]);
+    if (first < n) {
+        try w.writeAll(v.pcm_buf[0 .. n - first]);
+    }
+
+    @atomicStore(u32, &v.pcm_read, (rp +% n) & pcm_buf_mask, .release);
+    return n;
+}
+
+// -- ring buffer producer (main thread) -------------------------------------
+
+fn ringFree(v: *const StreamVoice) u32 {
+    const rp: u32 = @atomicLoad(u32, &v.pcm_read, .acquire);
+    const wp: u32 = v.pcm_write;
+    // One slot is always kept empty to distinguish full from empty.
+    return (pcm_buf_size - 1) - ((wp -% rp) & pcm_buf_mask);
+}
+
+/// Fill a voice's ring buffer with up to `budget` bytes of
+/// decompressed PCM. Small per-frame budgets spread the decode cost
+/// across frames; the silence-on-underrun in ringStream covers the
+/// ramp-up after a voice starts.
+fn refillRing(v: *StreamVoice, budget: u32) void {
+    var produced: u32 = 0;
+    while (v.pcm_remaining > 0 and produced < budget) {
+        const free = ringFree(v);
+        if (free == 0) return;
+        const wp = v.pcm_write;
+        const contig: u32 = @min(free, pcm_buf_size - wp);
+        // Cap at read_buf size to avoid overrunning the file reader's
+        // internal buffer when the decompressor delegates a large read.
+        const left: u32 = budget - produced;
+        const want: u32 = @intCast(@min(@min(@min(contig, v.read_buf.len), v.pcm_remaining), left));
+        const n = v.decompressor.reader.readSliceShort(v.pcm_buf[wp..][0..want]) catch break;
+        if (n == 0) {
+            v.pcm_remaining = 0;
+            break;
+        }
+        const bytes: u32 = @intCast(n);
+        produced += bytes;
+        v.pcm_remaining -= n;
+        @atomicStore(u32, &v.pcm_write, (wp + bytes) & pcm_buf_mask, .release);
+    }
+}
+
 // -- shared state -----------------------------------------------------------
 
 var stored_file: File = undefined;
 var stored_io: Io = undefined;
 var initialised: bool = false;
+var refill_estimator: Estimator = Estimator.init();
 
 // Music state machine
 const MusicState = enum { idle, playing, delay };
@@ -159,11 +269,8 @@ const music_paths: [music_count][]const u8 = .{
 
 // -- init / deinit ----------------------------------------------------------
 
-/// Opens a second handle to the pack archive (stored separately from the
-/// `Zip` used for textures) so music / sfx can stream PCM data while the
-/// main pack reads texture entries without seek contention. `dir` must
-/// match the dir passed to `ResourcePack.init` / `switch_pack` for the
-/// currently-loaded pack.
+/// Opens a second handle to the pack archive so music / sfx can stream
+/// PCM data without seek contention with texture reads.
 pub fn init(pack: *Zip, dir: Io.Dir, path: []const u8) void {
     stored_io = pack.io;
     stored_file = dir.openFile(stored_io, path, .{}) catch |err| {
@@ -177,9 +284,14 @@ pub fn init(pack: *Zip, dir: Io.Dir, path: []const u8) void {
 
     for (&voices) |*v| {
         v.active = false;
+        v.deflated = false;
         v.handle = 0;
+        v.pcm_write = 0;
+        v.pcm_read = 0;
+        v.pcm_remaining = 0;
     }
 
+    refill_estimator = Estimator.init();
     music_state = .delay;
     music_delay_timer = 5.0 + rand_f32() * 15.0;
     music_index = @intCast(rand_u32(music_count));
@@ -190,6 +302,7 @@ pub fn init(pack: *Zip, dir: Io.Dir, path: []const u8) void {
 
 pub fn deinit() void {
     if (!initialised) return;
+
     for (&voices) |*v| {
         if (v.active) {
             Audio.stop(v.handle);
@@ -247,34 +360,59 @@ fn scan_music(pack: *Zip) void {
     }
 }
 
-/// Open a WAV from the zip, parse its header, and record where the PCM
-/// data lives in the archive so we can seek straight to it at play time.
-/// Playback reads raw bytes directly from the archive file handle, so the
-/// entry must be stored (not deflated) -- user-supplied texturepacks often
-/// use deflate, in which case we fail the resolve and the sound silently
-/// drops rather than playing compressed bytes as PCM (static noise).
+/// Open a WAV from the zip, parse its header, and record where the
+/// entry's data lives in the archive. Both STORE and DEFLATE entries
+/// are supported: the Zip stream reader decompresses transparently, so
+/// the WAV header parse works regardless of compression method.
 fn resolve_wav(pack: *Zip, path: []const u8) !SoundEntry {
     var stream = try pack.open(path);
     defer pack.closeStream(&stream);
 
-    if (stream.compression_method != .store) return error.UnsupportedCompression;
-
     const wav = try Audio.wav.open(stream.reader);
     const pcm_size = wav.byte_length orelse return error.UnknownLength;
-    const header_bytes = stream.uncompressed_size - pcm_size;
+    const header_skip = stream.uncompressed_size - pcm_size;
 
     return .{
-        .pcm_offset = stream.data_offset + header_bytes,
+        .data_offset = stream.data_offset,
+        .header_skip = header_skip,
         .pcm_size = pcm_size,
         .format = wav.format,
+        .deflated = stream.compression_method == .deflate,
         .valid = true,
     };
 }
 
 // -- per-frame update -------------------------------------------------------
 
-pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32) void {
+pub fn update(dt: f32, budget: *const Util.BudgetContext, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32) void {
     if (!initialised) return;
+
+    // Top up ring buffers for active DEFLATE voices. The estimator
+    // tracks refill cost with a single measurement per frame; when the
+    // frame budget is already exhausted we skip the pass entirely and
+    // let the silence padding in ringStream cover the gap.
+    {
+        var has_deflate = false;
+        for (&voices) |*v| {
+            if (v.active and v.deflated and v.pcm_remaining > 0) {
+                has_deflate = true;
+                break;
+            }
+        }
+        if (has_deflate) {
+            const skip = !refill_estimator.is_warming_up() and
+                budget.safe_remaining() < refill_estimator.estimate_cost(.p75);
+            if (!skip) {
+                refill_estimator.begin(stored_io);
+                for (&voices) |*v| {
+                    if (!v.active or !v.deflated) continue;
+                    if (v.pcm_remaining == 0) continue;
+                    refillRing(v, 8192);
+                }
+                refill_estimator.end(stored_io);
+            }
+        }
+    }
 
     // Listener
     const sy = @sin(yaw);
@@ -423,13 +561,42 @@ fn start_voice(
     opts: Audio.PlayOptions,
 ) !void {
     v.file_reader = File.Reader.init(stored_file, stored_io, &v.read_buf);
-    try v.file_reader.seekTo(entry.pcm_offset);
+    v.deflated = entry.deflated;
 
-    v.limited = Io.Reader.Limited.init(
-        &v.file_reader.interface,
-        Io.Limit.limited64(entry.pcm_size),
-        &.{},
-    );
+    if (entry.deflated) {
+        try v.file_reader.seekTo(entry.data_offset);
+        v.decompressor = flate.Decompress.init(
+            &v.file_reader.interface,
+            .raw,
+            &v.flate_buf,
+        );
+        try v.decompressor.reader.discardAll64(entry.header_skip);
+
+        // Reset ring buffer. The next update() call will begin filling
+        // it; ringStream writes silence until data arrives.
+        v.pcm_write = 0;
+        v.pcm_read = 0;
+        v.pcm_remaining = entry.pcm_size;
+
+        v.ring_reader = .{
+            .vtable = &ring_vtable,
+            .buffer = &.{},
+            .seek = 0,
+            .end = 0,
+        };
+        v.limited = Io.Reader.Limited.init(
+            &v.ring_reader,
+            Io.Limit.limited64(entry.pcm_size),
+            &.{},
+        );
+    } else {
+        try v.file_reader.seekTo(entry.data_offset + entry.header_skip);
+        v.limited = Io.Reader.Limited.init(
+            &v.file_reader.interface,
+            Io.Limit.limited64(entry.pcm_size),
+            &.{},
+        );
+    }
 
     const stream: Audio.Stream = .{
         .reader = &v.limited.interface,

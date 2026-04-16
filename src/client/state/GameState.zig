@@ -562,6 +562,15 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         self.player.chat_cmd_pending = false;
         self.player.chat_send_pending = false;
         self.world.update(dt, budget, &self.player.camera);
+        SoundManager.update(
+            dt,
+            budget,
+            self.player.camera.x,
+            self.player.camera.y,
+            self.player.camera.z,
+            self.player.camera.yaw,
+            self.player.camera.pitch,
+        );
         self.report_timer += dt;
         if (self.report_timer >= 10.0) {
             self.report_timer -= 10.0;
@@ -617,6 +626,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
     self.world.update(dt, budget, &self.player.camera);
     SoundManager.update(
         dt,
+        budget,
         self.player.camera.x,
         self.player.camera.y,
         self.player.camera.z,
