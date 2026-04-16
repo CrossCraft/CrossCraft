@@ -142,7 +142,7 @@ fn defaults() Self {
     self.face_tiles[B.Iron_Ore] = all(1, 2);
     self.face_tiles[B.Coal_Ore] = all(2, 2);
     self.face_tiles[B.Log] = top_side_bot(5, 1, 4, 1, 5, 1);
-    self.face_tiles[B.Leaves] = all(4, 3);
+    self.face_tiles[B.Leaves] = all(6, 1);
     self.face_tiles[B.Sponge] = all(0, 3);
     self.face_tiles[B.Glass] = all(1, 3);
 
@@ -168,8 +168,8 @@ fn defaults() Self {
     self.face_tiles[B.Flower2] = all(12, 0);
     self.face_tiles[B.Mushroom1] = all(13, 1);
     self.face_tiles[B.Mushroom2] = all(12, 1);
-    self.face_tiles[B.Gold] = all(7, 1);
-    self.face_tiles[B.Iron] = all(6, 1);
+    self.face_tiles[B.Iron] = top_side_bot(7, 1, 7, 2, 7, 1);
+    self.face_tiles[B.Gold] = top_side_bot(8, 1, 8, 2, 8, 1);
     self.face_tiles[B.Double_Slab] = top_side_bot(6, 0, 5, 0, 6, 0);
     self.face_tiles[B.Slab] = top_side_bot(6, 0, 5, 0, 6, 0);
     self.face_tiles[B.Brick] = all(7, 0);
