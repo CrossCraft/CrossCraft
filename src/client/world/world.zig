@@ -120,6 +120,7 @@ pub fn init(
         self.build_estimator.begin(io);
         self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch break;
         self.build_estimator.end(io);
+        mark_first_built(&self.grid[ref.cx][ref.cz][ref.sy]);
         self.built[ref.cx][ref.cz][ref.sy] = true;
         self.in_queue[ref.cx][ref.cz][ref.sy] = false;
         self.build_cursor += 1;
@@ -142,6 +143,18 @@ pub fn deinit(self: *Self) void {
 pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
     self.sky.update(dt);
     self.particles.update(dt);
+
+    // Advance the bouncy-rise animation for every loaded section. Runs before
+    // the early-return below so the animation keeps ticking even when there
+    // are no pending rebuilds. Sections already at rest short-circuit.
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz]) continue;
+            for (0..SECTIONS_Y) |sy| {
+                self.grid[cx][cz][sy].update_animation(dt);
+            }
+        }
+    }
 
     const new_cx = camera_chunk(camera.x);
     const new_cz = camera_chunk(camera.z);
@@ -199,10 +212,19 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
             self.build_cursor = @intCast(i);
             return;
         }
+        mark_first_built(&self.grid[ref.cx][ref.cz][ref.sy]);
         self.built[ref.cx][ref.cz][ref.sy] = true;
         self.in_queue[ref.cx][ref.cz][ref.sy] = false;
     }
     self.build_cursor = end;
+}
+
+/// Clears first_build and, on the first build only, starts the bouncy-rise
+/// animation if the option is enabled. Called after a successful rebuild().
+fn mark_first_built(sec: *ChunkMesh) void {
+    if (!sec.first_build) return;
+    sec.first_build = false;
+    if (Options.current.bouncy_chunks) sec.anim_progress = 0.0;
 }
 
 pub fn draw(self: *Self, camera: *const Camera) void {

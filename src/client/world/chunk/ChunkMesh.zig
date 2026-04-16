@@ -23,6 +23,14 @@ cz: u32,
 /// updates the field when the section transitions across the radius and
 /// queues a rebuild so the mesher picks the new state up.
 near_lod: bool,
+/// Bouncy-rise animation progress in [0, 1]. 1 means at rest; 0 means the
+/// section is drawn 16 blocks below its natural Y. World kicks this to 0 the
+/// first time a section is meshed when the bouncy_chunks option is enabled,
+/// then advances toward 1 over 1 second via update_animation().
+anim_progress: f32,
+/// True until the first successful rebuild() — used by World to distinguish
+/// newly-meshed sections from dirty rebuilds.
+first_build: bool,
 allocator: std.mem.Allocator,
 
 const Self = @This();
@@ -35,8 +43,17 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, c
         .sy = sy,
         .cz = cz,
         .near_lod = false,
+        .anim_progress = 1.0,
+        .first_build = true,
         .allocator = allocator,
     };
+}
+
+/// Advance the bouncy rise animation. No-op once the section is at rest.
+pub fn update_animation(self: *Self, dt: f32) void {
+    if (self.anim_progress < 1.0) {
+        self.anim_progress = @min(self.anim_progress + dt, 1.0);
+    }
 }
 
 pub fn deinit(self: *Self) void {
@@ -108,7 +125,11 @@ const scale_trans: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32763.0 else 
 
 fn model_matrix(self: *const Self, s: f32) Math.Mat4 {
     const wx: f32 = @floatFromInt(self.cx * 16);
-    const wy: f32 = @floatFromInt(self.sy * 16);
+    const base_wy: f32 = @floatFromInt(self.sy * 16);
     const wz: f32 = @floatFromInt(self.cz * 16);
+    // Bouncy rise: at anim_progress=0 the section sits 16 blocks below its
+    // natural Y, reaching rest at anim_progress=1. Stays at 1 (no offset) on
+    // rebuilds and when the option is disabled.
+    const wy = base_wy - 16.0 * (1.0 - self.anim_progress);
     return Math.Mat4.scaling(s, s, s).mul(Math.Mat4.translation(wx, wy, wz));
 }

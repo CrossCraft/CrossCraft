@@ -48,6 +48,10 @@ pub const Options = struct {
     /// Smooth ambient occlusion on block faces.
     ambient_occlusion: bool = true,
 
+    /// Hidden debug toggle: newly-meshed chunk sections rise from -16 blocks
+    /// over 1 second. Rebuilt sections are unaffected. Not exposed in the UI.
+    bouncy_chunks: bool = false,
+
     /// Returns the active texture pack path as a slice (may be empty).
     pub fn active_texturepack(self: *const Options) []const u8 {
         return self.active_texturepack_buf[0..self.active_texturepack_len];
@@ -84,6 +88,7 @@ const JsonOptions = struct {
     fancy_leaves: bool = true,
     sensitivity: f32 = 3.0,
     ambient_occlusion: bool = true,
+    bouncy_chunks: bool = false,
 };
 
 // -- public API --------------------------------------------------------------
@@ -127,6 +132,7 @@ pub fn load(io: Io, dir: Io.Dir) void {
     current.fancy_leaves = j.fancy_leaves;
     current.sensitivity = std.math.clamp(j.sensitivity, 0.1, 20.0);
     current.ambient_occlusion = j.ambient_occlusion;
+    current.bouncy_chunks = j.bouncy_chunks;
 }
 
 /// Write current options to `options.json` in `dir`.
@@ -145,6 +151,7 @@ pub fn save(io: Io, dir: Io.Dir) void {
         .fancy_leaves = current.fancy_leaves,
         .sensitivity = current.sensitivity,
         .ambient_occlusion = current.ambient_occlusion,
+        .bouncy_chunks = current.bouncy_chunks,
     };
 
     var json_buf: [max_json_size]u8 = undefined;
