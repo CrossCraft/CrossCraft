@@ -14,6 +14,7 @@ const Estimator = Util.Estimator;
 const c = @import("common").consts;
 const B = c.Block;
 const Options = @import("Options.zig");
+const ResourcePack = @import("ResourcePack.zig");
 const Zip = @import("util/Zip.zig");
 
 const flate = std.compress.flate;
@@ -271,7 +272,10 @@ const music_paths: [music_count][]const u8 = .{
 
 /// Opens a second handle to the pack archive so music / sfx can stream
 /// PCM data without seek contention with texture reads.
-pub fn init(pack: *Zip, dir: Io.Dir, path: []const u8) void {
+pub fn init() void {
+    const pack = ResourcePack.get_pack();
+    const dir = ResourcePack.get_dir();
+    const path = ResourcePack.get_pack_path();
     stored_io = pack.io;
     stored_file = dir.openFile(stored_io, path, .{}) catch |err| {
         log.warn("cannot open '{s}' for audio: {}", .{ path, err });
