@@ -106,15 +106,18 @@ fn emit_quad(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
     vertices.appendAssumeCapacity(verts[2]);
 }
 
-fn emit_quad_double_sided(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
-    emit_quad(vertices, verts);
-    // Back face (reversed winding)
+fn emit_quad_reversed(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
     vertices.appendAssumeCapacity(verts[0]);
     vertices.appendAssumeCapacity(verts[1]);
     vertices.appendAssumeCapacity(verts[2]);
     vertices.appendAssumeCapacity(verts[0]);
     vertices.appendAssumeCapacity(verts[2]);
     vertices.appendAssumeCapacity(verts[3]);
+}
+
+fn emit_quad_double_sided(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
+    emit_quad(vertices, verts);
+    emit_quad_reversed(vertices, verts);
 }
 
 // -- Public emission functions ------------------------------------------------
@@ -318,17 +321,31 @@ pub fn emit_cross(
     const pz = encode_pos(z);
     const pz1 = encode_pos(z + 1);
 
-    emit_quad_double_sided(vertices, .{
+    // Back faces swap tu0/tu1 so the reversed winding does not mirror the
+    // texture when the quad is viewed from behind.
+    emit_quad(vertices, .{
         .{ .pos = .{ px, py, pz }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
         .{ .pos = .{ px1, py, pz1 }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
         .{ .pos = .{ px1, py1, pz1 }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
         .{ .pos = .{ px, py1, pz }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
     });
+    emit_quad_reversed(vertices, .{
+        .{ .pos = .{ px, py, pz }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
+        .{ .pos = .{ px1, py, pz1 }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
+        .{ .pos = .{ px1, py1, pz1 }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
+        .{ .pos = .{ px, py1, pz }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
+    });
 
-    emit_quad_double_sided(vertices, .{
+    emit_quad(vertices, .{
         .{ .pos = .{ px1, py, pz }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
         .{ .pos = .{ px, py, pz1 }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
         .{ .pos = .{ px, py1, pz1 }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
         .{ .pos = .{ px1, py1, pz }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
+    });
+    emit_quad_reversed(vertices, .{
+        .{ .pos = .{ px1, py, pz }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
+        .{ .pos = .{ px, py, pz1 }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
+        .{ .pos = .{ px, py1, pz1 }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
+        .{ .pos = .{ px1, py1, pz }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
     });
 }
