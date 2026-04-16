@@ -121,21 +121,21 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
         reader.toss(len);
     }
 
-    // Decompress the accumulated gzip stream into raw_blocks. The server
-    // uses `.gzip` in game/client.zig:reset_compressor, so match here.
+    // Decompress the accumulated gzip stream. The server uses `.gzip` in
+    // game/client.zig:reset_compressor, so match here. Wire format is
+    // contiguous YZX (Java Classic compatible); scatter into chunk-aware layout.
     var src = std.Io.Reader.fixed(compressed[0..compressed_end]);
     var window_buf: [flate.max_window_len]u8 = undefined;
     var decompress = flate.Decompress.init(&src, .gzip, &window_buf);
 
-    var dst = std.Io.Writer.fixed(World.raw_blocks);
-    _ = decompress.reader.streamRemaining(&dst) catch |err| {
+    decompress.reader.readSliceAll(World.raw_blocks[0..4]) catch |err| {
+        log.err("level decompress header failed: {}", .{err});
+        return err;
+    };
+    World.read_blocks_yzx(&decompress.reader) catch |err| {
         log.err("level decompress failed: {}", .{err});
         return err;
     };
-    if (dst.end != World.raw_blocks.len) {
-        log.err("level data truncated: got {d}, expected {d}", .{ dst.end, World.raw_blocks.len });
-        return error.TruncatedLevelData;
-    }
 
     World.finalize_loaded();
 }

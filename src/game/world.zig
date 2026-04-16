@@ -23,6 +23,27 @@ const light_passes = blk: {
     break :blk table;
 };
 
+/// Comptime lookup: true means the block fully fills its voxel and is not
+/// transparent. Used for the per-chunk all-opaque flag so pack can skip
+/// reading inner blocks entirely for solid underground chunks.
+const block_opaque = blk: {
+    var table: [50]bool = @splat(true);
+    table[B.Air] = false;
+    table[B.Sapling] = false;
+    table[B.Flowing_Water] = false;
+    table[B.Still_Water] = false;
+    table[B.Flowing_Lava] = false;
+    table[B.Still_Lava] = false;
+    table[B.Leaves] = false;
+    table[B.Glass] = false;
+    table[B.Flower1] = false;
+    table[B.Flower2] = false;
+    table[B.Mushroom1] = false;
+    table[B.Mushroom2] = false;
+    table[B.Slab] = false;
+    break :blk table;
+};
+
 pub const BlockChange = struct {
     x: u16,
     y: u16,
@@ -55,6 +76,11 @@ var node_pool: []WheelNode = undefined;
 var free_head: u32 = 0; // head of the free list
 var pool_used: u32 = 0; // high-water count for diagnostics
 var rng: Xorshift64 = .{ .state = 1 };
+
+// -- Per-chunk block counts (work-skipping) --------------------------------
+const CHUNK_COUNT: u32 = c.ChunksX * c.ChunksZ * c.ChunksY;
+var chunk_counts: [CHUNK_COUNT]u16 = undefined; // non-air blocks
+var chunk_non_opaque: [CHUNK_COUNT]u16 = undefined; // non-opaque blocks
 
 // -- Deduplication bitmap (1 bit per block = 512 KiB) ----------------------
 const BLOCK_COUNT: u32 = c.WorldLength * c.WorldHeight * c.WorldDepth;
@@ -110,7 +136,8 @@ pub fn save() !void {
     try writer.interface.writeSliceEndian(u64, &seed_arr, .little);
     const tick_arr = [1]u64{tick_count};
     try writer.interface.writeSliceEndian(u64, &tick_arr, .little);
-    try writer.interface.writeAll(raw_blocks);
+    try writer.interface.writeAll(raw_blocks[0..4]);
+    try write_blocks_yzx(&writer.interface);
     try writer.interface.flush();
 
     log.info("Saved world to world.dat", .{});
@@ -141,7 +168,8 @@ pub fn load() bool {
     reader.interface.readSliceEndian(u64, &saved_seed, .little) catch return false;
     var saved_tick: [1]u64 = undefined;
     reader.interface.readSliceEndian(u64, &saved_tick, .little) catch return false;
-    reader.interface.readSliceAll(raw_blocks) catch return false;
+    reader.interface.readSliceAll(raw_blocks[0..4]) catch return false;
+    read_blocks_yzx(&reader.interface) catch return false;
 
     world_size = dims;
     seed = saved_seed[0];
@@ -180,6 +208,8 @@ pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.D
 
     world_size = .{ c.WorldLength, c.WorldHeight, c.WorldDepth };
     @memset(raw_blocks, 0x00);
+    @memset(&chunk_counts, 0);
+    @memset(&chunk_non_opaque, 0);
 
     const size: u32 = c.WorldDepth * c.WorldHeight * c.WorldLength;
     std.mem.writeInt(u32, raw_blocks[0..4], size, .big);
@@ -194,9 +224,26 @@ pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.D
 /// Called by both the SP generate/load path and the MP download path once
 /// `blocks` is populated.
 pub fn finalize_loaded() void {
+    compute_chunk_counts();
     compute_light_map();
     load_status = .complete;
     log.info("World seed: {d}", .{seed});
+}
+
+/// Scan each 4 KiB chunk and count non-air / non-opaque blocks. Called once
+/// after generation or load; maintained incrementally by set_block thereafter.
+fn compute_chunk_counts() void {
+    for (0..CHUNK_COUNT) |ci| {
+        const base = ci * c.ChunkVolume;
+        var non_air: u16 = 0;
+        var non_opq: u16 = 0;
+        for (blocks[base..][0..c.ChunkVolume]) |b| {
+            if (b != B.Air) non_air += 1;
+            if (b >= block_opaque.len or !block_opaque[b]) non_opq += 1;
+        }
+        chunk_counts[ci] = non_air;
+        chunk_non_opaque[ci] = non_opq;
+    }
 }
 
 pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.Dir, new_seed: u64) !void {
@@ -247,7 +294,7 @@ fn get_index(x: u16, y: u16, z: u16) u32 {
     assert(x < c.WorldLength);
     assert(y < c.WorldHeight);
     assert(z < c.WorldDepth);
-    return (@as(u32, y) * c.WorldDepth + z) * c.WorldLength + x;
+    return c.block_index(@as(u32, x), @as(u32, y), @as(u32, z));
 }
 
 pub fn get_block(x: u16, y: u16, z: u16) u8 {
@@ -255,9 +302,43 @@ pub fn get_block(x: u16, y: u16, z: u16) u8 {
     return blocks[idx];
 }
 
+/// Pointer to ChunkSize contiguous blocks at chunk-aligned x.
+/// In the chunk-aware layout, blocks at (x..x+15, y, z) are contiguous,
+/// so callers can avoid per-block index computation in tight loops.
+pub fn get_chunk_row(x: u16, y: u16, z: u16) *const [c.ChunkSize]u8 {
+    assert(x % c.ChunkSize == 0);
+    const base = get_index(x, y, z);
+    return blocks[base..][0..c.ChunkSize];
+}
+
+/// Pointer to an entire 16x16x16 chunk (4 KiB). Index within the chunk
+/// with `(ly * ChunkSize + lz) * ChunkSize + lx` -- the same 4-op
+/// arithmetic as the old contiguous formula.
+pub fn get_chunk_ptr(chunk_cx: u32, chunk_cy: u32, chunk_cz: u32) *const [c.ChunkVolume]u8 {
+    const ci = (chunk_cy * c.ChunksZ + chunk_cz) * c.ChunksX + chunk_cx;
+    return blocks[ci * c.ChunkVolume ..][0..c.ChunkVolume];
+}
+
 pub fn set_block(x: u16, y: u16, z: u16, block: u8) void {
     const idx = get_index(x, y, z);
+    const old = blocks[idx];
     blocks[idx] = block;
+
+    // Maintain per-chunk counts for work-skipping.
+    const ci = chunk_idx(x, y, z);
+    if (old == B.Air and block != B.Air) {
+        chunk_counts[ci] += 1;
+    } else if (old != B.Air and block == B.Air) {
+        chunk_counts[ci] -= 1;
+    }
+    const old_opq = old < block_opaque.len and block_opaque[old];
+    const new_opq = block < block_opaque.len and block_opaque[block];
+    if (old_opq and !new_opq) {
+        chunk_non_opaque[ci] += 1;
+    } else if (!old_opq and new_opq) {
+        chunk_non_opaque[ci] -= 1;
+    }
+
     update_height_column(x, y, z, block);
     // The wheel dedup bitmap is keyed by location, not block type. If the
     // block at this loc was previously something with a slow tick (e.g.
@@ -268,6 +349,46 @@ pub fn set_block(x: u16, y: u16, z: u16, block: u8) void {
     // pass insert at the correct delay; any orphan wheel entry just no-ops
     // when it finally fires because process_block_update re-reads the block.
     bitmap_clear(idx);
+}
+
+pub fn is_chunk_all_air(cx: u32, cy: u32, cz: u32) bool {
+    return chunk_counts[(cy * c.ChunksZ + cz) * c.ChunksX + cx] == 0;
+}
+
+pub fn is_chunk_all_opaque(cx: u32, cy: u32, cz: u32) bool {
+    return chunk_non_opaque[(cy * c.ChunksZ + cz) * c.ChunksX + cx] == 0;
+}
+
+fn chunk_idx(x: u16, y: u16, z: u16) u32 {
+    return (@as(u32, y) / c.ChunkSize * c.ChunksZ + @as(u32, z) / c.ChunkSize) * c.ChunksX + @as(u32, x) / c.ChunkSize;
+}
+
+// -- Protocol-order serialization (contiguous YZX for Java Classic compat) ----
+
+/// Write all blocks in contiguous YZX wire order from chunk-aware memory.
+/// Within each (y,z) row, the 16 x-values per chunk are contiguous in the
+/// chunk-aware layout, so each inner iteration is a 16-byte slice copy.
+pub fn write_blocks_yzx(writer: *std.Io.Writer) !void {
+    for (0..c.WorldHeight) |yi| {
+        for (0..c.WorldDepth) |zi| {
+            for (0..c.ChunksX) |cxi| {
+                const base = c.block_index(@intCast(cxi * c.ChunkSize), @intCast(yi), @intCast(zi));
+                try writer.writeAll(blocks[base..][0..c.ChunkSize]);
+            }
+        }
+    }
+}
+
+/// Read contiguous YZX wire-order data and scatter into chunk-aware positions.
+pub fn read_blocks_yzx(reader: *std.Io.Reader) !void {
+    for (0..c.WorldHeight) |yi| {
+        for (0..c.WorldDepth) |zi| {
+            for (0..c.ChunksX) |cxi| {
+                const base = c.block_index(@intCast(cxi * c.ChunkSize), @intCast(yi), @intCast(zi));
+                try reader.readSliceAll(blocks[base..][0..c.ChunkSize]);
+            }
+        }
+    }
 }
 
 // -- Sunlight height map ------------------------------------------------------

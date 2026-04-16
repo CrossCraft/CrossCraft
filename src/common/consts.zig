@@ -10,6 +10,36 @@ pub const Message = [64]u8;
 
 pub const Water_Level = 32;
 
+pub const ChunkSize = 16;
+pub const ChunksX = WorldLength / ChunkSize;
+pub const ChunksY = WorldHeight / ChunkSize;
+pub const ChunksZ = WorldDepth / ChunkSize;
+pub const ChunkVolume = ChunkSize * ChunkSize * ChunkSize;
+
+/// Chunk-aware block index: two-level YZX ordering.
+/// Each 16x16x16 chunk is contiguous (4 KiB), enabling single-read streaming.
+pub fn block_index(x: u32, y: u32, z: u32) u32 {
+    const chunk = (y / ChunkSize * ChunksZ + z / ChunkSize) * ChunksX + x / ChunkSize;
+    const local = (y % ChunkSize * ChunkSize + z % ChunkSize) * ChunkSize + x % ChunkSize;
+    return chunk * ChunkVolume + local;
+}
+
+test "block_index" {
+    const std = @import("std");
+    // First block
+    try std.testing.expectEqual(@as(u32, 0), block_index(0, 0, 0));
+    // Last block in first chunk
+    try std.testing.expectEqual(@as(u32, 4095), block_index(15, 15, 15));
+    // First block in second chunk (next CX)
+    try std.testing.expectEqual(@as(u32, 4096), block_index(16, 0, 0));
+    // Last valid index
+    try std.testing.expectEqual(@as(u32, 4194303), block_index(255, 63, 255));
+    // Within a chunk, incrementing x gives consecutive indices
+    const base = block_index(0, 5, 7);
+    try std.testing.expectEqual(base + 1, block_index(1, 5, 7));
+    try std.testing.expectEqual(base + 15, block_index(15, 5, 7));
+}
+
 pub const Location = packed struct(u32) {
     x: u8,
     z: u8,
@@ -17,7 +47,7 @@ pub const Location = packed struct(u32) {
     _reserved: u8 = 0,
 
     pub fn to_index(self: Location) u32 {
-        return (@as(u32, self.y) * WorldDepth + @as(u32, self.z)) * WorldLength + self.x;
+        return block_index(@as(u32, self.x), @as(u32, self.y), @as(u32, self.z));
     }
 };
 

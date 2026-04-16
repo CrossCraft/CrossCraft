@@ -118,7 +118,7 @@ pub fn init(
     while (self.build_cursor < self.build_end and self.build_estimator.is_warming_up()) {
         const ref = self.build_queue[self.build_cursor];
         self.build_estimator.begin(io);
-        self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas, io) catch break;
+        self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch break;
         self.build_estimator.end(io);
         mark_first_built(&self.grid[ref.cx][ref.cz][ref.sy]);
         self.built[ref.cx][ref.cz][ref.sy] = true;
@@ -197,7 +197,7 @@ pub fn update(self: *Self, dt: f32, _: *const Util.BudgetContext, camera: *const
     for (self.build_cursor..end) |i| {
         const ref = self.build_queue[i];
         self.build_estimator.begin(self.io);
-        if (self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas, self.io)) {
+        if (self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas)) {
             self.build_estimator.end(self.io);
         } else |_| {
             self.build_estimator.end(self.io);
