@@ -56,10 +56,12 @@ var lbl_sens: [label_max]u8 = undefined;
 var lbl_sens_len: u8 = 0;
 var lbl_ct: [label_max]u8 = undefined;
 var lbl_ct_len: u8 = 0;
+var lbl_bouncy: [label_max]u8 = undefined;
+var lbl_bouncy_len: u8 = 0;
 
 // -- component storage -------------------------------------------------------
-// 1 title label + 8 option buttons + 1 Controls (disabled) + 1 Done = 11.
-const total_components = 11;
+// 1 title label + 9 option buttons + 1 Controls (disabled) + 1 Done = 12.
+const total_components = 12;
 var components_buf: [total_components]Component = undefined;
 
 // -- option step tables -------------------------------------------------------
@@ -128,6 +130,7 @@ fn refresh_labels() void {
     fmt_label(&lbl_ao, &lbl_ao_len, "Ambient Occlusion: {s}", .{bool_str(c.ambient_occlusion)});
     fmt_label(&lbl_sens, &lbl_sens_len, "Sensitivity: {d}", .{@as(u32, @intFromFloat(c.sensitivity + 0.5))});
     fmt_label(&lbl_ct, &lbl_ct_len, "Controllers: {s}", .{ct_display(c.controller_tooltips)});
+    fmt_label(&lbl_bouncy, &lbl_bouncy_len, "Bouncy Chunks: {s}", .{bool_str(c.bouncy_chunks)});
 }
 
 fn rebuild_components() void {
@@ -142,7 +145,7 @@ fn rebuild_components() void {
     components_buf[0] = .{ .label = .{
         .text = "Options",
         .pos_x = 0,
-        .pos_y = -88,
+        .pos_y = -96,
         .color = .white_fg,
         .shadow_color = .menu_gray,
         .reference = .middle_center,
@@ -153,7 +156,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = lx,
-        .pos_y = -64,
+        .pos_y = -72,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_music,
@@ -163,7 +166,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = rx,
-        .pos_y = -64,
+        .pos_y = -72,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_sound,
@@ -173,7 +176,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = lx,
-        .pos_y = -40,
+        .pos_y = -48,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_rd,
@@ -183,7 +186,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = rx,
-        .pos_y = -40,
+        .pos_y = -48,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_fancy,
@@ -193,7 +196,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = lx,
-        .pos_y = -16,
+        .pos_y = -24,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_fov,
@@ -203,7 +206,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = rx,
-        .pos_y = -16,
+        .pos_y = -24,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_ao,
@@ -213,7 +216,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = lx,
-        .pos_y = 8,
+        .pos_y = 0,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_sens,
@@ -223,28 +226,38 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = rx,
-        .pos_y = 8,
+        .pos_y = 0,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_ct,
     } };
     components_buf[9] = .{ .button = .{
-        .label = "Controls...",
-        .width = wf,
+        .label = lbl_bouncy[0..lbl_bouncy_len],
+        .width = w2,
         .height = bh,
-        .pos_x = 0,
-        .pos_y = 36,
+        .pos_x = lx,
+        .pos_y = 24,
+        .reference = .middle_center,
+        .origin = .middle_center,
+        .on_activate = on_bouncy,
+    } };
+    components_buf[10] = .{ .button = .{
+        .label = "Controls...",
+        .width = w2,
+        .height = bh,
+        .pos_x = rx,
+        .pos_y = 24,
         .reference = .middle_center,
         .origin = .middle_center,
         .enabled = false,
         .on_activate = on_noop,
     } };
-    components_buf[10] = .{ .button = .{
+    components_buf[11] = .{ .button = .{
         .label = "Done",
         .width = wf,
         .height = bh,
         .pos_x = 0,
-        .pos_y = 60,
+        .pos_y = 52,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_done,
@@ -304,6 +317,11 @@ fn on_sens(_: *anyopaque) void {
 
 fn on_ct(_: *anyopaque) void {
     Options.current.controller_tooltips = next_ct(Options.current.controller_tooltips);
+    refresh();
+}
+
+fn on_bouncy(_: *anyopaque) void {
+    Options.current.bouncy_chunks = !Options.current.bouncy_chunks;
     refresh();
 }
 

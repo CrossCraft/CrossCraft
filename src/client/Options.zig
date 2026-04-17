@@ -43,9 +43,12 @@ pub const Options = struct {
     active_texturepack_buf: [max_pack_path]u8 = [_]u8{0} ** max_pack_path,
     active_texturepack_len: u8 = 0,
 
-    /// Chunk render radius.  Defaults to the platform maximum so PSP builds
-    /// do not write a value larger than they can ever use.
-    render_distance: u8 = @intCast(@min(@as(u32, 8), cfg.current.chunk_radius)),
+    /// Chunk render radius.  PSP defaults to 3 (max 4); desktop defaults to 8.
+    /// Capped to the platform's compiled-in max via `capped_render_distance`.
+    render_distance: u8 = if (@import("aether").platform == .psp)
+        @intCast(@min(@as(u32, 3), cfg.current.chunk_radius))
+    else
+        @intCast(@min(@as(u32, 8), cfg.current.chunk_radius)),
 
     /// SFX volume multiplier (0.0 = silent, 1.0 = full).
     sound_volume: f32 = 1.0,
@@ -63,10 +66,10 @@ pub const Options = struct {
     sensitivity: f32 = 3.0,
 
     /// Smooth ambient occlusion on block faces.
-    ambient_occlusion: bool = true,
+    ambient_occlusion: bool = false,
 
-    /// Hidden debug toggle: newly-meshed chunk sections rise from -16 blocks
-    /// over 1 second. Rebuilt sections are unaffected. Not exposed in the UI.
+    /// Newly-meshed chunk sections rise from -16 blocks over 1 second.
+    /// Rebuilt sections are unaffected.
     bouncy_chunks: bool = false,
 
     /// In-game controller prompt style.  `auto` picks glyphs from the
@@ -102,13 +105,13 @@ pub fn capped_render_distance() u8 {
 
 const JsonOptions = struct {
     active_texturepack: []const u8 = "",
-    render_distance: u8 = 8,
+    render_distance: u8 = if (@import("aether").platform == .psp) 3 else 8,
     sound_volume: f32 = 1.0,
     music_volume: f32 = 0.5,
     fov: f32 = 70.0,
     fancy_leaves: bool = true,
     sensitivity: f32 = 3.0,
-    ambient_occlusion: bool = true,
+    ambient_occlusion: bool = false,
     bouncy_chunks: bool = false,
     controller_tooltips: u8 = 0,
 };

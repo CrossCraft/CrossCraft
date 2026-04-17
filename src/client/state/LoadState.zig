@@ -36,6 +36,7 @@ fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, i
         session_error = err;
         return;
     };
+    World.autosave_enabled = false;
     server_ready.store(true, .release);
 }
 

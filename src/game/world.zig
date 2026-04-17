@@ -104,6 +104,11 @@ pub var load_status: LoadStatus = .loading;
 /// can never persist a snapshot of somebody else's world as its own.
 pub var owned_locally: bool = false;
 
+/// Periodic in-tick autosave. Left on for the dedicated server (crash
+/// insurance across long uptimes) and off for singleplayer, which saves
+/// explicitly on worldgen completion and on shutdown via `deinit`.
+pub var autosave_enabled: bool = true;
+
 pub var backing_allocator: std.mem.Allocator = undefined;
 pub var raw_blocks: []u8 = undefined;
 pub var blocks: []u8 = undefined;
@@ -518,12 +523,14 @@ pub fn tick() void {
     }
 
     tick_count +%= 1;
-    save_counter += 1;
-    if (save_counter >= 6000) {
-        save_counter = 0;
-        save() catch |err| {
-            log.err("failed to save world: {}", .{err});
-        };
+    if (autosave_enabled) {
+        save_counter += 1;
+        if (save_counter >= 6000) {
+            save_counter = 0;
+            save() catch |err| {
+                log.err("failed to save world: {}", .{err});
+            };
+        }
     }
 }
 
