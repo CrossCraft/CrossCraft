@@ -19,9 +19,7 @@ pub fn get() u32 {
 }
 
 pub fn compute(screen_w: u32, screen_h: u32) u32 {
-    std.debug.assert(screen_w > 0);
-    std.debug.assert(screen_h > 0);
-
+    if (screen_w == 0 or screen_h == 0) return 1;
     const sx = screen_w / ref_width;
     const sy = screen_h / ref_height;
     return @max(1, @min(sx, sy));
