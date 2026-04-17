@@ -23,7 +23,7 @@ pub const Context = struct {
 
 const components = [_]Component{
     .{ .label = .{
-        .text = "CrossCraft Classic v1.0-rc1",
+        .text = "CrossCraft Classic v1.0-rc2",
         .pos_x = 2,
         .pos_y = 2,
         .color = .gray_fg,

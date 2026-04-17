@@ -738,6 +738,18 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.font_batcher.clear();
     self.iso_blocks.begin();
 
+    self.font_batcher.add_text(&.{
+        .str = "0.30",
+        .pos_x = 2,
+        .pos_y = 2,
+        .color = .white_fg,
+        .shadow_color = .menu_gray,
+        .spacing = 0,
+        .layer = 252,
+        .reference = .top_left,
+        .origin = .top_left,
+    });
+
     // Controller-tooltip strip only applies to the in-world HUD.  Hidden
     // (and the hotbar returns to its base position) whenever another
     // overlay owns the bottom row: inventory or pause menu.  The chat
