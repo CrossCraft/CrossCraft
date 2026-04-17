@@ -20,6 +20,23 @@ const max_json_size: usize = 4096;
 /// the settings UI should write it.
 pub var current: Options = .{};
 
+/// In-game controller prompt style.  PSP only supports `auto` / `off`; the
+/// other layouts are desktop-only and are corrected to `auto` on load.
+pub const ControllerTooltips = enum(u8) {
+    auto = 0,
+    xbox = 1,
+    playstation = 2,
+    nintendo = 3,
+    off = 4,
+
+    pub fn platform_supports(self: ControllerTooltips) bool {
+        if (comptime @import("aether").platform == .psp) {
+            return self == .auto or self == .off;
+        }
+        return true;
+    }
+};
+
 pub const Options = struct {
     /// Path of the active texture pack (relative to the data dir).
     /// Empty string means use the built-in default pack.
@@ -51,6 +68,10 @@ pub const Options = struct {
     /// Hidden debug toggle: newly-meshed chunk sections rise from -16 blocks
     /// over 1 second. Rebuilt sections are unaffected. Not exposed in the UI.
     bouncy_chunks: bool = false,
+
+    /// In-game controller prompt style.  `auto` picks glyphs from the
+    /// connected controller on desktop, or the only available layout on PSP.
+    controller_tooltips: ControllerTooltips = .auto,
 
     /// Returns the active texture pack path as a slice (may be empty).
     pub fn active_texturepack(self: *const Options) []const u8 {
@@ -89,6 +110,7 @@ const JsonOptions = struct {
     sensitivity: f32 = 3.0,
     ambient_occlusion: bool = true,
     bouncy_chunks: bool = false,
+    controller_tooltips: u8 = 0,
 };
 
 // -- public API --------------------------------------------------------------
@@ -133,6 +155,18 @@ pub fn load(io: Io, dir: Io.Dir) void {
     current.sensitivity = std.math.clamp(j.sensitivity, 0.1, 20.0);
     current.ambient_occlusion = j.ambient_occlusion;
     current.bouncy_chunks = j.bouncy_chunks;
+    current.controller_tooltips = blk: {
+        const mode: ControllerTooltips = switch (j.controller_tooltips) {
+            0 => .auto,
+            1 => .xbox,
+            2 => .playstation,
+            3 => .nintendo,
+            4 => .off,
+            else => break :blk .auto,
+        };
+        if (!mode.platform_supports()) break :blk .auto;
+        break :blk mode;
+    };
 }
 
 /// Write current options to `options.json` in `dir`.
@@ -152,6 +186,7 @@ pub fn save(io: Io, dir: Io.Dir) void {
         .sensitivity = current.sensitivity,
         .ambient_occlusion = current.ambient_occlusion,
         .bouncy_chunks = current.bouncy_chunks,
+        .controller_tooltips = @intFromEnum(current.controller_tooltips),
     };
 
     var json_buf: [max_json_size]u8 = undefined;
