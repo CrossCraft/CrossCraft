@@ -154,8 +154,8 @@ fn rebuild_batches(self: *Self, screen_w: u32, screen_h: u32) !void {
 }
 
 fn emit_sprite_vertices(mesh: *BatchMesh, sprite: *const Sprite, screen_w: u32, screen_h: u32, scale: u32) void {
-    const max_lx: i16 = @intCast((screen_w + scale - 1) / scale);
-    const max_ly: i16 = @intCast((screen_h + scale - 1) / scale);
+    const max_lx: i16 = @intCast(layout.logical_width(screen_w, scale));
+    const max_ly: i16 = @intCast(layout.logical_height(screen_h, scale));
 
     const ref = anchor_point(sprite.reference, max_lx, max_ly);
     const orig = anchor_point(sprite.origin, sprite.pos_extent.x, sprite.pos_extent.y);

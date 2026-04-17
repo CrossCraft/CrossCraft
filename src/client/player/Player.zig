@@ -28,6 +28,7 @@ const collision = @import("collision.zig");
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
 const Scaling = @import("../ui/Scaling.zig");
+const layout = @import("../ui/layout.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
 const SoundManager = @import("../SoundManager.zig");
@@ -1222,8 +1223,8 @@ fn draw_hotbar_blocks(self: *const Self, iso: *IsoBlockDrawer) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const ui_scale = Scaling.compute(screen_w, screen_h);
-    const max_lx: i32 = @intCast(screen_w / ui_scale);
-    const max_ly: i32 = @intCast(screen_h / ui_scale);
+    const max_lx: i32 = @intCast(layout.logical_width(screen_w, ui_scale));
+    const max_ly: i32 = @intCast(layout.logical_height(screen_h, ui_scale));
 
     // Hotbar bg sits at bottom-center with pos_offset y = -1 and origin
     // bottom-center, so its bottom edge is at max_ly - 1 and its top edge at

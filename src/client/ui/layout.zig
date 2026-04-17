@@ -29,6 +29,19 @@ pub fn anchor_point(anchor: Anchor, ex: i16, ey: i16) Point {
     };
 }
 
+/// Logical (UI-space) screen width in integer pixels.
+/// Uses ceiling division so bottom/right anchors land inside the last partial
+/// logical pixel when `screen_w` is not a multiple of `scale`. This is the
+/// canonical value -- match it anywhere you need to place a sprite relative
+/// to a screen edge.
+pub fn logical_width(screen_w: u32, scale: u32) u32 {
+    return (screen_w + scale - 1) / scale;
+}
+
+pub fn logical_height(screen_h: u32, scale: u32) u32 {
+    return (screen_h + scale - 1) / scale;
+}
+
 /// Converts a logical X pixel to snorm NDC.
 /// Origin (0,0) is the top-left corner of the window.
 pub fn logical_to_snorm_x(x: i16, screen_w: u32, scale: u32) i16 {

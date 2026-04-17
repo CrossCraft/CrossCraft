@@ -23,6 +23,7 @@ const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
 const IsoBlockDrawer = @import("IsoBlockDrawer.zig");
 const Scaling = @import("Scaling.zig");
+const layout_mod = @import("layout.zig");
 const ui_input = @import("input.zig");
 const Color = @import("../graphics/Color.zig").Color;
 const BlockNames = @import("BlockNames.zig");
@@ -184,8 +185,8 @@ const Layout = struct {
 
 fn layout(screen_w: u32, screen_h: u32) Layout {
     const scale = Scaling.compute(screen_w, screen_h);
-    const max_lx: i16 = @intCast(screen_w / scale);
-    const max_ly: i16 = @intCast(screen_h / scale);
+    const max_lx: i16 = @intCast(layout_mod.logical_width(screen_w, scale));
+    const max_ly: i16 = @intCast(layout_mod.logical_height(screen_h, scale));
     const panel_w: i16 = @as(i16, COLS) * SLOT_STRIDE + 2 * PANEL_PAD;
     const panel_h: i16 = @as(i16, ROWS) * SLOT_STRIDE + 2 * PANEL_PAD + TOOLTIP_GAP;
     const panel_left: i16 = @divTrunc(max_lx - panel_w, 2);
