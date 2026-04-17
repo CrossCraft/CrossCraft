@@ -58,6 +58,13 @@ build_cursor: u32,
 build_end: u32,
 build_estimator: Util.Estimator,
 
+/// Per-frame visibility list populated by draw_world_pass and consumed by
+/// draw_fluid_pass so the caller can slot overlays (selection outline, steve
+/// models) between the two passes without recomputing visibility.
+frame_visible: [MAX_ACTIVE]GridRef,
+frame_visible_count: u32,
+frame_clip_count: u32,
+
 terrain: *const Rendering.Texture,
 clouds: *const Rendering.Texture,
 atlas: TextureAtlas,
@@ -100,6 +107,9 @@ pub fn init(
         .build_cursor = 0,
         .build_end = 0,
         .build_estimator = Util.Estimator.init(),
+        .frame_visible = undefined,
+        .frame_visible_count = 0,
+        .frame_clip_count = 0,
         .terrain = terrain,
         .clouds = clouds,
         .atlas = atlas,
@@ -224,7 +234,10 @@ fn mark_first_built(sec: *ChunkMesh) void {
     if (Options.current.bouncy_chunks) sec.anim_progress = 0.0;
 }
 
-pub fn draw(self: *Self, camera: *const Camera) void {
+/// Draw everything up to and including particles; callers are expected to
+/// invoke draw_fluid_pass afterwards so water/lava draws over overlays like
+/// the block selection outline. Populates frame_visible/frame_clip_count.
+pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     const submerged = collision.liquid_at_point(camera.x, camera.y, camera.z);
 
     Rendering.Pipeline.bind(self.pipeline);
@@ -236,27 +249,27 @@ pub fn draw(self: *Self, camera: *const Camera) void {
     set_terrain_fog(submerged);
     self.terrain.bind();
 
-    var visible: [MAX_ACTIVE]GridRef = undefined;
-    var visible_count: u32 = 0;
-
+    self.frame_visible_count = 0;
     for (0..WORLD_CX) |cx| {
         for (0..WORLD_CZ) |cz| {
             if (!self.loaded[cx][cz]) continue;
             for (0..SECTIONS_Y) |sy| {
                 const sec = &self.grid[cx][cz][sy];
                 if (!camera.section_visible(sec.cx, sec.sy, sec.cz)) continue;
-                visible[visible_count] = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
-                visible_count += 1;
+                self.frame_visible[self.frame_visible_count] = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
+                self.frame_visible_count += 1;
             }
         }
     }
 
-    std.sort.pdq(GridRef, visible[0..visible_count], camera, grid_ref_less_than);
+    const visible = self.frame_visible[0..self.frame_visible_count];
+    std.sort.pdq(GridRef, visible, camera, grid_ref_less_than);
 
     // Sections close to the player need hardware clip planes to prevent
     // vertices from overflowing the PSP 4096 virtual viewport.
     const CLIP_SECTION_COUNT: u32 = 4;
-    const clip_count = @min(CLIP_SECTION_COUNT, visible_count);
+    self.frame_clip_count = @min(CLIP_SECTION_COUNT, self.frame_visible_count);
+    const clip_count = self.frame_clip_count;
 
     // Opaque pass (front-to-back): clip planes on for closest sections
     Rendering.gfx.api.set_alpha_blend(false);
@@ -267,7 +280,7 @@ pub fn draw(self: *Self, camera: *const Camera) void {
         }
         Rendering.gfx.api.set_clip_planes(false);
     }
-    for (visible[clip_count..visible_count]) |ref| {
+    for (visible[clip_count..]) |ref| {
         self.grid[ref.cx][ref.cz][ref.sy].draw_opaque();
     }
 
@@ -282,7 +295,7 @@ pub fn draw(self: *Self, camera: *const Camera) void {
     set_terrain_fog(submerged);
     self.terrain.bind();
     Rendering.gfx.api.set_alpha_blend(true);
-    var ri: u32 = visible_count;
+    var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
         ri -= 1;
         self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_transparent();
@@ -299,11 +312,24 @@ pub fn draw(self: *Self, camera: *const Camera) void {
     // Particles between transparent and fluid so they depth-test against
     // opaque + transparent geometry and blend before water is drawn.
     self.particles.draw(camera);
+}
+
+/// Draw the fluid (water/lava) pass. Must be called after draw_world_pass on
+/// the same frame; consumes the visibility list populated there. Kept
+/// separate so overlays (selection outline, remote players) drawn between
+/// the two passes are correctly occluded by fluid surfaces.
+pub fn draw_fluid_pass(self: *Self) void {
+    const visible = self.frame_visible[0..self.frame_visible_count];
+    const clip_count = self.frame_clip_count;
+
+    Rendering.Pipeline.bind(self.pipeline);
+    self.terrain.bind();
+    Rendering.gfx.api.set_alpha_blend(true);
 
     // Fluid pass (back-to-front): water/lava drawn with depth writes off so
     // fluid faces never occlude each other across section borders.
     Rendering.gfx.api.set_depth_write(false);
-    ri = visible_count;
+    var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
         ri -= 1;
         self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_fluid();

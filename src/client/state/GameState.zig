@@ -674,9 +674,10 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         return;
     }
     self.player.camera.apply();
-    self.world.draw(&self.player.camera);
+    self.world.draw_world_pass(&self.player.camera);
 
     // Remote player models: drawn in the 3D pass, depth-tested against the world.
+    // Slotted before the fluid pass so water/lava correctly occludes them.
     self.steve.draw(&self.player);
     self.steve.draw_nametags(&self.player, &self.font_batcher);
 
@@ -712,6 +713,11 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         };
         self.selection.draw(&t);
     }
+
+    // Fluid pass last so water/lava alpha-blends over the outline, steve
+    // models, and particles drawn just above instead of the depth-writeless
+    // fluid letting those overlays bleed through.
+    self.world.draw_fluid_pass();
 
     // Held-block viewmodel: swaps in its own projection + identity view,
     // clears depth internally so it never z-fights against nearby world
