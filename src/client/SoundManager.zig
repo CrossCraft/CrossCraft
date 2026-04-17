@@ -1,10 +1,7 @@
-/// Streams all audio directly from pack.zip - no PCM buffers in RAM.
-///
-/// Each active sound uses a dedicated file reader positioned at the
-/// pre-computed PCM data offset within the archive. The pack uses
-/// store-only compression, so reads are plain sequential I/O. File
-/// readers use positional mode (pread) for thread safety with the
-/// audio callback.
+/// Streams all audio directly from pack.zip. STORE entries (the default
+/// for .wav files in the standard pack) are read straight from disk by
+/// the audio callback with no intermediate buffers. Two shared DEFLATE
+/// stream slots exist for backwards compatibility with compressed packs.
 const SoundManager = @This();
 
 const std = @import("std");
@@ -14,8 +11,10 @@ const Math = ae.Math;
 const c = @import("common").consts;
 const B = c.Block;
 const Options = @import("Options.zig");
+const ResourcePack = @import("ResourcePack.zig");
 const Zip = @import("util/Zip.zig");
 
+const flate = std.compress.flate;
 const Io = std.Io;
 const File = Io.File;
 
@@ -23,9 +22,9 @@ const log = std.log.scoped(.audio);
 
 // -- material classification ------------------------------------------------
 
-pub const Material = enum(u3) { stone, grass, gravel, wood, glass };
+pub const Material = enum(u3) { stone, grass, gravel, wood, glass, cloth, sand };
 
-const material_count = 5;
+const material_count = 7;
 const max_variants = 4;
 const music_count: u8 = 7;
 
@@ -46,8 +45,26 @@ pub fn block_material(id: u8) Material {
         B.Obsidian,
         => .stone,
         B.Planks, B.Log, B.Bookshelf => .wood,
-        B.Dirt, B.Sand, B.Gravel => .gravel,
+        B.Dirt, B.Gravel => .gravel,
+        B.Sand => .sand,
         B.Glass => .glass,
+        B.Red_Wool,
+        B.Orange_Wool,
+        B.Yellow_Wool,
+        B.Chartreuse_Wool,
+        B.Green_Wool,
+        B.Spring_Green_Wool,
+        B.Cyan_Wool,
+        B.Capri_Wool,
+        B.Ultramarine_Wool,
+        B.Purple_Wool,
+        B.Violet_Wool,
+        B.Magenta_Wool,
+        B.Rose_Wool,
+        B.Dark_Gray_Wool,
+        B.Light_Gray_Wool,
+        B.White_Wool,
+        => .cloth,
         else => .grass,
     };
 }
@@ -55,9 +72,11 @@ pub fn block_material(id: u8) Material {
 // -- sound entry (location of PCM data inside pack.zip) ---------------------
 
 const SoundEntry = struct {
-    pcm_offset: u64 = 0,
+    data_offset: u64 = 0,
+    header_skip: u64 = 0,
     pcm_size: u64 = 0,
     format: Audio.PcmFormat = .{ .sample_rate = 44100, .channels = 1, .bit_depth = 16 },
+    deflated: bool = false,
     valid: bool = false,
 };
 
@@ -76,34 +95,63 @@ fn init_entry_row() [music_count]SoundEntry {
 }
 
 var dig_entries: [material_count][max_variants]SoundEntry = init_entry_grid();
-var dig_counts: [material_count]u8 = .{ 0, 0, 0, 0, 0 };
+var dig_counts: [material_count]u8 = .{ 0, 0, 0, 0, 0, 0, 0 };
 var step_entries: [material_count][max_variants]SoundEntry = init_entry_grid();
-var step_counts: [material_count]u8 = .{ 0, 0, 0, 0, 0 };
+var step_counts: [material_count]u8 = .{ 0, 0, 0, 0, 0, 0, 0 };
 var music_entries: [music_count]SoundEntry = init_entry_row();
 
-// -- streaming voice pool ---------------------------------------------------
+// -- voice pool -------------------------------------------------------------
 
 const max_voices: u32 = if (ae.platform == .psp) 8 else 17;
 const music_slot: u32 = if (ae.platform == .psp) 7 else 16;
 
-const StreamVoice = struct {
-    read_buf: [4096]u8,
+const Voice = struct {
+    read_buf: [8192]u8,
     file_reader: File.Reader,
     limited: Io.Reader.Limited,
     handle: Audio.SoundHandle,
     active: bool,
+    deflate: ?*DeflateSlot,
 };
 
-fn init_voices() [max_voices]StreamVoice {
-    var v: [max_voices]StreamVoice = undefined;
+fn init_voices() [max_voices]Voice {
+    var v: [max_voices]Voice = undefined;
     for (&v) |*slot| {
         slot.active = false;
         slot.handle = 0;
+        slot.deflate = null;
     }
     return v;
 }
 
-var voices: [max_voices]StreamVoice = init_voices();
+var voices: [max_voices]Voice = init_voices();
+
+// -- shared DEFLATE decompression streams -----------------------------------
+//
+// Only two exist -- enough for the rare case where a custom resource pack
+// ships compressed audio.  A voice that needs DEFLATE grabs a slot; the
+// decompressor reads from the voice's own file_reader.
+
+const DeflateSlot = struct {
+    flate_buf: [flate.max_window_len]u8,
+    decompressor: flate.Decompress,
+    in_use: bool,
+};
+
+fn init_deflate_slots() [2]DeflateSlot {
+    var s: [2]DeflateSlot = undefined;
+    for (&s) |*slot| slot.in_use = false;
+    return s;
+}
+
+var deflate_slots: [2]DeflateSlot = init_deflate_slots();
+
+fn find_free_deflate_slot() ?*DeflateSlot {
+    for (&deflate_slots) |*s| {
+        if (!s.in_use) return s;
+    }
+    return null;
+}
 
 // -- shared state -----------------------------------------------------------
 
@@ -143,9 +191,9 @@ fn rand_f32() f32 {
 
 // -- resource paths ---------------------------------------------------------
 
-const mat_names: [material_count][]const u8 = .{ "stone", "grass", "gravel", "wood", "glass" };
-const dig_max: [material_count]u8 = .{ 4, 4, 4, 4, 3 };
-const step_max: [material_count]u8 = .{ 4, 4, 4, 4, 0 };
+const mat_names: [material_count][]const u8 = .{ "stone", "grass", "gravel", "wood", "glass", "cloth", "sand" };
+const dig_max: [material_count]u8 = .{ 4, 4, 4, 4, 3, 4, 4 };
+const step_max: [material_count]u8 = .{ 4, 4, 4, 4, 0, 4, 4 };
 
 const music_paths: [music_count][]const u8 = .{
     "assets/minecraft/music/calm1.wav",
@@ -159,12 +207,12 @@ const music_paths: [music_count][]const u8 = .{
 
 // -- init / deinit ----------------------------------------------------------
 
-/// Opens a second handle to the pack archive (stored separately from the
-/// `Zip` used for textures) so music / sfx can stream PCM data while the
-/// main pack reads texture entries without seek contention. `dir` must
-/// match the dir passed to `ResourcePack.init` / `switch_pack` for the
-/// currently-loaded pack.
-pub fn init(pack: *Zip, dir: Io.Dir, path: []const u8) void {
+/// Opens a second handle to the pack archive so music / sfx can stream
+/// PCM data without seek contention with texture reads.
+pub fn init() void {
+    const pack = ResourcePack.get_pack();
+    const dir = ResourcePack.get_dir();
+    const path = ResourcePack.get_pack_path();
     stored_io = pack.io;
     stored_file = dir.openFile(stored_io, path, .{}) catch |err| {
         log.warn("cannot open '{s}' for audio: {}", .{ path, err });
@@ -178,7 +226,9 @@ pub fn init(pack: *Zip, dir: Io.Dir, path: []const u8) void {
     for (&voices) |*v| {
         v.active = false;
         v.handle = 0;
+        v.deflate = null;
     }
+    for (&deflate_slots) |*s| s.in_use = false;
 
     music_state = .delay;
     music_delay_timer = 5.0 + rand_f32() * 15.0;
@@ -190,11 +240,9 @@ pub fn init(pack: *Zip, dir: Io.Dir, path: []const u8) void {
 
 pub fn deinit() void {
     if (!initialised) return;
+
     for (&voices) |*v| {
-        if (v.active) {
-            Audio.stop(v.handle);
-            v.active = false;
-        }
+        if (v.active) release_voice(v);
     }
     stored_file.close(stored_io);
     initialised = false;
@@ -206,11 +254,12 @@ pub fn deinit() void {
     music_index = 0;
     music_delay_timer = 0;
     voices = undefined;
+    deflate_slots = undefined;
 
     dig_entries = init_entry_grid();
-    dig_counts = .{ 0, 0, 0, 0, 0 };
+    dig_counts = .{ 0, 0, 0, 0, 0, 0, 0 };
     step_entries = init_entry_grid();
-    step_counts = .{ 0, 0, 0, 0, 0 };
+    step_counts = .{ 0, 0, 0, 0, 0, 0, 0 };
     music_entries = init_entry_row();
 }
 
@@ -247,26 +296,24 @@ fn scan_music(pack: *Zip) void {
     }
 }
 
-/// Open a WAV from the zip, parse its header, and record where the PCM
-/// data lives in the archive so we can seek straight to it at play time.
-/// Playback reads raw bytes directly from the archive file handle, so the
-/// entry must be stored (not deflated) -- user-supplied texturepacks often
-/// use deflate, in which case we fail the resolve and the sound silently
-/// drops rather than playing compressed bytes as PCM (static noise).
+/// Open a WAV from the zip, parse its header, and record where the
+/// entry's data lives in the archive. Both STORE and DEFLATE entries
+/// are supported: the Zip stream reader decompresses transparently, so
+/// the WAV header parse works regardless of compression method.
 fn resolve_wav(pack: *Zip, path: []const u8) !SoundEntry {
     var stream = try pack.open(path);
     defer pack.closeStream(&stream);
 
-    if (stream.compression_method != .store) return error.UnsupportedCompression;
-
     const wav = try Audio.wav.open(stream.reader);
     const pcm_size = wav.byte_length orelse return error.UnknownLength;
-    const header_bytes = stream.uncompressed_size - pcm_size;
+    const header_skip = stream.uncompressed_size - pcm_size;
 
     return .{
-        .pcm_offset = stream.data_offset + header_bytes,
+        .data_offset = stream.data_offset,
+        .header_skip = header_skip,
         .pcm_size = pcm_size,
         .format = wav.format,
+        .deflated = stream.compression_method == .deflate,
         .valid = true,
     };
 }
@@ -287,15 +334,15 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
         Math.Vec3.new(0, 1, 0),
     );
 
-    // Reap finished SFX voices (not music slot).
+    // Reap finished SFX voices.
     // When sound is muted, actively stop any voices that are still streaming
     // so we don't burn I/O and CPU on audio no one can hear.
     for (voices[0..music_slot]) |*v| {
         if (!v.active) continue;
         if (Options.current.sound_volume == 0.0) {
-            Audio.stop(v.handle);
-            v.active = false;
+            release_voice(v);
         } else if (!Audio.is_playing(v.handle)) {
+            release_deflate(v);
             v.active = false;
         }
     }
@@ -306,11 +353,11 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
             if (Options.current.music_volume == 0.0) {
                 // Muted while playing: stop the stream and park in delay so
                 // music resumes automatically once volume is restored.
-                Audio.stop(voices[music_slot].handle);
-                voices[music_slot].active = false;
+                release_voice(&voices[music_slot]);
                 music_state = .delay;
                 music_delay_timer = 1.0;
             } else if (!Audio.is_playing(voices[music_slot].handle)) {
+                release_deflate(&voices[music_slot]);
                 voices[music_slot].active = false;
                 music_state = .delay;
                 music_delay_timer = min_music_delay +
@@ -364,6 +411,10 @@ pub fn play_dig(block: u8, bx: u16, by: u16, bz: u16) void {
 pub fn play_step(block: u8) void {
     if (!initialised) return;
     if (Options.current.sound_volume == 0.0) return;
+    switch (block) {
+        B.Flowing_Water, B.Still_Water, B.Flowing_Lava, B.Still_Lava => return,
+        else => {},
+    }
     var mat = @intFromEnum(block_material(block));
     var count = step_counts[mat];
     if (count == 0) {
@@ -374,7 +425,10 @@ pub fn play_step(block: u8) void {
     const entry = step_entries[mat][rand_u32(count)];
     if (!entry.valid) return;
     const slot = find_free_sfx() orelse return;
-    start_voice(slot, entry, null, .{ .volume = 0.15 * Options.current.sound_volume, .priority = .low }) catch return;
+    start_voice(slot, entry, null, .{
+        .volume = 0.15 * Options.current.sound_volume,
+        .priority = .low,
+    }) catch return;
 }
 
 fn play_material_sound(
@@ -409,27 +463,59 @@ fn play_material_sound(
 
 // -- internals --------------------------------------------------------------
 
-fn find_free_sfx() ?*StreamVoice {
+fn find_free_sfx() ?*Voice {
     for (voices[0..music_slot]) |*v| {
         if (!v.active) return v;
     }
     return null;
 }
 
+fn release_voice(v: *Voice) void {
+    Audio.stop(v.handle);
+    release_deflate(v);
+    v.active = false;
+}
+
+fn release_deflate(v: *Voice) void {
+    if (v.deflate) |ds| {
+        ds.in_use = false;
+        v.deflate = null;
+    }
+}
+
 fn start_voice(
-    v: *StreamVoice,
+    v: *Voice,
     entry: SoundEntry,
     pos: ?Math.Vec3,
     opts: Audio.PlayOptions,
 ) !void {
     v.file_reader = File.Reader.init(stored_file, stored_io, &v.read_buf);
-    try v.file_reader.seekTo(entry.pcm_offset);
+    v.deflate = null;
 
-    v.limited = Io.Reader.Limited.init(
-        &v.file_reader.interface,
-        Io.Limit.limited64(entry.pcm_size),
-        &.{},
-    );
+    if (entry.deflated) {
+        const ds = find_free_deflate_slot() orelse return error.OutOfDeflateSlots;
+        try v.file_reader.seekTo(entry.data_offset);
+        ds.decompressor = flate.Decompress.init(
+            &v.file_reader.interface,
+            .raw,
+            &ds.flate_buf,
+        );
+        try ds.decompressor.reader.discardAll64(entry.header_skip);
+        ds.in_use = true;
+        v.deflate = ds;
+        v.limited = Io.Reader.Limited.init(
+            &ds.decompressor.reader,
+            Io.Limit.limited64(entry.pcm_size),
+            &.{},
+        );
+    } else {
+        try v.file_reader.seekTo(entry.data_offset + entry.header_skip);
+        v.limited = Io.Reader.Limited.init(
+            &v.file_reader.interface,
+            Io.Limit.limited64(entry.pcm_size),
+            &.{},
+        );
+    }
 
     const stream: Audio.Stream = .{
         .reader = &v.limited.interface,

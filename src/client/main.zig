@@ -31,7 +31,6 @@ const ResourcePack = @import("ResourcePack.zig");
 
 pub fn main(init: std.process.Init) !void {
     if (ae.platform == .psp) {
-        sdk.extra.utils.enableHBCB();
         try sdk.power.set_clock_frequency(333, 333, 166);
     }
 
@@ -48,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
         .width = 854,
         .height = 480,
         .title = "CrossCraft Classic",
-        .vsync = false,
+        .vsync = true,
         .resizable = true,
     }, &state);
     defer engine.deinit();

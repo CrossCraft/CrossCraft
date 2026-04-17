@@ -25,7 +25,7 @@ pub fn encode_pos_frac(local: u32, frac256: u32) i16 {
 }
 
 /// Directional face shading.
-fn face_color(face: Face) u32 {
+pub fn face_color(face: Face) u32 {
     return switch (face) {
         .y_pos => 0xFFFFFFFF,
         .y_neg => 0xFF7F7F7F,
@@ -56,65 +56,94 @@ fn tile_uvs(tile: BlockRegistry.Tile, atlas: *const TextureAtlas) UVRect {
     };
 }
 
-fn make_quad(face: Face, px: i16, px1: i16, py: i16, py1: i16, pz: i16, pz1: i16, tu0: i16, tv0: i16, tu1: i16, tv1: i16, color: u32) [4]Vertex {
+/// Four identical corner colors for paths without per-vertex AO.
+pub fn uniform_colors(c: u32) [4]u32 {
+    return .{ c, c, c, c };
+}
+
+fn make_quad(face: Face, px: i16, px1: i16, py: i16, py1: i16, pz: i16, pz1: i16, tu0: i16, tv0: i16, tu1: i16, tv1: i16, colors: [4]u32) [4]Vertex {
     return switch (face) {
         .x_pos => .{
-            .{ .pos = .{ px1, py, pz }, .uv = .{ tu0, tv1 }, .color = color },
-            .{ .pos = .{ px1, py, pz1 }, .uv = .{ tu1, tv1 }, .color = color },
-            .{ .pos = .{ px1, py1, pz1 }, .uv = .{ tu1, tv0 }, .color = color },
-            .{ .pos = .{ px1, py1, pz }, .uv = .{ tu0, tv0 }, .color = color },
+            .{ .pos = .{ px1, py, pz }, .uv = .{ tu0, tv1 }, .color = colors[0] },
+            .{ .pos = .{ px1, py, pz1 }, .uv = .{ tu1, tv1 }, .color = colors[1] },
+            .{ .pos = .{ px1, py1, pz1 }, .uv = .{ tu1, tv0 }, .color = colors[2] },
+            .{ .pos = .{ px1, py1, pz }, .uv = .{ tu0, tv0 }, .color = colors[3] },
         },
         .x_neg => .{
-            .{ .pos = .{ px, py, pz1 }, .uv = .{ tu0, tv1 }, .color = color },
-            .{ .pos = .{ px, py, pz }, .uv = .{ tu1, tv1 }, .color = color },
-            .{ .pos = .{ px, py1, pz }, .uv = .{ tu1, tv0 }, .color = color },
-            .{ .pos = .{ px, py1, pz1 }, .uv = .{ tu0, tv0 }, .color = color },
+            .{ .pos = .{ px, py, pz1 }, .uv = .{ tu0, tv1 }, .color = colors[0] },
+            .{ .pos = .{ px, py, pz }, .uv = .{ tu1, tv1 }, .color = colors[1] },
+            .{ .pos = .{ px, py1, pz }, .uv = .{ tu1, tv0 }, .color = colors[2] },
+            .{ .pos = .{ px, py1, pz1 }, .uv = .{ tu0, tv0 }, .color = colors[3] },
         },
         .y_pos => .{
-            .{ .pos = .{ px, py1, pz }, .uv = .{ tu0, tv0 }, .color = color },
-            .{ .pos = .{ px1, py1, pz }, .uv = .{ tu1, tv0 }, .color = color },
-            .{ .pos = .{ px1, py1, pz1 }, .uv = .{ tu1, tv1 }, .color = color },
-            .{ .pos = .{ px, py1, pz1 }, .uv = .{ tu0, tv1 }, .color = color },
+            .{ .pos = .{ px, py1, pz }, .uv = .{ tu1, tv0 }, .color = colors[0] },
+            .{ .pos = .{ px1, py1, pz }, .uv = .{ tu0, tv0 }, .color = colors[1] },
+            .{ .pos = .{ px1, py1, pz1 }, .uv = .{ tu0, tv1 }, .color = colors[2] },
+            .{ .pos = .{ px, py1, pz1 }, .uv = .{ tu1, tv1 }, .color = colors[3] },
         },
         .y_neg => .{
-            .{ .pos = .{ px, py, pz1 }, .uv = .{ tu0, tv0 }, .color = color },
-            .{ .pos = .{ px1, py, pz1 }, .uv = .{ tu1, tv0 }, .color = color },
-            .{ .pos = .{ px1, py, pz }, .uv = .{ tu1, tv1 }, .color = color },
-            .{ .pos = .{ px, py, pz }, .uv = .{ tu0, tv1 }, .color = color },
+            .{ .pos = .{ px, py, pz1 }, .uv = .{ tu1, tv0 }, .color = colors[0] },
+            .{ .pos = .{ px1, py, pz1 }, .uv = .{ tu0, tv0 }, .color = colors[1] },
+            .{ .pos = .{ px1, py, pz }, .uv = .{ tu0, tv1 }, .color = colors[2] },
+            .{ .pos = .{ px, py, pz }, .uv = .{ tu1, tv1 }, .color = colors[3] },
         },
         .z_pos => .{
-            .{ .pos = .{ px1, py, pz1 }, .uv = .{ tu0, tv1 }, .color = color },
-            .{ .pos = .{ px, py, pz1 }, .uv = .{ tu1, tv1 }, .color = color },
-            .{ .pos = .{ px, py1, pz1 }, .uv = .{ tu1, tv0 }, .color = color },
-            .{ .pos = .{ px1, py1, pz1 }, .uv = .{ tu0, tv0 }, .color = color },
+            .{ .pos = .{ px1, py, pz1 }, .uv = .{ tu0, tv1 }, .color = colors[0] },
+            .{ .pos = .{ px, py, pz1 }, .uv = .{ tu1, tv1 }, .color = colors[1] },
+            .{ .pos = .{ px, py1, pz1 }, .uv = .{ tu1, tv0 }, .color = colors[2] },
+            .{ .pos = .{ px1, py1, pz1 }, .uv = .{ tu0, tv0 }, .color = colors[3] },
         },
         .z_neg => .{
-            .{ .pos = .{ px, py, pz }, .uv = .{ tu0, tv1 }, .color = color },
-            .{ .pos = .{ px1, py, pz }, .uv = .{ tu1, tv1 }, .color = color },
-            .{ .pos = .{ px1, py1, pz }, .uv = .{ tu1, tv0 }, .color = color },
-            .{ .pos = .{ px, py1, pz }, .uv = .{ tu0, tv0 }, .color = color },
+            .{ .pos = .{ px, py, pz }, .uv = .{ tu0, tv1 }, .color = colors[0] },
+            .{ .pos = .{ px1, py, pz }, .uv = .{ tu1, tv1 }, .color = colors[1] },
+            .{ .pos = .{ px1, py1, pz }, .uv = .{ tu1, tv0 }, .color = colors[2] },
+            .{ .pos = .{ px, py1, pz }, .uv = .{ tu0, tv0 }, .color = colors[3] },
         },
     };
 }
 
+/// Pick the triangulation diagonal so the split runs along the brighter pair
+/// of corners - avoids the Gouraud shadow ridge on AO-darkened inside corners.
+fn brighter_along_02(verts: [4]Vertex) bool {
+    const g0: u32 = (verts[0].color >> 8) & 0xFF;
+    const g1: u32 = (verts[1].color >> 8) & 0xFF;
+    const g2: u32 = (verts[2].color >> 8) & 0xFF;
+    const g3: u32 = (verts[3].color >> 8) & 0xFF;
+    return (g0 + g2) >= (g1 + g3);
+}
+
 fn emit_quad(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
+    if (brighter_along_02(verts)) {
+        // Diagonal 0-2 (original winding).
+        vertices.appendAssumeCapacity(verts[0]);
+        vertices.appendAssumeCapacity(verts[2]);
+        vertices.appendAssumeCapacity(verts[1]);
+        vertices.appendAssumeCapacity(verts[0]);
+        vertices.appendAssumeCapacity(verts[3]);
+        vertices.appendAssumeCapacity(verts[2]);
+    } else {
+        // Diagonal 1-3 (flipped, same winding orientation).
+        vertices.appendAssumeCapacity(verts[0]);
+        vertices.appendAssumeCapacity(verts[3]);
+        vertices.appendAssumeCapacity(verts[1]);
+        vertices.appendAssumeCapacity(verts[1]);
+        vertices.appendAssumeCapacity(verts[3]);
+        vertices.appendAssumeCapacity(verts[2]);
+    }
+}
+
+fn emit_quad_reversed(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
     vertices.appendAssumeCapacity(verts[0]);
-    vertices.appendAssumeCapacity(verts[2]);
     vertices.appendAssumeCapacity(verts[1]);
-    vertices.appendAssumeCapacity(verts[0]);
-    vertices.appendAssumeCapacity(verts[3]);
     vertices.appendAssumeCapacity(verts[2]);
+    vertices.appendAssumeCapacity(verts[0]);
+    vertices.appendAssumeCapacity(verts[2]);
+    vertices.appendAssumeCapacity(verts[3]);
 }
 
 fn emit_quad_double_sided(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
     emit_quad(vertices, verts);
-    // Back face (reversed winding)
-    vertices.appendAssumeCapacity(verts[0]);
-    vertices.appendAssumeCapacity(verts[1]);
-    vertices.appendAssumeCapacity(verts[2]);
-    vertices.appendAssumeCapacity(verts[0]);
-    vertices.appendAssumeCapacity(verts[2]);
-    vertices.appendAssumeCapacity(verts[3]);
+    emit_quad_reversed(vertices, verts);
 }
 
 // -- Public emission functions ------------------------------------------------
@@ -132,6 +161,21 @@ pub fn emit_face(
 ) void {
     const base = face_color(face);
     const color = if (shadowed) apply_shadow(base) else base;
+    emit_face_colors(vertices, face, x, y, z, tile, atlas, uniform_colors(color));
+}
+
+/// Emit one block face (6 vertices) with per-corner colors. Used by the AO
+/// path; `colors[i]` is applied to vertex `i` as laid out by `make_quad`.
+pub fn emit_face_colors(
+    vertices: *std.ArrayList(Vertex),
+    face: Face,
+    x: u32,
+    y: u32,
+    z: u32,
+    tile: BlockRegistry.Tile,
+    atlas: *const TextureAtlas,
+    colors: [4]u32,
+) void {
     const uv = tile_uvs(tile, atlas);
     emit_quad(vertices, make_quad(
         face,
@@ -145,7 +189,7 @@ pub fn emit_face(
         uv.tv0,
         uv.tu1,
         uv.tv1,
-        color,
+        colors,
     ));
 }
 
@@ -190,7 +234,7 @@ pub fn emit_slab_face(
         tv0,
         uv.tu1,
         uv.tv1,
-        color,
+        uniform_colors(color),
     ));
 }
 
@@ -218,8 +262,85 @@ pub fn emit_fluid_top(
         uv.tv0,
         uv.tu1,
         uv.tv1,
-        color,
+        uniform_colors(color),
     ));
+}
+
+/// Emit a fluid-overlay face on a transparent block's boundary with fluid.
+/// Inset 1/256 block past the boundary toward the fluid so the face sits
+/// just in front of the transparent block's own face when viewed from the
+/// fluid side, passing the depth test. Perpendicular axes are expanded by
+/// the same amount to close hairline seams at block corners. (6 vertices)
+pub fn emit_fluid_overlay(
+    vertices: *std.ArrayList(Vertex),
+    face: Face,
+    x: u32,
+    y: u32,
+    z: u32,
+    tile: BlockRegistry.Tile,
+    atlas: *const TextureAtlas,
+    shadowed: bool,
+) void {
+    const base = face_color(face);
+    const color = if (shadowed) apply_shadow(base) else base;
+    const uv = tile_uvs(tile, atlas);
+
+    var px = encode_pos(x);
+    var px1 = encode_pos(x + 1);
+    var py = encode_pos(y);
+    var py1 = encode_pos(y + 1);
+    var pz = encode_pos(z);
+    var pz1 = encode_pos(z + 1);
+
+    // Shift the face plane 1/256 block past the boundary (toward the fluid)
+    // and expand perpendicular axes by the same amount to close corner seams.
+    const INSET: i16 = 8; // 1/256 block in SNORM16 encoding
+    switch (face) {
+        .x_pos => {
+            px1 = px1 +| INSET;
+            py = py -| INSET;
+            py1 = py1 +| INSET;
+            pz = pz -| INSET;
+            pz1 = pz1 +| INSET;
+        },
+        .x_neg => {
+            px = px -| INSET;
+            py = py -| INSET;
+            py1 = py1 +| INSET;
+            pz = pz -| INSET;
+            pz1 = pz1 +| INSET;
+        },
+        .y_pos => {
+            py1 = py1 +| INSET;
+            px = px -| INSET;
+            px1 = px1 +| INSET;
+            pz = pz -| INSET;
+            pz1 = pz1 +| INSET;
+        },
+        .y_neg => {
+            py = py -| INSET;
+            px = px -| INSET;
+            px1 = px1 +| INSET;
+            pz = pz -| INSET;
+            pz1 = pz1 +| INSET;
+        },
+        .z_pos => {
+            pz1 = pz1 +| INSET;
+            px = px -| INSET;
+            px1 = px1 +| INSET;
+            py = py -| INSET;
+            py1 = py1 +| INSET;
+        },
+        .z_neg => {
+            pz = pz -| INSET;
+            px = px -| INSET;
+            px1 = px1 +| INSET;
+            py = py -| INSET;
+            py1 = py1 +| INSET;
+        },
+    }
+
+    emit_quad(vertices, make_quad(face, px, px1, py, py1, pz, pz1, uv.tu0, uv.tv0, uv.tu1, uv.tv1, uniform_colors(color)));
 }
 
 /// Emit two intersecting diagonal planes for cross-plants (24 vertices).
@@ -241,17 +362,31 @@ pub fn emit_cross(
     const pz = encode_pos(z);
     const pz1 = encode_pos(z + 1);
 
-    emit_quad_double_sided(vertices, .{
+    // Back faces swap tu0/tu1 so the reversed winding does not mirror the
+    // texture when the quad is viewed from behind.
+    emit_quad(vertices, .{
         .{ .pos = .{ px, py, pz }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
         .{ .pos = .{ px1, py, pz1 }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
         .{ .pos = .{ px1, py1, pz1 }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
         .{ .pos = .{ px, py1, pz }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
     });
+    emit_quad_reversed(vertices, .{
+        .{ .pos = .{ px, py, pz }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
+        .{ .pos = .{ px1, py, pz1 }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
+        .{ .pos = .{ px1, py1, pz1 }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
+        .{ .pos = .{ px, py1, pz }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
+    });
 
-    emit_quad_double_sided(vertices, .{
+    emit_quad(vertices, .{
         .{ .pos = .{ px1, py, pz }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
         .{ .pos = .{ px, py, pz1 }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
         .{ .pos = .{ px, py1, pz1 }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
         .{ .pos = .{ px1, py1, pz }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
+    });
+    emit_quad_reversed(vertices, .{
+        .{ .pos = .{ px1, py, pz }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
+        .{ .pos = .{ px, py, pz1 }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
+        .{ .pos = .{ px, py1, pz1 }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
+        .{ .pos = .{ px1, py1, pz }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
     });
 }

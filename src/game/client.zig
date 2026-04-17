@@ -166,16 +166,12 @@ fn send_world(self: *Self) !void {
         var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.raw_blocks.len));
         try reset_compressor(&sender.interface);
 
-        // Feed raw data in measured chunks so raw_written tracks input
-        // progress and LevelDataChunk packets carry accurate percentages.
-        const raw_step: usize = 4096;
-        var raw_offset: usize = 0;
-        while (raw_offset < world.raw_blocks.len) {
-            const end = @min(raw_offset + raw_step, world.raw_blocks.len);
-            try compressor.writer.writeAll(world.raw_blocks[raw_offset..end]);
-            raw_offset = end;
-            sender.raw_written = @intCast(raw_offset);
-        }
+        // Feed 4-byte size header, then block data in contiguous YZX wire
+        // order (Java Classic compatible) from chunk-aware memory layout.
+        try compressor.writer.writeAll(world.raw_blocks[0..4]);
+        sender.raw_written = 4;
+        try world.write_blocks_yzx(&compressor.writer);
+        sender.raw_written = @intCast(world.raw_blocks.len);
         try compressor.finish();
 
         // Send any remaining partial chunk as the final packet.

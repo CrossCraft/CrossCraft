@@ -91,16 +91,15 @@ pub fn draw_plane(self: *Self, camera: *const Camera, submerged: ?collision.Liqu
     self.plane_mesh.draw(&m);
 }
 
-/// Draw cloud layer at fixed Y=72. Call after terrain.
-/// The mesh follows the camera so it always covers the viewport; the scroll
-/// offset (wrapped to one tile width) slides the baked UVs seamlessly.
-pub fn draw_clouds(self: *Self, camera: *const Camera) void {
+/// Draw cloud layer at fixed Y=72 anchored to the world center.
+/// The scroll offset slides clouds along +X over time.
+pub fn draw_clouds(self: *Self, _: *const Camera) void {
     Rendering.gfx.api.set_alpha_blend(true);
     const m = Math.Mat4.scaling(PLANE_SIZE, 1.0, PLANE_SIZE)
         .mul(Math.Mat4.translation(
-        camera.x - HALF_SIZE + self.scroll,
+        WORLD_CENTER - HALF_SIZE + self.scroll,
         CLOUD_Y,
-        camera.z - HALF_SIZE,
+        WORLD_CENTER - HALF_SIZE,
     ));
     self.cloud_mesh.draw(&m);
 }

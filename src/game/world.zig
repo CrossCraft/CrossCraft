@@ -23,6 +23,27 @@ const light_passes = blk: {
     break :blk table;
 };
 
+/// Comptime lookup: true means the block fully fills its voxel and is not
+/// transparent. Used for the per-chunk all-opaque flag so pack can skip
+/// reading inner blocks entirely for solid underground chunks.
+const block_opaque = blk: {
+    var table: [50]bool = @splat(true);
+    table[B.Air] = false;
+    table[B.Sapling] = false;
+    table[B.Flowing_Water] = false;
+    table[B.Still_Water] = false;
+    table[B.Flowing_Lava] = false;
+    table[B.Still_Lava] = false;
+    table[B.Leaves] = false;
+    table[B.Glass] = false;
+    table[B.Flower1] = false;
+    table[B.Flower2] = false;
+    table[B.Mushroom1] = false;
+    table[B.Mushroom2] = false;
+    table[B.Slab] = false;
+    break :blk table;
+};
+
 pub const BlockChange = struct {
     x: u16,
     y: u16,
@@ -41,7 +62,7 @@ pub var pending_count: u32 = 0;
 // drained each tick - no dequeue-decrement-reenqueue of deferred entries.
 const WHEEL_SIZE: u32 = 1024;
 const WHEEL_MASK: u32 = WHEEL_SIZE - 1;
-const POOL_CAPACITY: u32 = 1 << 18; // 262144 nodes
+const POOL_CAPACITY: u32 = 1 << 13; // 8192 nodes
 
 const SENTINEL: u32 = std.math.maxInt(u32);
 
@@ -53,12 +74,21 @@ const WheelNode = packed struct(u64) {
 var wheel_buckets: [WHEEL_SIZE]u32 = @splat(SENTINEL); // head index per bucket
 var node_pool: []WheelNode = undefined;
 var free_head: u32 = 0; // head of the free list
-var pool_used: u32 = 0; // high-water count for diagnostics
+var pool_used: u32 = 0; // live count
+var pool_used_peak: u32 = 0; // high-water across the session, logged on deinit
 var rng: Xorshift64 = .{ .state = 1 };
 
-// -- Deduplication bitmap (1 bit per block = 512 KiB) ----------------------
-const BLOCK_COUNT: u32 = c.WorldLength * c.WorldHeight * c.WorldDepth;
-var enqueued_bitmap: []u8 = undefined;
+// -- Per-chunk block counts (work-skipping) --------------------------------
+const CHUNK_COUNT: u32 = c.ChunksX * c.ChunksZ * c.ChunksY;
+var chunk_counts: [CHUNK_COUNT]u16 = undefined; // non-air blocks
+var chunk_non_opaque: [CHUNK_COUNT]u16 = undefined; // non-opaque blocks
+
+// -- Enqueue dedup (fixed-capacity flat set, linear scan) ------------------
+// At POOL_CAPACITY=8192 entries, a flat u32 array is 32 KiB and every op
+// fits in a single SIMD-friendly scan - faster and ~40x smaller than a
+// hashmap once the index table and load-factor padding are counted.
+// Pre-reserved at init; runtime ops never grow.
+var enqueued: std.ArrayListUnmanaged(u32) = .empty;
 
 pub const LoadStatus = union(enum) {
     loading,
@@ -73,6 +103,11 @@ pub var load_status: LoadStatus = .loading;
 /// All save/autosave paths early-return when this is false so an MP client
 /// can never persist a snapshot of somebody else's world as its own.
 pub var owned_locally: bool = false;
+
+/// Periodic in-tick autosave. Left on for the dedicated server (crash
+/// insurance across long uptimes) and off for singleplayer, which saves
+/// explicitly on worldgen completion and on shutdown via `deinit`.
+pub var autosave_enabled: bool = true;
 
 pub var backing_allocator: std.mem.Allocator = undefined;
 pub var raw_blocks: []u8 = undefined;
@@ -110,7 +145,8 @@ pub fn save() !void {
     try writer.interface.writeSliceEndian(u64, &seed_arr, .little);
     const tick_arr = [1]u64{tick_count};
     try writer.interface.writeSliceEndian(u64, &tick_arr, .little);
-    try writer.interface.writeAll(raw_blocks);
+    try writer.interface.writeAll(raw_blocks[0..4]);
+    try write_blocks_yzx(&writer.interface);
     try writer.interface.flush();
 
     log.info("Saved world to world.dat", .{});
@@ -141,7 +177,8 @@ pub fn load() bool {
     reader.interface.readSliceEndian(u64, &saved_seed, .little) catch return false;
     var saved_tick: [1]u64 = undefined;
     reader.interface.readSliceEndian(u64, &saved_tick, .little) catch return false;
-    reader.interface.readSliceAll(raw_blocks) catch return false;
+    reader.interface.readSliceAll(raw_blocks[0..4]) catch return false;
+    read_blocks_yzx(&reader.interface) catch return false;
 
     world_size = dims;
     seed = saved_seed[0];
@@ -171,15 +208,17 @@ pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.D
     }
     free_head = 0;
     pool_used = 0;
+    pool_used_peak = 0;
     @memset(&wheel_buckets, SENTINEL);
-    enqueued_bitmap = try allocator.alloc(u8, BLOCK_COUNT / 8);
-    @memset(enqueued_bitmap, 0);
+    try enqueued.ensureTotalCapacityPrecise(allocator, POOL_CAPACITY);
 
     raw_blocks = try allocator.alloc(u8, c.WorldDepth * c.WorldHeight * c.WorldLength + 4);
     blocks = raw_blocks[4..];
 
     world_size = .{ c.WorldLength, c.WorldHeight, c.WorldDepth };
     @memset(raw_blocks, 0x00);
+    @memset(&chunk_counts, 0);
+    @memset(&chunk_non_opaque, 0);
 
     const size: u32 = c.WorldDepth * c.WorldHeight * c.WorldLength;
     std.mem.writeInt(u32, raw_blocks[0..4], size, .big);
@@ -194,9 +233,26 @@ pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.D
 /// Called by both the SP generate/load path and the MP download path once
 /// `blocks` is populated.
 pub fn finalize_loaded() void {
+    compute_chunk_counts();
     compute_light_map();
     load_status = .complete;
     log.info("World seed: {d}", .{seed});
+}
+
+/// Scan each 4 KiB chunk and count non-air / non-opaque blocks. Called once
+/// after generation or load; maintained incrementally by set_block thereafter.
+fn compute_chunk_counts() void {
+    for (0..CHUNK_COUNT) |ci| {
+        const base = ci * c.ChunkVolume;
+        var non_air: u16 = 0;
+        var non_opq: u16 = 0;
+        for (blocks[base..][0..c.ChunkVolume]) |b| {
+            if (b != B.Air) non_air += 1;
+            if (b >= block_opaque.len or !block_opaque[b]) non_opq += 1;
+        }
+        chunk_counts[ci] = non_air;
+        chunk_non_opaque[ci] = non_opq;
+    }
 }
 
 pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.Dir, new_seed: u64) !void {
@@ -231,12 +287,14 @@ pub fn deinit() void {
         log.err("failed to save world: {}", .{err});
     };
 
+    log.info("world update wheel peak: {d}/{d}", .{ pool_used_peak, POOL_CAPACITY });
+
     backing_allocator.free(raw_blocks);
     backing_allocator.free(node_pool);
-    backing_allocator.free(enqueued_bitmap);
+    enqueued.deinit(backing_allocator);
     raw_blocks = undefined;
     node_pool = undefined;
-    enqueued_bitmap = undefined;
+    enqueued = .empty;
     blocks = undefined;
     world_size = undefined;
     seed = undefined;
@@ -247,7 +305,7 @@ fn get_index(x: u16, y: u16, z: u16) u32 {
     assert(x < c.WorldLength);
     assert(y < c.WorldHeight);
     assert(z < c.WorldDepth);
-    return (@as(u32, y) * c.WorldDepth + z) * c.WorldLength + x;
+    return c.block_index(@as(u32, x), @as(u32, y), @as(u32, z));
 }
 
 pub fn get_block(x: u16, y: u16, z: u16) u8 {
@@ -255,19 +313,93 @@ pub fn get_block(x: u16, y: u16, z: u16) u8 {
     return blocks[idx];
 }
 
+/// Pointer to ChunkSize contiguous blocks at chunk-aligned x.
+/// In the chunk-aware layout, blocks at (x..x+15, y, z) are contiguous,
+/// so callers can avoid per-block index computation in tight loops.
+pub fn get_chunk_row(x: u16, y: u16, z: u16) *const [c.ChunkSize]u8 {
+    assert(x % c.ChunkSize == 0);
+    const base = get_index(x, y, z);
+    return blocks[base..][0..c.ChunkSize];
+}
+
+/// Pointer to an entire 16x16x16 chunk (4 KiB). Index within the chunk
+/// with `(ly * ChunkSize + lz) * ChunkSize + lx` -- the same 4-op
+/// arithmetic as the old contiguous formula.
+pub fn get_chunk_ptr(chunk_cx: u32, chunk_cy: u32, chunk_cz: u32) *const [c.ChunkVolume]u8 {
+    const ci = (chunk_cy * c.ChunksZ + chunk_cz) * c.ChunksX + chunk_cx;
+    return blocks[ci * c.ChunkVolume ..][0..c.ChunkVolume];
+}
+
 pub fn set_block(x: u16, y: u16, z: u16, block: u8) void {
     const idx = get_index(x, y, z);
+    const old = blocks[idx];
     blocks[idx] = block;
+
+    // Maintain per-chunk counts for work-skipping.
+    const ci = chunk_idx(x, y, z);
+    if (old == B.Air and block != B.Air) {
+        chunk_counts[ci] += 1;
+    } else if (old != B.Air and block == B.Air) {
+        chunk_counts[ci] -= 1;
+    }
+    const old_opq = old < block_opaque.len and block_opaque[old];
+    const new_opq = block < block_opaque.len and block_opaque[block];
+    if (old_opq and !new_opq) {
+        chunk_non_opaque[ci] += 1;
+    } else if (!old_opq and new_opq) {
+        chunk_non_opaque[ci] -= 1;
+    }
+
     update_height_column(x, y, z, block);
-    // The wheel dedup bitmap is keyed by location, not block type. If the
+    // The enqueue dedup set is keyed by location, not block type. If the
     // block at this loc was previously something with a slow tick (e.g.
     // dirt/grass at 100-999 ticks) and is now something fast (water/lava
-    // at 4 ticks), the stale bitmap would prevent try_enqueue from
-    // scheduling the new block at its faster delay until the slow timer
-    // eventually fires (5-50s later). Clearing here lets the next neighbor
-    // pass insert at the correct delay; any orphan wheel entry just no-ops
-    // when it finally fires because process_block_update re-reads the block.
-    bitmap_clear(idx);
+    // at 4 ticks), a stale entry would prevent try_enqueue from scheduling
+    // the new block at its faster delay until the slow timer eventually
+    // fires (5-50s later). Clearing here lets the next neighbor pass insert
+    // at the correct delay; any orphan wheel entry just no-ops when it
+    // finally fires because process_block_update re-reads the block.
+    enqueued_remove(idx);
+}
+
+pub fn is_chunk_all_air(cx: u32, cy: u32, cz: u32) bool {
+    return chunk_counts[(cy * c.ChunksZ + cz) * c.ChunksX + cx] == 0;
+}
+
+pub fn is_chunk_all_opaque(cx: u32, cy: u32, cz: u32) bool {
+    return chunk_non_opaque[(cy * c.ChunksZ + cz) * c.ChunksX + cx] == 0;
+}
+
+fn chunk_idx(x: u16, y: u16, z: u16) u32 {
+    return (@as(u32, y) / c.ChunkSize * c.ChunksZ + @as(u32, z) / c.ChunkSize) * c.ChunksX + @as(u32, x) / c.ChunkSize;
+}
+
+// -- Protocol-order serialization (contiguous YZX for Java Classic compat) ----
+
+/// Write all blocks in contiguous YZX wire order from chunk-aware memory.
+/// Within each (y,z) row, the 16 x-values per chunk are contiguous in the
+/// chunk-aware layout, so each inner iteration is a 16-byte slice copy.
+pub fn write_blocks_yzx(writer: *std.Io.Writer) !void {
+    for (0..c.WorldHeight) |yi| {
+        for (0..c.WorldDepth) |zi| {
+            for (0..c.ChunksX) |cxi| {
+                const base = c.block_index(@intCast(cxi * c.ChunkSize), @intCast(yi), @intCast(zi));
+                try writer.writeAll(blocks[base..][0..c.ChunkSize]);
+            }
+        }
+    }
+}
+
+/// Read contiguous YZX wire-order data and scatter into chunk-aware positions.
+pub fn read_blocks_yzx(reader: *std.Io.Reader) !void {
+    for (0..c.WorldHeight) |yi| {
+        for (0..c.WorldDepth) |zi| {
+            for (0..c.ChunksX) |cxi| {
+                const base = c.block_index(@intCast(cxi * c.ChunkSize), @intCast(yi), @intCast(zi));
+                try reader.readSliceAll(blocks[base..][0..c.ChunkSize]);
+            }
+        }
+    }
 }
 
 // -- Sunlight height map ------------------------------------------------------
@@ -391,17 +523,19 @@ pub fn tick() void {
     }
 
     tick_count +%= 1;
-    save_counter += 1;
-    if (save_counter >= 6000) {
-        save_counter = 0;
-        save() catch |err| {
-            log.err("failed to save world: {}", .{err});
-        };
+    if (autosave_enabled) {
+        save_counter += 1;
+        if (save_counter >= 6000) {
+            save_counter = 0;
+            save() catch |err| {
+                log.err("failed to save world: {}", .{err});
+            };
+        }
     }
 }
 
 fn process_block_update(loc: Location) void {
-    bitmap_clear(loc.to_index());
+    enqueued_remove(loc.to_index());
     const x: u16 = loc.x;
     const y: u16 = loc.y;
     const z: u16 = loc.z;
@@ -435,6 +569,7 @@ fn wheel_insert(loc: Location, delay: u32) void {
     const node_idx = free_head;
     free_head = node_pool[node_idx].next;
     pool_used += 1;
+    if (pool_used > pool_used_peak) pool_used_peak = pool_used;
 
     const slot = @as(u32, @intCast((tick_count +% delay) & WHEEL_MASK));
     node_pool[node_idx] = .{ .loc = loc, .next = wheel_buckets[slot] };
@@ -477,23 +612,20 @@ fn try_enqueue(x: u16, y: u16, z: u16) void {
     const block = get_block(x, y, z);
     if (block >= has_behavior.len or !has_behavior[block]) return;
     const idx = get_index(x, y, z);
-    if (bitmap_test(idx)) return;
-    if (free_head == SENTINEL) return; // pool exhausted, drop update
-    bitmap_set(idx);
+    if (std.mem.indexOfScalar(u32, enqueued.items, idx) != null) return;
+    if (free_head == SENTINEL or enqueued.items.len >= POOL_CAPACITY) {
+        log.warn("world update dropped: wheel full (pool_used={d})", .{pool_used});
+        return;
+    }
+    enqueued.appendAssumeCapacity(idx);
     const loc: Location = .{ .x = @intCast(x), .z = @intCast(z), .y = @intCast(y) };
     wheel_insert(loc, tick_delay(block));
 }
 
-fn bitmap_test(idx: u32) bool {
-    return (enqueued_bitmap[idx / 8] & (@as(u8, 1) << @as(u3, @intCast(idx % 8)))) != 0;
-}
-
-fn bitmap_set(idx: u32) void {
-    enqueued_bitmap[idx / 8] |= @as(u8, 1) << @as(u3, @intCast(idx % 8));
-}
-
-fn bitmap_clear(idx: u32) void {
-    enqueued_bitmap[idx / 8] &= ~(@as(u8, 1) << @as(u3, @intCast(idx % 8)));
+fn enqueued_remove(idx: u32) void {
+    if (std.mem.indexOfScalar(u32, enqueued.items, idx)) |i| {
+        _ = enqueued.swapRemove(i);
+    }
 }
 
 fn has_direct_sunlight(x: u16, y: u16, z: u16) bool {

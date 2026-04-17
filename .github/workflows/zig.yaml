@@ -27,11 +27,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,    kind: game,   extra: -Dcpu=x86_64_v3 }
+          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,    kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,    kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: macos-latest,   target: aarch64-macos,      name: mac,      kind: game,   extra: "" }
           - { os: macos-latest,   target: aarch64-macos,      name: mac,      kind: server, extra: "" }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,  kind: game,   extra: -Dcpu=x86_64_v3 }
+          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,  kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows,  kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_phat, kind: game,   extra: "" }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_slim, kind: game,   extra: -Dslim=true }
@@ -59,6 +59,13 @@ jobs:
 
       - name: Build (smoke)
         run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} -Dskip-pack=true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dev-${{ matrix.kind }}_${{ matrix.name }}
+          path: zig-out/bin/
+          if-no-files-found: error
 
   # Full release-style builds on push to main / v* tags. Pulls LFS for game
   # builds so pack.zip ships with real resources, runs per-platform artifact
@@ -185,5 +192,34 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.kind }}_${{ matrix.name }}
+          path: zig-out/bin/
+          if-no-files-found: error
+
+  # Build the pack_zip host tool for distribution. This is the canonical
+  # way to produce a CrossCraft pack.zip from a resource directory.
+  pack-tool:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  name: linux }
+          - { os: macos-latest,   name: mac }
+          - { os: windows-latest, name: windows }
+    runs-on: ${{ matrix.os }}
+    name: pack-tool (${{ matrix.name }})
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Build pack_zip
+        run: zig build pack-tool -Doptimize=ReleaseSafe
+
+      - name: Upload pack-tool
+        uses: actions/upload-artifact@v7
+        with:
+          name: pack-tool_${{ matrix.name }}
           path: zig-out/bin/
           if-no-files-found: error

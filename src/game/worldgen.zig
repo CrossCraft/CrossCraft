@@ -34,7 +34,7 @@
 //! Historical CrossCraft-Classic (accurate) generation time was > 30s, usually in the mid 40s
 //!
 //! Various Notes:
-//! * We use Y-first ordering in the world block array (YZX), so our generator prefers this order too for cache maximization
+//! * We use chunk-aware YZX ordering: each 16x16x16 chunk is contiguous (4 KiB)
 //!
 
 const std = @import("std");
@@ -130,7 +130,7 @@ const MUSHROOM_ATTEMPTS: u32 = 5;
 
 fn blockIdx(x: u32, y: u32, z: u32) u32 {
     assert(x < W and y < H and z < D);
-    return (y * D + z) * W + x;
+    return c.block_index(x, y, z);
 }
 
 fn hmIdx(x: u32, z: u32) u32 {

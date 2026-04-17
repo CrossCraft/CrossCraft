@@ -21,13 +21,28 @@ pub const FaceTiles = struct {
 
 const Self = @This();
 
+pub const Props = packed struct(u8) {
+    @"opaque": bool = false,
+    visible: bool = false,
+    fluid: bool = false,
+    cross: bool = false,
+    leaf: bool = false,
+    slab: bool = false,
+    /// Non-opaque block that culls faces against same-type neighbors (glass).
+    glass: bool = false,
+    _reserved: u1 = 0,
+};
+
 @"opaque": BitSet,
 visible: BitSet,
 cross: BitSet,
 leaf: BitSet,
 fluid: BitSet,
 slab: BitSet,
+glass: BitSet,
 face_tiles: [256]FaceTiles,
+/// Packed per-block properties. One lookup replaces 6 BitSet checks.
+props: [256]Props,
 
 /// Global registry instance - call init() before use.
 pub var global: Self = undefined;
@@ -71,7 +86,9 @@ fn defaults() Self {
         .leaf = BitSet.initEmpty(),
         .fluid = BitSet.initEmpty(),
         .slab = BitSet.initEmpty(),
+        .glass = BitSet.initEmpty(),
         .face_tiles = [_]FaceTiles{all(0, 0)} ** 256,
+        .props = [_]Props{.{}} ** 256,
     };
 
     // -- Opaque: clear non-opaque blocks --
@@ -124,6 +141,9 @@ fn defaults() Self {
     self.fluid.set(B.Flowing_Lava);
     self.fluid.set(B.Still_Lava);
 
+    // -- Glass blocks (cull faces against same-type neighbors) --
+    self.glass.set(B.Glass);
+
     // -- Face tiles (texture atlas coordinates) --
     self.face_tiles[B.Stone] = all(1, 0);
     self.face_tiles[B.Grass] = top_side_bot(0, 0, 3, 0, 2, 0);
@@ -142,7 +162,7 @@ fn defaults() Self {
     self.face_tiles[B.Iron_Ore] = all(1, 2);
     self.face_tiles[B.Coal_Ore] = all(2, 2);
     self.face_tiles[B.Log] = top_side_bot(5, 1, 4, 1, 5, 1);
-    self.face_tiles[B.Leaves] = all(4, 3);
+    self.face_tiles[B.Leaves] = all(6, 1);
     self.face_tiles[B.Sponge] = all(0, 3);
     self.face_tiles[B.Glass] = all(1, 3);
 
@@ -168,8 +188,8 @@ fn defaults() Self {
     self.face_tiles[B.Flower2] = all(12, 0);
     self.face_tiles[B.Mushroom1] = all(13, 1);
     self.face_tiles[B.Mushroom2] = all(12, 1);
-    self.face_tiles[B.Gold] = all(7, 1);
-    self.face_tiles[B.Iron] = all(6, 1);
+    self.face_tiles[B.Iron] = top_side_bot(7, 1, 7, 2, 7, 1);
+    self.face_tiles[B.Gold] = top_side_bot(8, 1, 8, 2, 8, 1);
     self.face_tiles[B.Double_Slab] = top_side_bot(6, 0, 5, 0, 6, 0);
     self.face_tiles[B.Slab] = top_side_bot(6, 0, 5, 0, 6, 0);
     self.face_tiles[B.Brick] = all(7, 0);
@@ -177,6 +197,19 @@ fn defaults() Self {
     self.face_tiles[B.Bookshelf] = top_side_bot(4, 0, 3, 2, 4, 0);
     self.face_tiles[B.Mossy_Rocks] = all(4, 2);
     self.face_tiles[B.Obsidian] = all(5, 2);
+
+    // Pack all BitSet properties into a single byte per block.
+    for (0..256) |i| {
+        self.props[i] = .{
+            .@"opaque" = self.@"opaque".isSet(i),
+            .visible = self.visible.isSet(i),
+            .fluid = self.fluid.isSet(i),
+            .cross = self.cross.isSet(i),
+            .leaf = self.leaf.isSet(i),
+            .slab = self.slab.isSet(i),
+            .glass = self.glass.isSet(i),
+        };
+    }
 
     return self;
 }

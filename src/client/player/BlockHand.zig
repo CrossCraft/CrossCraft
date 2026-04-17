@@ -37,7 +37,7 @@ const HELD_SCALE: f32 = 0.4;
 // vertical FOV and 0.72-block distance - at that depth the visible y
 // half-range is only ~0.5, so the reference value dropped the cube clean
 // off the bottom of the screen.
-const YAW: f32 = -std.math.pi / 4.0;
+const YAW: f32 = std.math.pi / 4.0;
 const BASE_X: f32 = 0.56;
 const BASE_Y: f32 = -0.52;
 const BASE_Z: f32 = -0.72;
@@ -227,21 +227,24 @@ fn rebuild(self: *Self, block: u8, shadowed: bool) void {
         // so the face argument is arbitrary.
         const tile = reg.get_face_tile(block, .y_pos);
         face_mod.emit_cross(&self.mesh.vertices, 0, 0, 0, tile, &self.atlas, shade);
-        std.debug.assert(self.mesh.vertices.items.len <= VERT_CAPACITY);
-        self.mesh.update();
-        return;
-    }
-
-    const is_slab = reg.slab.isSet(block);
-    const faces = [_]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
-    for (faces) |face| {
-        const tile = reg.get_face_tile(block, face);
-        if (is_slab) {
-            face_mod.emit_slab_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
-        } else {
-            face_mod.emit_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
+    } else {
+        const is_slab = reg.slab.isSet(block);
+        const faces = [_]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
+        for (faces) |face| {
+            const tile = reg.get_face_tile(block, face);
+            if (is_slab) {
+                face_mod.emit_slab_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
+            } else {
+                face_mod.emit_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
+            }
         }
     }
+
+    const uniform: u32 = if (shade) face_mod.apply_shadow(0xFFFFFFFF) else 0xFFFFFFFF;
+    for (self.mesh.vertices.items) |*v| {
+        v.color = uniform;
+    }
+
     std.debug.assert(self.mesh.vertices.items.len <= VERT_CAPACITY);
     self.mesh.update();
 }
@@ -254,6 +257,17 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
     // Clear depth so the cube is never clipped by nearby world geometry.
     // The existing clear_depth before the UI pass isolates the next layer.
     Rendering.gfx.api.clear_depth();
+
+    // Use a fixed 70-degree vertical FOV for the held block so it looks
+    // consistent regardless of the player's FOV setting.
+    const hand_fov: f32 = 70.0 * std.math.pi / 180.0;
+    if (camera.fov != hand_fov) {
+        const screen_w = Rendering.gfx.surface.get_width();
+        const screen_h = Rendering.gfx.surface.get_height();
+        const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
+        const proj = Math.Mat4.perspectiveFovRh(hand_fov, aspect, if (ae.platform == .psp) 0.3 else 0.1, 128.0);
+        Rendering.gfx.api.set_proj_matrix(&proj);
+    }
 
     Rendering.Pipeline.bind(self.pipeline);
     terrain.bind();
@@ -299,6 +313,15 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
         .mul(view_ry_inv)
         .mul(view_t_inv);
     self.mesh.draw(&model);
+
+    // Restore the camera's actual projection matrix.
+    if (camera.fov != hand_fov) {
+        const screen_w = Rendering.gfx.surface.get_width();
+        const screen_h = Rendering.gfx.surface.get_height();
+        const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
+        const proj = Math.Mat4.perspectiveFovRh(camera.fov, aspect, if (ae.platform == .psp) 0.3 else 0.1, 128.0);
+        Rendering.gfx.api.set_proj_matrix(&proj);
+    }
 }
 
 const Anim = struct {

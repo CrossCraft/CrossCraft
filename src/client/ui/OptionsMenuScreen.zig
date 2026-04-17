@@ -54,10 +54,16 @@ var lbl_ao: [label_max]u8 = undefined;
 var lbl_ao_len: u8 = 0;
 var lbl_sens: [label_max]u8 = undefined;
 var lbl_sens_len: u8 = 0;
+var lbl_ct: [label_max]u8 = undefined;
+var lbl_ct_len: u8 = 0;
+var lbl_bouncy: [label_max]u8 = undefined;
+var lbl_bouncy_len: u8 = 0;
+var lbl_vsync: [label_max]u8 = undefined;
+var lbl_vsync_len: u8 = 0;
 
 // -- component storage -------------------------------------------------------
-// 1 title label + 7 option buttons + 1 Controls (disabled) + 1 Done = 10.
-const total_components = 10;
+// 1 title label + 10 option buttons + 1 Controls (disabled) + 1 Done = 13.
+const total_components = 13;
 var components_buf: [total_components]Component = undefined;
 
 // -- option step tables -------------------------------------------------------
@@ -65,6 +71,26 @@ var components_buf: [total_components]Component = undefined;
 const vol_steps = [_]f32{ 0.0, 0.25, 0.5, 0.75, 1.0 };
 const fov_steps = [_]f32{ 60.0, 70.0, 80.0, 90.0, 100.0, 110.0 };
 const sens_steps = [_]f32{ 1.0, 2.0, 3.0, 5.0, 10.0 };
+
+const ct_modes_desktop = [_]Options.ControllerTooltips{ .auto, .xbox, .playstation, .nintendo, .off };
+const ct_modes_psp = [_]Options.ControllerTooltips{ .auto, .off };
+const ct_modes: []const Options.ControllerTooltips =
+    if (ae.platform == .psp) &ct_modes_psp else &ct_modes_desktop;
+
+fn ct_display(m: Options.ControllerTooltips) []const u8 {
+    return switch (m) {
+        .auto => "Auto",
+        .xbox => "Xbox",
+        .playstation => "PlayStation",
+        .nintendo => "Nintendo",
+        .off => "Off",
+    };
+}
+
+fn next_ct(cur: Options.ControllerTooltips) Options.ControllerTooltips {
+    for (ct_modes, 0..) |m, i| if (m == cur) return ct_modes[(i + 1) % ct_modes.len];
+    return .auto;
+}
 
 /// Find the step closest to `val` and return the next one (wrapping).
 fn nearest_next(steps: []const f32, val: f32) f32 {
@@ -105,6 +131,9 @@ fn refresh_labels() void {
     fmt_label(&lbl_fov, &lbl_fov_len, "FOV: {d}", .{@as(u32, @intFromFloat(c.fov + 0.5))});
     fmt_label(&lbl_ao, &lbl_ao_len, "Ambient Occlusion: {s}", .{bool_str(c.ambient_occlusion)});
     fmt_label(&lbl_sens, &lbl_sens_len, "Sensitivity: {d}", .{@as(u32, @intFromFloat(c.sensitivity + 0.5))});
+    fmt_label(&lbl_ct, &lbl_ct_len, "Controllers: {s}", .{ct_display(c.controller_tooltips)});
+    fmt_label(&lbl_bouncy, &lbl_bouncy_len, "Bouncy Chunks: {s}", .{bool_str(c.bouncy_chunks)});
+    fmt_label(&lbl_vsync, &lbl_vsync_len, "VSync: {s}", .{bool_str(c.vsync)});
 }
 
 fn rebuild_components() void {
@@ -119,7 +148,7 @@ fn rebuild_components() void {
     components_buf[0] = .{ .label = .{
         .text = "Options",
         .pos_x = 0,
-        .pos_y = -88,
+        .pos_y = -96,
         .color = .white_fg,
         .shadow_color = .menu_gray,
         .reference = .middle_center,
@@ -130,7 +159,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = lx,
-        .pos_y = -64,
+        .pos_y = -72,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_music,
@@ -140,7 +169,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = rx,
-        .pos_y = -64,
+        .pos_y = -72,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_sound,
@@ -150,7 +179,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = lx,
-        .pos_y = -40,
+        .pos_y = -48,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_rd,
@@ -160,7 +189,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = rx,
-        .pos_y = -40,
+        .pos_y = -48,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_fancy,
@@ -170,7 +199,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = lx,
-        .pos_y = -16,
+        .pos_y = -24,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_fov,
@@ -180,7 +209,7 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = rx,
-        .pos_y = -16,
+        .pos_y = -24,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_ao,
@@ -190,28 +219,58 @@ fn rebuild_components() void {
         .width = w2,
         .height = bh,
         .pos_x = lx,
-        .pos_y = 8,
+        .pos_y = 0,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_sens,
     } };
     components_buf[8] = .{ .button = .{
+        .label = lbl_ct[0..lbl_ct_len],
+        .width = w2,
+        .height = bh,
+        .pos_x = rx,
+        .pos_y = 0,
+        .reference = .middle_center,
+        .origin = .middle_center,
+        .on_activate = on_ct,
+    } };
+    components_buf[9] = .{ .button = .{
+        .label = lbl_bouncy[0..lbl_bouncy_len],
+        .width = w2,
+        .height = bh,
+        .pos_x = lx,
+        .pos_y = 24,
+        .reference = .middle_center,
+        .origin = .middle_center,
+        .on_activate = on_bouncy,
+    } };
+    components_buf[10] = .{ .button = .{
+        .label = lbl_vsync[0..lbl_vsync_len],
+        .width = w2,
+        .height = bh,
+        .pos_x = rx,
+        .pos_y = 24,
+        .reference = .middle_center,
+        .origin = .middle_center,
+        .on_activate = on_vsync,
+    } };
+    components_buf[11] = .{ .button = .{
         .label = "Controls...",
-        .width = wf,
+        .width = w2,
         .height = bh,
         .pos_x = 0,
-        .pos_y = 36,
+        .pos_y = 48,
         .reference = .middle_center,
         .origin = .middle_center,
         .enabled = false,
         .on_activate = on_noop,
     } };
-    components_buf[9] = .{ .button = .{
+    components_buf[12] = .{ .button = .{
         .label = "Done",
         .width = wf,
         .height = bh,
         .pos_x = 0,
-        .pos_y = 60,
+        .pos_y = 72,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_done,
@@ -266,6 +325,21 @@ fn on_ao(_: *anyopaque) void {
 
 fn on_sens(_: *anyopaque) void {
     Options.current.sensitivity = nearest_next(&sens_steps, Options.current.sensitivity);
+    refresh();
+}
+
+fn on_ct(_: *anyopaque) void {
+    Options.current.controller_tooltips = next_ct(Options.current.controller_tooltips);
+    refresh();
+}
+
+fn on_bouncy(_: *anyopaque) void {
+    Options.current.bouncy_chunks = !Options.current.bouncy_chunks;
+    refresh();
+}
+
+fn on_vsync(_: *anyopaque) void {
+    Options.current.vsync = !Options.current.vsync;
     refresh();
 }
 

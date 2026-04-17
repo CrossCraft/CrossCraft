@@ -28,6 +28,7 @@ const collision = @import("collision.zig");
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
 const Scaling = @import("../ui/Scaling.zig");
+const layout = @import("../ui/layout.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
 const SoundManager = @import("../SoundManager.zig");
@@ -1159,11 +1160,10 @@ pub fn draw_ui(
     iso: *IsoBlockDrawer,
     gui: *const Rendering.Texture,
     hide_crosshair: bool,
+    hud_y_shift: i16,
 ) void {
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
 
-    // Crosshair: gui.png (240, 0), 16x16, screen center.
-    // Hidden while the block inventory overlay is open.
     if (!hide_crosshair) {
         batcher.add_sprite(&.{
             .texture = gui,
@@ -1180,10 +1180,11 @@ pub fn draw_ui(
 
     // Hotbar background. The 1 px upward nudge keeps the selector's bottom
     // row (selector is 24 tall vs the hotbar's 22) from clipping off the
-    // bottom of the screen.
+    // bottom of the screen.  `hud_y_shift` lifts the whole hotbar to make
+    // room for the controller-tooltip strip.
     batcher.add_sprite(&.{
         .texture = gui,
-        .pos_offset = .{ .x = 0, .y = -1 },
+        .pos_offset = .{ .x = 0, .y = -1 - hud_y_shift },
         .pos_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
         .tex_offset = .{ .x = HOTBAR_TEX_X, .y = HOTBAR_TEX_Y },
         .tex_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
@@ -1199,7 +1200,7 @@ pub fn draw_ui(
     const sel_x: i16 = HOTBAR_SLOT_STRIDE * slot_i - 80;
     batcher.add_sprite(&.{
         .texture = gui,
-        .pos_offset = .{ .x = sel_x, .y = 0 },
+        .pos_offset = .{ .x = sel_x, .y = -hud_y_shift },
         .pos_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
         .tex_offset = .{ .x = SELECTOR_TEX_X, .y = SELECTOR_TEX_Y },
         .tex_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
@@ -1209,7 +1210,7 @@ pub fn draw_ui(
         .origin = .bottom_center,
     });
 
-    self.draw_hotbar_blocks(iso);
+    self.draw_hotbar_blocks(iso, hud_y_shift);
 }
 
 // Logical-pixel half-extent of each rendered iso block. The iso projection
@@ -1218,18 +1219,19 @@ pub fn draw_ui(
 // 16 px slot interior clear of the surrounding selector frame.
 const HOTBAR_BLOCK_HALF_EXTENT: f32 = 3.5;
 
-fn draw_hotbar_blocks(self: *const Self, iso: *IsoBlockDrawer) void {
+fn draw_hotbar_blocks(self: *const Self, iso: *IsoBlockDrawer, hud_y_shift: i16) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const ui_scale = Scaling.compute(screen_w, screen_h);
-    const max_lx: i32 = @intCast(screen_w / ui_scale);
-    const max_ly: i32 = @intCast(screen_h / ui_scale);
+    const max_lx: i32 = @intCast(layout.logical_width(screen_w, ui_scale));
+    const max_ly: i32 = @intCast(layout.logical_height(screen_h, ui_scale));
 
-    // Hotbar bg sits at bottom-center with pos_offset y = -1 and origin
-    // bottom-center, so its bottom edge is at max_ly - 1 and its top edge at
-    // max_ly - 1 - HOTBAR_H. Slot centers are 11 px below the top of the bg
-    // (Classic uses centered 20 px slots inside a 22 px tall strip).
-    const hotbar_top: f32 = @floatFromInt(max_ly - 1 - @as(i32, HOTBAR_H));
+    // Hotbar bg sits at bottom-center with pos_offset y = -1 - hud_y_shift
+    // and origin bottom-center, so its bottom edge is at max_ly - 1 -
+    // hud_y_shift and its top edge at max_ly - 1 - hud_y_shift - HOTBAR_H.
+    // Slot centers are 11 px below the top of the bg (Classic uses centered
+    // 20 px slots inside a 22 px tall strip).
+    const hotbar_top: f32 = @floatFromInt(max_ly - 1 - @as(i32, hud_y_shift) - @as(i32, HOTBAR_H));
     const slot_cy: f32 = hotbar_top + 11.0;
     const center_x: f32 = @floatFromInt(@divTrunc(max_lx, 2));
 

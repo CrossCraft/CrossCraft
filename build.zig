@@ -154,6 +154,8 @@ pub fn build(b: *std.Build) void {
         // the larger .icns slots but it's serviceable. Swap in a 1024×1024
         // PNG later if you want sharper Dock/Finder rendering.
         .icon_png = if (is_macos) b.path("assets/vita/icon0.png") else null,
+        .icon0 = if (is_psp) b.path("assets/psp/ICON0.png") else null,
+        .pic1 = if (is_psp) b.path("assets/psp/PIC1.png") else null,
     });
 
     // The server has no graphics — only use Aether.addGame for PSP
@@ -184,7 +186,7 @@ pub fn build(b: *std.Build) void {
         Aether.exportArtifact(ae_dep.builder, b, server_exe, config, .{
             .title = "CrossCraft Classic Server",
             .output_dir = "CrossCraft-Server-PSP",
-            .icon0 = b.path("assets/psp/ICON0.png"),
+            .icon0 = b.path("assets/psp/ICON0_Server.png"),
             .pic1 = b.path("assets/psp/PIC1.png"),
         });
     }
@@ -251,4 +253,17 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(zip_tests).step);
+
+    // Standalone build step for the pack_zip host tool.
+    // Usage: zig build pack-tool
+    // Produces zig-out/bin/pack_zip (host-native binary).
+    const pack_tool_step = b.step("pack-tool", "Build the pack_zip resource packing tool");
+    const pack_tool_exe = b.addExecutable(.{
+        .name = "pack_zip",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/pack_zip.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    pack_tool_step.dependOn(&b.addInstallArtifact(pack_tool_exe, .{}).step);
 }

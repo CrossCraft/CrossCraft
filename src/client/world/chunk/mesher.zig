@@ -48,6 +48,9 @@ const Row = struct {
     cross: u32,
     leaf: u32,
     slab: u32,
+    /// Glass (and any other block that culls faces against a same-type
+    /// neighbor). Two adjacent glass blocks don't draw the shared face.
+    glass: u32,
     /// Bits set where a leaf has all 6 neighbors covered (leaf-or-opaque).
     /// Filled by `compute_solid_leaves` after `pack_row` runs.
     solid_leaf: u32,
@@ -60,13 +63,14 @@ pub const SectionBuf = [BUF_Y][BUF_Z]Row;
 
 pub const SectionCounts = struct {
     opaque_verts: u32, // solid blocks + fully-buried leaf faces
-    transparent_verts: u32, // outer leaves + water/glass/cross
+    transparent_verts: u32, // outer leaves + glass/cross
+    fluid_verts: u32, // water/lava
 };
 
 // -- Pack ---------------------------------------------------------------------
 
 fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
-    const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .solid_leaf = 0 };
+    const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
     if (wz_raw < 0 or wz_raw >= @as(i32, WORLD_D)) return BOUNDARY;
     if (y < 0 or y >= @as(i32, WORLD_H)) return BOUNDARY;
 
@@ -76,8 +80,14 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     var cross: u32 = 0;
     var leaf: u32 = 0;
     var slab: u32 = 0;
+    var glass: u32 = 0;
     const wy: u16 = @intCast(y);
     const wz: u16 = @intCast(wz_raw);
+
+    // The 16 inner blocks (bits 1..16) share a chunk and are contiguous in
+    // the chunk-aware layout. Read them as a single slice to avoid 16
+    // individual block_index computations on the hot path.
+    const chunk_row = World.get_chunk_row(@intCast(cx * 16), wy, wz);
 
     for (0..18) |i| {
         const wx_raw: i32 = @as(i32, @intCast(cx)) * 16 + @as(i32, @intCast(i)) - 1;
@@ -85,17 +95,18 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
             opq |= @as(u32, 1) << @intCast(i);
             continue;
         }
-        const block = World.get_block(@intCast(wx_raw), wy, wz);
-        const reg = &BlockRegistry.global;
+        const block = if (i >= 1 and i <= 16) chunk_row[i - 1] else World.get_block(@intCast(wx_raw), wy, wz);
+        const p = BlockRegistry.global.props[block];
         const bit: u32 = @as(u32, 1) << @intCast(i);
-        if (reg.@"opaque".isSet(block)) opq |= bit;
-        if (reg.visible.isSet(block)) vis |= bit;
-        if (reg.fluid.isSet(block)) flu |= bit;
-        if (reg.cross.isSet(block)) cross |= bit;
-        if (reg.leaf.isSet(block)) leaf |= bit;
-        if (reg.slab.isSet(block)) slab |= bit;
+        if (p.@"opaque") opq |= bit;
+        if (p.visible) vis |= bit;
+        if (p.fluid) flu |= bit;
+        if (p.cross) cross |= bit;
+        if (p.leaf) leaf |= bit;
+        if (p.slab) slab |= bit;
+        if (p.glass) glass |= bit;
     }
-    return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .solid_leaf = 0 };
+    return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .glass = glass, .solid_leaf = 0 };
 }
 
 /// Flag leaves whose all 6 neighbors are leaf-or-opaque. Such leaves are
@@ -159,15 +170,65 @@ fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
 }
 
 pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf) void {
+    const all_opaque = World.is_chunk_all_opaque(cx, sy, cz);
     const base_y: i32 = @as(i32, @intCast(sy)) * 16 - 1;
     for (0..BUF_Y) |by| {
         const wy: i32 = base_y + @as(i32, @intCast(by));
         for (0..BUF_Z) |bz| {
             const wz_raw: i32 = @as(i32, @intCast(cz)) * 16 + @as(i32, @intCast(bz)) - 1;
-            buf[by][bz] = pack_row(cx, wy, wz_raw);
+            buf[by][bz] = if (all_opaque and by >= 1 and by <= 16 and bz >= 1 and bz <= 16)
+                pack_row_opaque(cx, wy, wz_raw)
+            else
+                pack_row(cx, wy, wz_raw);
         }
     }
-    compute_solid_leaves(buf, near_lod);
+    // All-opaque chunks have no leaves; skip the solid-leaf pass.
+    if (!all_opaque) compute_solid_leaves(buf, near_lod);
+}
+
+/// Fast path for inner rows of all-opaque chunks. The 16 inner blocks are
+/// known to be opaque+visible with no other flags, so we only need to
+/// classify the 2 boundary blocks from neighboring chunks.
+fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
+    var opq: u32 = SECTION_MASK; // bits 1..16
+    var vis: u32 = SECTION_MASK;
+    var flu: u32 = 0;
+    var cross: u32 = 0;
+    var leaf: u32 = 0;
+    var slab: u32 = 0;
+    var glass: u32 = 0;
+    const wy: u16 = @intCast(y);
+    const wz: u16 = @intCast(wz_raw);
+
+    // Left boundary (bit 0)
+    const left_x: i32 = @as(i32, @intCast(cx)) * 16 - 1;
+    if (left_x < 0) {
+        opq |= 1;
+    } else {
+        classify_block(World.get_block(@intCast(left_x), wy, wz), 0, &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
+    }
+
+    // Right boundary (bit 17)
+    const right_x: u32 = cx * 16 + 16;
+    if (right_x >= WORLD_W) {
+        opq |= @as(u32, 1) << 17;
+    } else {
+        classify_block(World.get_block(@intCast(right_x), wy, wz), 17, &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
+    }
+
+    return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .glass = glass, .solid_leaf = 0 };
+}
+
+inline fn classify_block(block: u8, bit_pos: u5, opq: *u32, vis: *u32, flu: *u32, cross_: *u32, leaf_: *u32, slab_: *u32, glass_: *u32) void {
+    const p = BlockRegistry.global.props[block];
+    const bit: u32 = @as(u32, 1) << bit_pos;
+    if (p.@"opaque") opq.* |= bit;
+    if (p.visible) vis.* |= bit;
+    if (p.fluid) flu.* |= bit;
+    if (p.cross) cross_.* |= bit;
+    if (p.leaf) leaf_.* |= bit;
+    if (p.slab) slab_.* |= bit;
+    if (p.glass) glass_.* |= bit;
 }
 
 // -- Count --------------------------------------------------------------------
@@ -199,8 +260,20 @@ const FaceMasks = struct {
     opq: u32,
     leaf: u32,
     slab: u32,
-    // Fluid y_pos faces needing double-sided emission (extra 6 verts each)
+    // Per-direction fluid masks for separate fluid mesh routing.
+    flu_xp: u32,
+    flu_xn: u32,
     flu_yp: u32,
+    flu_yn: u32,
+    flu_zp: u32,
+    flu_zn: u32,
+    // Transparent blocks with fluid neighbors - emit water overlay on fluid mesh.
+    tfl_xp: u32,
+    tfl_xn: u32,
+    tfl_yp: u32,
+    tfl_yn: u32,
+    tfl_zp: u32,
+    tfl_zn: u32,
 };
 
 fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
@@ -229,14 +302,25 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     // leaves are emitted through their own paths and excluded here.
     const std_vis = (vis & ~flu) & ~sleaf;
 
-    const x_pos = (std_vis & ~(eff_cur >> 1)) & SECTION_MASK;
-    const x_neg = (std_vis & ~(eff_cur << 1)) & SECTION_MASK;
-    const z_pos = (std_vis & ~eff_zp) & SECTION_MASK;
-    const z_neg = (std_vis & ~eff_zn) & SECTION_MASK;
+    // Glass-against-glass: cull the shared face on both sides. A bit is set
+    // here only when the block at that bit is glass and its neighbor in that
+    // direction is also glass - used to mask out those faces below.
+    const g = cur.glass;
+    const g_xp = g & (g >> 1);
+    const g_xn = g & (g << 1);
+    const g_zp = g & n_zp.glass;
+    const g_zn = g & n_zn.glass;
+    const g_yp = g & n_yp.glass;
+    const g_yn = g & n_yn.glass;
+
+    const x_pos = (std_vis & ~(eff_cur >> 1) & ~g_xp) & SECTION_MASK;
+    const x_neg = (std_vis & ~(eff_cur << 1) & ~g_xn) & SECTION_MASK;
+    const z_pos = (std_vis & ~eff_zp & ~g_zp) & SECTION_MASK;
+    const z_neg = (std_vis & ~eff_zn & ~g_zn) & SECTION_MASK;
     // Slab top sits at y+0.5 with a half-block air gap below the next block,
     // so it can never be occluded by its y+1 neighbor - force-emit unconditionally.
-    const y_pos = ((std_vis & ~eff_yp) | slab) & SECTION_MASK;
-    const y_neg = (std_vis & ~eff_yn) & SECTION_MASK;
+    const y_pos = ((std_vis & ~eff_yp & ~g_yp) | slab) & SECTION_MASK;
+    const y_neg = (std_vis & ~eff_yn & ~g_yn) & SECTION_MASK;
 
     // Fluid faces: cull against eff (so fluid against solid-leaf is culled)
     // and against same-fluid neighbors (water-against-water looks like bulk).
@@ -244,9 +328,22 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const flu_xn = (flu & ~(eff_cur << 1) & ~(flu << 1)) & SECTION_MASK;
     const flu_zp = (flu & ~eff_zp & ~n_zp.flu) & SECTION_MASK;
     const flu_zn = (flu & ~eff_zn & ~n_zn.flu) & SECTION_MASK;
-    // Water/lava tops are inset (~0.9 blocks), so they must be emitted even
-    // when the block above is opaque - omitting them leaves a visible gap.
-    const flu_yp_bits = (flu & ~n_yp.flu) & SECTION_MASK;
+    // Water/lava tops are inset (~0.9 blocks). Naked tops (block above is
+    // not fluid and not opaque) always emit. Tops with opaque above only
+    // emit when adjacent (within 1 block horizontally) to a naked top, to
+    // form a one-plane border that hides the inset seam. Deep-covered
+    // interior culls — huge win in water/lava-filled caves.
+    const n_yp_zp = &buf[by + 1][bz + 1];
+    const n_yp_zn = &buf[by + 1][bz - 1];
+    const eff_yp_zp = n_yp_zp.opq | n_yp_zp.solid_leaf;
+    const eff_yp_zn = n_yp_zn.opq | n_yp_zn.solid_leaf;
+    const naked_cur = flu & ~n_yp.flu & ~eff_yp;
+    const naked_zp = n_zp.flu & ~n_yp_zp.flu & ~eff_yp_zp;
+    const naked_zn = n_zn.flu & ~n_yp_zn.flu & ~eff_yp_zn;
+    const naked_border = naked_cur | (naked_cur << 1) | (naked_cur >> 1) |
+        naked_zp | (naked_zp << 1) | (naked_zp >> 1) |
+        naked_zn | (naked_zn << 1) | (naked_zn >> 1);
+    const flu_yp_bits = (flu & ~n_yp.flu & (~eff_yp | naked_border)) & SECTION_MASK;
     const flu_yn = (flu & ~eff_yn & ~n_yn.flu) & SECTION_MASK;
 
     // Solid-leaf faces. By construction, all 6 neighbors of a solid leaf are
@@ -259,6 +356,17 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const sl_zn = (sleaf & ~eff_zn) & SECTION_MASK;
     const sl_yp = (sleaf & ~eff_yp) & SECTION_MASK;
     const sl_yn = (sleaf & ~eff_yn) & SECTION_MASK;
+
+    // Transparent blocks (including slabs) with fluid neighbors. Emit a
+    // water-textured overlay on the fluid mesh so the water surface is
+    // visible from the fluid side.
+    const trans = std_vis & ~opq;
+    const tfl_xp = (trans & (flu >> 1)) & SECTION_MASK;
+    const tfl_xn = (trans & (flu << 1)) & SECTION_MASK;
+    const tfl_zp = (trans & n_zp.flu) & SECTION_MASK;
+    const tfl_zn = (trans & n_zn.flu) & SECTION_MASK;
+    const tfl_yp = (trans & n_yp.flu) & SECTION_MASK;
+    const tfl_yn = (trans & n_yn.flu) & SECTION_MASK;
 
     return .{
         .x_pos = x_pos | flu_xp,
@@ -277,7 +385,18 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
         .opq = opq,
         .leaf = leaf,
         .slab = slab,
+        .flu_xp = flu_xp,
+        .flu_xn = flu_xn,
         .flu_yp = flu_yp_bits,
+        .flu_yn = flu_yn,
+        .flu_zp = flu_zp,
+        .flu_zn = flu_zn,
+        .tfl_xp = tfl_xp,
+        .tfl_xn = tfl_xn,
+        .tfl_yp = tfl_yp,
+        .tfl_yn = tfl_yn,
+        .tfl_zp = tfl_zp,
+        .tfl_zn = tfl_zn,
     };
 }
 
@@ -295,21 +414,29 @@ fn count_row_faces(by: u32, bz: u32, buf: *const SectionBuf) SectionCounts {
         pop(f.z_pos) + pop(f.z_neg) +
         pop(f.y_pos) + pop(f.y_neg);
     const cross_count = pop(f.cross);
+    const flu_count = pop(f.flu_xp) + pop(f.flu_xn) +
+        pop(f.flu_zp) + pop(f.flu_zn) +
+        pop(f.flu_yp) + pop(f.flu_yn);
     const flu_top_extra = pop(f.flu_yp);
+    const tfl_count = pop(f.tfl_xp) + pop(f.tfl_xn) +
+        pop(f.tfl_zp) + pop(f.tfl_zn) +
+        pop(f.tfl_yp) + pop(f.tfl_yn);
 
     return .{
         .opaque_verts = (opq_count + sl_count) * 6,
-        .transparent_verts = (all_count - opq_count) * 6 + cross_count * 24 + flu_top_extra * 6,
+        .transparent_verts = (all_count - opq_count - flu_count) * 6 + cross_count * 24,
+        .fluid_verts = flu_count * 6 + flu_top_extra * 6 + tfl_count * 6,
     };
 }
 
 pub fn count_section(buf: *const SectionBuf) SectionCounts {
-    var total: SectionCounts = .{ .opaque_verts = 0, .transparent_verts = 0 };
+    var total: SectionCounts = .{ .opaque_verts = 0, .transparent_verts = 0, .fluid_verts = 0 };
     for (1..BUF_Y - 1) |by| {
         for (1..BUF_Z - 1) |bz| {
             const row = count_row_faces(@intCast(by), @intCast(bz), buf);
             total.opaque_verts += row.opaque_verts;
             total.transparent_verts += row.transparent_verts;
+            total.fluid_verts += row.fluid_verts;
         }
     }
     return total;
@@ -321,9 +448,99 @@ fn assert_has_room(verts: *const std.ArrayList(Vertex), n: u32) void {
     std.debug.assert(verts.items.len + n <= verts.capacity);
 }
 
+// -- Ambient Occlusion --------------------------------------------------------
+// Per-vertex AO: sample 3 neighbors in the face's neighbor plane (two tangent
+// edges + the diagonal), classify to a 4-level brightness ramp, and modulate
+// the base directional face tint. Opaque-eff = opq | solid_leaf so solid-leaf
+// clusters cast AO just like real opaque blocks (matches the cull logic).
+
+const AO_MUL: [4]u8 = .{ 128, 170, 212, 255 };
+
+fn eff_bit(buf: *const SectionBuf, by: u32, bz: u32, bit: u32) u32 {
+    const row = &buf[by][bz];
+    const eff = row.opq | row.solid_leaf;
+    return (eff >> @intCast(bit)) & 1;
+}
+
+fn ao_level(t1: u32, t2: u32, d: u32) u32 {
+    if (t1 != 0 and t2 != 0) return 0;
+    return 3 - (t1 + t2 + d);
+}
+
+fn ao_modulate(color: u32, level: u32) u32 {
+    const m: u32 = AO_MUL[level];
+    const a = color & 0xFF000000;
+    const r = (color >> 16) & 0xFF;
+    const g = (color >> 8) & 0xFF;
+    const b = color & 0xFF;
+    return a | (((r * m) >> 8) << 16) | (((g * m) >> 8) << 8) | ((b * m) >> 8);
+}
+
+/// Compute the 4 per-corner colors for a cube face at buffer position
+/// (by, bz, bit). Vertex order matches `make_quad` for the given face.
+fn compute_ao_colors(buf: *const SectionBuf, by: u32, bz: u32, bit: u5, face: Face, shadowed: bool) [4]u32 {
+    const base_unshadowed = face_mod.face_color(face);
+    const base: u32 = if (shadowed) face_mod.apply_shadow(base_unshadowed) else base_unshadowed;
+    const b: u32 = bit;
+    var out: [4]u32 = undefined;
+
+    switch (face) {
+        .y_pos => {
+            const plane = by + 1;
+            // v0 (-X,-Z), v1 (+X,-Z), v2 (+X,+Z), v3 (-X,+Z)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b - 1), eff_bit(buf, plane, bz - 1, b), eff_bit(buf, plane, bz - 1, b - 1)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b + 1), eff_bit(buf, plane, bz - 1, b), eff_bit(buf, plane, bz - 1, b + 1)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b + 1), eff_bit(buf, plane, bz + 1, b), eff_bit(buf, plane, bz + 1, b + 1)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b - 1), eff_bit(buf, plane, bz + 1, b), eff_bit(buf, plane, bz + 1, b - 1)));
+        },
+        .y_neg => {
+            const plane = by - 1;
+            // v0 (-X,+Z), v1 (+X,+Z), v2 (+X,-Z), v3 (-X,-Z)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b - 1), eff_bit(buf, plane, bz + 1, b), eff_bit(buf, plane, bz + 1, b - 1)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b + 1), eff_bit(buf, plane, bz + 1, b), eff_bit(buf, plane, bz + 1, b + 1)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b + 1), eff_bit(buf, plane, bz - 1, b), eff_bit(buf, plane, bz - 1, b + 1)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b - 1), eff_bit(buf, plane, bz - 1, b), eff_bit(buf, plane, bz - 1, b - 1)));
+        },
+        .x_pos => {
+            const bp = b + 1;
+            // v0 (-Y,-Z), v1 (-Y,+Z), v2 (+Y,+Z), v3 (+Y,-Z)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, by - 1, bz, bp), eff_bit(buf, by, bz - 1, bp), eff_bit(buf, by - 1, bz - 1, bp)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, by - 1, bz, bp), eff_bit(buf, by, bz + 1, bp), eff_bit(buf, by - 1, bz + 1, bp)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, by + 1, bz, bp), eff_bit(buf, by, bz + 1, bp), eff_bit(buf, by + 1, bz + 1, bp)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, by + 1, bz, bp), eff_bit(buf, by, bz - 1, bp), eff_bit(buf, by + 1, bz - 1, bp)));
+        },
+        .x_neg => {
+            const bp = b - 1;
+            // v0 (-Y,+Z), v1 (-Y,-Z), v2 (+Y,-Z), v3 (+Y,+Z)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, by - 1, bz, bp), eff_bit(buf, by, bz + 1, bp), eff_bit(buf, by - 1, bz + 1, bp)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, by - 1, bz, bp), eff_bit(buf, by, bz - 1, bp), eff_bit(buf, by - 1, bz - 1, bp)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, by + 1, bz, bp), eff_bit(buf, by, bz - 1, bp), eff_bit(buf, by + 1, bz - 1, bp)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, by + 1, bz, bp), eff_bit(buf, by, bz + 1, bp), eff_bit(buf, by + 1, bz + 1, bp)));
+        },
+        .z_pos => {
+            const plane = bz + 1;
+            // v0 (+X,-Y), v1 (-X,-Y), v2 (-X,+Y), v3 (+X,+Y)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b + 1), eff_bit(buf, by - 1, plane, b), eff_bit(buf, by - 1, plane, b + 1)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b - 1), eff_bit(buf, by - 1, plane, b), eff_bit(buf, by - 1, plane, b - 1)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b - 1), eff_bit(buf, by + 1, plane, b), eff_bit(buf, by + 1, plane, b - 1)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b + 1), eff_bit(buf, by + 1, plane, b), eff_bit(buf, by + 1, plane, b + 1)));
+        },
+        .z_neg => {
+            const plane = bz - 1;
+            // v0 (-X,-Y), v1 (+X,-Y), v2 (+X,+Y), v3 (-X,+Y)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b - 1), eff_bit(buf, by - 1, plane, b), eff_bit(buf, by - 1, plane, b - 1)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b + 1), eff_bit(buf, by - 1, plane, b), eff_bit(buf, by - 1, plane, b + 1)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b + 1), eff_bit(buf, by + 1, plane, b), eff_bit(buf, by + 1, plane, b + 1)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b - 1), eff_bit(buf, by + 1, plane, b), eff_bit(buf, by + 1, plane, b - 1)));
+        },
+    }
+    return out;
+}
+
 pub const Meshes = struct {
     @"opaque": *std.ArrayList(Vertex),
     transparent: *std.ArrayList(Vertex),
+    fluid: *std.ArrayList(Vertex),
 };
 
 fn emit_mask(
@@ -335,6 +552,11 @@ fn emit_mask(
     face: Face,
     m: Meshes,
     atlas: *const TextureAtlas,
+    chunk_row: *const [c.ChunkSize]u8,
+    buf: *const SectionBuf,
+    by: u32,
+    bz: u32,
+    ao: bool,
 ) void {
     const local_y: u32 = y % SECTION_H;
     var bits = mask;
@@ -345,22 +567,32 @@ fn emit_mask(
         const lx: u32 = @as(u32, bit_pos) - 1;
         const wx: u16 = @intCast(cx * 16 + lx);
         const wz: u16 = @intCast(cz * 16 + lz);
-        const block = World.get_block(wx, @intCast(y), wz);
+        const block = chunk_row[lx];
         const reg = &BlockRegistry.global;
         const tile = reg.get_face_tile(block, face);
 
         const is_slab = reg.slab.isSet(block);
-        const mesh = if (reg.@"opaque".isSet(block) or is_slab) m.@"opaque" else m.transparent;
+        const is_fluid = reg.fluid.isSet(block);
+        const mesh = if (reg.@"opaque".isSet(block) or is_slab)
+            m.@"opaque"
+        else if (is_fluid)
+            m.fluid
+        else
+            m.transparent;
 
         const shadowed = !face_sunlit(wx, y, wz, face) and
             block != B.Flowing_Lava and block != B.Still_Lava;
 
-        if (face == .y_pos and reg.fluid.isSet(block)) {
+        if (face == .y_pos and is_fluid) {
             assert_has_room(mesh, 12);
             face_mod.emit_fluid_top(mesh, lx, local_y, lz, tile, atlas, shadowed);
         } else if (is_slab) {
             assert_has_room(mesh, 6);
             face_mod.emit_slab_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);
+        } else if (ao and !is_fluid) {
+            assert_has_room(mesh, 6);
+            const colors = compute_ao_colors(buf, by, bz, bit_pos, face, shadowed);
+            face_mod.emit_face_colors(mesh, face, lx, local_y, lz, tile, atlas, colors);
         } else {
             assert_has_room(mesh, 6);
             face_mod.emit_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);
@@ -378,6 +610,11 @@ fn emit_opaque_leaf_mask(
     face: Face,
     opaque_mesh: *std.ArrayList(Vertex),
     atlas: *const TextureAtlas,
+    chunk_row: *const [c.ChunkSize]u8,
+    buf: *const SectionBuf,
+    by: u32,
+    bz: u32,
+    ao: bool,
 ) void {
     const local_y: u32 = y % SECTION_H;
     var bits = mask;
@@ -389,10 +626,15 @@ fn emit_opaque_leaf_mask(
         const lx: u32 = @as(u32, bit_pos) - 1;
         const wx: u16 = @intCast(cx * 16 + lx);
         const wz: u16 = @intCast(cz * 16 + lz);
-        const block = World.get_block(wx, @intCast(y), wz);
+        const block = chunk_row[lx];
         const tile = BlockRegistry.global.get_face_tile(block, face);
         const shadowed = !face_sunlit(wx, y, wz, face);
-        face_mod.emit_face(opaque_mesh, face, lx, local_y, lz, tile, atlas, shadowed);
+        if (ao) {
+            const colors = compute_ao_colors(buf, by, bz, bit_pos, face, shadowed);
+            face_mod.emit_face_colors(opaque_mesh, face, lx, local_y, lz, tile, atlas, colors);
+        } else {
+            face_mod.emit_face(opaque_mesh, face, lx, local_y, lz, tile, atlas, shadowed);
+        }
     }
 }
 
@@ -404,6 +646,7 @@ fn emit_cross_mask(
     cz: u32,
     transparent_mesh: *std.ArrayList(Vertex),
     atlas: *const TextureAtlas,
+    chunk_row: *const [c.ChunkSize]u8,
 ) void {
     const local_y: u32 = y % SECTION_H;
     var bits = mask;
@@ -415,9 +658,59 @@ fn emit_cross_mask(
         const lx: u32 = @as(u32, bit_pos) - 1;
         const wx: u16 = @intCast(cx * 16 + lx);
         const wz: u16 = @intCast(cz * 16 + lz);
-        const block = World.get_block(wx, @intCast(y), wz);
+        const block = chunk_row[lx];
         const tile = BlockRegistry.global.get_face_tile(block, .y_pos);
         face_mod.emit_cross(transparent_mesh, lx, local_y, lz, tile, atlas, !World.is_sunlit(wx, @intCast(y), wz));
+    }
+}
+
+/// Emit fluid-overlay faces for transparent blocks adjacent to fluid.
+/// Looks up the neighbor fluid block's tile and emits an inset face on the
+/// fluid mesh so the water surface is visible from the fluid side.
+fn emit_fluid_overlay_mask(
+    mask: u32,
+    y: u32,
+    lz: u32,
+    cx: u32,
+    cz: u32,
+    face: Face,
+    fluid_mesh: *std.ArrayList(Vertex),
+    atlas: *const TextureAtlas,
+) void {
+    const local_y: u32 = y % SECTION_H;
+    const dx: i32 = switch (face) {
+        .x_pos => 1,
+        .x_neg => -1,
+        else => 0,
+    };
+    const dy: i32 = switch (face) {
+        .y_pos => 1,
+        .y_neg => -1,
+        else => 0,
+    };
+    const dz: i32 = switch (face) {
+        .z_pos => 1,
+        .z_neg => -1,
+        else => 0,
+    };
+    var bits = mask;
+    while (bits != 0) {
+        const bit_pos: u5 = @intCast(@ctz(bits));
+        bits &= bits - 1;
+        assert_has_room(fluid_mesh, 6);
+
+        const lx: u32 = @as(u32, bit_pos) - 1;
+        const wx: u16 = @intCast(cx * 16 + lx);
+        const wz: u16 = @intCast(cz * 16 + lz);
+        // Look up the neighboring fluid block's texture.
+        const nx: u16 = @intCast(@as(i32, wx) + dx);
+        const ny: u16 = @intCast(@as(i32, @intCast(y)) + dy);
+        const nz: u16 = @intCast(@as(i32, wz) + dz);
+        const neighbor = World.get_block(nx, ny, nz);
+        const tile = BlockRegistry.global.get_face_tile(neighbor, face);
+        const shadowed = !face_sunlit(wx, y, wz, face) and
+            neighbor != B.Flowing_Lava and neighbor != B.Still_Lava;
+        face_mod.emit_fluid_overlay(fluid_mesh, face, lx, local_y, lz, tile, atlas, shadowed);
     }
 }
 
@@ -428,6 +721,7 @@ pub fn emit_section(
     cz: u32,
     m: Meshes,
     atlas: *const TextureAtlas,
+    ao: bool,
 ) void {
     const base_y: u32 = sy * SECTION_H;
     for (0..SECTION_H) |ly| {
@@ -437,24 +731,36 @@ pub fn emit_section(
             const bz: u32 = @as(u32, @intCast(lz)) + 1;
             const f = compute_face_masks(by, bz, buf);
 
+            const chunk_row = World.get_chunk_row(@intCast(cx * 16), @intCast(world_y), @intCast(cz * 16 + lz));
+
             // Standard faces - emit_mask routes opaque blocks to the opaque
             // mesh and outer leaves / glass / fluids to the transparent mesh.
-            if (f.x_pos != 0) emit_mask(f.x_pos, world_y, @intCast(lz), cx, cz, .x_pos, m, atlas);
-            if (f.x_neg != 0) emit_mask(f.x_neg, world_y, @intCast(lz), cx, cz, .x_neg, m, atlas);
-            if (f.z_pos != 0) emit_mask(f.z_pos, world_y, @intCast(lz), cx, cz, .z_pos, m, atlas);
-            if (f.z_neg != 0) emit_mask(f.z_neg, world_y, @intCast(lz), cx, cz, .z_neg, m, atlas);
-            if (f.y_pos != 0) emit_mask(f.y_pos, world_y, @intCast(lz), cx, cz, .y_pos, m, atlas);
-            if (f.y_neg != 0) emit_mask(f.y_neg, world_y, @intCast(lz), cx, cz, .y_neg, m, atlas);
+            if (f.x_pos != 0) emit_mask(f.x_pos, world_y, @intCast(lz), cx, cz, .x_pos, m, atlas, chunk_row, buf, by, bz, ao);
+            if (f.x_neg != 0) emit_mask(f.x_neg, world_y, @intCast(lz), cx, cz, .x_neg, m, atlas, chunk_row, buf, by, bz, ao);
+            if (f.z_pos != 0) emit_mask(f.z_pos, world_y, @intCast(lz), cx, cz, .z_pos, m, atlas, chunk_row, buf, by, bz, ao);
+            if (f.z_neg != 0) emit_mask(f.z_neg, world_y, @intCast(lz), cx, cz, .z_neg, m, atlas, chunk_row, buf, by, bz, ao);
+            if (f.y_pos != 0) emit_mask(f.y_pos, world_y, @intCast(lz), cx, cz, .y_pos, m, atlas, chunk_row, buf, by, bz, ao);
+            if (f.y_neg != 0) emit_mask(f.y_neg, world_y, @intCast(lz), cx, cz, .y_neg, m, atlas, chunk_row, buf, by, bz, ao);
 
             // Emit solid-leaf faces -> opaque mesh
-            if (f.sl_xp != 0) emit_opaque_leaf_mask(f.sl_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.@"opaque", atlas);
-            if (f.sl_xn != 0) emit_opaque_leaf_mask(f.sl_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.@"opaque", atlas);
-            if (f.sl_zp != 0) emit_opaque_leaf_mask(f.sl_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.@"opaque", atlas);
-            if (f.sl_zn != 0) emit_opaque_leaf_mask(f.sl_zn, world_y, @intCast(lz), cx, cz, .z_neg, m.@"opaque", atlas);
-            if (f.sl_yp != 0) emit_opaque_leaf_mask(f.sl_yp, world_y, @intCast(lz), cx, cz, .y_pos, m.@"opaque", atlas);
-            if (f.sl_yn != 0) emit_opaque_leaf_mask(f.sl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.@"opaque", atlas);
+            if (f.sl_xp != 0) emit_opaque_leaf_mask(f.sl_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
+            if (f.sl_xn != 0) emit_opaque_leaf_mask(f.sl_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
+            if (f.sl_zp != 0) emit_opaque_leaf_mask(f.sl_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
+            if (f.sl_zn != 0) emit_opaque_leaf_mask(f.sl_zn, world_y, @intCast(lz), cx, cz, .z_neg, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
+            if (f.sl_yp != 0) emit_opaque_leaf_mask(f.sl_yp, world_y, @intCast(lz), cx, cz, .y_pos, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
+            if (f.sl_yn != 0) emit_opaque_leaf_mask(f.sl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
 
-            if (f.cross != 0) emit_cross_mask(f.cross, world_y, @intCast(lz), cx, cz, m.transparent, atlas);
+            if (f.cross != 0) emit_cross_mask(f.cross, world_y, @intCast(lz), cx, cz, m.transparent, atlas, chunk_row);
+
+            // Emit fluid-overlay faces for transparent blocks with fluid neighbors.
+            // These look up neighbor blocks which may cross chunk boundaries,
+            // so they still use get_block internally.
+            if (f.tfl_xp != 0) emit_fluid_overlay_mask(f.tfl_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.fluid, atlas);
+            if (f.tfl_xn != 0) emit_fluid_overlay_mask(f.tfl_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.fluid, atlas);
+            if (f.tfl_zp != 0) emit_fluid_overlay_mask(f.tfl_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.fluid, atlas);
+            if (f.tfl_zn != 0) emit_fluid_overlay_mask(f.tfl_zn, world_y, @intCast(lz), cx, cz, .z_neg, m.fluid, atlas);
+            if (f.tfl_yp != 0) emit_fluid_overlay_mask(f.tfl_yp, world_y, @intCast(lz), cx, cz, .y_pos, m.fluid, atlas);
+            if (f.tfl_yn != 0) emit_fluid_overlay_mask(f.tfl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.fluid, atlas);
         }
     }
 }

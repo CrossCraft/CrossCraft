@@ -1,16 +1,19 @@
-/// Build tool: packs a directory into a store-only ZIP archive.
+/// Build tool: packs a directory into a ZIP archive.
 ///
 /// Usage: pack_zip <input_dir> <output_file>
 ///
 /// Walks the input directory recursively and writes all files into a
-/// ZIP archive using the "store" method (no compression). Paths inside
-/// the ZIP use forward slashes regardless of host OS.
+/// ZIP archive. Audio files (.wav) are stored uncompressed so they can
+/// be streamed directly at runtime; all other files use DEFLATE
+/// compression. Paths inside the ZIP use forward slashes regardless of
+/// host OS.
 const std = @import("std");
 const Io = std.Io;
 const Dir = Io.Dir;
 const File = Io.File;
 const Allocator = std.mem.Allocator;
 const Crc32 = std.hash.crc.Crc32IsoHdlc;
+const flate = std.compress.flate;
 
 const local_file_header_sig = [4]u8{ 0x50, 0x4b, 0x03, 0x04 };
 const central_dir_header_sig = [4]u8{ 0x50, 0x4b, 0x01, 0x02 };
@@ -18,7 +21,9 @@ const end_of_central_dir_sig = [4]u8{ 0x50, 0x4b, 0x05, 0x06 };
 
 const CdRecord = struct {
     crc32: u32,
-    size: u32,
+    compressed_size: u32,
+    uncompressed_size: u32,
+    compression_method: u16,
     filename: []const u8,
     local_header_offset: u32,
 };
@@ -76,6 +81,11 @@ pub fn main(init: std.process.Init) !void {
         cd_records.deinit(gpa);
     }
 
+    const compress_window = try gpa.create([flate.max_window_len]u8);
+    defer gpa.destroy(compress_window);
+    const comp_storage = try gpa.create(flate.Compress);
+    defer gpa.destroy(comp_storage);
+
     var offset: u32 = 0;
 
     for (entries.items) |rel_path| {
@@ -83,31 +93,56 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(data);
 
         const crc = Crc32.hash(data);
-        const size: u32 = @intCast(data.len);
+        const uncompressed_size: u32 = @intCast(data.len);
         const name_len: u16 = @intCast(rel_path.len);
         const local_header_offset = offset;
+
+        // Audio (.wav) is stored uncompressed for direct streaming;
+        // everything else is DEFLATE-compressed.
+        const is_store = std.mem.endsWith(u8, rel_path, ".wav");
+        const compression_method: u16 = if (is_store) 0 else 8;
+
+        var compressed_size: u32 = uncompressed_size;
+        var compressed_data: []const u8 = data;
+        var compress_alloc: ?[]u8 = null;
+
+        if (!is_store) {
+            const compress_out = try gpa.alloc(u8, data.len + 1024);
+            compress_alloc = compress_out;
+            var compress_writer: Io.Writer = .fixed(compress_out);
+
+            comp_storage.* = try flate.Compress.init(&compress_writer, compress_window, .raw, .default);
+            try comp_storage.writer.writeAll(data);
+            try comp_storage.finish();
+            try compress_writer.flush();
+            compressed_size = @intCast(compress_writer.end);
+            compressed_data = compress_out[0..compressed_size];
+        }
+        defer if (compress_alloc) |a| gpa.free(a);
 
         // Local file header (30 bytes)
         try w.writeAll(&local_file_header_sig);
         try w.writeInt(u16, 20, .little); // version needed
         try w.writeInt(u16, 0, .little); // flags
-        try w.writeInt(u16, 0, .little); // compression: store
+        try w.writeInt(u16, compression_method, .little);
         try w.writeInt(u16, 0, .little); // mod time
         try w.writeInt(u16, 0, .little); // mod date
         try w.writeInt(u32, crc, .little);
-        try w.writeInt(u32, size, .little); // compressed size
-        try w.writeInt(u32, size, .little); // uncompressed size
+        try w.writeInt(u32, compressed_size, .little);
+        try w.writeInt(u32, uncompressed_size, .little);
         try w.writeInt(u16, name_len, .little);
         try w.writeInt(u16, 0, .little); // extra field length
 
         try w.writeAll(rel_path);
-        try w.writeAll(data);
+        try w.writeAll(compressed_data);
 
-        offset += 30 + @as(u32, name_len) + size;
+        offset += 30 + @as(u32, name_len) + compressed_size;
 
         try cd_records.append(gpa, .{
             .crc32 = crc,
-            .size = size,
+            .compressed_size = compressed_size,
+            .uncompressed_size = uncompressed_size,
+            .compression_method = compression_method,
             .filename = try gpa.dupe(u8, rel_path),
             .local_header_offset = local_header_offset,
         });
@@ -123,12 +158,12 @@ pub fn main(init: std.process.Init) !void {
         try w.writeInt(u16, 20, .little); // version made by
         try w.writeInt(u16, 20, .little); // version needed
         try w.writeInt(u16, 0, .little); // flags
-        try w.writeInt(u16, 0, .little); // compression: store
+        try w.writeInt(u16, rec.compression_method, .little);
         try w.writeInt(u16, 0, .little); // mod time
         try w.writeInt(u16, 0, .little); // mod date
         try w.writeInt(u32, rec.crc32, .little);
-        try w.writeInt(u32, rec.size, .little); // compressed size
-        try w.writeInt(u32, rec.size, .little); // uncompressed size
+        try w.writeInt(u32, rec.compressed_size, .little);
+        try w.writeInt(u32, rec.uncompressed_size, .little);
         try w.writeInt(u16, name_len, .little);
         try w.writeInt(u16, 0, .little); // extra field length
         try w.writeInt(u16, 0, .little); // comment length

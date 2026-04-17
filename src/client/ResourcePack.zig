@@ -27,6 +27,7 @@ pub const Tex = enum(u8) {
     water_still,
     lava_still,
     char,
+    glyphs,
 
     const count = @typeInfo(Tex).@"enum".fields.len;
 };
@@ -42,6 +43,10 @@ fn tex_path(id: Tex) []const u8 {
         .water_still => "crosscraft/textures/water_still",
         .lava_still => "crosscraft/textures/lava_still",
         .char => "minecraft/textures/char",
+        .glyphs => if (@import("aether").platform == .psp)
+            "crosscraft/textures/interface/controller_glyphs/psp"
+        else
+            "crosscraft/textures/interface/controller_glyphs/pc",
     };
 }
 
@@ -108,7 +113,7 @@ pub fn init(
     pack_path_len = path.len;
     pack_dir = dir;
     pack_initialized = true;
-    SoundManager.init(pack, dir, pack_path_buf[0..pack_path_len]);
+    SoundManager.init();
 }
 
 pub fn deinit() void {
@@ -133,6 +138,10 @@ pub fn get_pack() *Zip {
 
 pub fn get_pack_path() []const u8 {
     return pack_path_buf[0..pack_path_len];
+}
+
+pub fn get_dir() std.Io.Dir {
+    return pack_dir;
 }
 
 /// Replace the active archive at `path` (resolved against `dir`),
@@ -214,7 +223,7 @@ pub fn switch_pack(dir: std.Io.Dir, path: []const u8) !void {
     pack_dir = dir;
 
     SoundManager.deinit();
-    SoundManager.init(pack, dir, pack_path_buf[0..pack_path_len]);
+    SoundManager.init();
 
     log.info("switched to pack '{s}'", .{path});
 }
