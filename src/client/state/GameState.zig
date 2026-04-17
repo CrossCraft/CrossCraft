@@ -510,7 +510,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
                 // Re-apply settings that are cached at init time.
                 ae_input.mouse_sensitivity = Options.current.sensitivity;
                 self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
-                engine.vsync = Options.current.vsync;
+                engine.set_vsync(Options.current.vsync);
                 self.in_options = false;
                 self.pause_screen = PauseMenuScreen.build(&self.pause_ctx, Session.mode == .singleplayer);
                 self.pause_screen.open(!ui_input.profile_uses_pointer());

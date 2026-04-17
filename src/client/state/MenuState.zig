@@ -109,7 +109,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // the file in sync with any in-memory changes that were made but not yet
     // persisted (e.g. settings applied during the previous game session).
     Options.save(engine.io, engine.dirs.data);
-    engine.vsync = Options.current.vsync;
+    engine.set_vsync(Options.current.vsync);
 
     const pack_dir = if (build_options.embed_pack) engine.dirs.data else engine.dirs.resources;
     try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, pack_dir, "pack.zip");
@@ -219,7 +219,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
     if (on_options and (OptionsMenuScreen.pending_done or self.screen.cancel_pressed)) {
         OptionsMenuScreen.pending_done = false;
         Options.save(engine.io, engine.dirs.data);
-        engine.vsync = Options.current.vsync;
+        engine.set_vsync(Options.current.vsync);
         self.screen = MainMenuScreen.build(&self.main_menu_ctx);
         self.screen.open(!ui_input.profile_uses_pointer());
     }

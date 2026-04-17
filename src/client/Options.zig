@@ -74,8 +74,8 @@ pub const Options = struct {
     /// Rebuilt sections are unaffected.
     bouncy_chunks: bool = false,
 
-    /// Cap frames to the display refresh rate.  Applied to `engine.vsync`
-    /// on load and whenever the options menu is dismissed.
+    /// Cap frames to the display refresh rate.  Applied via
+    /// `engine.set_vsync` on load and whenever the options menu is dismissed.
     vsync: bool = true,
 
     /// In-game controller prompt style.  `auto` picks glyphs from the
