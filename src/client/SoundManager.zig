@@ -22,9 +22,9 @@ const log = std.log.scoped(.audio);
 
 // -- material classification ------------------------------------------------
 
-pub const Material = enum(u3) { stone, grass, gravel, wood, glass };
+pub const Material = enum(u3) { stone, grass, gravel, wood, glass, cloth, sand };
 
-const material_count = 5;
+const material_count = 7;
 const max_variants = 4;
 const music_count: u8 = 7;
 
@@ -45,8 +45,26 @@ pub fn block_material(id: u8) Material {
         B.Obsidian,
         => .stone,
         B.Planks, B.Log, B.Bookshelf => .wood,
-        B.Dirt, B.Sand, B.Gravel => .gravel,
+        B.Dirt, B.Gravel => .gravel,
+        B.Sand => .sand,
         B.Glass => .glass,
+        B.Red_Wool,
+        B.Orange_Wool,
+        B.Yellow_Wool,
+        B.Chartreuse_Wool,
+        B.Green_Wool,
+        B.Spring_Green_Wool,
+        B.Cyan_Wool,
+        B.Capri_Wool,
+        B.Ultramarine_Wool,
+        B.Purple_Wool,
+        B.Violet_Wool,
+        B.Magenta_Wool,
+        B.Rose_Wool,
+        B.Dark_Gray_Wool,
+        B.Light_Gray_Wool,
+        B.White_Wool,
+        => .cloth,
         else => .grass,
     };
 }
@@ -77,9 +95,9 @@ fn init_entry_row() [music_count]SoundEntry {
 }
 
 var dig_entries: [material_count][max_variants]SoundEntry = init_entry_grid();
-var dig_counts: [material_count]u8 = .{ 0, 0, 0, 0, 0 };
+var dig_counts: [material_count]u8 = .{ 0, 0, 0, 0, 0, 0, 0 };
 var step_entries: [material_count][max_variants]SoundEntry = init_entry_grid();
-var step_counts: [material_count]u8 = .{ 0, 0, 0, 0, 0 };
+var step_counts: [material_count]u8 = .{ 0, 0, 0, 0, 0, 0, 0 };
 var music_entries: [music_count]SoundEntry = init_entry_row();
 
 // -- voice pool -------------------------------------------------------------
@@ -173,9 +191,9 @@ fn rand_f32() f32 {
 
 // -- resource paths ---------------------------------------------------------
 
-const mat_names: [material_count][]const u8 = .{ "stone", "grass", "gravel", "wood", "glass" };
-const dig_max: [material_count]u8 = .{ 4, 4, 4, 4, 3 };
-const step_max: [material_count]u8 = .{ 4, 4, 4, 4, 0 };
+const mat_names: [material_count][]const u8 = .{ "stone", "grass", "gravel", "wood", "glass", "cloth", "sand" };
+const dig_max: [material_count]u8 = .{ 4, 4, 4, 4, 3, 4, 4 };
+const step_max: [material_count]u8 = .{ 4, 4, 4, 4, 0, 4, 4 };
 
 const music_paths: [music_count][]const u8 = .{
     "assets/minecraft/music/calm1.wav",
@@ -239,9 +257,9 @@ pub fn deinit() void {
     deflate_slots = undefined;
 
     dig_entries = init_entry_grid();
-    dig_counts = .{ 0, 0, 0, 0, 0 };
+    dig_counts = .{ 0, 0, 0, 0, 0, 0, 0 };
     step_entries = init_entry_grid();
-    step_counts = .{ 0, 0, 0, 0, 0 };
+    step_counts = .{ 0, 0, 0, 0, 0, 0, 0 };
     music_entries = init_entry_row();
 }
 
