@@ -695,7 +695,9 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // block face, without making it show through other geometry.
     // The outline shape matches the block's subvoxel bounds (e.g. half-height
     // for slabs, small box for flowers/mushrooms).
-    if (self.player.selected) |hit| {
+    if (self.player.selected) |hit| blk: {
+        const block_id = World.get_block(hit.x, hit.y, hit.z);
+        if (block_id == c.Block.Air) break :blk;
         Rendering.Texture.Default.bind();
         var t = Rendering.Transform.new();
         const cp = @cos(self.player.camera.pitch);
@@ -704,7 +706,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
             .y = @sin(self.player.camera.pitch),
             .z = @cos(self.player.camera.yaw) * cp,
         };
-        const bounds = c.block_bounds(World.get_block(hit.x, hit.y, hit.z));
+        const bounds = c.block_bounds(block_id);
         const Q: f32 = 0.0625;
         t.pos = .{
             .x = @as(f32, @floatFromInt(hit.x)) + @as(f32, @floatFromInt(bounds.min_x)) * Q + toward_camera.x * selection_depth_nudge,
