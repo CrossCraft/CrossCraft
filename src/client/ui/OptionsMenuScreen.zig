@@ -58,10 +58,12 @@ var lbl_ct: [label_max]u8 = undefined;
 var lbl_ct_len: u8 = 0;
 var lbl_bouncy: [label_max]u8 = undefined;
 var lbl_bouncy_len: u8 = 0;
+var lbl_vsync: [label_max]u8 = undefined;
+var lbl_vsync_len: u8 = 0;
 
 // -- component storage -------------------------------------------------------
-// 1 title label + 9 option buttons + 1 Controls (disabled) + 1 Done = 12.
-const total_components = 12;
+// 1 title label + 10 option buttons + 1 Controls (disabled) + 1 Done = 13.
+const total_components = 13;
 var components_buf: [total_components]Component = undefined;
 
 // -- option step tables -------------------------------------------------------
@@ -131,6 +133,7 @@ fn refresh_labels() void {
     fmt_label(&lbl_sens, &lbl_sens_len, "Sensitivity: {d}", .{@as(u32, @intFromFloat(c.sensitivity + 0.5))});
     fmt_label(&lbl_ct, &lbl_ct_len, "Controllers: {s}", .{ct_display(c.controller_tooltips)});
     fmt_label(&lbl_bouncy, &lbl_bouncy_len, "Bouncy Chunks: {s}", .{bool_str(c.bouncy_chunks)});
+    fmt_label(&lbl_vsync, &lbl_vsync_len, "VSync: {s}", .{bool_str(c.vsync)});
 }
 
 fn rebuild_components() void {
@@ -242,22 +245,32 @@ fn rebuild_components() void {
         .on_activate = on_bouncy,
     } };
     components_buf[10] = .{ .button = .{
-        .label = "Controls...",
+        .label = lbl_vsync[0..lbl_vsync_len],
         .width = w2,
         .height = bh,
         .pos_x = rx,
         .pos_y = 24,
         .reference = .middle_center,
         .origin = .middle_center,
+        .on_activate = on_vsync,
+    } };
+    components_buf[11] = .{ .button = .{
+        .label = "Controls...",
+        .width = w2,
+        .height = bh,
+        .pos_x = 0,
+        .pos_y = 48,
+        .reference = .middle_center,
+        .origin = .middle_center,
         .enabled = false,
         .on_activate = on_noop,
     } };
-    components_buf[11] = .{ .button = .{
+    components_buf[12] = .{ .button = .{
         .label = "Done",
         .width = wf,
         .height = bh,
         .pos_x = 0,
-        .pos_y = 52,
+        .pos_y = 72,
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_done,
@@ -322,6 +335,11 @@ fn on_ct(_: *anyopaque) void {
 
 fn on_bouncy(_: *anyopaque) void {
     Options.current.bouncy_chunks = !Options.current.bouncy_chunks;
+    refresh();
+}
+
+fn on_vsync(_: *anyopaque) void {
+    Options.current.vsync = !Options.current.vsync;
     refresh();
 }
 

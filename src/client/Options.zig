@@ -72,6 +72,10 @@ pub const Options = struct {
     /// Rebuilt sections are unaffected.
     bouncy_chunks: bool = false,
 
+    /// Cap frames to the display refresh rate.  Applied to `engine.vsync`
+    /// on load and whenever the options menu is dismissed.
+    vsync: bool = true,
+
     /// In-game controller prompt style.  `auto` picks glyphs from the
     /// connected controller on desktop, or the only available layout on PSP.
     controller_tooltips: ControllerTooltips = .auto,
@@ -113,6 +117,7 @@ const JsonOptions = struct {
     sensitivity: f32 = 3.0,
     ambient_occlusion: bool = false,
     bouncy_chunks: bool = false,
+    vsync: bool = true,
     controller_tooltips: u8 = 0,
 };
 
@@ -158,6 +163,7 @@ pub fn load(io: Io, dir: Io.Dir) void {
     current.sensitivity = std.math.clamp(j.sensitivity, 0.1, 20.0);
     current.ambient_occlusion = j.ambient_occlusion;
     current.bouncy_chunks = j.bouncy_chunks;
+    current.vsync = j.vsync;
     current.controller_tooltips = blk: {
         const mode: ControllerTooltips = switch (j.controller_tooltips) {
             0 => .auto,
@@ -189,6 +195,7 @@ pub fn save(io: Io, dir: Io.Dir) void {
         .sensitivity = current.sensitivity,
         .ambient_occlusion = current.ambient_occlusion,
         .bouncy_chunks = current.bouncy_chunks,
+        .vsync = current.vsync,
         .controller_tooltips = @intFromEnum(current.controller_tooltips),
     };
 

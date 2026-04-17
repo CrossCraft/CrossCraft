@@ -47,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
         .width = 854,
         .height = 480,
         .title = "CrossCraft Classic",
-        .vsync = false,
+        .vsync = true,
         .resizable = true,
     }, &state);
     defer engine.deinit();
