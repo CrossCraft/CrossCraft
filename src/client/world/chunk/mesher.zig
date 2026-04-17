@@ -448,6 +448,95 @@ fn assert_has_room(verts: *const std.ArrayList(Vertex), n: u32) void {
     std.debug.assert(verts.items.len + n <= verts.capacity);
 }
 
+// -- Ambient Occlusion --------------------------------------------------------
+// Per-vertex AO: sample 3 neighbors in the face's neighbor plane (two tangent
+// edges + the diagonal), classify to a 4-level brightness ramp, and modulate
+// the base directional face tint. Opaque-eff = opq | solid_leaf so solid-leaf
+// clusters cast AO just like real opaque blocks (matches the cull logic).
+
+const AO_MUL: [4]u8 = .{ 128, 170, 212, 255 };
+
+fn eff_bit(buf: *const SectionBuf, by: u32, bz: u32, bit: u32) u32 {
+    const row = &buf[by][bz];
+    const eff = row.opq | row.solid_leaf;
+    return (eff >> @intCast(bit)) & 1;
+}
+
+fn ao_level(t1: u32, t2: u32, d: u32) u32 {
+    if (t1 != 0 and t2 != 0) return 0;
+    return 3 - (t1 + t2 + d);
+}
+
+fn ao_modulate(color: u32, level: u32) u32 {
+    const m: u32 = AO_MUL[level];
+    const a = color & 0xFF000000;
+    const r = (color >> 16) & 0xFF;
+    const g = (color >> 8) & 0xFF;
+    const b = color & 0xFF;
+    return a | (((r * m) >> 8) << 16) | (((g * m) >> 8) << 8) | ((b * m) >> 8);
+}
+
+/// Compute the 4 per-corner colors for a cube face at buffer position
+/// (by, bz, bit). Vertex order matches `make_quad` for the given face.
+fn compute_ao_colors(buf: *const SectionBuf, by: u32, bz: u32, bit: u5, face: Face, shadowed: bool) [4]u32 {
+    const base_unshadowed = face_mod.face_color(face);
+    const base: u32 = if (shadowed) face_mod.apply_shadow(base_unshadowed) else base_unshadowed;
+    const b: u32 = bit;
+    var out: [4]u32 = undefined;
+
+    switch (face) {
+        .y_pos => {
+            const plane = by + 1;
+            // v0 (-X,-Z), v1 (+X,-Z), v2 (+X,+Z), v3 (-X,+Z)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b - 1), eff_bit(buf, plane, bz - 1, b), eff_bit(buf, plane, bz - 1, b - 1)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b + 1), eff_bit(buf, plane, bz - 1, b), eff_bit(buf, plane, bz - 1, b + 1)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b + 1), eff_bit(buf, plane, bz + 1, b), eff_bit(buf, plane, bz + 1, b + 1)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b - 1), eff_bit(buf, plane, bz + 1, b), eff_bit(buf, plane, bz + 1, b - 1)));
+        },
+        .y_neg => {
+            const plane = by - 1;
+            // v0 (-X,+Z), v1 (+X,+Z), v2 (+X,-Z), v3 (-X,-Z)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b - 1), eff_bit(buf, plane, bz + 1, b), eff_bit(buf, plane, bz + 1, b - 1)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b + 1), eff_bit(buf, plane, bz + 1, b), eff_bit(buf, plane, bz + 1, b + 1)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b + 1), eff_bit(buf, plane, bz - 1, b), eff_bit(buf, plane, bz - 1, b + 1)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, plane, bz, b - 1), eff_bit(buf, plane, bz - 1, b), eff_bit(buf, plane, bz - 1, b - 1)));
+        },
+        .x_pos => {
+            const bp = b + 1;
+            // v0 (-Y,-Z), v1 (-Y,+Z), v2 (+Y,+Z), v3 (+Y,-Z)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, by - 1, bz, bp), eff_bit(buf, by, bz - 1, bp), eff_bit(buf, by - 1, bz - 1, bp)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, by - 1, bz, bp), eff_bit(buf, by, bz + 1, bp), eff_bit(buf, by - 1, bz + 1, bp)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, by + 1, bz, bp), eff_bit(buf, by, bz + 1, bp), eff_bit(buf, by + 1, bz + 1, bp)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, by + 1, bz, bp), eff_bit(buf, by, bz - 1, bp), eff_bit(buf, by + 1, bz - 1, bp)));
+        },
+        .x_neg => {
+            const bp = b - 1;
+            // v0 (-Y,+Z), v1 (-Y,-Z), v2 (+Y,-Z), v3 (+Y,+Z)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, by - 1, bz, bp), eff_bit(buf, by, bz + 1, bp), eff_bit(buf, by - 1, bz + 1, bp)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, by - 1, bz, bp), eff_bit(buf, by, bz - 1, bp), eff_bit(buf, by - 1, bz - 1, bp)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, by + 1, bz, bp), eff_bit(buf, by, bz - 1, bp), eff_bit(buf, by + 1, bz - 1, bp)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, by + 1, bz, bp), eff_bit(buf, by, bz + 1, bp), eff_bit(buf, by + 1, bz + 1, bp)));
+        },
+        .z_pos => {
+            const plane = bz + 1;
+            // v0 (+X,-Y), v1 (-X,-Y), v2 (-X,+Y), v3 (+X,+Y)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b + 1), eff_bit(buf, by - 1, plane, b), eff_bit(buf, by - 1, plane, b + 1)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b - 1), eff_bit(buf, by - 1, plane, b), eff_bit(buf, by - 1, plane, b - 1)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b - 1), eff_bit(buf, by + 1, plane, b), eff_bit(buf, by + 1, plane, b - 1)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b + 1), eff_bit(buf, by + 1, plane, b), eff_bit(buf, by + 1, plane, b + 1)));
+        },
+        .z_neg => {
+            const plane = bz - 1;
+            // v0 (-X,-Y), v1 (+X,-Y), v2 (+X,+Y), v3 (-X,+Y)
+            out[0] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b - 1), eff_bit(buf, by - 1, plane, b), eff_bit(buf, by - 1, plane, b - 1)));
+            out[1] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b + 1), eff_bit(buf, by - 1, plane, b), eff_bit(buf, by - 1, plane, b + 1)));
+            out[2] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b + 1), eff_bit(buf, by + 1, plane, b), eff_bit(buf, by + 1, plane, b + 1)));
+            out[3] = ao_modulate(base, ao_level(eff_bit(buf, by, plane, b - 1), eff_bit(buf, by + 1, plane, b), eff_bit(buf, by + 1, plane, b - 1)));
+        },
+    }
+    return out;
+}
+
 pub const Meshes = struct {
     @"opaque": *std.ArrayList(Vertex),
     transparent: *std.ArrayList(Vertex),
@@ -464,6 +553,10 @@ fn emit_mask(
     m: Meshes,
     atlas: *const TextureAtlas,
     chunk_row: *const [c.ChunkSize]u8,
+    buf: *const SectionBuf,
+    by: u32,
+    bz: u32,
+    ao: bool,
 ) void {
     const local_y: u32 = y % SECTION_H;
     var bits = mask;
@@ -496,6 +589,10 @@ fn emit_mask(
         } else if (is_slab) {
             assert_has_room(mesh, 6);
             face_mod.emit_slab_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);
+        } else if (ao and !is_fluid) {
+            assert_has_room(mesh, 6);
+            const colors = compute_ao_colors(buf, by, bz, bit_pos, face, shadowed);
+            face_mod.emit_face_colors(mesh, face, lx, local_y, lz, tile, atlas, colors);
         } else {
             assert_has_room(mesh, 6);
             face_mod.emit_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);
@@ -514,6 +611,10 @@ fn emit_opaque_leaf_mask(
     opaque_mesh: *std.ArrayList(Vertex),
     atlas: *const TextureAtlas,
     chunk_row: *const [c.ChunkSize]u8,
+    buf: *const SectionBuf,
+    by: u32,
+    bz: u32,
+    ao: bool,
 ) void {
     const local_y: u32 = y % SECTION_H;
     var bits = mask;
@@ -528,7 +629,12 @@ fn emit_opaque_leaf_mask(
         const block = chunk_row[lx];
         const tile = BlockRegistry.global.get_face_tile(block, face);
         const shadowed = !face_sunlit(wx, y, wz, face);
-        face_mod.emit_face(opaque_mesh, face, lx, local_y, lz, tile, atlas, shadowed);
+        if (ao) {
+            const colors = compute_ao_colors(buf, by, bz, bit_pos, face, shadowed);
+            face_mod.emit_face_colors(opaque_mesh, face, lx, local_y, lz, tile, atlas, colors);
+        } else {
+            face_mod.emit_face(opaque_mesh, face, lx, local_y, lz, tile, atlas, shadowed);
+        }
     }
 }
 
@@ -615,6 +721,7 @@ pub fn emit_section(
     cz: u32,
     m: Meshes,
     atlas: *const TextureAtlas,
+    ao: bool,
 ) void {
     const base_y: u32 = sy * SECTION_H;
     for (0..SECTION_H) |ly| {
@@ -628,20 +735,20 @@ pub fn emit_section(
 
             // Standard faces - emit_mask routes opaque blocks to the opaque
             // mesh and outer leaves / glass / fluids to the transparent mesh.
-            if (f.x_pos != 0) emit_mask(f.x_pos, world_y, @intCast(lz), cx, cz, .x_pos, m, atlas, chunk_row);
-            if (f.x_neg != 0) emit_mask(f.x_neg, world_y, @intCast(lz), cx, cz, .x_neg, m, atlas, chunk_row);
-            if (f.z_pos != 0) emit_mask(f.z_pos, world_y, @intCast(lz), cx, cz, .z_pos, m, atlas, chunk_row);
-            if (f.z_neg != 0) emit_mask(f.z_neg, world_y, @intCast(lz), cx, cz, .z_neg, m, atlas, chunk_row);
-            if (f.y_pos != 0) emit_mask(f.y_pos, world_y, @intCast(lz), cx, cz, .y_pos, m, atlas, chunk_row);
-            if (f.y_neg != 0) emit_mask(f.y_neg, world_y, @intCast(lz), cx, cz, .y_neg, m, atlas, chunk_row);
+            if (f.x_pos != 0) emit_mask(f.x_pos, world_y, @intCast(lz), cx, cz, .x_pos, m, atlas, chunk_row, buf, by, bz, ao);
+            if (f.x_neg != 0) emit_mask(f.x_neg, world_y, @intCast(lz), cx, cz, .x_neg, m, atlas, chunk_row, buf, by, bz, ao);
+            if (f.z_pos != 0) emit_mask(f.z_pos, world_y, @intCast(lz), cx, cz, .z_pos, m, atlas, chunk_row, buf, by, bz, ao);
+            if (f.z_neg != 0) emit_mask(f.z_neg, world_y, @intCast(lz), cx, cz, .z_neg, m, atlas, chunk_row, buf, by, bz, ao);
+            if (f.y_pos != 0) emit_mask(f.y_pos, world_y, @intCast(lz), cx, cz, .y_pos, m, atlas, chunk_row, buf, by, bz, ao);
+            if (f.y_neg != 0) emit_mask(f.y_neg, world_y, @intCast(lz), cx, cz, .y_neg, m, atlas, chunk_row, buf, by, bz, ao);
 
             // Emit solid-leaf faces -> opaque mesh
-            if (f.sl_xp != 0) emit_opaque_leaf_mask(f.sl_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.@"opaque", atlas, chunk_row);
-            if (f.sl_xn != 0) emit_opaque_leaf_mask(f.sl_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.@"opaque", atlas, chunk_row);
-            if (f.sl_zp != 0) emit_opaque_leaf_mask(f.sl_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.@"opaque", atlas, chunk_row);
-            if (f.sl_zn != 0) emit_opaque_leaf_mask(f.sl_zn, world_y, @intCast(lz), cx, cz, .z_neg, m.@"opaque", atlas, chunk_row);
-            if (f.sl_yp != 0) emit_opaque_leaf_mask(f.sl_yp, world_y, @intCast(lz), cx, cz, .y_pos, m.@"opaque", atlas, chunk_row);
-            if (f.sl_yn != 0) emit_opaque_leaf_mask(f.sl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.@"opaque", atlas, chunk_row);
+            if (f.sl_xp != 0) emit_opaque_leaf_mask(f.sl_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
+            if (f.sl_xn != 0) emit_opaque_leaf_mask(f.sl_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
+            if (f.sl_zp != 0) emit_opaque_leaf_mask(f.sl_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
+            if (f.sl_zn != 0) emit_opaque_leaf_mask(f.sl_zn, world_y, @intCast(lz), cx, cz, .z_neg, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
+            if (f.sl_yp != 0) emit_opaque_leaf_mask(f.sl_yp, world_y, @intCast(lz), cx, cz, .y_pos, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
+            if (f.sl_yn != 0) emit_opaque_leaf_mask(f.sl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
 
             if (f.cross != 0) emit_cross_mask(f.cross, world_y, @intCast(lz), cx, cz, m.transparent, atlas, chunk_row);
 

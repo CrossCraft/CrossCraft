@@ -52,6 +52,10 @@ dirty_overflow: bool,
 lod_check_x: f32,
 lod_check_y: f32,
 lod_check_z: f32,
+/// Last Options.current.ambient_occlusion value applied to loaded sections.
+/// When it diverges from the option we walk every loaded section and mark
+/// any mismatched ones dirty so they re-mesh with the new AO state.
+applied_ao: bool,
 
 build_queue: [MAX_ACTIVE]GridRef,
 build_cursor: u32,
@@ -103,6 +107,7 @@ pub fn init(
         .lod_check_x = camera.x,
         .lod_check_y = camera.y,
         .lod_check_z = camera.z,
+        .applied_ao = Options.current.ambient_occlusion,
         .build_queue = undefined,
         .build_cursor = 0,
         .build_end = 0,
@@ -170,6 +175,12 @@ pub fn update(self: *Self, dt: f32, _: *const Util.BudgetContext, camera: *const
     const new_cz = camera_chunk(camera.z);
     if (new_cx != self.cam_cx or new_cz != self.cam_cz) {
         self.recollect(camera);
+    }
+
+    // AO toggle: one bool compare per frame; on mismatch, every loaded
+    // section needs a rebuild since AO is global.
+    if (Options.current.ambient_occlusion != self.applied_ao) {
+        self.apply_ao_toggle();
     }
 
     // Catch LOD transitions mid-chunk only when the camera has moved at
@@ -423,6 +434,7 @@ fn init_column(self: *Self, cx: u8, cz: u8, cam: *const Camera) bool {
         // Set the LOD state up front so the first build uses the correct
         // detail level rather than the default and immediately rebuilding.
         self.grid[cx][cz][sy].near_lod = target_near_lod(cx, @intCast(sy), cz, cam);
+        self.grid[cx][cz][sy].ao_enabled = Options.current.ambient_occlusion;
         count += 1;
     }
     return true;
@@ -539,6 +551,27 @@ pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
             self.dirty_overflow = true;
         }
     }
+}
+
+/// Flip ao_enabled on every loaded section whose last-built state disagrees
+/// with Options.current.ambient_occlusion, and mark those sections dirty so
+/// they re-mesh with the new AO state. Only called on the frame the option
+/// actually changes.
+fn apply_ao_toggle(self: *Self) void {
+    const target = Options.current.ambient_occlusion;
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz]) continue;
+            for (0..SECTIONS_Y) |sy| {
+                const sec = &self.grid[cx][cz][sy];
+                if (sec.ao_enabled != target) {
+                    sec.ao_enabled = target;
+                    self.mark_section_dirty(@intCast(cx), @intCast(sy), @intCast(cz));
+                }
+            }
+        }
+    }
+    self.applied_ao = target;
 }
 
 /// Walk loaded sections and update their LOD state. Sections that cross

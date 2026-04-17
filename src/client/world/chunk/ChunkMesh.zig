@@ -26,6 +26,10 @@ cz: u32,
 /// updates the field when the section transitions across the radius and
 /// queues a rebuild so the mesher picks the new state up.
 near_lod: bool,
+/// Whether this section was last rebuilt with ambient occlusion on. Same
+/// ownership pattern as `near_lod` - World flips it and marks dirty when
+/// Options.current.ambient_occlusion changes.
+ao_enabled: bool,
 /// Bouncy-rise animation progress in [0, 1]. 1 means at rest; 0 means the
 /// section is drawn 16 blocks below its natural Y. World kicks this to 0 the
 /// first time a section is meshed when the bouncy_chunks option is enabled,
@@ -47,6 +51,7 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, c
         .sy = sy,
         .cz = cz,
         .near_lod = false,
+        .ao_enabled = false,
         .anim_progress = 1.0,
         .first_build = true,
         .allocator = allocator,
@@ -101,7 +106,7 @@ pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void 
         .@"opaque" = &self.@"opaque".vertices,
         .transparent = &self.trans.vertices,
         .fluid = &self.fluid.vertices,
-    }, atlas);
+    }, atlas, self.ao_enabled);
 
     inline for (&.{ &self.@"opaque", &self.trans, &self.fluid }) |mesh| {
         if (mesh.vertices.items.len > 0) mesh.update();
