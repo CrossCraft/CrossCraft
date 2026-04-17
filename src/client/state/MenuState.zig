@@ -164,10 +164,10 @@ fn tick(ctx: *anyopaque, _: *Engine) anyerror!void {
     _ = ctx;
 }
 
-fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
+fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
-    SoundManager.update(dt, budget, 0, 0, 0, 0, 0);
+    SoundManager.update(dt, 0, 0, 0, 0, 0);
 
     // PSP: service deferred OSK at the top of update - the previous
     // frame's end_frame has completed so the GE is idle.

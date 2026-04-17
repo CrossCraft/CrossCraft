@@ -564,7 +564,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         self.world.update(dt, budget, &self.player.camera);
         SoundManager.update(
             dt,
-            budget,
             self.player.camera.x,
             self.player.camera.y,
             self.player.camera.z,
@@ -626,7 +625,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
     self.world.update(dt, budget, &self.player.camera);
     SoundManager.update(
         dt,
-        budget,
         self.player.camera.x,
         self.player.camera.y,
         self.player.camera.z,
