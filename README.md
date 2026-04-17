@@ -29,7 +29,7 @@ Classic v1.0 is a feature-complete, clean-room reimplementation of Minecraft Cla
 |------------------|-------------|-------------------------------------------------------------|
 | Server (Classic) | v1.0        | Stable. Speaks the Classic 0.30 protocol.                   |
 | Client (Classic) | v1.0        | Stable. Full singleplayer and multiplayer, desktop and PSP. |
-| Engine (Aether)  | In-tree dep | Powers rendering, audio, input, packing, platform ports.    |
+| Engine (Aether)  | External dep | Powers rendering, audio, input, packing, platform ports.    |
 
 ## Roadmap
 
