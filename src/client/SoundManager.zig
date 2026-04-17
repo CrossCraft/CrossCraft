@@ -411,6 +411,10 @@ pub fn play_dig(block: u8, bx: u16, by: u16, bz: u16) void {
 pub fn play_step(block: u8) void {
     if (!initialised) return;
     if (Options.current.sound_volume == 0.0) return;
+    switch (block) {
+        B.Flowing_Water, B.Still_Water, B.Flowing_Lava, B.Still_Lava => return,
+        else => {},
+    }
     var mat = @intFromEnum(block_material(block));
     var count = step_counts[mat];
     if (count == 0) {
