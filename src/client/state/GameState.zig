@@ -555,72 +555,59 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             }
         }
         // While paused, drop other pending input edges so they do not fire on
-        // resume. World/Server ticking continues in `tick()`; only player and
-        // overlay updates are skipped here.
+        // resume. Remote-player smoothing, world meshing, sound, and the
+        // periodic report keep ticking in the shared tail below.
         self.player.inventory_toggle_pending = false;
         self.player.chat_open_pending = false;
         self.player.chat_cmd_pending = false;
         self.player.chat_send_pending = false;
-        self.world.update(dt, budget, &self.player.camera);
-        SoundManager.update(
-            dt,
-            self.player.camera.x,
-            self.player.camera.y,
-            self.player.camera.z,
-            self.player.camera.yaw,
-            self.player.camera.pitch,
-        );
-        self.report_timer += dt;
-        if (self.report_timer >= 10.0) {
-            self.report_timer -= 10.0;
-            engine.report();
-        }
-        return;
-    }
-
-    if (self.player.inventory_toggle_pending) {
-        self.player.inventory_toggle_pending = false;
-        if (self.inventory.open) {
-            self.inventory.close_overlay(&self.player);
-        } else if (!self.chat.open) {
-            self.inventory.open_overlay(&self.player);
-        }
-    }
-
-    // Chat open/close.  Inventory and chat are mutually exclusive; neither
-    // opens while the other is active.
-    if (self.player.chat_open_pending) {
-        self.player.chat_open_pending = false;
-        if (!self.chat.open and !self.inventory.open) {
-            self.chat.open_overlay(&self.player, false);
-        }
-    }
-    if (self.player.chat_cmd_pending) {
-        self.player.chat_cmd_pending = false;
-        if (!self.chat.open and !self.inventory.open) {
-            self.chat.open_overlay(&self.player, true);
-        }
-    }
-
-    if (self.inventory.open) self.inventory.update(&ui_in, &self.player);
-
-    // Chat update: pass the chat_send flag separately so Enter sends without
-    // Space accidentally triggering a send (Space fires ui_confirm AND types
-    // a space char; chat ignores confirm_edge and uses chat_send_pending).
-    if (self.chat.open) {
-        const send = self.player.chat_send_pending;
-        self.player.chat_send_pending = false;
-        self.chat.update(&ui_in, send, &self.player);
     } else {
-        self.player.chat_send_pending = false;
+        if (self.player.inventory_toggle_pending) {
+            self.player.inventory_toggle_pending = false;
+            if (self.inventory.open) {
+                self.inventory.close_overlay(&self.player);
+            } else if (!self.chat.open) {
+                self.inventory.open_overlay(&self.player);
+            }
+        }
+
+        // Chat open/close.  Inventory and chat are mutually exclusive; neither
+        // opens while the other is active.
+        if (self.player.chat_open_pending) {
+            self.player.chat_open_pending = false;
+            if (!self.chat.open and !self.inventory.open) {
+                self.chat.open_overlay(&self.player, false);
+            }
+        }
+        if (self.player.chat_cmd_pending) {
+            self.player.chat_cmd_pending = false;
+            if (!self.chat.open and !self.inventory.open) {
+                self.chat.open_overlay(&self.player, true);
+            }
+        }
+
+        if (self.inventory.open) self.inventory.update(&ui_in, &self.player);
+
+        // Chat update: pass the chat_send flag separately so Enter sends
+        // without Space accidentally triggering a send (Space fires
+        // ui_confirm AND types a space char; chat ignores confirm_edge and
+        // uses chat_send_pending).
+        if (self.chat.open) {
+            const send = self.player.chat_send_pending;
+            self.player.chat_send_pending = false;
+            self.chat.update(&ui_in, send, &self.player);
+        } else {
+            self.player.chat_send_pending = false;
+        }
+
+        self.chat.tick(dt);
+
+        // Player physics keep ticking with the inventory open (matching
+        // Classic). mouse_captured is false while open, so apply_look
+        // ignores deltas and on_break/on_place early-return.
+        self.player.update(dt);
     }
 
-    self.chat.tick(dt);
-
-    // Player physics keep ticking with the inventory open (matching Classic).
-    // mouse_captured is false while open, so apply_look ignores deltas and
-    // on_break/on_place early-return.
-    self.player.update(dt);
     self.steve.update(dt, &self.player_list, &self.font_batcher);
     self.world.update(dt, budget, &self.player.camera);
     SoundManager.update(
@@ -631,14 +618,17 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         self.player.camera.yaw,
         self.player.camera.pitch,
     );
-    const slot_block = self.player.hotbar[self.player.selected_slot];
-    self.held.update(dt, slot_block, player_in_shadow(&self.player));
 
     self.report_timer += dt;
     if (self.report_timer >= 10.0) {
         self.report_timer -= 10.0;
         engine.report();
     }
+
+    if (self.paused) return;
+
+    const slot_block = self.player.hotbar[self.player.selected_slot];
+    self.held.update(dt, slot_block, player_in_shadow(&self.player));
 
     // Hotbar tooltip: reset timer on slot change, tick down otherwise.
     if (self.player.selected_slot != self.prev_selected_slot) {
