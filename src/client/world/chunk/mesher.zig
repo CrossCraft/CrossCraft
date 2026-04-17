@@ -310,9 +310,22 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const flu_xn = (flu & ~(eff_cur << 1) & ~(flu << 1)) & SECTION_MASK;
     const flu_zp = (flu & ~eff_zp & ~n_zp.flu) & SECTION_MASK;
     const flu_zn = (flu & ~eff_zn & ~n_zn.flu) & SECTION_MASK;
-    // Water/lava tops are inset (~0.9 blocks), so they must be emitted even
-    // when the block above is opaque - omitting them leaves a visible gap.
-    const flu_yp_bits = (flu & ~n_yp.flu) & SECTION_MASK;
+    // Water/lava tops are inset (~0.9 blocks). Naked tops (block above is
+    // not fluid and not opaque) always emit. Tops with opaque above only
+    // emit when adjacent (within 1 block horizontally) to a naked top, to
+    // form a one-plane border that hides the inset seam. Deep-covered
+    // interior culls — huge win in water/lava-filled caves.
+    const n_yp_zp = &buf[by + 1][bz + 1];
+    const n_yp_zn = &buf[by + 1][bz - 1];
+    const eff_yp_zp = n_yp_zp.opq | n_yp_zp.solid_leaf;
+    const eff_yp_zn = n_yp_zn.opq | n_yp_zn.solid_leaf;
+    const naked_cur = flu & ~n_yp.flu & ~eff_yp;
+    const naked_zp = n_zp.flu & ~n_yp_zp.flu & ~eff_yp_zp;
+    const naked_zn = n_zn.flu & ~n_yp_zn.flu & ~eff_yp_zn;
+    const naked_border = naked_cur | (naked_cur << 1) | (naked_cur >> 1) |
+        naked_zp | (naked_zp << 1) | (naked_zp >> 1) |
+        naked_zn | (naked_zn << 1) | (naked_zn >> 1);
+    const flu_yp_bits = (flu & ~n_yp.flu & (~eff_yp | naked_border)) & SECTION_MASK;
     const flu_yn = (flu & ~eff_yn & ~n_yn.flu) & SECTION_MASK;
 
     // Solid-leaf faces. By construction, all 6 neighbors of a solid leaf are
