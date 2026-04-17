@@ -27,6 +27,7 @@ pub const Tex = enum(u8) {
     water_still,
     lava_still,
     char,
+    glyphs,
 
     const count = @typeInfo(Tex).@"enum".fields.len;
 };
@@ -42,6 +43,10 @@ fn tex_path(id: Tex) []const u8 {
         .water_still => "crosscraft/textures/water_still",
         .lava_still => "crosscraft/textures/lava_still",
         .char => "minecraft/textures/char",
+        .glyphs => if (@import("aether").platform == .psp)
+            "crosscraft/textures/interface/controller_glyphs/psp"
+        else
+            "crosscraft/textures/interface/controller_glyphs/pc",
     };
 }
 

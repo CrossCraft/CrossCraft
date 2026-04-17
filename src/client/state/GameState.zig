@@ -34,6 +34,7 @@ const Inventory = @import("../ui/Inventory.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
 const Chat = @import("../ui/Chat.zig");
 const BlockNames = @import("../ui/BlockNames.zig");
+const ControllerGlyphs = @import("../ui/ControllerGlyphs.zig");
 const Color = @import("../graphics/Color.zig").Color;
 const ui_input = @import("../ui/input.zig");
 const PauseMenuScreen = @import("../ui/PauseMenuScreen.zig");
@@ -202,7 +203,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.render_alloc = render_alloc;
 
     // Textures
-    try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still, .char });
+    try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still, .char, .glyphs });
 
     // World renderer
     self.world = try WorldRenderer.init(
@@ -735,7 +736,17 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.ui_batcher.clear();
     self.font_batcher.clear();
     self.iso_blocks.begin();
-    self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, ResourcePack.get_tex(.gui), self.inventory.open);
+
+    // Controller-tooltip strip only applies to the in-world HUD.  Hidden
+    // (and the hotbar returns to its base position) whenever another
+    // overlay owns the bottom row: inventory, chat input, pause menu.
+    const show_glyphs = ControllerGlyphs.enabled() and
+        !self.inventory.open and
+        !self.chat.open and
+        !self.paused;
+    const hud_y_shift: i16 = if (show_glyphs) ControllerGlyphs.strip_height() else 0;
+
+    self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, ResourcePack.get_tex(.gui), self.inventory.open, hud_y_shift);
     if (self.inventory.open) {
         self.inventory.draw(&self.ui_batcher, &self.iso_blocks, &self.font_batcher);
     }
@@ -751,6 +762,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.chat.draw(&self.ui_batcher, &self.font_batcher);
 
     // Hotbar tooltip: block name above the hotbar, fades out over the last 0.5s.
+    // Rides the hotbar up when the controller-tooltip strip is visible.
     if (self.hotbar_tooltip_timer > 0 and !self.inventory.open) {
         const block = self.player.hotbar[self.player.selected_slot];
         const name = BlockNames.get(block);
@@ -766,7 +778,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
             self.font_batcher.add_text(&.{
                 .str = name,
                 .pos_x = 0,
-                .pos_y = -26,
+                .pos_y = -26 - hud_y_shift,
                 .color = Color.rgba(255, 255, 255, alpha),
                 .shadow_color = Color.rgba(50, 50, 50, shadow_alpha),
                 .spacing = 0,
@@ -775,6 +787,10 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
                 .origin = .bottom_center,
             });
         }
+    }
+
+    if (show_glyphs) {
+        self.draw_controller_tooltips();
     }
 
     try self.ui_batcher.flush();
@@ -805,6 +821,140 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         Rendering.gfx.api.clear_depth();
         try self.pause_font_batcher.flush();
     }
+}
+
+/// Render the bottom-left controller-prompt strip.
+///
+/// Layout: origin at (20, 23) from the bottom-left.  Each entry is a
+/// glyph followed by its label, all vertically centered on the glyph.
+/// Entries: Inventory (always), Place (if an aimable block is
+/// selected), Break (if any non-air block is selected).  PSP renders
+/// the L+R chord for Inventory as two shoulder glyphs side-by-side.
+fn draw_controller_tooltips(self: *@This()) void {
+    const strip_x0: i16 = 20;
+    const strip_y: i16 = 3; // bottom edge of glyphs, from screen bottom
+    const glyph_pad: i16 = 4; // gap between glyph and its label
+    const entry_pad: i16 = 12; // gap between one entry's label and the next glyph
+    const chord_pad: i16 = 2; // gap between the two PSP inventory glyphs
+    const text_layer: u8 = 252;
+    const sprite_layer: u8 = 252;
+
+    const glyphs_tex = ResourcePack.get_tex(.glyphs);
+
+    var cursor_x: i16 = strip_x0;
+
+    // Inventory (always).
+    cursor_x = self.draw_glyph_entry(
+        glyphs_tex,
+        .inventory,
+        cursor_x,
+        strip_y,
+        glyph_pad,
+        chord_pad,
+        sprite_layer,
+        text_layer,
+    );
+
+    // Place / Break only when something is aimed at.
+    if (self.player.selected) |hit| {
+        const block_id = World.get_block(hit.x, hit.y, hit.z);
+        if (block_id != c.Block.Air) {
+            if (hit.has_place) {
+                cursor_x += entry_pad;
+                cursor_x = self.draw_glyph_entry(
+                    glyphs_tex,
+                    .place,
+                    cursor_x,
+                    strip_y,
+                    glyph_pad,
+                    chord_pad,
+                    sprite_layer,
+                    text_layer,
+                );
+            }
+            cursor_x += entry_pad;
+            _ = self.draw_glyph_entry(
+                glyphs_tex,
+                .break_,
+                cursor_x,
+                strip_y,
+                glyph_pad,
+                chord_pad,
+                sprite_layer,
+                text_layer,
+            );
+        }
+    }
+}
+
+/// Draws one glyph (or two side-by-side for the PSP inventory chord)
+/// plus its label, anchored bottom-left.  Returns the x just past the
+/// label so the caller can chain the next entry.
+fn draw_glyph_entry(
+    self: *@This(),
+    glyphs_tex: *const Rendering.Texture,
+    which: ControllerGlyphs.Glyph,
+    x0: i16,
+    y: i16,
+    glyph_pad: i16,
+    chord_pad: i16,
+    sprite_layer: u8,
+    text_layer: u8,
+) i16 {
+    var x = x0;
+    const count = if (which == .inventory) ControllerGlyphs.inventory_glyph_count() else 1;
+    var last_rect: ControllerGlyphs.Rect = undefined;
+    var i: u8 = 0;
+    while (i < count) : (i += 1) {
+        const rect = ControllerGlyphs.lookup(which, i);
+        last_rect = rect;
+        self.ui_batcher.add_sprite(&.{
+            .texture = glyphs_tex,
+            .pos_offset = .{ .x = x, .y = -y },
+            .pos_extent = .{ .x = rect.render_w, .y = rect.render_h },
+            .tex_offset = .{ .x = rect.tex_x, .y = rect.tex_y },
+            .tex_extent = .{ .x = rect.tex_w, .y = rect.tex_h },
+            .color = .white_fg,
+            .layer = sprite_layer,
+            .reference = .bottom_left,
+            .origin = .bottom_left,
+        });
+        // KB+M inventory uses the Blank Key art with a letter rastered on
+        // top of it; other glyphs are self-describing.
+        if (ControllerGlyphs.letter_overlay(which)) |overlay| {
+            self.font_batcher.add_text(&.{
+                .str = overlay,
+                // Glyph center = (x + render_w/2, y + render_h/2) from bottom-left.
+                .pos_x = x + @divTrunc(rect.render_w, 2),
+                .pos_y = -(y + @divTrunc(rect.render_h, 2)),
+                .color = .white_fg,
+                .shadow_color = .menu_gray,
+                .spacing = 0,
+                .layer = text_layer,
+                .reference = .bottom_left,
+                .origin = .middle_center,
+            });
+        }
+        x += rect.render_w;
+        if (i + 1 < count) x += chord_pad;
+    }
+
+    // Label, vertically centered on the glyph.
+    const label = ControllerGlyphs.label(which);
+    const label_y_center: i16 = y + @divTrunc(last_rect.render_h, 2);
+    x += glyph_pad;
+    self.font_batcher.add_text(&.{
+        .str = label,
+        .pos_x = x,
+        .pos_y = -label_y_center,
+        .color = .white_fg,
+        .shadow_color = .menu_gray,
+        .spacing = 0,
+        .layer = text_layer,
+        .reference = .bottom_left,
+        .origin = .middle_left,
+    });
+    return x + self.font_batcher.string_width(label, 0, 1);
 }
 
 pub fn state(self: *@This()) State {
