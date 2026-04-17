@@ -370,47 +370,87 @@ fn sweep_move(start: Aabb, dx_in: f32, dy_in: f32, dz_in: f32) SweepResult {
 
 const VoxelHit = struct { t_enter: f32, axis: HitAxis };
 
+// Q16.16 fixed-point helpers. Slab test runs in integer math because the
+// PSP Allegrex FPU's `div.s` faults on inputs (denormals / near-zero
+// divisors) that x86/ARM silently clamp.
+const Q_FRAC_BITS: u5 = 16;
+const Q_ONE: i32 = 1 << Q_FRAC_BITS;
+
+/// Convert f32 to Q16.16, clamping to the i32 range so `@intFromFloat`
+/// never sees an out-of-range value.
+fn to_q(v: f32) i32 {
+    const s = v * @as(f32, @floatFromInt(Q_ONE));
+    const clamped = @max(-2147483520.0, @min(2147483520.0, s));
+    return @intFromFloat(clamped);
+}
+
+/// Q16.16 division with i64 intermediate and i32 saturation. `den` must
+/// be non-zero -- callers guard on that before entry.
+fn q_div_sat(num: i32, den: i32) i32 {
+    const widened: i64 = @as(i64, num) << Q_FRAC_BITS;
+    const r: i64 = @divTrunc(widened, @as(i64, den));
+    if (r > std.math.maxInt(i32)) return std.math.maxInt(i32);
+    if (r < std.math.minInt(i32)) return std.math.minInt(i32);
+    return @intCast(r);
+}
+
 /// Continuous-time AABB-vs-AABB sweep for one candidate voxel. Returns the
 /// entry time (0..1) along the swept motion and which axis caused entry, or
 /// `.axis = .none` if there's no hit within [0, 1).
 fn voxel_sweep(box: Aabb, dx: f32, dy: f32, dz: f32, blk: Aabb) VoxelHit {
-    var t_enter: f32 = -std.math.inf(f32);
-    var t_exit: f32 = std.math.inf(f32);
+    const bx0 = to_q(box.min_x);
+    const by0 = to_q(box.min_y);
+    const bz0 = to_q(box.min_z);
+    const bx1 = to_q(box.max_x);
+    const by1 = to_q(box.max_y);
+    const bz1 = to_q(box.max_z);
+    const kx0 = to_q(blk.min_x);
+    const ky0 = to_q(blk.min_y);
+    const kz0 = to_q(blk.min_z);
+    const kx1 = to_q(blk.max_x);
+    const ky1 = to_q(blk.max_y);
+    const kz1 = to_q(blk.max_z);
+    const qdx = to_q(dx);
+    const qdy = to_q(dy);
+    const qdz = to_q(dz);
+
+    var t_enter: i32 = std.math.minInt(i32);
+    var t_exit: i32 = std.math.maxInt(i32);
     var enter_axis: HitAxis = .none;
 
-    if (dx != 0.0) {
-        const te: f32 = if (dx > 0.0) (blk.min_x - box.max_x) / dx else (blk.max_x - box.min_x) / dx;
-        const tx: f32 = if (dx > 0.0) (blk.max_x - box.min_x) / dx else (blk.min_x - box.max_x) / dx;
+    if (qdx != 0) {
+        const te: i32 = if (qdx > 0) q_div_sat(kx0 - bx1, qdx) else q_div_sat(kx1 - bx0, qdx);
+        const tx: i32 = if (qdx > 0) q_div_sat(kx1 - bx0, qdx) else q_div_sat(kx0 - bx1, qdx);
         if (te > t_enter) {
             t_enter = te;
             enter_axis = .x;
         }
         if (tx < t_exit) t_exit = tx;
-    } else if (box.max_x <= blk.min_x or box.min_x >= blk.max_x) {
+    } else if (bx1 <= kx0 or bx0 >= kx1) {
         return .{ .t_enter = 1.0, .axis = .none };
     }
 
-    if (dy != 0.0) {
-        const te: f32 = if (dy > 0.0) (blk.min_y - box.max_y) / dy else (blk.max_y - box.min_y) / dy;
-        const tx: f32 = if (dy > 0.0) (blk.max_y - box.min_y) / dy else (blk.min_y - box.max_y) / dy;
+    if (qdy != 0) {
+        const te: i32 = if (qdy > 0) q_div_sat(ky0 - by1, qdy) else q_div_sat(ky1 - by0, qdy);
+        const tx: i32 = if (qdy > 0) q_div_sat(ky1 - by0, qdy) else q_div_sat(ky0 - by1, qdy);
         if (te > t_enter) {
             t_enter = te;
-            enter_axis = if (dy > 0.0) .y_pos else .y_neg;
+            enter_axis = if (qdy > 0) .y_pos else .y_neg;
         }
         if (tx < t_exit) t_exit = tx;
-    } else if (box.max_y <= blk.min_y or box.min_y >= blk.max_y) {
+    } else if (by1 <= ky0 or by0 >= ky1) {
         return .{ .t_enter = 1.0, .axis = .none };
     }
 
-    if (dz != 0.0) {
-        const te: f32 = if (dz > 0.0) (blk.min_z - box.max_z) / dz else (blk.max_z - box.min_z) / dz;
-        const tx: f32 = if (dz > 0.0) (blk.max_z - box.min_z) / dz else (blk.min_z - box.max_z) / dz;
+    if (qdz != 0) {
+        const te: i32 = if (qdz > 0) q_div_sat(kz0 - bz1, qdz) else q_div_sat(kz1 - bz0, qdz);
+        const tx: i32 = if (qdz > 0) q_div_sat(kz1 - bz0, qdz) else q_div_sat(kz0 - bz1, qdz);
         if (te > t_enter) {
             t_enter = te;
             enter_axis = .z;
         }
         if (tx < t_exit) t_exit = tx;
-    } else if (box.max_z <= blk.min_z or box.min_z >= blk.max_z) {
+    } else if (bz1 <= kz0 or bz0 >= kz1) {
         return .{ .t_enter = 1.0, .axis = .none };
     }
 
@@ -420,10 +460,14 @@ fn voxel_sweep(box: Aabb, dx: f32, dy: f32, dz: f32, blk: Aabb) VoxelHit {
     // one axis is already penetrated, which we can't resolve via sweep --
     // leave those to the skin-pulled next iteration.
     if (t_enter >= t_exit) return .{ .t_enter = 1.0, .axis = .none };
-    if (t_enter < 0.0) return .{ .t_enter = 1.0, .axis = .none };
-    if (t_enter >= 1.0) return .{ .t_enter = 1.0, .axis = .none };
+    if (t_enter < 0) return .{ .t_enter = 1.0, .axis = .none };
+    if (t_enter >= Q_ONE) return .{ .t_enter = 1.0, .axis = .none };
 
-    return .{ .t_enter = t_enter, .axis = enter_axis };
+    // Multiply by 2^-16 rather than dividing by 65536 -- exact in f32 and
+    // avoids `div.s` entirely.
+    const Q_ONE_INV: f32 = 1.0 / 65536.0;
+    const t_f: f32 = @as(f32, @floatFromInt(t_enter)) * Q_ONE_INV;
+    return .{ .t_enter = t_f, .axis = enter_axis };
 }
 
 fn extend_box(box: Aabb, dx: f32, dy: f32, dz: f32) Aabb {
