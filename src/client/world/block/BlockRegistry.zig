@@ -28,7 +28,9 @@ pub const Props = packed struct(u8) {
     cross: bool = false,
     leaf: bool = false,
     slab: bool = false,
-    _reserved: u2 = 0,
+    /// Non-opaque block that culls faces against same-type neighbors (glass).
+    glass: bool = false,
+    _reserved: u1 = 0,
 };
 
 @"opaque": BitSet,
@@ -37,6 +39,7 @@ cross: BitSet,
 leaf: BitSet,
 fluid: BitSet,
 slab: BitSet,
+glass: BitSet,
 face_tiles: [256]FaceTiles,
 /// Packed per-block properties. One lookup replaces 6 BitSet checks.
 props: [256]Props,
@@ -83,6 +86,7 @@ fn defaults() Self {
         .leaf = BitSet.initEmpty(),
         .fluid = BitSet.initEmpty(),
         .slab = BitSet.initEmpty(),
+        .glass = BitSet.initEmpty(),
         .face_tiles = [_]FaceTiles{all(0, 0)} ** 256,
         .props = [_]Props{.{}} ** 256,
     };
@@ -136,6 +140,9 @@ fn defaults() Self {
     self.fluid.set(B.Still_Water);
     self.fluid.set(B.Flowing_Lava);
     self.fluid.set(B.Still_Lava);
+
+    // -- Glass blocks (cull faces against same-type neighbors) --
+    self.glass.set(B.Glass);
 
     // -- Face tiles (texture atlas coordinates) --
     self.face_tiles[B.Stone] = all(1, 0);
@@ -200,6 +207,7 @@ fn defaults() Self {
             .cross = self.cross.isSet(i),
             .leaf = self.leaf.isSet(i),
             .slab = self.slab.isSet(i),
+            .glass = self.glass.isSet(i),
         };
     }
 

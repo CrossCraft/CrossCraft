@@ -48,6 +48,9 @@ const Row = struct {
     cross: u32,
     leaf: u32,
     slab: u32,
+    /// Glass (and any other block that culls faces against a same-type
+    /// neighbor). Two adjacent glass blocks don't draw the shared face.
+    glass: u32,
     /// Bits set where a leaf has all 6 neighbors covered (leaf-or-opaque).
     /// Filled by `compute_solid_leaves` after `pack_row` runs.
     solid_leaf: u32,
@@ -67,7 +70,7 @@ pub const SectionCounts = struct {
 // -- Pack ---------------------------------------------------------------------
 
 fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
-    const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .solid_leaf = 0 };
+    const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
     if (wz_raw < 0 or wz_raw >= @as(i32, WORLD_D)) return BOUNDARY;
     if (y < 0 or y >= @as(i32, WORLD_H)) return BOUNDARY;
 
@@ -77,6 +80,7 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     var cross: u32 = 0;
     var leaf: u32 = 0;
     var slab: u32 = 0;
+    var glass: u32 = 0;
     const wy: u16 = @intCast(y);
     const wz: u16 = @intCast(wz_raw);
 
@@ -100,8 +104,9 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
         if (p.cross) cross |= bit;
         if (p.leaf) leaf |= bit;
         if (p.slab) slab |= bit;
+        if (p.glass) glass |= bit;
     }
-    return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .solid_leaf = 0 };
+    return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .glass = glass, .solid_leaf = 0 };
 }
 
 /// Flag leaves whose all 6 neighbors are leaf-or-opaque. Such leaves are
@@ -191,6 +196,7 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     var cross: u32 = 0;
     var leaf: u32 = 0;
     var slab: u32 = 0;
+    var glass: u32 = 0;
     const wy: u16 = @intCast(y);
     const wz: u16 = @intCast(wz_raw);
 
@@ -199,7 +205,7 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     if (left_x < 0) {
         opq |= 1;
     } else {
-        classify_block(World.get_block(@intCast(left_x), wy, wz), 0, &opq, &vis, &flu, &cross, &leaf, &slab);
+        classify_block(World.get_block(@intCast(left_x), wy, wz), 0, &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
     }
 
     // Right boundary (bit 17)
@@ -207,13 +213,13 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     if (right_x >= WORLD_W) {
         opq |= @as(u32, 1) << 17;
     } else {
-        classify_block(World.get_block(@intCast(right_x), wy, wz), 17, &opq, &vis, &flu, &cross, &leaf, &slab);
+        classify_block(World.get_block(@intCast(right_x), wy, wz), 17, &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
     }
 
-    return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .solid_leaf = 0 };
+    return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .glass = glass, .solid_leaf = 0 };
 }
 
-inline fn classify_block(block: u8, bit_pos: u5, opq: *u32, vis: *u32, flu: *u32, cross_: *u32, leaf_: *u32, slab_: *u32) void {
+inline fn classify_block(block: u8, bit_pos: u5, opq: *u32, vis: *u32, flu: *u32, cross_: *u32, leaf_: *u32, slab_: *u32, glass_: *u32) void {
     const p = BlockRegistry.global.props[block];
     const bit: u32 = @as(u32, 1) << bit_pos;
     if (p.@"opaque") opq.* |= bit;
@@ -222,6 +228,7 @@ inline fn classify_block(block: u8, bit_pos: u5, opq: *u32, vis: *u32, flu: *u32
     if (p.cross) cross_.* |= bit;
     if (p.leaf) leaf_.* |= bit;
     if (p.slab) slab_.* |= bit;
+    if (p.glass) glass_.* |= bit;
 }
 
 // -- Count --------------------------------------------------------------------
@@ -295,14 +302,25 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     // leaves are emitted through their own paths and excluded here.
     const std_vis = (vis & ~flu) & ~sleaf;
 
-    const x_pos = (std_vis & ~(eff_cur >> 1)) & SECTION_MASK;
-    const x_neg = (std_vis & ~(eff_cur << 1)) & SECTION_MASK;
-    const z_pos = (std_vis & ~eff_zp) & SECTION_MASK;
-    const z_neg = (std_vis & ~eff_zn) & SECTION_MASK;
+    // Glass-against-glass: cull the shared face on both sides. A bit is set
+    // here only when the block at that bit is glass and its neighbor in that
+    // direction is also glass - used to mask out those faces below.
+    const g = cur.glass;
+    const g_xp = g & (g >> 1);
+    const g_xn = g & (g << 1);
+    const g_zp = g & n_zp.glass;
+    const g_zn = g & n_zn.glass;
+    const g_yp = g & n_yp.glass;
+    const g_yn = g & n_yn.glass;
+
+    const x_pos = (std_vis & ~(eff_cur >> 1) & ~g_xp) & SECTION_MASK;
+    const x_neg = (std_vis & ~(eff_cur << 1) & ~g_xn) & SECTION_MASK;
+    const z_pos = (std_vis & ~eff_zp & ~g_zp) & SECTION_MASK;
+    const z_neg = (std_vis & ~eff_zn & ~g_zn) & SECTION_MASK;
     // Slab top sits at y+0.5 with a half-block air gap below the next block,
     // so it can never be occluded by its y+1 neighbor - force-emit unconditionally.
-    const y_pos = ((std_vis & ~eff_yp) | slab) & SECTION_MASK;
-    const y_neg = (std_vis & ~eff_yn) & SECTION_MASK;
+    const y_pos = ((std_vis & ~eff_yp & ~g_yp) | slab) & SECTION_MASK;
+    const y_neg = (std_vis & ~eff_yn & ~g_yn) & SECTION_MASK;
 
     // Fluid faces: cull against eff (so fluid against solid-leaf is culled)
     // and against same-fluid neighbors (water-against-water looks like bulk).
