@@ -27,11 +27,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,    kind: game,   extra: -Dcpu=x86_64_v3 }
+          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,    kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,    kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: macos-latest,   target: aarch64-macos,      name: mac,      kind: game,   extra: "" }
           - { os: macos-latest,   target: aarch64-macos,      name: mac,      kind: server, extra: "" }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,  kind: game,   extra: -Dcpu=x86_64_v3 }
+          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,  kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows,  kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_phat, kind: game,   extra: "" }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_slim, kind: game,   extra: -Dslim=true }
