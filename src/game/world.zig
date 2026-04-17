@@ -62,7 +62,7 @@ pub var pending_count: u32 = 0;
 // drained each tick - no dequeue-decrement-reenqueue of deferred entries.
 const WHEEL_SIZE: u32 = 1024;
 const WHEEL_MASK: u32 = WHEEL_SIZE - 1;
-const POOL_CAPACITY: u32 = 1 << 18; // 262144 nodes
+const POOL_CAPACITY: u32 = 1 << 13; // 8192 nodes
 
 const SENTINEL: u32 = std.math.maxInt(u32);
 
@@ -74,7 +74,8 @@ const WheelNode = packed struct(u64) {
 var wheel_buckets: [WHEEL_SIZE]u32 = @splat(SENTINEL); // head index per bucket
 var node_pool: []WheelNode = undefined;
 var free_head: u32 = 0; // head of the free list
-var pool_used: u32 = 0; // high-water count for diagnostics
+var pool_used: u32 = 0; // live count
+var pool_used_peak: u32 = 0; // high-water across the session, logged on deinit
 var rng: Xorshift64 = .{ .state = 1 };
 
 // -- Per-chunk block counts (work-skipping) --------------------------------
@@ -82,9 +83,12 @@ const CHUNK_COUNT: u32 = c.ChunksX * c.ChunksZ * c.ChunksY;
 var chunk_counts: [CHUNK_COUNT]u16 = undefined; // non-air blocks
 var chunk_non_opaque: [CHUNK_COUNT]u16 = undefined; // non-opaque blocks
 
-// -- Deduplication bitmap (1 bit per block = 512 KiB) ----------------------
-const BLOCK_COUNT: u32 = c.WorldLength * c.WorldHeight * c.WorldDepth;
-var enqueued_bitmap: []u8 = undefined;
+// -- Enqueue dedup (fixed-capacity flat set, linear scan) ------------------
+// At POOL_CAPACITY=8192 entries, a flat u32 array is 32 KiB and every op
+// fits in a single SIMD-friendly scan - faster and ~40x smaller than a
+// hashmap once the index table and load-factor padding are counted.
+// Pre-reserved at init; runtime ops never grow.
+var enqueued: std.ArrayListUnmanaged(u32) = .empty;
 
 pub const LoadStatus = union(enum) {
     loading,
@@ -199,9 +203,9 @@ pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.D
     }
     free_head = 0;
     pool_used = 0;
+    pool_used_peak = 0;
     @memset(&wheel_buckets, SENTINEL);
-    enqueued_bitmap = try allocator.alloc(u8, BLOCK_COUNT / 8);
-    @memset(enqueued_bitmap, 0);
+    try enqueued.ensureTotalCapacityPrecise(allocator, POOL_CAPACITY);
 
     raw_blocks = try allocator.alloc(u8, c.WorldDepth * c.WorldHeight * c.WorldLength + 4);
     blocks = raw_blocks[4..];
@@ -278,12 +282,14 @@ pub fn deinit() void {
         log.err("failed to save world: {}", .{err});
     };
 
+    log.info("world update wheel peak: {d}/{d}", .{ pool_used_peak, POOL_CAPACITY });
+
     backing_allocator.free(raw_blocks);
     backing_allocator.free(node_pool);
-    backing_allocator.free(enqueued_bitmap);
+    enqueued.deinit(backing_allocator);
     raw_blocks = undefined;
     node_pool = undefined;
-    enqueued_bitmap = undefined;
+    enqueued = .empty;
     blocks = undefined;
     world_size = undefined;
     seed = undefined;
@@ -340,15 +346,15 @@ pub fn set_block(x: u16, y: u16, z: u16, block: u8) void {
     }
 
     update_height_column(x, y, z, block);
-    // The wheel dedup bitmap is keyed by location, not block type. If the
+    // The enqueue dedup set is keyed by location, not block type. If the
     // block at this loc was previously something with a slow tick (e.g.
     // dirt/grass at 100-999 ticks) and is now something fast (water/lava
-    // at 4 ticks), the stale bitmap would prevent try_enqueue from
-    // scheduling the new block at its faster delay until the slow timer
-    // eventually fires (5-50s later). Clearing here lets the next neighbor
-    // pass insert at the correct delay; any orphan wheel entry just no-ops
-    // when it finally fires because process_block_update re-reads the block.
-    bitmap_clear(idx);
+    // at 4 ticks), a stale entry would prevent try_enqueue from scheduling
+    // the new block at its faster delay until the slow timer eventually
+    // fires (5-50s later). Clearing here lets the next neighbor pass insert
+    // at the correct delay; any orphan wheel entry just no-ops when it
+    // finally fires because process_block_update re-reads the block.
+    enqueued_remove(idx);
 }
 
 pub fn is_chunk_all_air(cx: u32, cy: u32, cz: u32) bool {
@@ -522,7 +528,7 @@ pub fn tick() void {
 }
 
 fn process_block_update(loc: Location) void {
-    bitmap_clear(loc.to_index());
+    enqueued_remove(loc.to_index());
     const x: u16 = loc.x;
     const y: u16 = loc.y;
     const z: u16 = loc.z;
@@ -556,6 +562,7 @@ fn wheel_insert(loc: Location, delay: u32) void {
     const node_idx = free_head;
     free_head = node_pool[node_idx].next;
     pool_used += 1;
+    if (pool_used > pool_used_peak) pool_used_peak = pool_used;
 
     const slot = @as(u32, @intCast((tick_count +% delay) & WHEEL_MASK));
     node_pool[node_idx] = .{ .loc = loc, .next = wheel_buckets[slot] };
@@ -598,23 +605,20 @@ fn try_enqueue(x: u16, y: u16, z: u16) void {
     const block = get_block(x, y, z);
     if (block >= has_behavior.len or !has_behavior[block]) return;
     const idx = get_index(x, y, z);
-    if (bitmap_test(idx)) return;
-    if (free_head == SENTINEL) return; // pool exhausted, drop update
-    bitmap_set(idx);
+    if (std.mem.indexOfScalar(u32, enqueued.items, idx) != null) return;
+    if (free_head == SENTINEL or enqueued.items.len >= POOL_CAPACITY) {
+        log.warn("world update dropped: wheel full (pool_used={d})", .{pool_used});
+        return;
+    }
+    enqueued.appendAssumeCapacity(idx);
     const loc: Location = .{ .x = @intCast(x), .z = @intCast(z), .y = @intCast(y) };
     wheel_insert(loc, tick_delay(block));
 }
 
-fn bitmap_test(idx: u32) bool {
-    return (enqueued_bitmap[idx / 8] & (@as(u8, 1) << @as(u3, @intCast(idx % 8)))) != 0;
-}
-
-fn bitmap_set(idx: u32) void {
-    enqueued_bitmap[idx / 8] |= @as(u8, 1) << @as(u3, @intCast(idx % 8));
-}
-
-fn bitmap_clear(idx: u32) void {
-    enqueued_bitmap[idx / 8] &= ~(@as(u8, 1) << @as(u3, @intCast(idx % 8)));
+fn enqueued_remove(idx: u32) void {
+    if (std.mem.indexOfScalar(u32, enqueued.items, idx)) |i| {
+        _ = enqueued.swapRemove(i);
+    }
 }
 
 fn has_direct_sunlight(x: u16, y: u16, z: u16) bool {

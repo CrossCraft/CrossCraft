@@ -11,7 +11,6 @@ const KB: u32 = 1024;
 total_memory_mb: u32,
 chunk_radius: u32, // chunks from camera center (diameter = 2*r+1)
 lod_near_radius_blocks: u32, // sections within this distance get full-detail meshing
-mesh_pool_mb: u32,
 
 // Initial pool layout (used by App.init before any state runs)
 init_render: u32,
@@ -29,33 +28,30 @@ pub const current: Self = if (ae.platform == .psp and build_options.slim) .{
     .total_memory_mb = 32,
     .chunk_radius = 4,
     .lod_near_radius_blocks = 28,
-    .mesh_pool_mb = 20,
     .init_render = 4 * MB,
     .init_audio = 2 * MB,
     .init_game = 2 * MB,
     .init_user = 12 * MB,
-    .rt_render = 24 * MB,
+    .rt_render = 26 * MB + 512 * KB,
     .rt_audio = 0 * KB,
     .rt_game = 256 * KB,
-    .rt_user = 7 * MB,
+    .rt_user = 4 * MB + 512 * KB,
 } else if (ae.platform == .psp) .{
     .total_memory_mb = 19,
     .chunk_radius = 4,
     .lod_near_radius_blocks = 0, // Always opaque leaves
-    .mesh_pool_mb = 10,
     .init_render = 2 * MB,
     .init_audio = 1 * MB,
     .init_game = 1 * MB,
     .init_user = 12 * MB,
-    .rt_render = 11 * MB + 768 * KB,
+    .rt_render = 14 * MB + 256 * KB,
     .rt_audio = 0 * KB,
     .rt_game = 256 * KB,
-    .rt_user = 7 * MB,
+    .rt_user = 4 * MB + 512 * KB,
 } else .{
     .total_memory_mb = 80,
     .chunk_radius = 8,
     .lod_near_radius_blocks = 96,
-    .mesh_pool_mb = 32,
     .init_render = 8 * MB,
     .init_audio = 2 * MB,
     .init_game = 2 * MB,
