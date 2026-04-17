@@ -38,9 +38,9 @@ const MSG_FADE_SECS: f32 = 0.5;
 const MSG_TOTAL_SECS: f32 = MSG_SHOW_SECS + MSG_FADE_SECS;
 
 // Layout constants (logical pixels).
-const ROW_H: i16 = 10;      // Height of one message or input row.
-const MSG_W: i16 = 200;     // Width of the per-message background strip.
-const LEFT_PAD: i16 = 2;    // Distance from the screen left edge.
+const ROW_H: i16 = 10; // Height of one message or input row.
+const MSG_W: i16 = 200; // Width of the per-message background strip.
+const LEFT_PAD: i16 = 2; // Distance from the screen left edge.
 // The hotbar is 22 px tall and sits 1 px above the bottom, so it occupies
 // the bottom 23 logical pixels.  Add 3 px breathing room -> 26 px, matching
 // the hotbar tooltip offset used elsewhere in the codebase.
@@ -64,8 +64,8 @@ const Entry = struct {
 
 /// Ring buffer of received messages, oldest at head, newest just before head.
 messages: [MAX_MESSAGES]Entry,
-msg_head: u8,   // Next-write slot (wraps at MAX_MESSAGES).
-msg_count: u8,  // Number of valid entries (0..MAX_MESSAGES).
+msg_head: u8, // Next-write slot (wraps at MAX_MESSAGES).
+msg_count: u8, // Number of valid entries (0..MAX_MESSAGES).
 
 /// True while the input field is visible.
 open: bool,
@@ -253,7 +253,12 @@ pub fn service_psp_osk(self: *Self, player: *Player) void {
 
 // -- Draw -------------------------------------------------------------------
 
-pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher) void {
+pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, y_shift: i16) void {
+    // y_shift is the number of logical pixels the HUD has been pushed upward
+    // by the controller-tooltip strip.  When it is non-zero, every chat row
+    // and the input field ride upward by the same amount so they sit above
+    // the strip instead of overlapping it.
+    const base: i16 = BOTTOM_PAD + y_shift;
     // -- Message history --
     // Iterate from newest to oldest; newest draws closest to the bottom.
     // When the input field is open, messages are offset one row upward to
@@ -272,7 +277,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher) voi
         // "above the bottom edge."  The baseline sits above the hotbar; when
         // the input field is open, messages are offset one extra row upward.
         const input_offset: i16 = if (self.open) ROW_H else 0;
-        const row_y: i16 = -(BOTTOM_PAD + input_offset + @as(i16, drawn) * ROW_H);
+        const row_y: i16 = -(base + input_offset + @as(i16, drawn) * ROW_H);
 
         // Proportionally fade the dark background to match the text alpha.
         const bg_a: u8 = @intFromFloat(160.0 * (@as(f32, @floatFromInt(alpha)) / 255.0));
@@ -309,7 +314,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher) voi
     // Dark background strip for the input row, flush with the hotbar top.
     batcher.add_sprite(&.{
         .texture = &Rendering.Texture.Default,
-        .pos_offset = .{ .x = LEFT_PAD, .y = -BOTTOM_PAD },
+        .pos_offset = .{ .x = LEFT_PAD, .y = -base },
         .pos_extent = .{ .x = MSG_W, .y = ROW_H },
         .tex_offset = .{ .x = 0, .y = 0 },
         .tex_extent = .{ .x = 1, .y = 1 },
@@ -325,7 +330,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher) voi
     fonts.add_text(&.{
         .str = prefix,
         .pos_x = text_x,
-        .pos_y = -BOTTOM_PAD,
+        .pos_y = -base,
         .color = .white_fg,
         .shadow_color = .menu_gray,
         .spacing = 0,
@@ -340,7 +345,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher) voi
         fonts.add_text(&.{
             .str = self.buf[0..self.len],
             .pos_x = text_x + prefix_w,
-            .pos_y = -BOTTOM_PAD,
+            .pos_y = -base,
             .color = .white_fg,
             .shadow_color = .menu_gray,
             .spacing = 0,
@@ -355,7 +360,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher) voi
     fonts.add_text(&.{
         .str = "_",
         .pos_x = text_x + prefix_w + typed_w + 1,
-        .pos_y = -BOTTOM_PAD,
+        .pos_y = -base,
         .color = .white_fg,
         .shadow_color = .menu_gray,
         .spacing = 0,

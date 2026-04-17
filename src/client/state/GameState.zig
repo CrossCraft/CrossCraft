@@ -739,10 +739,10 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
 
     // Controller-tooltip strip only applies to the in-world HUD.  Hidden
     // (and the hotbar returns to its base position) whenever another
-    // overlay owns the bottom row: inventory, chat input, pause menu.
+    // overlay owns the bottom row: inventory or pause menu.  The chat
+    // overlay coexists with the strip -- chat rides up by hud_y_shift.
     const show_glyphs = ControllerGlyphs.enabled() and
         !self.inventory.open and
-        !self.chat.open and
         !self.paused;
     const hud_y_shift: i16 = if (show_glyphs) ControllerGlyphs.strip_height() else 0;
 
@@ -759,7 +759,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (show_playerlist) {
         self.player_list.draw(&self.ui_batcher, &self.font_batcher, Session.username());
     }
-    self.chat.draw(&self.ui_batcher, &self.font_batcher);
+    self.chat.draw(&self.ui_batcher, &self.font_batcher, hud_y_shift);
 
     // Hotbar tooltip: block name above the hotbar, fades out over the last 0.5s.
     // Rides the hotbar up when the controller-tooltip strip is visible.
@@ -903,6 +903,10 @@ fn draw_glyph_entry(
 ) i16 {
     var x = x0;
     const count = if (which == .inventory) ControllerGlyphs.inventory_glyph_count() else 1;
+    // Per-style baseline nudge so keyboard art can drop a pixel without
+    // changing the desktop-gamepad/PSP alignment.  Positive = down, which
+    // means subtracting from the bottom-anchored logical y.
+    const glyph_y = y - ControllerGlyphs.glyph_y_offset();
     var last_rect: ControllerGlyphs.Rect = undefined;
     var i: u8 = 0;
     while (i < count) : (i += 1) {
@@ -910,7 +914,7 @@ fn draw_glyph_entry(
         last_rect = rect;
         self.ui_batcher.add_sprite(&.{
             .texture = glyphs_tex,
-            .pos_offset = .{ .x = x, .y = -y },
+            .pos_offset = .{ .x = x, .y = -glyph_y },
             .pos_extent = .{ .x = rect.render_w, .y = rect.render_h },
             .tex_offset = .{ .x = rect.tex_x, .y = rect.tex_y },
             .tex_extent = .{ .x = rect.tex_w, .y = rect.tex_h },
@@ -920,13 +924,16 @@ fn draw_glyph_entry(
             .origin = .bottom_left,
         });
         // KB+M inventory uses the Blank Key art with a letter rastered on
-        // top of it; other glyphs are self-describing.
+        // top of it; other glyphs are self-describing.  The letter drops
+        // one extra logical pixel below the key center -- the font's cap
+        // line sits above its bounding-box center, so pure geometric
+        // centering reads as floating above the key face.
         if (ControllerGlyphs.letter_overlay(which)) |overlay| {
             self.font_batcher.add_text(&.{
                 .str = overlay,
-                // Glyph center = (x + render_w/2, y + render_h/2) from bottom-left.
+                // Glyph center = (x + render_w/2, glyph_y + render_h/2) from bottom-left.
                 .pos_x = x + @divTrunc(rect.render_w, 2),
-                .pos_y = -(y + @divTrunc(rect.render_h, 2)),
+                .pos_y = -(glyph_y + @divTrunc(rect.render_h, 2) - 1),
                 .color = .white_fg,
                 .shadow_color = .menu_gray,
                 .spacing = 0,
@@ -939,9 +946,11 @@ fn draw_glyph_entry(
         if (i + 1 < count) x += chord_pad;
     }
 
-    // Label, vertically centered on the glyph.
+    // Label, vertically centered on the glyph.  Nudged 1 logical px below
+    // the true glyph center so the text baseline sits visually aligned with
+    // the bottom half of the glyph instead of floating above it.
     const label = ControllerGlyphs.label(which);
-    const label_y_center: i16 = y + @divTrunc(last_rect.render_h, 2);
+    const label_y_center: i16 = y + @divTrunc(last_rect.render_h, 2) - 1;
     x += glyph_pad;
     self.font_batcher.add_text(&.{
         .str = label,

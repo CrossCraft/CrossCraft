@@ -15,6 +15,16 @@ pub const STEP_HEIGHT: f32 = 0.5;
 /// Used when converting open AABB maxima to inclusive voxel scan ranges.
 const EPSILON: f32 = 0.0001;
 
+/// Cap on sweep re-iterations after per-axis clip. Three passes is enough
+/// to exhaust a 3-axis clip, one extra guards against float-precision
+/// corner cases where the same voxel re-reports at t_enter ~ 0.
+const MAX_SWEEP_ITERS: u32 = 4;
+
+/// Pull the box out of the contact plane by this much after each hit so
+/// the next iteration's t_enter math doesn't see a zero-gap overlap and
+/// re-clip against the same voxel at t=0.
+const CONTACT_SKIN: f32 = 1.0e-4;
+
 // -- Collision solidity table (comptime) -------------------------------------
 
 /// True for block IDs the player cannot pass through.
@@ -123,7 +133,10 @@ pub const MoveResult = struct {
 // -- Core collision ----------------------------------------------------------
 
 /// Resolve a proposed movement against the voxel world.
-/// Axes are clipped in Y, X, Z order (matching Classic Minecraft).
+/// Uses a swept-AABB routine so corner/column voxels clip correctly on the
+/// first contact axis -- the old Y/X/Z sequential clip let the box slip
+/// past a single-block obstacle when the perpendicular axis hadn't moved
+/// yet, producing the "phase through one block at chunk borders" bug.
 pub fn move_and_collide(
     px: f32,
     py: f32,
@@ -132,28 +145,17 @@ pub fn move_and_collide(
     dy: f32,
     dz: f32,
 ) MoveResult {
-    var box = player_box(px, py, pz);
-    const original_dx = dx;
-    const original_dy = dy;
-    const original_dz = dz;
-
-    const move_y = clip_y(box, dy);
-    box.offset_y(move_y);
-
-    const move_x = clip_x(box, dx);
-    box.offset_x(move_x);
-
-    const move_z = clip_z(box, dz);
-    box.offset_z(move_z);
+    const start = player_box(px, py, pz);
+    const swept = sweep_move(start, dx, dy, dz);
 
     return MoveResult{
-        .x = box.center_x(),
-        .y = box.min_y,
-        .z = box.center_z(),
-        .on_ground = original_dy != move_y and original_dy < 0.0,
-        .hit_y_above = original_dy != move_y and original_dy > 0.0,
-        .hit_x = original_dx != move_x,
-        .hit_z = original_dz != move_z,
+        .x = swept.box.center_x(),
+        .y = swept.box.min_y,
+        .z = swept.box.center_z(),
+        .on_ground = swept.hits.y_neg and dy < 0.0,
+        .hit_y_above = swept.hits.y_pos and dy > 0.0,
+        .hit_x = swept.hits.x,
+        .hit_z = swept.hits.z,
     };
 }
 
@@ -258,143 +260,220 @@ fn block_box(bx: i32, by: i32, bz: i32, height: f32) Aabb {
     };
 }
 
-fn clip_y(box: Aabb, dy: f32) f32 {
-    if (dy == 0.0) return 0.0;
+// -- Swept AABB --------------------------------------------------------------
 
-    var clipped = dy;
-    if (dy < 0.0 and box.min_y + dy < 0.0) {
-        clipped = @min(-box.min_y, 0.0);
-    }
-    if (clipped == 0.0) return 0.0;
+const HitAxis = enum { none, x, y_neg, y_pos, z };
 
-    var sweep = box;
-    if (clipped > 0.0) {
-        sweep.max_y += clipped;
-    } else {
-        sweep.min_y += clipped;
-    }
+const HitFlags = struct {
+    x: bool = false,
+    y_neg: bool = false,
+    y_pos: bool = false,
+    z: bool = false,
+};
 
-    const range = scan_range(sweep);
-    var by = range.by0;
-    while (by <= range.by1) : (by += 1) {
-        if (by < 0 or by >= c.WorldHeight) continue;
-        var bx = range.bx0;
-        while (bx <= range.bx1) : (bx += 1) {
-            var bz = range.bz0;
-            while (bz <= range.bz1) : (bz += 1) {
-                clipped = clip_y_block(box, clipped, bx, by, bz);
+const SweepResult = struct {
+    box: Aabb,
+    hits: HitFlags,
+};
+
+/// Sweep `box` through (dx, dy, dz), clipping against voxel walls and
+/// world boundaries. All three axes move together -- a corner/column
+/// voxel stops the motion on the axis that made first contact, and the
+/// remaining motion retries on the other axes from the contact point.
+fn sweep_move(start: Aabb, dx_in: f32, dy_in: f32, dz_in: f32) SweepResult {
+    var box = start;
+    var dx = dx_in;
+    var dy = dy_in;
+    var dz = dz_in;
+    var hits: HitFlags = .{};
+
+    // World boundary hard walls (x in [0, WorldLength], z in [0, WorldDepth],
+    // y >= 0). Clamp once up front so the voxel loop never has to reason
+    // about them.
+    clip_world_x(&box, &dx, &hits);
+    clip_world_z(&box, &dz, &hits);
+    clip_world_y_floor(&box, &dy, &hits);
+
+    var iter: u32 = 0;
+    while (iter < MAX_SWEEP_ITERS) : (iter += 1) {
+        if (dx == 0.0 and dy == 0.0 and dz == 0.0) break;
+
+        const sweep = extend_box(box, dx, dy, dz);
+        const range = scan_range(sweep);
+
+        var t_min: f32 = 1.0;
+        var axis: HitAxis = .none;
+
+        var by: i32 = range.by0;
+        while (by <= range.by1) : (by += 1) {
+            if (by < 0 or by >= c.WorldHeight) continue;
+            var bx: i32 = range.bx0;
+            while (bx <= range.bx1) : (bx += 1) {
+                var bz: i32 = range.bz0;
+                while (bz <= range.bz1) : (bz += 1) {
+                    const height = solid_height_at(bx, by, bz);
+                    if (height == 0.0) continue;
+                    const blk = block_box(bx, by, bz, height);
+                    const hit = voxel_sweep(box, dx, dy, dz, blk);
+                    if (hit.axis == .none) continue;
+                    if (hit.t_enter < t_min) {
+                        t_min = hit.t_enter;
+                        axis = hit.axis;
+                    }
+                }
             }
         }
-    }
-    return clipped;
-}
 
-fn clip_x(box: Aabb, dx: f32) f32 {
-    if (dx == 0.0) return 0.0;
+        if (axis == .none) {
+            // Rest of the motion is unobstructed.
+            box.offset_x(dx);
+            box.offset_y(dy);
+            box.offset_z(dz);
+            break;
+        }
 
-    var clipped = clip_x_world(box, dx);
-    if (clipped == 0.0) return 0.0;
-
-    var sweep = box;
-    if (clipped > 0.0) {
-        sweep.max_x += clipped;
-    } else {
-        sweep.min_x += clipped;
-    }
-
-    const range = scan_range(sweep);
-    var by = range.by0;
-    while (by <= range.by1) : (by += 1) {
-        if (by < 0 or by >= c.WorldHeight) continue;
-        var bx = range.bx0;
-        while (bx <= range.bx1) : (bx += 1) {
-            var bz = range.bz0;
-            while (bz <= range.bz1) : (bz += 1) {
-                clipped = clip_x_block(box, clipped, bx, by, bz);
-            }
+        // Advance to just before the contact plane, zero the hit axis, and
+        // loop to let the remaining motion clip on other voxels / axes.
+        const safe_t = @max(0.0, t_min - CONTACT_SKIN);
+        const move_x = dx * safe_t;
+        const move_y = dy * safe_t;
+        const move_z = dz * safe_t;
+        box.offset_x(move_x);
+        box.offset_y(move_y);
+        box.offset_z(move_z);
+        dx -= move_x;
+        dy -= move_y;
+        dz -= move_z;
+        switch (axis) {
+            .x => {
+                dx = 0.0;
+                hits.x = true;
+            },
+            .y_neg => {
+                dy = 0.0;
+                hits.y_neg = true;
+            },
+            .y_pos => {
+                dy = 0.0;
+                hits.y_pos = true;
+            },
+            .z => {
+                dz = 0.0;
+                hits.z = true;
+            },
+            .none => unreachable,
         }
     }
-    return clipped;
+
+    return .{ .box = box, .hits = hits };
 }
 
-fn clip_z(box: Aabb, dz: f32) f32 {
-    if (dz == 0.0) return 0.0;
+const VoxelHit = struct { t_enter: f32, axis: HitAxis };
 
-    var clipped = clip_z_world(box, dz);
-    if (clipped == 0.0) return 0.0;
+/// Continuous-time AABB-vs-AABB sweep for one candidate voxel. Returns the
+/// entry time (0..1) along the swept motion and which axis caused entry, or
+/// `.axis = .none` if there's no hit within [0, 1).
+fn voxel_sweep(box: Aabb, dx: f32, dy: f32, dz: f32, blk: Aabb) VoxelHit {
+    var t_enter: f32 = -std.math.inf(f32);
+    var t_exit: f32 = std.math.inf(f32);
+    var enter_axis: HitAxis = .none;
 
-    var sweep = box;
-    if (clipped > 0.0) {
-        sweep.max_z += clipped;
-    } else {
-        sweep.min_z += clipped;
-    }
-
-    const range = scan_range(sweep);
-    var by = range.by0;
-    while (by <= range.by1) : (by += 1) {
-        if (by < 0 or by >= c.WorldHeight) continue;
-        var bx = range.bx0;
-        while (bx <= range.bx1) : (bx += 1) {
-            var bz = range.bz0;
-            while (bz <= range.bz1) : (bz += 1) {
-                clipped = clip_z_block(box, clipped, bx, by, bz);
-            }
+    if (dx != 0.0) {
+        const te: f32 = if (dx > 0.0) (blk.min_x - box.max_x) / dx else (blk.max_x - box.min_x) / dx;
+        const tx: f32 = if (dx > 0.0) (blk.max_x - box.min_x) / dx else (blk.min_x - box.max_x) / dx;
+        if (te > t_enter) {
+            t_enter = te;
+            enter_axis = .x;
         }
+        if (tx < t_exit) t_exit = tx;
+    } else if (box.max_x <= blk.min_x or box.min_x >= blk.max_x) {
+        return .{ .t_enter = 1.0, .axis = .none };
     }
-    return clipped;
+
+    if (dy != 0.0) {
+        const te: f32 = if (dy > 0.0) (blk.min_y - box.max_y) / dy else (blk.max_y - box.min_y) / dy;
+        const tx: f32 = if (dy > 0.0) (blk.max_y - box.min_y) / dy else (blk.min_y - box.max_y) / dy;
+        if (te > t_enter) {
+            t_enter = te;
+            enter_axis = if (dy > 0.0) .y_pos else .y_neg;
+        }
+        if (tx < t_exit) t_exit = tx;
+    } else if (box.max_y <= blk.min_y or box.min_y >= blk.max_y) {
+        return .{ .t_enter = 1.0, .axis = .none };
+    }
+
+    if (dz != 0.0) {
+        const te: f32 = if (dz > 0.0) (blk.min_z - box.max_z) / dz else (blk.max_z - box.min_z) / dz;
+        const tx: f32 = if (dz > 0.0) (blk.max_z - box.min_z) / dz else (blk.min_z - box.max_z) / dz;
+        if (te > t_enter) {
+            t_enter = te;
+            enter_axis = .z;
+        }
+        if (tx < t_exit) t_exit = tx;
+    } else if (box.max_z <= blk.min_z or box.min_z >= blk.max_z) {
+        return .{ .t_enter = 1.0, .axis = .none };
+    }
+
+    // Must enter before exiting, and entry must be within this motion
+    // window. `t_enter == 0` is a legitimate contact hit (box face flush
+    // with block face, moving in); only strictly-negative t_enter means
+    // one axis is already penetrated, which we can't resolve via sweep --
+    // leave those to the skin-pulled next iteration.
+    if (t_enter >= t_exit) return .{ .t_enter = 1.0, .axis = .none };
+    if (t_enter < 0.0) return .{ .t_enter = 1.0, .axis = .none };
+    if (t_enter >= 1.0) return .{ .t_enter = 1.0, .axis = .none };
+
+    return .{ .t_enter = t_enter, .axis = enter_axis };
 }
 
-fn clip_x_world(box: Aabb, dx: f32) f32 {
-    if (dx > 0.0) {
+fn extend_box(box: Aabb, dx: f32, dy: f32, dz: f32) Aabb {
+    var out = box;
+    if (dx > 0.0) out.max_x += dx else if (dx < 0.0) out.min_x += dx;
+    if (dy > 0.0) out.max_y += dy else if (dy < 0.0) out.min_y += dy;
+    if (dz > 0.0) out.max_z += dz else if (dz < 0.0) out.min_z += dz;
+    return out;
+}
+
+fn clip_world_x(box: *Aabb, dx: *f32, hits: *HitFlags) void {
+    if (dx.* > 0.0) {
         const allowed = @as(f32, @floatFromInt(c.WorldLength)) - box.max_x;
-        if (dx > allowed) return @max(0.0, allowed);
-    } else {
+        if (dx.* > allowed) {
+            dx.* = @max(0.0, allowed);
+            hits.x = true;
+        }
+    } else if (dx.* < 0.0) {
         const allowed = -box.min_x;
-        if (dx < allowed) return @min(0.0, allowed);
+        if (dx.* < allowed) {
+            dx.* = @min(0.0, allowed);
+            hits.x = true;
+        }
     }
-    return dx;
 }
 
-fn clip_z_world(box: Aabb, dz: f32) f32 {
-    if (dz > 0.0) {
+fn clip_world_z(box: *Aabb, dz: *f32, hits: *HitFlags) void {
+    if (dz.* > 0.0) {
         const allowed = @as(f32, @floatFromInt(c.WorldDepth)) - box.max_z;
-        if (dz > allowed) return @max(0.0, allowed);
-    } else {
+        if (dz.* > allowed) {
+            dz.* = @max(0.0, allowed);
+            hits.z = true;
+        }
+    } else if (dz.* < 0.0) {
         const allowed = -box.min_z;
-        if (dz < allowed) return @min(0.0, allowed);
+        if (dz.* < allowed) {
+            dz.* = @min(0.0, allowed);
+            hits.z = true;
+        }
     }
-    return dz;
 }
 
-fn clip_y_block(box: Aabb, dy: f32, bx: i32, by: i32, bz: i32) f32 {
-    const height = solid_height_at(bx, by, bz);
-    if (height == 0.0) return dy;
-    const block = block_box(bx, by, bz, height);
-    if (!overlaps_xz(box, block)) return dy;
-    if (dy > 0.0 and block.min_y >= box.max_y) return @min(dy, block.min_y - box.max_y);
-    if (dy < 0.0 and block.max_y <= box.min_y) return @max(dy, block.max_y - box.min_y);
-    return dy;
-}
-
-fn clip_x_block(box: Aabb, dx: f32, bx: i32, by: i32, bz: i32) f32 {
-    const height = solid_height_at(bx, by, bz);
-    if (height == 0.0) return dx;
-    const block = block_box(bx, by, bz, height);
-    if (!overlaps_yz(box, block)) return dx;
-    if (dx > 0.0 and block.min_x >= box.max_x) return @min(dx, block.min_x - box.max_x);
-    if (dx < 0.0 and block.max_x <= box.min_x) return @max(dx, block.max_x - box.min_x);
-    return dx;
-}
-
-fn clip_z_block(box: Aabb, dz: f32, bx: i32, by: i32, bz: i32) f32 {
-    const height = solid_height_at(bx, by, bz);
-    if (height == 0.0) return dz;
-    const block = block_box(bx, by, bz, height);
-    if (!overlaps_xy(box, block)) return dz;
-    if (dz > 0.0 and block.min_z >= box.max_z) return @min(dz, block.min_z - box.max_z);
-    if (dz < 0.0 and block.max_z <= box.min_z) return @max(dz, block.max_z - box.min_z);
-    return dz;
+fn clip_world_y_floor(box: *Aabb, dy: *f32, hits: *HitFlags) void {
+    if (dy.* < 0.0) {
+        const allowed = -box.min_y;
+        if (dy.* < allowed) {
+            dy.* = @min(0.0, allowed);
+            hits.y_neg = true;
+        }
+    }
 }
 
 /// Find the highest solid top crossed by a downward sweep.
@@ -417,9 +496,9 @@ fn find_landing_y(px: f32, start_y: f32, pz: f32, max_drop: f32) ?f32 {
             while (bz <= range.bz1) : (bz += 1) {
                 const height = solid_height_at(bx, by, bz);
                 if (height == 0.0) continue;
-                const block = block_box(bx, by, bz, height);
-                if (!overlaps_xz(box, block)) continue;
-                const block_top = block.max_y;
+                const blk = block_box(bx, by, bz, height);
+                if (!overlaps_xz(box, blk)) continue;
+                const block_top = blk.max_y;
                 if (block_top < target_y or block_top > start_y) continue;
                 if (landed == null or block_top > landed.?) {
                     landed = block_top;
@@ -464,8 +543,8 @@ fn overlaps_solid_box(box: Aabb) bool {
             while (bz <= range.bz1) : (bz += 1) {
                 const height = solid_height_at(bx, by, bz);
                 if (height == 0.0) continue;
-                const block = block_box(bx, by, bz, height);
-                if (overlaps_xyz(box, block)) return true;
+                const blk = block_box(bx, by, bz, height);
+                if (overlaps_xyz(box, blk)) return true;
             }
         }
     }
@@ -504,18 +583,10 @@ fn overlaps_xz(a: Aabb, b: Aabb) bool {
         a.max_z > b.min_z and a.min_z < b.max_z;
 }
 
-fn overlaps_xy(a: Aabb, b: Aabb) bool {
-    return a.max_x > b.min_x and a.min_x < b.max_x and
-        a.max_y > b.min_y and a.min_y < b.max_y;
-}
-
-fn overlaps_yz(a: Aabb, b: Aabb) bool {
-    return a.max_y > b.min_y and a.min_y < b.max_y and
-        a.max_z > b.min_z and a.min_z < b.max_z;
-}
-
 fn overlaps_xyz(a: Aabb, b: Aabb) bool {
-    return overlaps_xy(a, b) and a.max_z > b.min_z and a.min_z < b.max_z;
+    return a.max_x > b.min_x and a.min_x < b.max_x and
+        a.max_y > b.min_y and a.min_y < b.max_y and
+        a.max_z > b.min_z and a.min_z < b.max_z;
 }
 
 /// True when a floored f32 can be losslessly cast to i32.

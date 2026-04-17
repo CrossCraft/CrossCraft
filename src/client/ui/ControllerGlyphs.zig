@@ -79,6 +79,14 @@ pub fn label(g: Glyph) []const u8 {
     };
 }
 
+/// Per-style vertical nudge applied to the glyph sprite (and any letter
+/// overlay) in logical pixels.  Positive = down.  Keyboard art has its
+/// own built-in padding that reads as floating above the label baseline;
+/// dropping it by 1 px lines it up with the controller glyphs.
+pub fn glyph_y_offset() i16 {
+    return if (resolve_style() == .kbm) 1 else 0;
+}
+
 /// Optional letter string to raster on top of the glyph (only used by
 /// the desktop KB+M "blank key" art).  Returns null when no overlay is
 /// needed.  The returned slice is backed by a static string so it stays
@@ -155,12 +163,15 @@ fn lookup_pc(g: Glyph, style: Style) Rect {
         };
         return pc_tile(col, base_y + PC_TILE);
     }
-    // Controller layouts: inventory = top face button (slot 3 on row 0),
-    // place = RButton (slot 3 on row 1), break = LButton (slot 2 on row 1).
+    // Controller layouts: inventory = top face button (slot 3 on row 0,
+    // the Y / Triangle / X position).  Place / Break use the triggers --
+    // RT places, LT breaks -- matching the PSP shoulder bindings.  Row
+    // N+1 order is LStick, RStick, LButton, RButton, LTrigger, RTrigger,
+    // Start, Select, so LT = col 4 and RT = col 5.
     return switch (g) {
         .inventory => pc_tile(3, base_y),
-        .place => pc_tile(3, base_y + PC_TILE),
-        .break_ => pc_tile(2, base_y + PC_TILE),
+        .place => pc_tile(5, base_y + PC_TILE),
+        .break_ => pc_tile(4, base_y + PC_TILE),
     };
 }
 
