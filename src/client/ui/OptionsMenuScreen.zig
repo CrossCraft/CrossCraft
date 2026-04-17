@@ -139,22 +139,17 @@ fn refresh_labels() void {
 fn rebuild_components() void {
     // Two-column buttons: width 196 with pos_x +-100 from screen center.
     // At 400-pixel minimum logical width this leaves a 2-pixel margin each side.
+    // Array order is row-major across the two columns so grid nav maps cleanly:
+    // index = row * 2 + col. The title label and centered Controls/Done still
+    // sit in that virtual grid but are either unfocusable or span a row.
     const w2: i16 = 196;
     const wf: i16 = 200;
     const bh: i16 = 20;
     const lx: i16 = -100; // left column center offset
     const rx: i16 = 100; // right column center offset
 
-    components_buf[0] = .{ .label = .{
-        .text = "Options",
-        .pos_x = 0,
-        .pos_y = -96,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
-        .reference = .middle_center,
-        .origin = .middle_center,
-    } };
-    components_buf[1] = .{ .button = .{
+    // Row 0: Music (L) | Sound (R)
+    components_buf[0] = .{ .button = .{
         .label = lbl_music[0..lbl_music_len],
         .width = w2,
         .height = bh,
@@ -164,7 +159,7 @@ fn rebuild_components() void {
         .origin = .middle_center,
         .on_activate = on_music,
     } };
-    components_buf[2] = .{ .button = .{
+    components_buf[1] = .{ .button = .{
         .label = lbl_sound[0..lbl_sound_len],
         .width = w2,
         .height = bh,
@@ -174,7 +169,8 @@ fn rebuild_components() void {
         .origin = .middle_center,
         .on_activate = on_sound,
     } };
-    components_buf[3] = .{ .button = .{
+    // Row 1: Render Distance (L) | Fancy Leaves (R)
+    components_buf[2] = .{ .button = .{
         .label = lbl_rd[0..lbl_rd_len],
         .width = w2,
         .height = bh,
@@ -184,7 +180,7 @@ fn rebuild_components() void {
         .origin = .middle_center,
         .on_activate = on_rd,
     } };
-    components_buf[4] = .{ .button = .{
+    components_buf[3] = .{ .button = .{
         .label = lbl_fancy[0..lbl_fancy_len],
         .width = w2,
         .height = bh,
@@ -192,9 +188,11 @@ fn rebuild_components() void {
         .pos_y = -48,
         .reference = .middle_center,
         .origin = .middle_center,
+        .enabled = Options.fancy_leaves_supported(),
         .on_activate = on_fancy,
     } };
-    components_buf[5] = .{ .button = .{
+    // Row 2: FOV (L) | Ambient Occlusion (R)
+    components_buf[4] = .{ .button = .{
         .label = lbl_fov[0..lbl_fov_len],
         .width = w2,
         .height = bh,
@@ -204,7 +202,7 @@ fn rebuild_components() void {
         .origin = .middle_center,
         .on_activate = on_fov,
     } };
-    components_buf[6] = .{ .button = .{
+    components_buf[5] = .{ .button = .{
         .label = lbl_ao[0..lbl_ao_len],
         .width = w2,
         .height = bh,
@@ -214,7 +212,8 @@ fn rebuild_components() void {
         .origin = .middle_center,
         .on_activate = on_ao,
     } };
-    components_buf[7] = .{ .button = .{
+    // Row 3: Sensitivity (L) | Controllers (R)
+    components_buf[6] = .{ .button = .{
         .label = lbl_sens[0..lbl_sens_len],
         .width = w2,
         .height = bh,
@@ -224,7 +223,7 @@ fn rebuild_components() void {
         .origin = .middle_center,
         .on_activate = on_sens,
     } };
-    components_buf[8] = .{ .button = .{
+    components_buf[7] = .{ .button = .{
         .label = lbl_ct[0..lbl_ct_len],
         .width = w2,
         .height = bh,
@@ -234,7 +233,8 @@ fn rebuild_components() void {
         .origin = .middle_center,
         .on_activate = on_ct,
     } };
-    components_buf[9] = .{ .button = .{
+    // Row 4: Bouncy Chunks (L) | VSync (R)
+    components_buf[8] = .{ .button = .{
         .label = lbl_bouncy[0..lbl_bouncy_len],
         .width = w2,
         .height = bh,
@@ -244,7 +244,7 @@ fn rebuild_components() void {
         .origin = .middle_center,
         .on_activate = on_bouncy,
     } };
-    components_buf[10] = .{ .button = .{
+    components_buf[9] = .{ .button = .{
         .label = lbl_vsync[0..lbl_vsync_len],
         .width = w2,
         .height = bh,
@@ -254,7 +254,8 @@ fn rebuild_components() void {
         .origin = .middle_center,
         .on_activate = on_vsync,
     } };
-    components_buf[11] = .{ .button = .{
+    // Row 5: Controls (col 0, disabled) | Done (col 1) -- both drawn centered.
+    components_buf[10] = .{ .button = .{
         .label = "Controls...",
         .width = w2,
         .height = bh,
@@ -265,7 +266,7 @@ fn rebuild_components() void {
         .enabled = false,
         .on_activate = on_noop,
     } };
-    components_buf[12] = .{ .button = .{
+    components_buf[11] = .{ .button = .{
         .label = "Done",
         .width = wf,
         .height = bh,
@@ -274,6 +275,16 @@ fn rebuild_components() void {
         .reference = .middle_center,
         .origin = .middle_center,
         .on_activate = on_done,
+    } };
+    // Title is unfocusable; parked past the interactive grid so nav math stays clean.
+    components_buf[12] = .{ .label = .{
+        .text = "Options",
+        .pos_x = 0,
+        .pos_y = -96,
+        .color = .white_fg,
+        .shadow_color = .menu_gray,
+        .reference = .middle_center,
+        .origin = .middle_center,
     } };
 }
 
@@ -406,7 +417,8 @@ pub fn build(ctx: *Context) Screen {
     return .{
         .components = components_buf[0..],
         .ctx = ctx,
-        .nav = .stack,
+        .nav = .grid,
+        .row_width = 2,
         .draw_underlay = if (ctx.dirt != null) draw_dirt_underlay else draw_dim_underlay,
         .layer_base = if (ctx.dirt != null) 0 else LAYER_BASE,
     };

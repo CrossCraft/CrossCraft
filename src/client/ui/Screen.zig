@@ -286,31 +286,57 @@ fn nav_grid(self: *Self, dir: NavDir) void {
     const col: i32 = @mod(cur, rw);
     const row: i32 = @divTrunc(cur, rw);
 
-    var nx: i32 = col;
-    var ny: i32 = row;
     switch (dir) {
-        .left => nx -= 1,
-        .right => nx += 1,
-        .up => ny -= 1,
-        .down => ny += 1,
+        .left, .right => {
+            const step: i32 = if (dir == .right) 1 else -1;
+            var nx: i32 = col + step;
+            while (nx >= 0 and nx < rw) : (nx += step) {
+                const next = row * rw + nx;
+                if (next < 0 or next >= len) return;
+                if (self.components[@intCast(next)].focusable()) {
+                    self.focused = @intCast(next);
+                    return;
+                }
+            }
+        },
+        .up, .down => {
+            const step: i32 = if (dir == .down) 1 else -1;
+            // Pass 1: walk the same column first so a disabled cell never
+            // pivots focus sideways when a straight-ahead focusable exists.
+            var ny: i32 = row + step;
+            while (ny >= 0) : (ny += step) {
+                const idx = ny * rw + col;
+                if (idx >= len and step > 0) break;
+                if (idx >= 0 and idx < len and
+                    self.components[@intCast(idx)].focusable())
+                {
+                    self.focused = @intCast(idx);
+                    return;
+                }
+            }
+            // Pass 2: column exhausted -- scan each row in direction for any
+            // focusable, preferring cells nearer the original column. Handles
+            // asymmetric rows like a centered Done below two-column options.
+            ny = row + step;
+            while (ny >= 0) : (ny += step) {
+                var off: i32 = 1;
+                const first_in_row = ny * rw;
+                if (first_in_row >= len and step > 0) return;
+                while (off < rw) : (off += 1) {
+                    const cols = [_]i32{ col - off, col + off };
+                    for (cols) |cc| {
+                        if (cc < 0 or cc >= rw) continue;
+                        const idx = ny * rw + cc;
+                        if (idx < 0 or idx >= len) continue;
+                        if (self.components[@intCast(idx)].focusable()) {
+                            self.focused = @intCast(idx);
+                            return;
+                        }
+                    }
+                }
+            }
+        },
         .none => return,
-    }
-    while (true) {
-        if (nx < 0 or nx >= rw or ny < 0) return;
-        const next = ny * rw + nx;
-        if (next < 0 or next >= len) return;
-        if (self.components[@intCast(next)].focusable()) {
-            self.focused = @intCast(next);
-            return;
-        }
-
-        switch (dir) {
-            .left => nx -= 1,
-            .right => nx += 1,
-            .up => ny -= 1,
-            .down => ny += 1,
-            .none => return,
-        }
     }
 }
 
