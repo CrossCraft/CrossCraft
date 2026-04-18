@@ -480,20 +480,24 @@ fn apply_look(self: *Self, dt: f32) void {
     // Stick look honours the same gate as mouse look so the PSP analog nub
     // does not rotate the camera while the inventory overlay is up.
     if (self.mouse_captured) {
-        self.camera.yaw -= apply_stick_curve(self.look_rate[0]) * self.stick_look_speed * dt;
-        self.camera.pitch += apply_stick_curve(self.look_rate[1]) * self.stick_look_speed * dt;
+        const curved = apply_stick_curve(self.look_rate);
+        self.camera.yaw -= curved[0] * self.stick_look_speed * dt;
+        self.camera.pitch += curved[1] * self.stick_look_speed * dt;
     }
 
     const max_pitch = std.math.pi / 2.0 - 0.01;
     self.camera.pitch = @max(-max_pitch, @min(max_pitch, self.camera.pitch));
 }
 
-/// Apply a power curve to an analog stick axis value (already dead-zoned by
-/// the engine). Gives fine control at small deflections and fast turns at
-/// full tilt.
-fn apply_stick_curve(raw: f32) f32 {
+/// Apply a power curve to the stick magnitude (already dead-zoned by the
+/// engine) while preserving direction.
+fn apply_stick_curve(raw: [2]f32) [2]f32 {
     const exponent: f32 = 2.2;
-    return std.math.copysign(std.math.pow(f32, @abs(raw), exponent), raw);
+    const mag_sq = raw[0] * raw[0] + raw[1] * raw[1];
+    if (mag_sq < 1e-10) return .{ 0, 0 };
+    const mag = @sqrt(mag_sq);
+    const scale = std.math.pow(f32, @min(mag, 1.0), exponent) / mag;
+    return .{ raw[0] * scale, raw[1] * scale };
 }
 
 // -- Noclip (freecam) -------------------------------------------------------

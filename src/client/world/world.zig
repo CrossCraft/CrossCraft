@@ -212,7 +212,7 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
     if (self.build_cursor >= self.build_end) return;
 
     const available = budget.safe_remaining();
-    const n: u32 = if (self.build_estimator.is_warming_up())
+    const n: u32 = if (self.build_estimator.is_warming_up() or ae.platform == .psp)
         1
     else
         @intCast(@max(1, self.build_estimator.fit_in(available, .p75)));
