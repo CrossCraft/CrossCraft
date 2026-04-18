@@ -49,6 +49,15 @@ pub fn init() !void {
         try input.bind_action("noclip", .{ .source = .{ .key = .X } });
     }
 
+    // ---- HUD toggle (desktop only) ----
+    // F1 hides/reveals the crosshair, hotbar, version text, and held-block
+    // viewmodel. Not bound on PSP; there's no comparable key and the strip
+    // is already minimal at that resolution.
+    if (ae.platform != .psp) {
+        try input.register_action("hud_toggle", .button);
+        try input.bind_action("hud_toggle", .{ .source = .{ .key = .F1 } });
+    }
+
     // ---- inventory toggle ----
     // Opens the Classic block-picker overlay. Desktop keyboard uses B and
     // gamepad uses Y; PSP uses L+R chord (detected in Player via shoulder_l /

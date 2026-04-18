@@ -82,6 +82,10 @@ render_alloc: std.mem.Allocator,
 hotbar_tooltip_timer: f32,
 prev_selected_slot: u8,
 report_timer: f32,
+/// Desktop F1 toggles HUD visibility. When set, the crosshair, hotbar,
+/// version text, hotbar tooltip, prompt strip, and held-block viewmodel
+/// are all suppressed. Pause, inventory, and chat overlays stay visible.
+hud_hidden: bool,
 paused: bool,
 pause_screen: Screen,
 pause_ctx: PauseMenuScreen.Context,
@@ -258,6 +262,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.hotbar_tooltip_timer = 0;
     self.prev_selected_slot = 0;
     self.report_timer = 0;
+    self.hud_hidden = false;
 
     // Pause menu: built lazily-by-config. The lost-focus callback is a no-op
     // on PSP (Aether never fires it there). Pause uses dedicated batchers so
@@ -562,10 +567,16 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         // resume. Remote-player smoothing, world meshing, sound, and the
         // periodic report keep ticking in the shared tail below.
         self.player.inventory_toggle_pending = false;
+        self.player.hud_toggle_pending = false;
         self.player.chat_open_pending = false;
         self.player.chat_cmd_pending = false;
         self.player.chat_send_pending = false;
     } else {
+        if (self.player.hud_toggle_pending) {
+            self.player.hud_toggle_pending = false;
+            self.hud_hidden = !self.hud_hidden;
+        }
+
         if (self.player.inventory_toggle_pending) {
             self.player.inventory_toggle_pending = false;
             if (self.inventory.open) {
@@ -727,7 +738,9 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // clears depth internally so it never z-fights against nearby world
     // geometry. Matrices are left in that state on exit; the UI pass
     // below installs its own identity proj/view before drawing.
-    self.held.draw(ResourcePack.get_tex(.terrain), &self.player.camera);
+    if (!self.hud_hidden) {
+        self.held.draw(ResourcePack.get_tex(.terrain), &self.player.camera);
+    }
 
     // UI pass: orthographic overlay drawn on top of the 3D scene.
     // Draw order is hotbar bg -> selector -> inventory panel -> iso block
@@ -740,27 +753,31 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.font_batcher.clear();
     self.iso_blocks.begin();
 
-    self.font_batcher.add_text(&.{
-        .str = "0.30",
-        .pos_x = 2,
-        .pos_y = 2,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
-        .spacing = 0,
-        .layer = 252,
-        .reference = .top_left,
-        .origin = .top_left,
-    });
+    if (!self.hud_hidden) {
+        self.font_batcher.add_text(&.{
+            .str = "0.30",
+            .pos_x = 2,
+            .pos_y = 2,
+            .color = .white_fg,
+            .shadow_color = .menu_gray,
+            .spacing = 0,
+            .layer = 252,
+            .reference = .top_left,
+            .origin = .top_left,
+        });
+    }
 
     // Controller-tooltip strip applies to every in-world HUD context --
     // normal play, inventory open, social overlay, chat.  The prompt
     // *contents* swap per context in draw_hud_prompts.  Hidden only when
     // the pause screen draws its own strip.  Chat + inventory both ride
     // up by hud_y_shift so the strip never overlaps them.
-    const show_glyphs = PromptStrip.enabled() and !self.paused;
+    const show_glyphs = PromptStrip.enabled() and !self.paused and !self.hud_hidden;
     const hud_y_shift: i16 = if (show_glyphs) Buttons.strip_height() else 0;
 
-    self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, ResourcePack.get_tex(.gui), self.inventory.open, hud_y_shift);
+    if (!self.hud_hidden) {
+        self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, ResourcePack.get_tex(.gui), self.inventory.open, hud_y_shift);
+    }
     if (self.inventory.open) {
         self.inventory.draw(&self.ui_batcher, &self.iso_blocks, &self.font_batcher);
     }
@@ -777,7 +794,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
 
     // Hotbar tooltip: block name above the hotbar, fades out over the last 0.5s.
     // Rides the hotbar up when the controller-tooltip strip is visible.
-    if (self.hotbar_tooltip_timer > 0 and !self.inventory.open) {
+    if (self.hotbar_tooltip_timer > 0 and !self.inventory.open and !self.hud_hidden) {
         const block = self.player.hotbar[self.player.selected_slot];
         const name = BlockNames.get(block);
         if (name.len > 0) {

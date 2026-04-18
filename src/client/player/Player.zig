@@ -246,6 +246,10 @@ playerlist_edge: bool,
 /// PSP only: Cross (X) pressed while social mode is open -- arm the OSK.
 psp_osk_edge: bool,
 
+/// Rising edge of the hud_toggle press (desktop F1); consumed by GameState
+/// each frame to flip its `hud_hidden` state.
+hud_toggle_pending: bool,
+
 /// Edge flags set by the chat action callbacks; GameState polls and clears
 /// them each frame.  chat_open: blank field; chat_cmd: '/' prefix field;
 /// chat_send: Enter key (send pending message).
@@ -327,6 +331,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .playerlist_held = false,
         .playerlist_edge = false,
         .psp_osk_edge = false,
+        .hud_toggle_pending = false,
         .chat_open_pending = false,
         .chat_cmd_pending = false,
         .chat_send_pending = false,
@@ -358,6 +363,9 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     try input.add_button_callback("shoulder_r", @ptrCast(self), on_shoulder_r);
     try input.add_button_callback("shoulder_l", @ptrCast(self), on_shoulder_l);
     try input.add_button_callback("playerlist", @ptrCast(self), on_playerlist);
+    if (ae.platform != .psp) {
+        try input.add_button_callback("hud_toggle", @ptrCast(self), on_hud_toggle);
+    }
     try input.add_button_callback("chat_open", @ptrCast(self), on_chat_open);
     try input.add_button_callback("chat_cmd", @ptrCast(self), on_chat_cmd);
     try input.add_button_callback("chat_send", @ptrCast(self), on_chat_send);
@@ -1416,6 +1424,12 @@ fn on_psp_osk(ctx: *anyopaque, event: input.ButtonEvent) void {
     if (event != .pressed) return;
     const self: *Self = @ptrCast(@alignCast(ctx));
     self.psp_osk_edge = true;
+}
+
+fn on_hud_toggle(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.hud_toggle_pending = true;
 }
 
 fn on_chat_open(ctx: *anyopaque, event: input.ButtonEvent) void {
