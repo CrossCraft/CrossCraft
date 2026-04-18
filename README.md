@@ -2,7 +2,7 @@
 
 CrossCraft is a monorepo of clean-room Minecraft reimplementations written in Zig on top of the custom Aether engine. It is developed in phases, one classic-era version at a time.
 
-The current phase is **Classic (0.30)**. When Classic is done, the next phase is Survival Test, then later phases after that. Each completed phase stays in the tree as a first-class build. Shared code lives in shared modules; version-specific behavior lives behind branching code paths so that improvements made while developing a newer phase flow back into older ones automatically.
+The current phase is **Classic (0.30)**, now at **v1.0**. Each completed phase stays in the tree as a first-class build. Shared code lives in shared modules; version-specific behavior lives behind branching code paths so that improvements made while developing a newer phase flow back into older ones automatically.
 
 Concretely:
 
@@ -12,16 +12,36 @@ Concretely:
 
 This is the point of the monorepo: keep every implementation alive and improving as the project moves forward, instead of forking and abandoning.
 
+## Classic v1.0
+
+Classic v1.0 is a feature-complete, clean-room reimplementation of Minecraft Classic 0.30.
+
+- **Classic 0.30 protocol** - full client and server implementation, compatible with the public Classic protocol.
+- **Singleplayer and multiplayer** - singleplayer runs an in-process server behind a `FakeConn`; there is no second code path.
+- **Desktop + PSP** - Linux, macOS, Windows, and PSP (both PSP-1000 and PSP-2000+ memory profiles) ship from the same tree.
+- **Fixed-point worldgen and rendering** - deterministic across targets, fast on hardware without an FPU.
+- **Zero post-init allocation on the server.** Minimal hot-path allocation on the client.
+- **Full in-game settings UI** - options persist in a JSON file and are wired into every system.
+
 ## Status
 
-| Component         | State           | Notes                                                       |
-|-------------------|-----------------|-------------------------------------------------------------|
-| Server (Classic)  | v1.0            | Stable. Speaks the Classic 0.30 protocol.                   |
-| Client  (Classic) | In progress     | Playable, gaining features.                                 |
-| Engine (Aether)   | In-tree dep     | Powers rendering, audio, input, packing, platform ports.    |
-| Future phases     | Not yet started | Survival Test and beyond will land in this same repo.       |
+| Component        | State       | Notes                                                       |
+|------------------|-------------|-------------------------------------------------------------|
+| Server (Classic) | v1.0        | Stable. Speaks the Classic 0.30 protocol.                   |
+| Client (Classic) | v1.0        | Stable. Full singleplayer and multiplayer, desktop and PSP. |
+| Engine (Aether)  | External dep | Powers rendering, audio, input, packing, platform ports.    |
 
-Near-term platforms under consideration (not yet supported): 3DS and Nintendo Switch. Adding them is mostly an Aether targeting exercise plus minimal per-platform integration; once that lands, every existing phase in the repo gains support at once.
+## Roadmap
+
+The near-term plan, in order:
+
+1. **Classic Server v1.1** - next up. Iterate on the server first so improvements land for everyone speaking the protocol.
+2. **Classic v1.1** - follow-up client release built on top of the v1.1 server work.
+3. **Survival Test** - the next phase. Shares the engine, common primitives, and most of the game module with Classic.
+
+No firm dates or feature promises on any of the above yet; specifics land in release notes as each ships.
+
+Additional platforms (3DS, Nintendo Switch) are under consideration. Adding them is mostly an Aether targeting exercise plus minimal per-platform integration; once that lands, every existing phase in the repo gains support at once.
 
 ## Design Goals
 

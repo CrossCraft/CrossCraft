@@ -155,7 +155,7 @@ pub fn deinit(self: *Self) void {
     }
 }
 
-pub fn update(self: *Self, dt: f32, _: *const Util.BudgetContext, camera: *const Camera) void {
+pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
     self.sky.update(dt);
     self.particles.update(dt);
 
@@ -211,8 +211,11 @@ pub fn update(self: *Self, dt: f32, _: *const Util.BudgetContext, camera: *const
 
     if (self.build_cursor >= self.build_end) return;
 
-    // const available = budget.safe_remaining();
-    const n: u32 = 1;
+    const available = budget.safe_remaining();
+    const n: u32 = if (self.build_estimator.is_warming_up() or ae.platform == .psp)
+        1
+    else
+        @intCast(@max(1, self.build_estimator.fit_in(available, .p75)));
     const end = @min(self.build_cursor + n, self.build_end);
 
     for (self.build_cursor..end) |i| {

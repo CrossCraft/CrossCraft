@@ -246,6 +246,10 @@ playerlist_edge: bool,
 /// PSP only: Cross (X) pressed while social mode is open -- arm the OSK.
 psp_osk_edge: bool,
 
+/// Rising edge of the hud_toggle press (desktop F1); consumed by GameState
+/// each frame to flip its `hud_hidden` state.
+hud_toggle_pending: bool,
+
 /// Edge flags set by the chat action callbacks; GameState polls and clears
 /// them each frame.  chat_open: blank field; chat_cmd: '/' prefix field;
 /// chat_send: Enter key (send pending message).
@@ -327,6 +331,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .playerlist_held = false,
         .playerlist_edge = false,
         .psp_osk_edge = false,
+        .hud_toggle_pending = false,
         .chat_open_pending = false,
         .chat_cmd_pending = false,
         .chat_send_pending = false,
@@ -358,6 +363,9 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     try input.add_button_callback("shoulder_r", @ptrCast(self), on_shoulder_r);
     try input.add_button_callback("shoulder_l", @ptrCast(self), on_shoulder_l);
     try input.add_button_callback("playerlist", @ptrCast(self), on_playerlist);
+    if (ae.platform != .psp) {
+        try input.add_button_callback("hud_toggle", @ptrCast(self), on_hud_toggle);
+    }
     try input.add_button_callback("chat_open", @ptrCast(self), on_chat_open);
     try input.add_button_callback("chat_cmd", @ptrCast(self), on_chat_cmd);
     try input.add_button_callback("chat_send", @ptrCast(self), on_chat_send);
@@ -472,20 +480,24 @@ fn apply_look(self: *Self, dt: f32) void {
     // Stick look honours the same gate as mouse look so the PSP analog nub
     // does not rotate the camera while the inventory overlay is up.
     if (self.mouse_captured) {
-        self.camera.yaw -= apply_stick_curve(self.look_rate[0]) * self.stick_look_speed * dt;
-        self.camera.pitch += apply_stick_curve(self.look_rate[1]) * self.stick_look_speed * dt;
+        const curved = apply_stick_curve(self.look_rate);
+        self.camera.yaw -= curved[0] * self.stick_look_speed * dt;
+        self.camera.pitch += curved[1] * self.stick_look_speed * dt;
     }
 
     const max_pitch = std.math.pi / 2.0 - 0.01;
     self.camera.pitch = @max(-max_pitch, @min(max_pitch, self.camera.pitch));
 }
 
-/// Apply a power curve to an analog stick axis value (already dead-zoned by
-/// the engine). Gives fine control at small deflections and fast turns at
-/// full tilt.
-fn apply_stick_curve(raw: f32) f32 {
+/// Apply a power curve to the stick magnitude (already dead-zoned by the
+/// engine) while preserving direction.
+fn apply_stick_curve(raw: [2]f32) [2]f32 {
     const exponent: f32 = 2.2;
-    return std.math.copysign(std.math.pow(f32, @abs(raw), exponent), raw);
+    const mag_sq = raw[0] * raw[0] + raw[1] * raw[1];
+    if (mag_sq < 1e-10) return .{ 0, 0 };
+    const mag = @sqrt(mag_sq);
+    const scale = std.math.pow(f32, @min(mag, 1.0), exponent) / mag;
+    return .{ raw[0] * scale, raw[1] * scale };
 }
 
 // -- Noclip (freecam) -------------------------------------------------------
@@ -1416,6 +1428,12 @@ fn on_psp_osk(ctx: *anyopaque, event: input.ButtonEvent) void {
     if (event != .pressed) return;
     const self: *Self = @ptrCast(@alignCast(ctx));
     self.psp_osk_edge = true;
+}
+
+fn on_hud_toggle(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.hud_toggle_pending = true;
 }
 
 fn on_chat_open(ctx: *anyopaque, event: input.ButtonEvent) void {

@@ -13,6 +13,8 @@ const Session = @import("../state/Session.zig");
 const Scaling = @import("Scaling.zig");
 const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
+const PromptStrip = @import("PromptStrip.zig");
+const Prompts = @import("Prompts.zig");
 
 pub const Context = struct {
     dirt: *const Rendering.Texture,
@@ -142,11 +144,18 @@ fn draw_underlay(ctx: *anyopaque, sprites: *SpriteBatcher, _: *FontBatcher, _: *
     }
 }
 
+fn build_prompts(_: *anyopaque, buf: []PromptStrip.Prompt) []const PromptStrip.Prompt {
+    buf[0] = Prompts.select();
+    buf[1] = Prompts.back();
+    return buf[0..2];
+}
+
 pub fn build(ctx: *Context) Screen {
     return .{
         .components = components[0..],
         .ctx = ctx,
         .nav = .stack,
         .draw_underlay = draw_underlay,
+        .prompts_fn = build_prompts,
     };
 }

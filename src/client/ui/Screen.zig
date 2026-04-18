@@ -14,6 +14,7 @@ const component = @import("component.zig");
 const ui_input = @import("input.zig");
 const UiInput = ui_input.UiInput;
 const NavDir = ui_input.NavDir;
+const PromptStrip = @import("PromptStrip.zig");
 
 const Self = @This();
 
@@ -26,6 +27,15 @@ pub const DrawFn = *const fn (
     fonts: *FontBatcher,
     gui_tex: *const Rendering.Texture,
 ) void;
+
+/// Caps the prompt strip the Screen can host per frame.  Four is enough
+/// for every menu today (typical: Select + Back).  The buffer lives on
+/// the Screen so `PromptsFn` never has to manage its own storage.
+pub const MAX_PROMPTS: u8 = 4;
+/// Builds the prompt list for the current frame.  Runs every draw so
+/// style cycles from the Options menu take effect immediately.  Fills
+/// `buf` and returns the populated slice.
+pub const PromptsFn = *const fn (ctx: *anyopaque, buf: []PromptStrip.Prompt) []const PromptStrip.Prompt;
 
 components: []const Component,
 ctx: *anyopaque,
@@ -50,6 +60,10 @@ cancel_pressed: bool = false,
 /// in-game darkening overlay without colliding with HUD layers.
 layer_base: u8 = 0,
 draw_underlay: ?DrawFn = null,
+/// Optional per-frame prompt builder.  When set, a controller / KB+M
+/// prompt strip is drawn at the screen's bottom-left.  Null = no strip.
+prompts_fn: ?PromptsFn = null,
+prompts_buf: [MAX_PROMPTS]PromptStrip.Prompt = undefined,
 
 pub fn open(self: *Self, seed_focus: bool) void {
     self.hovered = null;
@@ -286,31 +300,57 @@ fn nav_grid(self: *Self, dir: NavDir) void {
     const col: i32 = @mod(cur, rw);
     const row: i32 = @divTrunc(cur, rw);
 
-    var nx: i32 = col;
-    var ny: i32 = row;
     switch (dir) {
-        .left => nx -= 1,
-        .right => nx += 1,
-        .up => ny -= 1,
-        .down => ny += 1,
+        .left, .right => {
+            const step: i32 = if (dir == .right) 1 else -1;
+            var nx: i32 = col + step;
+            while (nx >= 0 and nx < rw) : (nx += step) {
+                const next = row * rw + nx;
+                if (next < 0 or next >= len) return;
+                if (self.components[@intCast(next)].focusable()) {
+                    self.focused = @intCast(next);
+                    return;
+                }
+            }
+        },
+        .up, .down => {
+            const step: i32 = if (dir == .down) 1 else -1;
+            // Pass 1: walk the same column first so a disabled cell never
+            // pivots focus sideways when a straight-ahead focusable exists.
+            var ny: i32 = row + step;
+            while (ny >= 0) : (ny += step) {
+                const idx = ny * rw + col;
+                if (idx >= len and step > 0) break;
+                if (idx >= 0 and idx < len and
+                    self.components[@intCast(idx)].focusable())
+                {
+                    self.focused = @intCast(idx);
+                    return;
+                }
+            }
+            // Pass 2: column exhausted -- scan each row in direction for any
+            // focusable, preferring cells nearer the original column. Handles
+            // asymmetric rows like a centered Done below two-column options.
+            ny = row + step;
+            while (ny >= 0) : (ny += step) {
+                var off: i32 = 1;
+                const first_in_row = ny * rw;
+                if (first_in_row >= len and step > 0) return;
+                while (off < rw) : (off += 1) {
+                    const cols = [_]i32{ col - off, col + off };
+                    for (cols) |cc| {
+                        if (cc < 0 or cc >= rw) continue;
+                        const idx = ny * rw + cc;
+                        if (idx < 0 or idx >= len) continue;
+                        if (self.components[@intCast(idx)].focusable()) {
+                            self.focused = @intCast(idx);
+                            return;
+                        }
+                    }
+                }
+            }
+        },
         .none => return,
-    }
-    while (true) {
-        if (nx < 0 or nx >= rw or ny < 0) return;
-        const next = ny * rw + nx;
-        if (next < 0 or next >= len) return;
-        if (self.components[@intCast(next)].focusable()) {
-            self.focused = @intCast(next);
-            return;
-        }
-
-        switch (dir) {
-            .left => nx -= 1,
-            .right => nx += 1,
-            .up => ny -= 1,
-            .down => ny += 1,
-            .none => return,
-        }
     }
 }
 
@@ -322,10 +362,11 @@ fn first_focusable(self: *const Self) ?u8 {
 }
 
 pub fn draw(
-    self: *const Self,
+    self: *Self,
     sprites: *SpriteBatcher,
     fonts: *FontBatcher,
     gui_tex: *const Rendering.Texture,
+    glyphs_tex: *const Rendering.Texture,
 ) void {
     if (self.draw_underlay) |draw_underlay| {
         draw_underlay(self.ctx, sprites, fonts, gui_tex);
@@ -334,6 +375,24 @@ pub fn draw(
         const idx: u8 = @intCast(i);
         const active = self.active_input != null and self.active_input.? == idx;
         c.draw(sprites, fonts, gui_tex, self.is_highlighted(idx) or active, self.layer_base);
+    }
+    if (self.prompts_fn) |build_prompts| {
+        if (PromptStrip.enabled()) {
+            const slice = build_prompts(self.ctx, self.prompts_buf[0..]);
+            // Slot sprite/text two/three layers above the deepest component
+            // so prompts always sit on top of button art.
+            PromptStrip.draw(
+                slice,
+                sprites,
+                fonts,
+                glyphs_tex,
+                .bottom_left,
+                PromptStrip.DEFAULT_POS_X,
+                PromptStrip.DEFAULT_POS_Y,
+                self.layer_base +| 2,
+                self.layer_base +| 3,
+            );
+        }
     }
 }
 

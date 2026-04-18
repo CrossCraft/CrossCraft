@@ -43,10 +43,10 @@ pub const Options = struct {
     active_texturepack_buf: [max_pack_path]u8 = [_]u8{0} ** max_pack_path,
     active_texturepack_len: u8 = 0,
 
-    /// Chunk render radius.  PSP defaults to 3 (max 4); desktop defaults to 8.
+    /// Chunk render radius.  PSP defaults to 4; desktop defaults to 8.
     /// Capped to the platform's compiled-in max via `capped_render_distance`.
     render_distance: u8 = if (@import("aether").platform == .psp)
-        @intCast(@min(@as(u32, 3), cfg.current.chunk_radius))
+        @intCast(@min(@as(u32, 4), cfg.current.chunk_radius))
     else
         @intCast(@min(@as(u32, 8), cfg.current.chunk_radius)),
 
@@ -60,7 +60,9 @@ pub const Options = struct {
     fov: f32 = 70.0,
 
     /// True = full leaf transparency (fancy); false = opaque leaves (fast).
-    fancy_leaves: bool = true,
+    /// Defaults off on PSP to keep meshing within budget.  Builds with
+    /// `lod_near_radius_blocks == 0` cannot render fancy leaves at all.
+    fancy_leaves: bool = @import("aether").platform != .psp,
 
     /// Mouse / analogue-stick look sensitivity multiplier.
     sensitivity: f32 = 3.0,
@@ -72,8 +74,8 @@ pub const Options = struct {
     /// Rebuilt sections are unaffected.
     bouncy_chunks: bool = false,
 
-    /// Cap frames to the display refresh rate.  Applied to `engine.vsync`
-    /// on load and whenever the options menu is dismissed.
+    /// Cap frames to the display refresh rate.  Applied via
+    /// `engine.set_vsync` on load and whenever the options menu is dismissed.
     vsync: bool = true,
 
     /// In-game controller prompt style.  `auto` picks glyphs from the
@@ -102,6 +104,13 @@ pub fn capped_render_distance() u8 {
     return @min(current.render_distance, max);
 }
 
+/// True when the build can render fancy (transparent) leaves at all.
+/// PSP phat forces opaque leaves via `lod_near_radius_blocks = 0`; this
+/// helper centralises the detection so the UI and load path agree.
+pub fn fancy_leaves_supported() bool {
+    return cfg.current.lod_near_radius_blocks > 0;
+}
+
 // -- JSON shadow type --------------------------------------------------------
 // Field names match the JSON keys.  `active_texturepack` is a `[]const u8`
 // so the JSON parser can allocate it into the per-call arena; the caller
@@ -109,11 +118,11 @@ pub fn capped_render_distance() u8 {
 
 const JsonOptions = struct {
     active_texturepack: []const u8 = "",
-    render_distance: u8 = if (@import("aether").platform == .psp) 3 else 8,
+    render_distance: u8 = if (@import("aether").platform == .psp) 4 else 8,
     sound_volume: f32 = 1.0,
     music_volume: f32 = 0.5,
     fov: f32 = 70.0,
-    fancy_leaves: bool = true,
+    fancy_leaves: bool = @import("aether").platform != .psp,
     sensitivity: f32 = 3.0,
     ambient_occlusion: bool = false,
     bouncy_chunks: bool = false,
@@ -159,7 +168,7 @@ pub fn load(io: Io, dir: Io.Dir) void {
     current.sound_volume = std.math.clamp(j.sound_volume, 0.0, 1.0);
     current.music_volume = std.math.clamp(j.music_volume, 0.0, 1.0);
     current.fov = std.math.clamp(j.fov, 10.0, 170.0);
-    current.fancy_leaves = j.fancy_leaves;
+    current.fancy_leaves = j.fancy_leaves and fancy_leaves_supported();
     current.sensitivity = std.math.clamp(j.sensitivity, 0.1, 20.0);
     current.ambient_occlusion = j.ambient_occlusion;
     current.bouncy_chunks = j.bouncy_chunks;

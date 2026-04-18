@@ -15,6 +15,8 @@ const Screen = @import("Screen.zig");
 const Scaling = @import("Scaling.zig");
 const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
+const PromptStrip = @import("PromptStrip.zig");
+const Prompts = @import("Prompts.zig");
 
 const Options = @import("../Options.zig");
 
@@ -248,11 +250,18 @@ fn draw_underlay(ctx: *anyopaque, sprites: *SpriteBatcher, _: *FontBatcher, _: *
     }
 }
 
+fn build_prompts(_: *anyopaque, buf: []PromptStrip.Prompt) []const PromptStrip.Prompt {
+    buf[0] = Prompts.select();
+    buf[1] = Prompts.back();
+    return buf[0..2];
+}
+
 pub fn build(ctx: *Context) Screen {
     return .{
         .components = components_buf[0..component_count],
         .ctx = ctx,
         .nav = .stack,
         .draw_underlay = draw_underlay,
+        .prompts_fn = build_prompts,
     };
 }
