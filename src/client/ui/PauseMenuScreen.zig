@@ -104,7 +104,7 @@ const mp_components = [_]Component{
         .pos_y = -12,
         .reference = .middle_center,
         .origin = .middle_center,
-        .on_activate = on_noop,
+        .on_activate = on_options,
     } },
     .{ .button = .{
         .label = "Save level...",
