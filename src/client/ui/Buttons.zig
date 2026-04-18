@@ -98,8 +98,12 @@ pub fn glyph_y_offset() i16 {
 pub fn resolve_style() Style {
     if (ae.platform == .psp) return .psp;
     return switch (Options.current.controller_tooltips) {
-        // No runtime gamepad detection yet; auto == KB+M on desktop.
-        .auto => .kbm,
+        // Auto follows whatever device produced input most recently; the
+        // Xbox sheet stands in for any gamepad since we don't probe vendor.
+        .auto => switch (ae.Core.input.get_last_input_mode()) {
+            .keyboard => .kbm,
+            .controller => .xbox,
+        },
         .nintendo => .nintendo,
         .xbox => .xbox,
         .playstation => .playstation,
