@@ -372,8 +372,8 @@ fn clip_y_block(box: Aabb, dy: f32, bx: i32, by: i32, bz: i32) f32 {
     if (height == 0.0) return dy;
     const block = block_box(bx, by, bz, height);
     if (!overlaps_xz(box, block)) return dy;
-    if (dy > 0.0 and block.min_y >= box.max_y) return @min(dy, block.min_y - box.max_y);
-    if (dy < 0.0 and block.max_y <= box.min_y) return @max(dy, block.max_y - box.min_y);
+    if (dy > 0.0 and block.min_y + EPSILON >= box.max_y) return @min(dy, @max(0.0, block.min_y - box.max_y));
+    if (dy < 0.0 and block.max_y - EPSILON <= box.min_y) return @max(dy, @min(0.0, block.max_y - box.min_y));
     return dy;
 }
 
@@ -382,8 +382,8 @@ fn clip_x_block(box: Aabb, dx: f32, bx: i32, by: i32, bz: i32) f32 {
     if (height == 0.0) return dx;
     const block = block_box(bx, by, bz, height);
     if (!overlaps_yz(box, block)) return dx;
-    if (dx > 0.0 and block.min_x >= box.max_x) return @min(dx, block.min_x - box.max_x);
-    if (dx < 0.0 and block.max_x <= box.min_x) return @max(dx, block.max_x - box.min_x);
+    if (dx > 0.0 and block.min_x + EPSILON >= box.max_x) return @min(dx, @max(0.0, block.min_x - box.max_x));
+    if (dx < 0.0 and block.max_x - EPSILON <= box.min_x) return @max(dx, @min(0.0, block.max_x - box.min_x));
     return dx;
 }
 
@@ -392,8 +392,8 @@ fn clip_z_block(box: Aabb, dz: f32, bx: i32, by: i32, bz: i32) f32 {
     if (height == 0.0) return dz;
     const block = block_box(bx, by, bz, height);
     if (!overlaps_xy(box, block)) return dz;
-    if (dz > 0.0 and block.min_z >= box.max_z) return @min(dz, block.min_z - box.max_z);
-    if (dz < 0.0 and block.max_z <= box.min_z) return @max(dz, block.max_z - box.min_z);
+    if (dz > 0.0 and block.min_z + EPSILON >= box.max_z) return @min(dz, @max(0.0, block.min_z - box.max_z));
+    if (dz < 0.0 and block.max_z - EPSILON <= box.min_z) return @max(dz, @min(0.0, block.max_z - box.min_z));
     return dz;
 }
 
@@ -500,18 +500,18 @@ fn solid_height_at(bx: i32, by: i32, bz: i32) f32 {
 }
 
 fn overlaps_xz(a: Aabb, b: Aabb) bool {
-    return a.max_x > b.min_x and a.min_x < b.max_x and
-        a.max_z > b.min_z and a.min_z < b.max_z;
+    return a.max_x > b.min_x + EPSILON and a.min_x + EPSILON < b.max_x and
+        a.max_z > b.min_z + EPSILON and a.min_z + EPSILON < b.max_z;
 }
 
 fn overlaps_xy(a: Aabb, b: Aabb) bool {
-    return a.max_x > b.min_x and a.min_x < b.max_x and
-        a.max_y > b.min_y and a.min_y < b.max_y;
+    return a.max_x > b.min_x + EPSILON and a.min_x + EPSILON < b.max_x and
+        a.max_y > b.min_y + EPSILON and a.min_y + EPSILON < b.max_y;
 }
 
 fn overlaps_yz(a: Aabb, b: Aabb) bool {
-    return a.max_y > b.min_y and a.min_y < b.max_y and
-        a.max_z > b.min_z and a.min_z < b.max_z;
+    return a.max_y > b.min_y + EPSILON and a.min_y + EPSILON < b.max_y and
+        a.max_z > b.min_z + EPSILON and a.min_z + EPSILON < b.max_z;
 }
 
 fn overlaps_xyz(a: Aabb, b: Aabb) bool {
