@@ -128,6 +128,7 @@ var save_counter: u32 = 0;
 /// occlusion map rather than a height/elevation map.
 pub var light_map: [c.WorldLength * c.WorldDepth]u8 = undefined;
 
+const BLOCK_SIZE = 32768;
 /// File header: 3 little-endian u16 (x, y, z), 1 little-endian u64 (seed), then raw block data.
 pub fn save() !void {
     if (!owned_locally) return;
@@ -137,9 +138,10 @@ pub fn save() !void {
     };
     defer file.close(io);
 
-    var write_buf: [4096]u8 = undefined;
+    var write_buf: [BLOCK_SIZE]u8 = undefined;
     var writer = file.writer(io, &write_buf);
 
+    const start = std.Io.Clock.Timestamp.now(io, .boot);
     try writer.interface.writeSliceEndian(u16, &world_size, .little);
     const seed_arr = [1]u64{seed};
     try writer.interface.writeSliceEndian(u64, &seed_arr, .little);
@@ -148,8 +150,17 @@ pub fn save() !void {
     try writer.interface.writeAll(raw_blocks[0..4]);
     try write_blocks_yzx(&writer.interface);
     try writer.interface.flush();
+    const end = std.Io.Clock.Timestamp.now(io, .boot);
 
-    log.info("Saved world to world.dat", .{});
+    const total_bytes: u64 = 6 + 8 + 8 + 4 +
+        @as(u64, c.WorldLength) * @as(u64, c.WorldDepth) * @as(u64, c.WorldHeight);
+    const elapsed_ns: i64 = @truncate(end.raw.nanoseconds - start.raw.nanoseconds);
+    const elapsed_us: i64 = @max(1, @divTrunc(elapsed_ns, std.time.ns_per_us));
+    const mib_per_s: u64 = (total_bytes * std.time.us_per_s) /
+        (@as(u64, @intCast(elapsed_us)) * 1024 * 1024);
+    log.info("Saved world to world.dat ({d} bytes in {d}us, {d} MiB/s)", .{
+        total_bytes, elapsed_us, mib_per_s,
+    });
 }
 
 pub fn load() bool {
@@ -158,7 +169,7 @@ pub fn load() bool {
     };
     defer file.close(io);
 
-    var read_buf: [4096]u8 = undefined;
+    var read_buf: [BLOCK_SIZE]u8 = undefined;
     var reader = file.reader(io, &read_buf);
 
     // Header: world dimensions.
