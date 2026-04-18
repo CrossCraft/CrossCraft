@@ -114,7 +114,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     const pack_dir = if (build_options.embed_pack) engine.dirs.data else engine.dirs.resources;
     try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, pack_dir, "pack.zip");
     errdefer ResourcePack.deinit();
-    try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui });
+    try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui, .glyphs });
 
     self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
     self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
@@ -270,7 +270,12 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
 
     self.batcher.clear();
     self.font_batcher.clear();
-    self.screen.draw(&self.batcher, &self.font_batcher, ResourcePack.get_tex(.gui));
+    self.screen.draw(
+        &self.batcher,
+        &self.font_batcher,
+        ResourcePack.get_tex(.gui),
+        ResourcePack.get_tex(.glyphs),
+    );
 
     // Options labels are mutable buffers updated in-place: the FontBatcher
     // diff compares content at stable pointers and sees no change.  Force a

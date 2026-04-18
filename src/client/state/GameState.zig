@@ -34,7 +34,9 @@ const Inventory = @import("../ui/Inventory.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
 const Chat = @import("../ui/Chat.zig");
 const BlockNames = @import("../ui/BlockNames.zig");
-const ControllerGlyphs = @import("../ui/ControllerGlyphs.zig");
+const Buttons = @import("../ui/Buttons.zig");
+const PromptStrip = @import("../ui/PromptStrip.zig");
+const Prompts = @import("../ui/Prompts.zig");
 const Color = @import("../graphics/Color.zig").Color;
 const ui_input = @import("../ui/input.zig");
 const PauseMenuScreen = @import("../ui/PauseMenuScreen.zig");
@@ -750,14 +752,13 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         .origin = .top_left,
     });
 
-    // Controller-tooltip strip only applies to the in-world HUD.  Hidden
-    // (and the hotbar returns to its base position) whenever another
-    // overlay owns the bottom row: inventory or pause menu.  The chat
-    // overlay coexists with the strip -- chat rides up by hud_y_shift.
-    const show_glyphs = ControllerGlyphs.enabled() and
-        !self.inventory.open and
-        !self.paused;
-    const hud_y_shift: i16 = if (show_glyphs) ControllerGlyphs.strip_height() else 0;
+    // Controller-tooltip strip applies to every in-world HUD context --
+    // normal play, inventory open, social overlay, chat.  The prompt
+    // *contents* swap per context in draw_hud_prompts.  Hidden only when
+    // the pause screen draws its own strip.  Chat + inventory both ride
+    // up by hud_y_shift so the strip never overlaps them.
+    const show_glyphs = PromptStrip.enabled() and !self.paused;
+    const hud_y_shift: i16 = if (show_glyphs) Buttons.strip_height() else 0;
 
     self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, ResourcePack.get_tex(.gui), self.inventory.open, hud_y_shift);
     if (self.inventory.open) {
@@ -803,7 +804,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     }
 
     if (show_glyphs) {
-        self.draw_controller_tooltips();
+        self.draw_hud_prompts();
     }
 
     try self.ui_batcher.flush();
@@ -819,7 +820,12 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (self.paused) {
         self.pause_batcher.clear();
         self.pause_font_batcher.clear();
-        self.pause_screen.draw(&self.pause_batcher, &self.pause_font_batcher, ResourcePack.get_tex(.gui));
+        self.pause_screen.draw(
+            &self.pause_batcher,
+            &self.pause_font_batcher,
+            ResourcePack.get_tex(.gui),
+            ResourcePack.get_tex(.glyphs),
+        );
 
         // Options labels are mutable buffers updated in-place: the FontBatcher
         // diff sees no change across frames.  Force a rebuild while the options
@@ -836,147 +842,67 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     }
 }
 
-/// Render the bottom-left controller-prompt strip.
+/// Compose the bottom-left HUD prompt list and delegate to PromptStrip.
 ///
-/// Layout: origin at (20, 23) from the bottom-left.  Each entry is a
-/// glyph followed by its label, all vertically centered on the glyph.
-/// Entries: Inventory (always), Place (if an aimable block is
-/// selected), Break (if any non-air block is selected).  PSP renders
-/// the L+R chord for Inventory as two shoulder glyphs side-by-side.
-fn draw_controller_tooltips(self: *@This()) void {
-    const strip_x0: i16 = 20;
-    const strip_y: i16 = 3; // bottom edge of glyphs, from screen bottom
-    const glyph_pad: i16 = 4; // gap between glyph and its label
-    const entry_pad: i16 = 12; // gap between one entry's label and the next glyph
-    const chord_pad: i16 = 2; // gap between the two PSP inventory glyphs
-    const text_layer: u8 = 252;
+/// Content switches by context so the strip always describes the
+/// currently-available actions:
+///   * Inventory open: [Select, Back] -- matches menu convention; the
+///     same Inventory button that opened the panel also closes it, but
+///     "Back" is clearer when the user is mid-selection.
+///   * PSP social mode: [Exit, Chat].
+///   * Desktop chat open: [Send, Cancel].
+///   * Normal play: [Inventory, Place?, Break?] -- Place requires an
+///     aimed-at placement slot, Break any non-Air target.
+fn draw_hud_prompts(self: *@This()) void {
     const sprite_layer: u8 = 252;
-
+    const text_layer: u8 = 252;
     const glyphs_tex = ResourcePack.get_tex(.glyphs);
 
-    var cursor_x: i16 = strip_x0;
+    var buf: [3]PromptStrip.Prompt = undefined;
+    var n: u8 = 0;
 
-    // Inventory (always).
-    cursor_x = self.draw_glyph_entry(
+    if (self.inventory.open) {
+        buf[n] = Prompts.select();
+        n += 1;
+        buf[n] = Prompts.back();
+        n += 1;
+    } else if (ae.platform == .psp and self.psp_social_mode) {
+        buf[n] = Prompts.exit_list();
+        n += 1;
+        buf[n] = Prompts.chat();
+        n += 1;
+    } else if (ae.platform != .psp and self.chat.open) {
+        buf[n] = Prompts.send();
+        n += 1;
+        buf[n] = Prompts.cancel();
+        n += 1;
+    } else {
+        buf[n] = Prompts.inventory();
+        n += 1;
+        if (self.player.selected) |hit| {
+            const block_id = World.get_block(hit.x, hit.y, hit.z);
+            if (block_id != c.Block.Air) {
+                if (hit.has_place) {
+                    buf[n] = Prompts.place();
+                    n += 1;
+                }
+                buf[n] = Prompts.break_();
+                n += 1;
+            }
+        }
+    }
+
+    PromptStrip.draw(
+        buf[0..n],
+        &self.ui_batcher,
+        &self.font_batcher,
         glyphs_tex,
-        .inventory,
-        cursor_x,
-        strip_y,
-        glyph_pad,
-        chord_pad,
+        .bottom_left,
+        PromptStrip.DEFAULT_POS_X,
+        PromptStrip.DEFAULT_POS_Y,
         sprite_layer,
         text_layer,
     );
-
-    // Place / Break only when something is aimed at.
-    if (self.player.selected) |hit| {
-        const block_id = World.get_block(hit.x, hit.y, hit.z);
-        if (block_id != c.Block.Air) {
-            if (hit.has_place) {
-                cursor_x += entry_pad;
-                cursor_x = self.draw_glyph_entry(
-                    glyphs_tex,
-                    .place,
-                    cursor_x,
-                    strip_y,
-                    glyph_pad,
-                    chord_pad,
-                    sprite_layer,
-                    text_layer,
-                );
-            }
-            cursor_x += entry_pad;
-            _ = self.draw_glyph_entry(
-                glyphs_tex,
-                .break_,
-                cursor_x,
-                strip_y,
-                glyph_pad,
-                chord_pad,
-                sprite_layer,
-                text_layer,
-            );
-        }
-    }
-}
-
-/// Draws one glyph (or two side-by-side for the PSP inventory chord)
-/// plus its label, anchored bottom-left.  Returns the x just past the
-/// label so the caller can chain the next entry.
-fn draw_glyph_entry(
-    self: *@This(),
-    glyphs_tex: *const Rendering.Texture,
-    which: ControllerGlyphs.Glyph,
-    x0: i16,
-    y: i16,
-    glyph_pad: i16,
-    chord_pad: i16,
-    sprite_layer: u8,
-    text_layer: u8,
-) i16 {
-    var x = x0;
-    const count = if (which == .inventory) ControllerGlyphs.inventory_glyph_count() else 1;
-    // Per-style baseline nudge so keyboard art can drop a pixel without
-    // changing the desktop-gamepad/PSP alignment.  Positive = down, which
-    // means subtracting from the bottom-anchored logical y.
-    const glyph_y = y - ControllerGlyphs.glyph_y_offset();
-    var last_rect: ControllerGlyphs.Rect = undefined;
-    var i: u8 = 0;
-    while (i < count) : (i += 1) {
-        const rect = ControllerGlyphs.lookup(which, i);
-        last_rect = rect;
-        self.ui_batcher.add_sprite(&.{
-            .texture = glyphs_tex,
-            .pos_offset = .{ .x = x, .y = -glyph_y },
-            .pos_extent = .{ .x = rect.render_w, .y = rect.render_h },
-            .tex_offset = .{ .x = rect.tex_x, .y = rect.tex_y },
-            .tex_extent = .{ .x = rect.tex_w, .y = rect.tex_h },
-            .color = .white_fg,
-            .layer = sprite_layer,
-            .reference = .bottom_left,
-            .origin = .bottom_left,
-        });
-        // KB+M inventory uses the Blank Key art with a letter rastered on
-        // top of it; other glyphs are self-describing.  The letter drops
-        // one extra logical pixel below the key center -- the font's cap
-        // line sits above its bounding-box center, so pure geometric
-        // centering reads as floating above the key face.
-        if (ControllerGlyphs.letter_overlay(which)) |overlay| {
-            self.font_batcher.add_text(&.{
-                .str = overlay,
-                // Glyph center = (x + render_w/2, glyph_y + render_h/2) from bottom-left.
-                .pos_x = x + @divTrunc(rect.render_w, 2),
-                .pos_y = -(glyph_y + @divTrunc(rect.render_h, 2) - 1),
-                .color = .white_fg,
-                .shadow_color = .menu_gray,
-                .spacing = 0,
-                .layer = text_layer,
-                .reference = .bottom_left,
-                .origin = .middle_center,
-            });
-        }
-        x += rect.render_w;
-        if (i + 1 < count) x += chord_pad;
-    }
-
-    // Label, vertically centered on the glyph.  Nudged 1 logical px below
-    // the true glyph center so the text baseline sits visually aligned with
-    // the bottom half of the glyph instead of floating above it.
-    const label = ControllerGlyphs.label(which);
-    const label_y_center: i16 = y + @divTrunc(last_rect.render_h, 2) - 1;
-    x += glyph_pad;
-    self.font_batcher.add_text(&.{
-        .str = label,
-        .pos_x = x,
-        .pos_y = -label_y_center,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
-        .spacing = 0,
-        .layer = text_layer,
-        .reference = .bottom_left,
-        .origin = .middle_left,
-    });
-    return x + self.font_batcher.string_width(label, 0, 1);
 }
 
 pub fn state(self: *@This()) State {

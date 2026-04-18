@@ -14,6 +14,7 @@ const component = @import("component.zig");
 const ui_input = @import("input.zig");
 const UiInput = ui_input.UiInput;
 const NavDir = ui_input.NavDir;
+const PromptStrip = @import("PromptStrip.zig");
 
 const Self = @This();
 
@@ -26,6 +27,15 @@ pub const DrawFn = *const fn (
     fonts: *FontBatcher,
     gui_tex: *const Rendering.Texture,
 ) void;
+
+/// Caps the prompt strip the Screen can host per frame.  Four is enough
+/// for every menu today (typical: Select + Back).  The buffer lives on
+/// the Screen so `PromptsFn` never has to manage its own storage.
+pub const MAX_PROMPTS: u8 = 4;
+/// Builds the prompt list for the current frame.  Runs every draw so
+/// style cycles from the Options menu take effect immediately.  Fills
+/// `buf` and returns the populated slice.
+pub const PromptsFn = *const fn (ctx: *anyopaque, buf: []PromptStrip.Prompt) []const PromptStrip.Prompt;
 
 components: []const Component,
 ctx: *anyopaque,
@@ -50,6 +60,10 @@ cancel_pressed: bool = false,
 /// in-game darkening overlay without colliding with HUD layers.
 layer_base: u8 = 0,
 draw_underlay: ?DrawFn = null,
+/// Optional per-frame prompt builder.  When set, a controller / KB+M
+/// prompt strip is drawn at the screen's bottom-left.  Null = no strip.
+prompts_fn: ?PromptsFn = null,
+prompts_buf: [MAX_PROMPTS]PromptStrip.Prompt = undefined,
 
 pub fn open(self: *Self, seed_focus: bool) void {
     self.hovered = null;
@@ -348,10 +362,11 @@ fn first_focusable(self: *const Self) ?u8 {
 }
 
 pub fn draw(
-    self: *const Self,
+    self: *Self,
     sprites: *SpriteBatcher,
     fonts: *FontBatcher,
     gui_tex: *const Rendering.Texture,
+    glyphs_tex: *const Rendering.Texture,
 ) void {
     if (self.draw_underlay) |draw_underlay| {
         draw_underlay(self.ctx, sprites, fonts, gui_tex);
@@ -360,6 +375,24 @@ pub fn draw(
         const idx: u8 = @intCast(i);
         const active = self.active_input != null and self.active_input.? == idx;
         c.draw(sprites, fonts, gui_tex, self.is_highlighted(idx) or active, self.layer_base);
+    }
+    if (self.prompts_fn) |build_prompts| {
+        if (PromptStrip.enabled()) {
+            const slice = build_prompts(self.ctx, self.prompts_buf[0..]);
+            // Slot sprite/text two/three layers above the deepest component
+            // so prompts always sit on top of button art.
+            PromptStrip.draw(
+                slice,
+                sprites,
+                fonts,
+                glyphs_tex,
+                .bottom_left,
+                PromptStrip.DEFAULT_POS_X,
+                PromptStrip.DEFAULT_POS_Y,
+                self.layer_base +| 2,
+                self.layer_base +| 3,
+            );
+        }
     }
 }
 

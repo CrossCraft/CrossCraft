@@ -21,6 +21,8 @@ const FontBatcher = @import("FontBatcher.zig");
 const Color = @import("../graphics/Color.zig").Color;
 const Options = @import("../Options.zig");
 const config = @import("../config.zig");
+const PromptStrip = @import("PromptStrip.zig");
+const Prompts = @import("Prompts.zig");
 
 pub const Context = struct {
     /// Non-null when opened from the main menu: used for the dirt-tile underlay.
@@ -411,6 +413,12 @@ fn draw_dim_underlay(_: *anyopaque, sprites: *SpriteBatcher, _: *FontBatcher, _:
 
 // -- public API --------------------------------------------------------------
 
+fn build_prompts(_: *anyopaque, buf: []PromptStrip.Prompt) []const PromptStrip.Prompt {
+    buf[0] = Prompts.select();
+    buf[1] = Prompts.back();
+    return buf[0..2];
+}
+
 pub fn build(ctx: *Context) Screen {
     refresh();
     pending_done = false;
@@ -421,5 +429,6 @@ pub fn build(ctx: *Context) Screen {
         .row_width = 2,
         .draw_underlay = if (ctx.dirt != null) draw_dirt_underlay else draw_dim_underlay,
         .layer_base = if (ctx.dirt != null) 0 else LAYER_BASE,
+        .prompts_fn = build_prompts,
     };
 }

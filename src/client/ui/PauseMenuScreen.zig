@@ -17,6 +17,8 @@ const Scaling = @import("Scaling.zig");
 const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
 const Color = @import("../graphics/Color.zig").Color;
+const PromptStrip = @import("PromptStrip.zig");
+const Prompts = @import("Prompts.zig");
 
 pub const Context = struct {};
 
@@ -171,6 +173,12 @@ fn draw_dim_overlay(_: *anyopaque, sprites: *SpriteBatcher, _: *FontBatcher, _: 
     });
 }
 
+fn build_prompts(_: *anyopaque, buf: []PromptStrip.Prompt) []const PromptStrip.Prompt {
+    buf[0] = Prompts.select();
+    buf[1] = Prompts.back();
+    return buf[0..2];
+}
+
 pub fn build(ctx: *Context, is_singleplayer: bool) Screen {
     const slice: []const Component = if (is_singleplayer) sp_components[0..] else mp_components[0..];
     return .{
@@ -179,5 +187,6 @@ pub fn build(ctx: *Context, is_singleplayer: bool) Screen {
         .nav = .stack,
         .draw_underlay = draw_dim_overlay,
         .layer_base = LAYER_BASE,
+        .prompts_fn = build_prompts,
     };
 }
