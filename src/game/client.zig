@@ -244,18 +244,23 @@ pub fn handshake(self: *Self) !void {
     try proto.send_position_to_client(self.writer, -1, self.x, self.y, self.z, 0, 0);
     try self.writer.flush();
 
-    var msg_buf: c.Message = @splat(' ');
-    std.mem.copyForwards(u8, &msg_buf, "&eWelcome to the world!");
-
-    try self.send_message(self.id, &msg_buf);
-    try self.writer.flush();
-
-    msg_buf = @splat(' ');
-    _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
-
     self.initialized = true;
-    Server.broadcast_chat_message(self.id, &msg_buf);
-    try self.writer.flush();
+
+    // Skip welcome + join-broadcast chat in singleplayer: the lone local
+    // player would just be seeing themselves "join" their own world.
+    if (!Server.internal_use) {
+        var msg_buf: c.Message = @splat(' ');
+        std.mem.copyForwards(u8, &msg_buf, "&eWelcome to the world!");
+
+        try self.send_message(self.id, &msg_buf);
+        try self.writer.flush();
+
+        msg_buf = @splat(' ');
+        _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
+
+        Server.broadcast_chat_message(self.id, &msg_buf);
+        try self.writer.flush();
+    }
 }
 
 fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {

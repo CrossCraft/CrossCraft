@@ -23,18 +23,24 @@ pub var server_motd: [64]u8 = pad(default_server_motd);
 
 pub var players: FAB(Client, consts.MAX_PLAYERS) = .init();
 
+/// True when the server is hosted inside the client process for singleplayer.
+/// Gates behaviors that only make sense for a standalone server reachable by
+/// real network clients (server.properties I/O, join/leave chat spam, etc.).
+pub var internal_use: bool = false;
+
 fn pad(comptime s: []const u8) [64]u8 {
     var buf: [64]u8 = @splat(' ');
     @memcpy(buf[0..s.len], s);
     return buf;
 }
 
-pub fn init(alloc: std.mem.Allocator, scratch_alloc: std.mem.Allocator, seed: u64, _io: std.Io, _data_dir: std.Io.Dir) !void {
+pub fn init(alloc: std.mem.Allocator, scratch_alloc: std.mem.Allocator, seed: u64, _io: std.Io, _data_dir: std.Io.Dir, _internal_use: bool) !void {
     allocator = .init(alloc);
     io = _io;
     data_dir = _data_dir;
+    internal_use = _internal_use;
 
-    load_config();
+    if (!internal_use) load_config();
 
     // Temporary scratch allocations
     var scratch = std.heap.ArenaAllocator.init(scratch_alloc);
