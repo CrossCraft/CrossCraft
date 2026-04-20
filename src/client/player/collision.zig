@@ -3,7 +3,7 @@
 const std = @import("std");
 const World = @import("game").World;
 const c = @import("common").consts;
-const B = c.Block;
+const Block = c.Block;
 
 // -- Player dimensions -------------------------------------------------------
 
@@ -22,22 +22,22 @@ const collision_solid = blk: {
     var table: [256]bool = @splat(false);
     // All defined blocks (1-49) default solid, then carve out passable ones.
     for (1..50) |i| table[i] = true;
-    table[B.Sapling] = false;
-    table[B.Flowing_Water] = false;
-    table[B.Still_Water] = false;
-    table[B.Flowing_Lava] = false;
-    table[B.Still_Lava] = false;
-    table[B.Flower1] = false;
-    table[B.Flower2] = false;
-    table[B.Mushroom1] = false;
-    table[B.Mushroom2] = false;
+    table[@intFromEnum(Block.sapling)] = false;
+    table[@intFromEnum(Block.flowing_water)] = false;
+    table[@intFromEnum(Block.still_water)] = false;
+    table[@intFromEnum(Block.flowing_lava)] = false;
+    table[@intFromEnum(Block.still_lava)] = false;
+    table[@intFromEnum(Block.flower_1)] = false;
+    table[@intFromEnum(Block.flower_2)] = false;
+    table[@intFromEnum(Block.mushroom_1)] = false;
+    table[@intFromEnum(Block.mushroom_2)] = false;
     break :blk table;
 };
 
 /// Collision height of a block: 0.0 (passable), 0.5 (slab), or 1.0 (full).
-pub fn block_height(id: u8) f32 {
-    if (!collision_solid[id]) return 0.0;
-    if (id == B.Slab) return 0.5;
+pub fn block_height(id: Block) f32 {
+    if (!collision_solid[@intFromEnum(id)]) return 0.0;
+    if (id == .slab) return 0.5;
     return 1.0;
 }
 
@@ -60,8 +60,8 @@ pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
     const by: i32 = @intFromFloat(fy);
     const bz: i32 = @intFromFloat(fz);
     const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-    if (block == B.Flowing_Water or block == B.Still_Water) return .water;
-    if (block == B.Flowing_Lava or block == B.Still_Lava) return .lava;
+    if (block == .flowing_water or block == .still_water) return .water;
+    if (block == .flowing_lava or block == .still_lava) return .lava;
     return null;
 }
 
@@ -100,8 +100,8 @@ fn zone_liquid(px: f32, pz: f32, by0: i32, by1: i32) ?Liquid {
             while (bz <= max_bz) : (bz += 1) {
                 if (bz < 0 or bz >= c.WorldDepth) continue;
                 const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-                if (block == B.Flowing_Water or block == B.Still_Water) return .water;
-                if (block == B.Flowing_Lava or block == B.Still_Lava) return .lava;
+                if (block == .flowing_water or block == .still_water) return .water;
+                if (block == .flowing_lava or block == .still_lava) return .lava;
             }
         }
     }

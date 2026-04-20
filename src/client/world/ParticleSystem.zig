@@ -106,8 +106,8 @@ pub fn deinit(self: *Self) void {
 /// Emit a burst of particles for a block that just got broken.
 /// `bx/by/bz` are world block coordinates; `face` selects which atlas tile
 /// (top/bottom/side) the shards sample from.
-pub fn spawn_break(self: *Self, block_id: u8, bx: u16, by: u16, bz: u16, face: Face) void {
-    std.debug.assert(block_id != 0);
+pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, face: Face) void {
+    std.debug.assert(block_id != .air);
 
     const tile = BlockRegistry.global.get_face_tile(block_id, face);
     const tu = self.atlas.tileU(tile.col);

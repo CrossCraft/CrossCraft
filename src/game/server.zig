@@ -188,10 +188,10 @@ pub fn broadcast_chat_message(id: i8, message: []u8) void {
     }
 }
 
-pub fn broadcast_block_change(x: u16, y: u16, z: u16, block_type: u8) void {
+pub fn broadcast_block_change(x: u16, y: u16, z: u16, block: consts.Block) void {
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
-            players.items[i].?.send_block_change(x, y, z, block_type) catch continue;
+            players.items[i].?.send_block_change(x, y, z, block) catch continue;
             players.items[i].?.writer.flush() catch continue;
         }
     }

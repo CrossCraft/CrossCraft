@@ -16,7 +16,7 @@ const Math = ae.Math;
 const Rendering = ae.Rendering;
 
 const c = @import("common").consts;
-const B = c.Block;
+const Block = c.Block;
 
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
@@ -67,7 +67,7 @@ const DIG_PITCH_RAD: f32 = -20.0 * std.math.pi / 180.0;
 const VERT_CAPACITY: usize = 36;
 // Sentinel distinct from any real block id. Classic block ids occupy 0..49;
 // 50..255 are unused, so 0xFF is safely outside the assigned range.
-const SENTINEL: u8 = 0xFF;
+const SENTINEL: Block = @enumFromInt(0xFF);
 
 const SwingKind = enum { idle, place, dig };
 
@@ -76,8 +76,8 @@ const Self = @This();
 pipeline: Rendering.Pipeline.Handle,
 atlas: TextureAtlas,
 mesh: Rendering.Mesh(Vertex),
-cached_block: u8,
-pending_block: u8,
+cached_block: Block,
+pending_block: Block,
 /// Whether the currently baked mesh used the shadow tint. Tracked alongside
 /// `cached_block` so the mesh rebuilds when the player walks across a
 /// sunlit/shaded boundary even if the slot stayed the same.
@@ -136,7 +136,7 @@ pub fn trigger_place(self: *Self) void {
 
 // -- Per-frame update --------------------------------------------------------
 
-pub fn update(self: *Self, dt: f32, current_block: u8, shadowed: bool) void {
+pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     std.debug.assert(dt >= 0);
 
     // First frame: bootstrap cache without an animation.
@@ -207,28 +207,28 @@ pub fn update(self: *Self, dt: f32, current_block: u8, shadowed: bool) void {
 
 // -- Mesh build --------------------------------------------------------------
 
-fn rebuild(self: *Self, block: u8, shadowed: bool) void {
+fn rebuild(self: *Self, block: Block, shadowed: bool) void {
     self.mesh.vertices.clearRetainingCapacity();
-    if (block == B.Air) {
+    if (block == .air) {
         self.mesh.update();
         return;
     }
     const reg = &BlockRegistry.global;
     // Lava ignores shadowing in chunk meshing; mirror that here so a held
     // lava block always reads as glowing.
-    const shade = shadowed and block != B.Flowing_Lava and block != B.Still_Lava;
+    const shade = shadowed and block != .flowing_lava and block != .still_lava;
 
     // Cross-plants (saplings, flowers, mushrooms) have no cube faces -- the
     // chunk mesher emits two intersecting flat planes for them via
     // emit_cross. Mirror that here so the held viewmodel reads as a real
     // sapling/flower/mushroom instead of a cube wrapped in cross-PNG faces.
-    if (reg.cross.isSet(block)) {
+    if (reg.cross.isSet(@intFromEnum(block))) {
         // All faces of a cross-plant share one tile (registered via `all`),
         // so the face argument is arbitrary.
         const tile = reg.get_face_tile(block, .y_pos);
         face_mod.emit_cross(&self.mesh.vertices, 0, 0, 0, tile, &self.atlas, shade);
     } else {
-        const is_slab = reg.slab.isSet(block);
+        const is_slab = reg.slab.isSet(@intFromEnum(block));
         const faces = [_]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
         for (faces) |face| {
             const tile = reg.get_face_tile(block, face);
@@ -252,7 +252,7 @@ fn rebuild(self: *Self, block: u8, shadowed: bool) void {
 // -- Draw --------------------------------------------------------------------
 
 pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camera) void {
-    if (self.cached_block == B.Air or self.mesh.vertices.items.len == 0) return;
+    if (self.cached_block == .air or self.mesh.vertices.items.len == 0) return;
 
     // Clear depth so the cube is never clipped by nearby world geometry.
     // The existing clear_depth before the UI pass isolates the next layer.
@@ -274,7 +274,7 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
 
     const anim = self.compute_anim();
     const reg = &BlockRegistry.global;
-    const y_lift: f32 = if (reg.slab.isSet(self.cached_block) or reg.cross.isSet(self.cached_block))
+    const y_lift: f32 = if (reg.slab.isSet(@intFromEnum(self.cached_block)) or reg.cross.isSet(@intFromEnum(self.cached_block)))
         HELD_Y_LIFT
     else
         0;

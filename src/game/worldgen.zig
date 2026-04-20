@@ -50,7 +50,7 @@ const CombinedNoise = noise.CombinedNoise;
 const sin_fp16 = noise.sin_fp16;
 const cos_fp16 = noise.cos_fp16;
 
-const B = c.Block;
+const Block = c.Block;
 const W: u32 = c.WorldLength;
 const H: u32 = c.WorldHeight;
 const D: u32 = c.WorldDepth;
@@ -378,7 +378,7 @@ noinline fn stepErosion(heightmap: []i16, rng: *Xorshift64) void {
 
 // -- Step 3: Strata ------------------------------------------------------
 
-noinline fn stepStrata(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+noinline fn stepStrata(blocks: []Block, heightmap: []const i16, rng: *Xorshift64) void {
     const soil = OctaveNoise.init(rng, 8);
 
     for (0..W) |xi| {
@@ -396,7 +396,7 @@ noinline fn stepStrata(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) v
 
             for (0..H) |yi| {
                 const y: i32 = @intCast(yi);
-                const blk: u8 = if (y == 0) B.Bedrock else if (y == 1) B.Still_Lava else if (y <= stone_top) B.Stone else if (y <= h) B.Dirt else B.Air;
+                const blk: Block = if (y == 0) .bedrock else if (y == 1) .still_lava else if (y <= stone_top) .stone else if (y <= h) .dirt else .air;
                 blocks[blockIdx(x, @intCast(yi), z)] = blk;
             }
         }
@@ -423,7 +423,7 @@ noinline fn stepOres(ore_mask: []u8, rng: *Xorshift64) void {
 
 // -- Step 6: Merge -------------------------------------------------------
 
-noinline fn stepMerge(blocks: []u8, cave_mask: []const u8, ore_mask: []const u8) void {
+noinline fn stepMerge(blocks: []Block, cave_mask: []const u8, ore_mask: []const u8) void {
     for (0..H) |yi| {
         for (0..D) |zi| {
             for (0..W) |xi| {
@@ -432,14 +432,14 @@ noinline fn stepMerge(blocks: []u8, cave_mask: []const u8, ore_mask: []const u8)
                 const z: u32 = @intCast(zi);
                 const idx = blockIdx(x, y, z);
                 if (getCaveBit(cave_mask, idx) and y > 1) {
-                    blocks[idx] = B.Air;
-                } else if (blocks[idx] == B.Stone) {
+                    blocks[idx] = .air;
+                } else if (blocks[idx] == .stone) {
                     const ore = getOreBits(ore_mask, idx);
                     if (ore != 0) {
                         blocks[idx] = switch (ore) {
-                            1 => B.Coal_Ore,
-                            2 => B.Iron_Ore,
-                            3 => B.Gold_Ore,
+                            1 => .coal_ore,
+                            2 => .iron_ore,
+                            3 => .gold_ore,
                             0 => unreachable,
                         };
                     }
@@ -459,7 +459,7 @@ fn packCoord(x: u32, y: u32, z: u32) u32 {
 /// and downward (-y) only - water never propagates upward, per spec.
 /// Caller is responsible for marking seeded cells as `fluid` and writing them
 /// into `queue[0..tail_in]` before calling.
-fn floodFromQueue(blocks: []u8, queue: []u32, tail_in: u32, fluid: u8) void {
+fn floodFromQueue(blocks: []Block, queue: []u32, tail_in: u32, fluid: Block) void {
     const cap: u32 = @intCast(queue.len);
     var head: u32 = 0;
     var tail = tail_in;
@@ -481,7 +481,7 @@ fn floodFromQueue(blocks: []u8, queue: []u32, tail_in: u32, fluid: u8) void {
             const nz = bz + d[2];
             if (nx < 0 or nx >= W or ny < 1 or ny >= H or nz < 0 or nz >= D) continue;
             const nidx = blockIdx(@intCast(nx), @intCast(ny), @intCast(nz));
-            if (blocks[nidx] != B.Air) continue;
+            if (blocks[nidx] != .air) continue;
             blocks[nidx] = fluid;
             const next_tail = (tail + 1) % cap;
             if (next_tail == head) return;
@@ -493,15 +493,15 @@ fn floodFromQueue(blocks: []u8, queue: []u32, tail_in: u32, fluid: u8) void {
 
 /// Single-source flood: seeds one cell and runs the BFS. Used for the random
 /// underground water and lava sources.
-fn bfsFloodDown(blocks: []u8, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: u8) void {
+fn bfsFloodDown(blocks: []Block, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: Block) void {
     const start_idx = blockIdx(sx, sy, sz);
-    if (blocks[start_idx] != B.Air) return;
+    if (blocks[start_idx] != .air) return;
     blocks[start_idx] = fluid;
     queue[0] = packCoord(sx, sy, sz);
     floodFromQueue(blocks, queue, 1, fluid);
 }
 
-noinline fn stepFloodWater(blocks: []u8, rng: *Xorshift64, flood_queue: []u32) void {
+noinline fn stepFloodWater(blocks: []Block, rng: *Xorshift64, flood_queue: []u32) void {
     // Ocean: spec flood-fills from every map-edge column at y = waterLevel - 1,
     // spreading horizontally and downward. Pre-seed every border air block at
     // that height into the BFS queue, then run a single combined BFS. Caves
@@ -515,8 +515,8 @@ noinline fn stepFloodWater(blocks: []u8, rng: *Xorshift64, flood_queue: []u32) v
         const x: u32 = @intCast(xi);
         for ([_]u32{ 0, D - 1 }) |z| {
             const idx = blockIdx(x, water_y, z);
-            if (blocks[idx] == B.Air and tail < cap) {
-                blocks[idx] = B.Still_Water;
+            if (blocks[idx] == .air and tail < cap) {
+                blocks[idx] = .still_water;
                 flood_queue[tail] = packCoord(x, water_y, z);
                 tail += 1;
             }
@@ -528,15 +528,15 @@ noinline fn stepFloodWater(blocks: []u8, rng: *Xorshift64, flood_queue: []u32) v
         const z: u32 = @intCast(zi);
         for ([_]u32{ 0, W - 1 }) |x| {
             const idx = blockIdx(x, water_y, z);
-            if (blocks[idx] == B.Air and tail < cap) {
-                blocks[idx] = B.Still_Water;
+            if (blocks[idx] == .air and tail < cap) {
+                blocks[idx] = .still_water;
                 flood_queue[tail] = packCoord(x, water_y, z);
                 tail += 1;
             }
         }
     }
 
-    floodFromQueue(blocks, flood_queue, tail, B.Still_Water);
+    floodFromQueue(blocks, flood_queue, tail, .still_water);
 
     // Underground water sources (spec: width * depth / 8000) seeded at
     // y = waterLevel - 1 or - 2.
@@ -545,11 +545,11 @@ noinline fn stepFloodWater(blocks: []u8, rng: *Xorshift64, flood_queue: []u32) v
         const sx = rng.next_bounded(W);
         const sy: u32 = @intCast(WATER - 1 - @as(i32, @intCast(rng.next_bounded(WATER_SOURCE_DEPTH))));
         const sz = rng.next_bounded(D);
-        bfsFloodDown(blocks, flood_queue, sx, sy, sz, B.Still_Water);
+        bfsFloodDown(blocks, flood_queue, sx, sy, sz, .still_water);
     }
 }
 
-noinline fn stepFloodLava(blocks: []u8, rng: *Xorshift64, flood_queue: []u32) void {
+noinline fn stepFloodLava(blocks: []Block, rng: *Xorshift64, flood_queue: []u32) void {
     const sources: u32 = MAP_VOL / LAVA_SOURCE_DIVISOR;
     for (0..sources) |_| {
         const sx = rng.next_bounded(W);
@@ -558,13 +558,13 @@ noinline fn stepFloodLava(blocks: []u8, rng: *Xorshift64, flood_queue: []u32) vo
         const sy_fp = r1.mul(r2).mul(FP16.from(WATER - LAVA_DEPTH_OFFSET));
         const sy: u32 = @intCast(@max(1, sy_fp.int()));
         const sz = rng.next_bounded(D);
-        bfsFloodDown(blocks, flood_queue, sx, sy, sz, B.Still_Lava);
+        bfsFloodDown(blocks, flood_queue, sx, sy, sz, .still_lava);
     }
 }
 
 // -- Step 9: Surface -----------------------------------------------------
 
-noinline fn stepSurface(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+noinline fn stepSurface(blocks: []Block, heightmap: []const i16, rng: *Xorshift64) void {
     const sand_noise = OctaveNoise.init(rng, 8);
     const gravel_noise = OctaveNoise.init(rng, 8);
 
@@ -583,13 +583,13 @@ noinline fn stepSurface(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) 
             const y: u32 = @intCast(h);
             const above = blocks[blockIdx(x, y + 1, z)];
 
-            if (above == B.Still_Water and is_gravel) {
-                blocks[blockIdx(x, y, z)] = B.Gravel;
-            } else if (above == B.Air) {
+            if (above == .still_water and is_gravel) {
+                blocks[blockIdx(x, y, z)] = .gravel;
+            } else if (above == .air) {
                 if (h <= WATER and is_sand) {
-                    blocks[blockIdx(x, y, z)] = B.Sand;
+                    blocks[blockIdx(x, y, z)] = .sand;
                 } else {
-                    blocks[blockIdx(x, y, z)] = B.Grass;
+                    blocks[blockIdx(x, y, z)] = .grass;
                 }
             }
         }
@@ -598,18 +598,18 @@ noinline fn stepSurface(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) 
 
 // -- Step 10: Plants -----------------------------------------------------
 
-pub fn placeTree(blocks: []u8, tx: u32, base_y: u32, tz: u32, height: u32, rng: *Xorshift64) void {
+pub fn placeTree(blocks: []Block, tx: u32, base_y: u32, tz: u32, height: u32, rng: *Xorshift64) void {
     // Check space
     var check_y: u32 = base_y + 1;
     while (check_y <= base_y + height + 2 and check_y < H) : (check_y += 1) {
-        if (blocks[blockIdx(tx, check_y, tz)] != B.Air) return;
+        if (blocks[blockIdx(tx, check_y, tz)] != .air) return;
     }
     if (base_y + height + 2 >= H) return;
 
     // Trunk
     for (0..height) |i| {
         const y: u32 = base_y + 1 + @as(u32, @intCast(i));
-        if (y < H) blocks[blockIdx(tx, y, tz)] = B.Log;
+        if (y < H) blocks[blockIdx(tx, y, tz)] = .log;
     }
     // Leaves: 4 layers
     for (0..4) |layer| {
@@ -631,13 +631,13 @@ pub fn placeTree(blocks: []u8, tx: u32, base_y: u32, tz: u32, height: u32, rng: 
                 const lz = @as(i32, @intCast(tz)) + dz;
                 if (lx < 0 or lx >= W or lz < 0 or lz >= D) continue;
                 const idx = blockIdx(@intCast(lx), y, @intCast(lz));
-                if (blocks[idx] == B.Air) blocks[idx] = B.Leaves;
+                if (blocks[idx] == .air) blocks[idx] = .leaves;
             }
         }
     }
 }
 
-noinline fn stepPlants(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+noinline fn stepPlants(blocks: []Block, heightmap: []const i16, rng: *Xorshift64) void {
     // Trees
     const tree_patches: u32 = MAP_AREA / TREE_PATCH_DIVISOR;
     for (0..tree_patches) |_| {
@@ -654,20 +654,20 @@ noinline fn stepPlants(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) v
                 const h: i32 = heightmap[hmIdx(ux, uz)];
                 if (h < WATER or h >= @as(i32, H) - TREE_MIN_HEADROOM) continue;
                 const uy: u32 = @intCast(h);
-                if (blocks[blockIdx(ux, uy, uz)] != B.Grass) continue;
+                if (blocks[blockIdx(ux, uy, uz)] != .grass) continue;
                 const th: u32 = rng.next_bounded(TREE_HEIGHT_VARIANCE) + TREE_MIN_HEIGHT;
                 placeTree(blocks, ux, uy, uz, th, rng);
             }
         }
     }
     // Flowers
-    placePatches(blocks, heightmap, rng, B.Flower1, MAP_AREA / FLOWER_PATCH_DIVISOR);
-    placePatches(blocks, heightmap, rng, B.Flower2, MAP_AREA / FLOWER_PATCH_DIVISOR);
+    placePatches(blocks, heightmap, rng, .flower_1, MAP_AREA / FLOWER_PATCH_DIVISOR);
+    placePatches(blocks, heightmap, rng, .flower_2, MAP_AREA / FLOWER_PATCH_DIVISOR);
     // Mushrooms (underground)
     placeMushrooms(blocks, heightmap, rng);
 }
 
-fn placePatches(blocks: []u8, heightmap: []const i16, rng: *Xorshift64, flower: u8, count: u32) void {
+fn placePatches(blocks: []Block, heightmap: []const i16, rng: *Xorshift64, flower: Block, count: u32) void {
     for (0..count) |_| {
         var px: i32 = @intCast(rng.next_bounded(W));
         var pz: i32 = @intCast(rng.next_bounded(D));
@@ -681,21 +681,21 @@ fn placePatches(blocks: []u8, heightmap: []const i16, rng: *Xorshift64, flower: 
                 const h: i32 = heightmap[hmIdx(ux, uz)];
                 if (h < 1 or h >= @as(i32, H) - 1) continue;
                 const uy: u32 = @intCast(h + 1);
-                if (blocks[blockIdx(ux, uy, uz)] != B.Air) continue;
-                if (blocks[blockIdx(ux, @intCast(h), uz)] != B.Grass) continue;
+                if (blocks[blockIdx(ux, uy, uz)] != .air) continue;
+                if (blocks[blockIdx(ux, @intCast(h), uz)] != .grass) continue;
                 blocks[blockIdx(ux, uy, uz)] = flower;
             }
         }
     }
 }
 
-fn placeMushrooms(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
+fn placeMushrooms(blocks: []Block, heightmap: []const i16, rng: *Xorshift64) void {
     const count: u32 = MAP_VOL / MUSHROOM_DIVISOR;
     for (0..count) |_| {
         var px: i32 = @intCast(rng.next_bounded(W));
         var py: i32 = @intCast(rng.next_bounded(H));
         var pz: i32 = @intCast(rng.next_bounded(D));
-        const mtype: u8 = if (rng.next_bounded(2) == 0) B.Mushroom1 else B.Mushroom2;
+        const mtype: Block = if (rng.next_bounded(2) == 0) .mushroom_1 else .mushroom_2;
         for (0..MUSHROOM_GROUPS) |_| {
             for (0..MUSHROOM_ATTEMPTS) |_| {
                 px += @as(i32, @intCast(rng.next_bounded(PLANT_WANDER_RANGE))) - @as(i32, @intCast(rng.next_bounded(PLANT_WANDER_RANGE)));
@@ -706,9 +706,9 @@ fn placeMushrooms(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) void {
                 const uy: u32 = @intCast(py);
                 const uz: u32 = @intCast(pz);
                 if (uy >= @as(u32, @intCast(heightmap[hmIdx(ux, uz)]))) continue;
-                if (blocks[blockIdx(ux, uy, uz)] != B.Air) continue;
+                if (blocks[blockIdx(ux, uy, uz)] != .air) continue;
                 if (uy < 1) continue;
-                if (blocks[blockIdx(ux, uy - 1, uz)] != B.Stone) continue;
+                if (blocks[blockIdx(ux, uy - 1, uz)] != .stone) continue;
                 blocks[blockIdx(ux, uy, uz)] = mtype;
             }
         }
@@ -730,7 +730,7 @@ pub const GenPhase = enum(u8) {
     plants,
 };
 
-pub fn generate(scratch: std.mem.Allocator, blocks: []u8, seed: u64, io: std.Io, phase: *GenPhase) !void {
+pub fn generate(scratch: std.mem.Allocator, blocks: []Block, seed: u64, io: std.Io, phase: *GenPhase) !void {
     assert(blocks.len == MAP_VOL);
     var rng = Xorshift64.init(seed);
 

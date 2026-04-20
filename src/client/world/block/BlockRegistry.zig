@@ -1,6 +1,6 @@
 const std = @import("std");
 const c = @import("common").consts;
-const B = c.Block;
+const Block = c.Block;
 const face_mod = @import("../chunk/face.zig");
 pub const Face = face_mod.Face;
 
@@ -52,8 +52,8 @@ pub fn init() void {
 }
 
 /// Returns the atlas tile for a given block and face direction.
-pub fn get_face_tile(self: *const Self, block: u8, face: Face) Tile {
-    const ft = self.face_tiles[block];
+pub fn get_face_tile(self: *const Self, block: Block, face: Face) Tile {
+    const ft = self.face_tiles[@intFromEnum(block)];
     return switch (face) {
         .y_pos => ft.top,
         .y_neg => ft.bottom,
@@ -92,111 +92,111 @@ fn defaults() Self {
     };
 
     // -- Opaque: clear non-opaque blocks --
-    self.@"opaque".unset(B.Air);
-    self.@"opaque".unset(B.Sapling);
-    self.@"opaque".unset(B.Flowing_Water);
-    self.@"opaque".unset(B.Still_Water);
-    self.@"opaque".unset(B.Flowing_Lava);
-    self.@"opaque".unset(B.Still_Lava);
-    self.@"opaque".unset(B.Leaves);
-    self.@"opaque".unset(B.Glass);
-    self.@"opaque".unset(B.Flower1);
-    self.@"opaque".unset(B.Flower2);
-    self.@"opaque".unset(B.Mushroom1);
-    self.@"opaque".unset(B.Mushroom2);
+    self.@"opaque".unset(@intFromEnum(Block.air));
+    self.@"opaque".unset(@intFromEnum(Block.sapling));
+    self.@"opaque".unset(@intFromEnum(Block.flowing_water));
+    self.@"opaque".unset(@intFromEnum(Block.still_water));
+    self.@"opaque".unset(@intFromEnum(Block.flowing_lava));
+    self.@"opaque".unset(@intFromEnum(Block.still_lava));
+    self.@"opaque".unset(@intFromEnum(Block.leaves));
+    self.@"opaque".unset(@intFromEnum(Block.glass));
+    self.@"opaque".unset(@intFromEnum(Block.flower_1));
+    self.@"opaque".unset(@intFromEnum(Block.flower_2));
+    self.@"opaque".unset(@intFromEnum(Block.mushroom_1));
+    self.@"opaque".unset(@intFromEnum(Block.mushroom_2));
     // Slab is half-height; treating it as opaque would (a) cull neighbors'
     // faces hidden behind the missing top half and (b) cause its own top
     // face to be culled by whatever sits above it. Mark non-opaque and let
     // the dedicated slab path in the mesher handle geometry.
-    self.@"opaque".unset(B.Slab);
+    self.@"opaque".unset(@intFromEnum(Block.slab));
     // Clear undefined block IDs 50-255 as non-opaque
     for (50..256) |i| self.@"opaque".unset(i);
 
     // -- Slab blocks (half-height geometry) --
-    self.slab.set(B.Slab);
+    self.slab.set(@intFromEnum(Block.slab));
 
     // -- Visible: clear invisible blocks --
-    self.visible.unset(B.Air);
-    self.visible.unset(B.Sapling);
-    self.visible.unset(B.Flower1);
-    self.visible.unset(B.Flower2);
-    self.visible.unset(B.Mushroom1);
-    self.visible.unset(B.Mushroom2);
+    self.visible.unset(@intFromEnum(Block.air));
+    self.visible.unset(@intFromEnum(Block.sapling));
+    self.visible.unset(@intFromEnum(Block.flower_1));
+    self.visible.unset(@intFromEnum(Block.flower_2));
+    self.visible.unset(@intFromEnum(Block.mushroom_1));
+    self.visible.unset(@intFromEnum(Block.mushroom_2));
     // Clear undefined block IDs 50-255 as invisible
     for (50..256) |i| self.visible.unset(i);
 
     // -- Cross-plant blocks --
-    self.cross.set(B.Sapling);
-    self.cross.set(B.Flower1);
-    self.cross.set(B.Flower2);
-    self.cross.set(B.Mushroom1);
-    self.cross.set(B.Mushroom2);
+    self.cross.set(@intFromEnum(Block.sapling));
+    self.cross.set(@intFromEnum(Block.flower_1));
+    self.cross.set(@intFromEnum(Block.flower_2));
+    self.cross.set(@intFromEnum(Block.mushroom_1));
+    self.cross.set(@intFromEnum(Block.mushroom_2));
 
     // -- Leaf blocks --
-    self.leaf.set(B.Leaves);
+    self.leaf.set(@intFromEnum(Block.leaves));
 
     // -- Fluid blocks --
-    self.fluid.set(B.Flowing_Water);
-    self.fluid.set(B.Still_Water);
-    self.fluid.set(B.Flowing_Lava);
-    self.fluid.set(B.Still_Lava);
+    self.fluid.set(@intFromEnum(Block.flowing_water));
+    self.fluid.set(@intFromEnum(Block.still_water));
+    self.fluid.set(@intFromEnum(Block.flowing_lava));
+    self.fluid.set(@intFromEnum(Block.still_lava));
 
     // -- Glass blocks (cull faces against same-type neighbors) --
-    self.glass.set(B.Glass);
+    self.glass.set(@intFromEnum(Block.glass));
 
     // -- Face tiles (texture atlas coordinates) --
-    self.face_tiles[B.Stone] = all(1, 0);
-    self.face_tiles[B.Grass] = top_side_bot(0, 0, 3, 0, 2, 0);
-    self.face_tiles[B.Dirt] = all(2, 0);
-    self.face_tiles[B.Cobblestone] = all(0, 1);
-    self.face_tiles[B.Planks] = all(4, 0);
-    self.face_tiles[B.Sapling] = all(15, 0);
-    self.face_tiles[B.Bedrock] = all(1, 1);
-    self.face_tiles[B.Flowing_Water] = all(14, 0);
-    self.face_tiles[B.Still_Water] = all(14, 0);
-    self.face_tiles[B.Flowing_Lava] = all(14, 1);
-    self.face_tiles[B.Still_Lava] = all(14, 1);
-    self.face_tiles[B.Sand] = all(2, 1);
-    self.face_tiles[B.Gravel] = all(3, 1);
-    self.face_tiles[B.Gold_Ore] = all(0, 2);
-    self.face_tiles[B.Iron_Ore] = all(1, 2);
-    self.face_tiles[B.Coal_Ore] = all(2, 2);
-    self.face_tiles[B.Log] = top_side_bot(5, 1, 4, 1, 5, 1);
-    self.face_tiles[B.Leaves] = all(6, 1);
-    self.face_tiles[B.Sponge] = all(0, 3);
-    self.face_tiles[B.Glass] = all(1, 3);
+    self.face_tiles[@intFromEnum(Block.stone)] = all(1, 0);
+    self.face_tiles[@intFromEnum(Block.grass)] = top_side_bot(0, 0, 3, 0, 2, 0);
+    self.face_tiles[@intFromEnum(Block.dirt)] = all(2, 0);
+    self.face_tiles[@intFromEnum(Block.cobblestone)] = all(0, 1);
+    self.face_tiles[@intFromEnum(Block.planks)] = all(4, 0);
+    self.face_tiles[@intFromEnum(Block.sapling)] = all(15, 0);
+    self.face_tiles[@intFromEnum(Block.bedrock)] = all(1, 1);
+    self.face_tiles[@intFromEnum(Block.flowing_water)] = all(14, 0);
+    self.face_tiles[@intFromEnum(Block.still_water)] = all(14, 0);
+    self.face_tiles[@intFromEnum(Block.flowing_lava)] = all(14, 1);
+    self.face_tiles[@intFromEnum(Block.still_lava)] = all(14, 1);
+    self.face_tiles[@intFromEnum(Block.sand)] = all(2, 1);
+    self.face_tiles[@intFromEnum(Block.gravel)] = all(3, 1);
+    self.face_tiles[@intFromEnum(Block.gold_ore)] = all(0, 2);
+    self.face_tiles[@intFromEnum(Block.iron_ore)] = all(1, 2);
+    self.face_tiles[@intFromEnum(Block.coal_ore)] = all(2, 2);
+    self.face_tiles[@intFromEnum(Block.log)] = top_side_bot(5, 1, 4, 1, 5, 1);
+    self.face_tiles[@intFromEnum(Block.leaves)] = all(6, 1);
+    self.face_tiles[@intFromEnum(Block.sponge)] = all(0, 3);
+    self.face_tiles[@intFromEnum(Block.glass)] = all(1, 3);
 
     // Wool colors
-    self.face_tiles[B.Red_Wool] = all(0, 4);
-    self.face_tiles[B.Orange_Wool] = all(1, 4);
-    self.face_tiles[B.Yellow_Wool] = all(2, 4);
-    self.face_tiles[B.Chartreuse_Wool] = all(3, 4);
-    self.face_tiles[B.Green_Wool] = all(4, 4);
-    self.face_tiles[B.Spring_Green_Wool] = all(5, 4);
-    self.face_tiles[B.Cyan_Wool] = all(6, 4);
-    self.face_tiles[B.Capri_Wool] = all(7, 4);
-    self.face_tiles[B.Ultramarine_Wool] = all(8, 4);
-    self.face_tiles[B.Purple_Wool] = all(9, 4);
-    self.face_tiles[B.Violet_Wool] = all(10, 4);
-    self.face_tiles[B.Magenta_Wool] = all(11, 4);
-    self.face_tiles[B.Rose_Wool] = all(12, 4);
-    self.face_tiles[B.Dark_Gray_Wool] = all(13, 4);
-    self.face_tiles[B.Light_Gray_Wool] = all(14, 4);
-    self.face_tiles[B.White_Wool] = all(15, 4);
+    self.face_tiles[@intFromEnum(Block.red_wool)] = all(0, 4);
+    self.face_tiles[@intFromEnum(Block.orange_wool)] = all(1, 4);
+    self.face_tiles[@intFromEnum(Block.yellow_wool)] = all(2, 4);
+    self.face_tiles[@intFromEnum(Block.chartreuse_wool)] = all(3, 4);
+    self.face_tiles[@intFromEnum(Block.green_wool)] = all(4, 4);
+    self.face_tiles[@intFromEnum(Block.spring_green_wool)] = all(5, 4);
+    self.face_tiles[@intFromEnum(Block.cyan_wool)] = all(6, 4);
+    self.face_tiles[@intFromEnum(Block.capri_wool)] = all(7, 4);
+    self.face_tiles[@intFromEnum(Block.ultramarine_wool)] = all(8, 4);
+    self.face_tiles[@intFromEnum(Block.purple_wool)] = all(9, 4);
+    self.face_tiles[@intFromEnum(Block.violet_wool)] = all(10, 4);
+    self.face_tiles[@intFromEnum(Block.magenta_wool)] = all(11, 4);
+    self.face_tiles[@intFromEnum(Block.rose_wool)] = all(12, 4);
+    self.face_tiles[@intFromEnum(Block.dark_gray_wool)] = all(13, 4);
+    self.face_tiles[@intFromEnum(Block.light_gray_wool)] = all(14, 4);
+    self.face_tiles[@intFromEnum(Block.white_wool)] = all(15, 4);
 
-    self.face_tiles[B.Flower1] = all(13, 0);
-    self.face_tiles[B.Flower2] = all(12, 0);
-    self.face_tiles[B.Mushroom1] = all(13, 1);
-    self.face_tiles[B.Mushroom2] = all(12, 1);
-    self.face_tiles[B.Iron] = top_side_bot(7, 1, 7, 2, 7, 1);
-    self.face_tiles[B.Gold] = top_side_bot(8, 1, 8, 2, 8, 1);
-    self.face_tiles[B.Double_Slab] = top_side_bot(6, 0, 5, 0, 6, 0);
-    self.face_tiles[B.Slab] = top_side_bot(6, 0, 5, 0, 6, 0);
-    self.face_tiles[B.Brick] = all(7, 0);
-    self.face_tiles[B.TNT] = top_side_bot(9, 0, 8, 0, 10, 0);
-    self.face_tiles[B.Bookshelf] = top_side_bot(4, 0, 3, 2, 4, 0);
-    self.face_tiles[B.Mossy_Rocks] = all(4, 2);
-    self.face_tiles[B.Obsidian] = all(5, 2);
+    self.face_tiles[@intFromEnum(Block.flower_1)] = all(13, 0);
+    self.face_tiles[@intFromEnum(Block.flower_2)] = all(12, 0);
+    self.face_tiles[@intFromEnum(Block.mushroom_1)] = all(13, 1);
+    self.face_tiles[@intFromEnum(Block.mushroom_2)] = all(12, 1);
+    self.face_tiles[@intFromEnum(Block.iron)] = top_side_bot(7, 1, 7, 2, 7, 1);
+    self.face_tiles[@intFromEnum(Block.gold)] = top_side_bot(8, 1, 8, 2, 8, 1);
+    self.face_tiles[@intFromEnum(Block.double_slab)] = top_side_bot(6, 0, 5, 0, 6, 0);
+    self.face_tiles[@intFromEnum(Block.slab)] = top_side_bot(6, 0, 5, 0, 6, 0);
+    self.face_tiles[@intFromEnum(Block.brick)] = all(7, 0);
+    self.face_tiles[@intFromEnum(Block.tnt)] = top_side_bot(9, 0, 8, 0, 10, 0);
+    self.face_tiles[@intFromEnum(Block.bookshelf)] = top_side_bot(4, 0, 3, 2, 4, 0);
+    self.face_tiles[@intFromEnum(Block.mossy_rocks)] = all(4, 2);
+    self.face_tiles[@intFromEnum(Block.obsidian)] = all(5, 2);
 
     // Pack all BitSet properties into a single byte per block.
     for (0..256) |i| {

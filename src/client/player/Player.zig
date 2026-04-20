@@ -19,7 +19,7 @@ const input = ae.Core.input;
 
 const World = @import("game").World;
 const c = @import("common").consts;
-const B = c.Block;
+const Block = c.Block;
 const proto = @import("common").protocol;
 
 const Camera = @import("Camera.zig");
@@ -55,16 +55,16 @@ pub const REACH: f32 = 5.0;
 pub const HOTBAR_SLOTS: u8 = 9;
 
 /// Default hotbar contents in slot order.
-const DEFAULT_HOTBAR: [HOTBAR_SLOTS]u8 = .{
-    B.Stone,
-    B.Cobblestone,
-    B.Brick,
-    B.Dirt,
-    B.Planks,
-    B.Log,
-    B.Leaves,
-    B.Glass,
-    B.Slab,
+const DEFAULT_HOTBAR: [HOTBAR_SLOTS]Block = .{
+    .stone,
+    .cobblestone,
+    .brick,
+    .dirt,
+    .planks,
+    .log,
+    .leaves,
+    .glass,
+    .slab,
 };
 
 // gui.png layout (Minecraft Classic): hotbar bg at (0,0) 182x22; selector
@@ -97,7 +97,7 @@ const PendingBlock = struct {
     x: u16,
     y: u16,
     z: u16,
-    block: u8,
+    block: Block,
 };
 
 // -- Physics constants (blocks/tick, Classic units) --------------------------
@@ -213,7 +213,7 @@ stick_look_speed: f32,
 selected: ?RaycastHit,
 
 /// Hotbar contents (block IDs) and currently selected slot index.
-hotbar: [HOTBAR_SLOTS]u8,
+hotbar: [HOTBAR_SLOTS]Block,
 selected_slot: u8,
 
 /// Edge flag set by the inventory_toggle input callback. GameState polls and
@@ -617,7 +617,7 @@ fn advance_view_bob(self: *Self) void {
             const curr_idx = @as(u32, @intFromFloat(@floor(self.walk_phase / std.math.pi)));
             if (curr_idx != prev_idx) {
                 const foot = block_under_feet(self);
-                if (foot != B.Air) SoundManager.play_step(foot);
+                if (foot != .air) SoundManager.play_step(foot);
             }
         }
     } else {
@@ -729,13 +729,13 @@ fn frac(v: f32) f32 {
 }
 
 /// Block the player is standing on (for step sounds).
-fn block_under_feet(self: *const Self) u8 {
+fn block_under_feet(self: *const Self) Block {
     const by_f = @floor(self.pos_y - 0.01);
     const bx_f = @floor(self.pos_x);
     const bz_f = @floor(self.pos_z);
-    if (by_f < 0 or by_f >= @as(f32, @floatFromInt(c.WorldHeight))) return B.Air;
-    if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(c.WorldLength))) return B.Air;
-    if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(c.WorldDepth))) return B.Air;
+    if (by_f < 0 or by_f >= @as(f32, @floatFromInt(c.WorldHeight))) return .air;
+    if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(c.WorldLength))) return .air;
+    if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(c.WorldDepth))) return .air;
     return World.get_block(
         @intCast(@as(i32, @intFromFloat(bx_f))),
         @intCast(@as(i32, @intFromFloat(by_f))),
@@ -789,7 +789,7 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
     // Virtual block collision: clip against a block the client placed
     // but the server has not yet committed to the world.
     if (self.pending_block) |pb| {
-        if (World.get_block(pb.x, pb.y, pb.z) != B.Air) {
+        if (World.get_block(pb.x, pb.y, pb.z) != .air) {
             // Server has committed the block; real collision takes over.
             self.pending_block = null;
         } else {
@@ -1030,11 +1030,11 @@ fn in_world(x: i32, y: i32, z: i32) bool {
 fn is_selectable(x: u16, y: u16, z: u16) bool {
     const id = World.get_block(x, y, z);
     return switch (id) {
-        B.Air,
-        B.Flowing_Water,
-        B.Still_Water,
-        B.Flowing_Lava,
-        B.Still_Lava,
+        .air,
+        .flowing_water,
+        .still_water,
+        .flowing_lava,
+        .still_lava,
         => false,
         else => true,
     };
@@ -1318,14 +1318,14 @@ fn do_break(self: *Self) void {
     if (self.held_renderer) |hr| hr.trigger_dig();
     const hit = self.selected orelse return;
     const block_id = World.get_block(hit.x, hit.y, hit.z);
-    if (block_id == B.Bedrock) return;
-    if (block_id != B.Air) {
+    if (block_id == .bedrock) return;
+    if (block_id != .air) {
         if (self.particle_sink) |ps| {
             ps.spawn_break(block_id, hit.x, hit.y, hit.z, derive_break_face(hit));
         }
         SoundManager.play_dig(block_id, hit.x, hit.y, hit.z);
     }
-    send_block_change(self.writer, hit.x, hit.y, hit.z, 0, B.Air);
+    send_block_change(self.writer, hit.x, hit.y, hit.z, 0, .air);
 }
 
 /// Recover which face the player struck from the raycast result. The
@@ -1374,7 +1374,7 @@ fn do_place(self: *Self) void {
     if (overlaps) return;
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
     const block = self.hotbar[self.selected_slot];
-    if (block == B.Air) return;
+    if (block == .air) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
     // Register a "virtual block" for collision so the player cannot
@@ -1529,7 +1529,7 @@ fn on_hotbar_scroll(ctx: *anyopaque, value: f32) void {
 /// Send a SetBlockToServer packet and flush the writer so the embedded
 /// server picks it up on its next drain. Errors are logged-and-ignored;
 /// dropping a click is harmless and the alternative would crash the game.
-fn send_block_change(w: *std.Io.Writer, x: u16, y: u16, z: u16, mode: u8, block: u8) void {
+fn send_block_change(w: *std.Io.Writer, x: u16, y: u16, z: u16, mode: u8, block: Block) void {
     proto.send_set_block_to_server(w, x, y, z, mode, block) catch |err| {
         std.log.scoped(.player).err("send_set_block_to_server: {}", .{err});
         return;

@@ -9,7 +9,7 @@ const ae = @import("aether");
 const Audio = ae.Audio;
 const Math = ae.Math;
 const c = @import("common").consts;
-const B = c.Block;
+const Block = c.Block;
 const Options = @import("Options.zig");
 const ResourcePack = @import("ResourcePack.zig");
 const Zip = @import("util/Zip.zig");
@@ -28,42 +28,42 @@ const material_count = 7;
 const max_variants = 4;
 const music_count: u8 = 7;
 
-pub fn block_material(id: u8) Material {
+pub fn block_material(id: Block) Material {
     return switch (id) {
-        B.Stone,
-        B.Cobblestone,
-        B.Bedrock,
-        B.Gold_Ore,
-        B.Iron_Ore,
-        B.Coal_Ore,
-        B.Gold,
-        B.Iron,
-        B.Double_Slab,
-        B.Slab,
-        B.Brick,
-        B.Mossy_Rocks,
-        B.Obsidian,
+        .stone,
+        .cobblestone,
+        .bedrock,
+        .gold_ore,
+        .iron_ore,
+        .coal_ore,
+        .gold,
+        .iron,
+        .double_slab,
+        .slab,
+        .brick,
+        .mossy_rocks,
+        .obsidian,
         => .stone,
-        B.Planks, B.Log, B.Bookshelf => .wood,
-        B.Dirt, B.Gravel => .gravel,
-        B.Sand => .sand,
-        B.Glass => .glass,
-        B.Red_Wool,
-        B.Orange_Wool,
-        B.Yellow_Wool,
-        B.Chartreuse_Wool,
-        B.Green_Wool,
-        B.Spring_Green_Wool,
-        B.Cyan_Wool,
-        B.Capri_Wool,
-        B.Ultramarine_Wool,
-        B.Purple_Wool,
-        B.Violet_Wool,
-        B.Magenta_Wool,
-        B.Rose_Wool,
-        B.Dark_Gray_Wool,
-        B.Light_Gray_Wool,
-        B.White_Wool,
+        .planks, .log, .bookshelf => .wood,
+        .dirt, .gravel => .gravel,
+        .sand => .sand,
+        .glass => .glass,
+        .red_wool,
+        .orange_wool,
+        .yellow_wool,
+        .chartreuse_wool,
+        .green_wool,
+        .spring_green_wool,
+        .cyan_wool,
+        .capri_wool,
+        .ultramarine_wool,
+        .purple_wool,
+        .violet_wool,
+        .magenta_wool,
+        .rose_wool,
+        .dark_gray_wool,
+        .light_gray_wool,
+        .white_wool,
         => .cloth,
         else => .grass,
     };
@@ -404,15 +404,15 @@ fn advance_and_play_music() void {
 
 // -- play API ---------------------------------------------------------------
 
-pub fn play_dig(block: u8, bx: u16, by: u16, bz: u16) void {
+pub fn play_dig(block: Block, bx: u16, by: u16, bz: u16) void {
     play_material_sound(&dig_entries, &dig_counts, block, bx, by, bz, 1.0);
 }
 
-pub fn play_step(block: u8) void {
+pub fn play_step(block: Block) void {
     if (!initialised) return;
     if (Options.current.sound_volume == 0.0) return;
     switch (block) {
-        B.Flowing_Water, B.Still_Water, B.Flowing_Lava, B.Still_Lava => return,
+        .flowing_water, .still_water, .flowing_lava, .still_lava => return,
         else => {},
     }
     var mat = @intFromEnum(block_material(block));
@@ -434,7 +434,7 @@ pub fn play_step(block: u8) void {
 fn play_material_sound(
     entries: *const [material_count][max_variants]SoundEntry,
     counts: *const [material_count]u8,
-    block: u8,
+    block: Block,
     bx: u16,
     by: u16,
     bz: u16,

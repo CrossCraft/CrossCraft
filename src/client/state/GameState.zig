@@ -703,7 +703,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // for slabs, small box for flowers/mushrooms).
     if (self.player.selected) |hit| blk: {
         const block_id = World.get_block(hit.x, hit.y, hit.z);
-        if (block_id == c.Block.Air) break :blk;
+        if (block_id == .air) break :blk;
         Rendering.Texture.Default.bind();
         var t = Rendering.Transform.new();
         const cp = @cos(self.player.camera.pitch);
@@ -898,7 +898,7 @@ fn draw_hud_prompts(self: *@This()) void {
         n += 1;
         if (self.player.selected) |hit| {
             const block_id = World.get_block(hit.x, hit.y, hit.z);
-            if (block_id != c.Block.Air) {
+            if (block_id != .air) {
                 if (hit.has_place) {
                     buf[n] = Prompts.place();
                     n += 1;

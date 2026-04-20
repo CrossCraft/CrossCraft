@@ -8,7 +8,7 @@ const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 
 const SECTION_H: u32 = 16;
-const B = c.Block;
+const Block = c.Block;
 
 /// Check sunlight at the neighbor block this face looks into.
 fn face_sunlit(wx: u16, y: u32, wz: u16, face: Face) bool {
@@ -96,7 +96,7 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
             continue;
         }
         const block = if (i >= 1 and i <= 16) chunk_row[i - 1] else World.get_block(@intCast(wx_raw), wy, wz);
-        const p = BlockRegistry.global.props[block];
+        const p = BlockRegistry.global.props[@intFromEnum(block)];
         const bit: u32 = @as(u32, 1) << @intCast(i);
         if (p.@"opaque") opq |= bit;
         if (p.visible) vis |= bit;
@@ -219,8 +219,8 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .glass = glass, .solid_leaf = 0 };
 }
 
-inline fn classify_block(block: u8, bit_pos: u5, opq: *u32, vis: *u32, flu: *u32, cross_: *u32, leaf_: *u32, slab_: *u32, glass_: *u32) void {
-    const p = BlockRegistry.global.props[block];
+inline fn classify_block(block: Block, bit_pos: u5, opq: *u32, vis: *u32, flu: *u32, cross_: *u32, leaf_: *u32, slab_: *u32, glass_: *u32) void {
+    const p = BlockRegistry.global.props[@intFromEnum(block)];
     const bit: u32 = @as(u32, 1) << bit_pos;
     if (p.@"opaque") opq.* |= bit;
     if (p.visible) vis.* |= bit;
@@ -552,7 +552,7 @@ fn emit_mask(
     face: Face,
     m: Meshes,
     atlas: *const TextureAtlas,
-    chunk_row: *const [c.ChunkSize]u8,
+    chunk_row: *const [c.ChunkSize]Block,
     buf: *const SectionBuf,
     by: u32,
     bz: u32,
@@ -571,9 +571,9 @@ fn emit_mask(
         const reg = &BlockRegistry.global;
         const tile = reg.get_face_tile(block, face);
 
-        const is_slab = reg.slab.isSet(block);
-        const is_fluid = reg.fluid.isSet(block);
-        const mesh = if (reg.@"opaque".isSet(block) or is_slab)
+        const is_slab = reg.slab.isSet(@intFromEnum(block));
+        const is_fluid = reg.fluid.isSet(@intFromEnum(block));
+        const mesh = if (reg.@"opaque".isSet(@intFromEnum(block)) or is_slab)
             m.@"opaque"
         else if (is_fluid)
             m.fluid
@@ -581,7 +581,7 @@ fn emit_mask(
             m.transparent;
 
         const shadowed = !face_sunlit(wx, y, wz, face) and
-            block != B.Flowing_Lava and block != B.Still_Lava;
+            block != .flowing_lava and block != .still_lava;
 
         if (face == .y_pos and is_fluid) {
             assert_has_room(mesh, 12);
@@ -610,7 +610,7 @@ fn emit_opaque_leaf_mask(
     face: Face,
     opaque_mesh: *std.ArrayList(Vertex),
     atlas: *const TextureAtlas,
-    chunk_row: *const [c.ChunkSize]u8,
+    chunk_row: *const [c.ChunkSize]Block,
     buf: *const SectionBuf,
     by: u32,
     bz: u32,
@@ -646,7 +646,7 @@ fn emit_cross_mask(
     cz: u32,
     transparent_mesh: *std.ArrayList(Vertex),
     atlas: *const TextureAtlas,
-    chunk_row: *const [c.ChunkSize]u8,
+    chunk_row: *const [c.ChunkSize]Block,
 ) void {
     const local_y: u32 = y % SECTION_H;
     var bits = mask;
@@ -709,7 +709,7 @@ fn emit_fluid_overlay_mask(
         const neighbor = World.get_block(nx, ny, nz);
         const tile = BlockRegistry.global.get_face_tile(neighbor, face);
         const shadowed = !face_sunlit(wx, y, wz, face) and
-            neighbor != B.Flowing_Lava and neighbor != B.Still_Lava;
+            neighbor != .flowing_lava and neighbor != .still_lava;
         face_mod.emit_fluid_overlay(fluid_mesh, face, lx, local_y, lz, tile, atlas, shadowed);
     }
 }

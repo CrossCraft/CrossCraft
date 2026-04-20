@@ -1,5 +1,6 @@
 const std = @import("std");
 const zb = @import("protocol");
+const Block = @import("consts.zig").Block;
 
 const Writer = std.Io.Writer;
 
@@ -60,13 +61,13 @@ pub fn send_position_to_server(writer: *Writer, pid: i8, x: u16, y: u16, z: u16,
     try packet.write(writer);
 }
 
-pub fn send_set_block_to_server(writer: *Writer, x: u16, y: u16, z: u16, mode: u8, block: u8) !void {
+pub fn send_set_block_to_server(writer: *Writer, x: u16, y: u16, z: u16, mode: u8, block: Block) !void {
     var packet = zb.SetBlockToServer{
         .x = x,
         .y = y,
         .z = z,
         .mode = @enumFromInt(mode),
-        .block = block,
+        .block = @intFromEnum(block),
     };
     try packet.write(writer);
 }
@@ -115,12 +116,12 @@ pub fn send_position_to_client(writer: *Writer, id: i8, x: u16, y: u16, z: u16, 
     try packet.write(writer);
 }
 
-pub fn send_block_change_to_client(writer: *Writer, x: u16, y: u16, z: u16, block: u8) !void {
+pub fn send_block_change_to_client(writer: *Writer, x: u16, y: u16, z: u16, block: Block) !void {
     var packet = zb.SetBlockToClient{
         .x = x,
         .y = y,
         .z = z,
-        .block = block,
+        .block = @intFromEnum(block),
     };
     try packet.write(writer);
 }

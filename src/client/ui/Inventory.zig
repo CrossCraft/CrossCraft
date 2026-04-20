@@ -16,7 +16,7 @@ const Rendering = ae.Rendering;
 const input = ae.Core.input;
 
 const c = @import("common").consts;
-const B = c.Block;
+const Block = c.Block;
 
 const Player = @import("../player/Player.zig");
 const SpriteBatcher = @import("SpriteBatcher.zig");
@@ -58,23 +58,23 @@ const TOOLTIP_LAYER: u8 = 252;
 
 // -- The 9x5 grid (top-left to bottom-right) --------------------------------
 
-const FILLED_BLOCKS = [_]u8{
-    B.Stone,       B.Cobblestone,      B.Brick,           B.Dirt,              B.Planks,
-    B.Log,         B.Leaves,           B.Glass,           B.Slab,              B.Mossy_Rocks,
-    B.Sapling,     B.Flower1,          B.Flower2,         B.Mushroom1,         B.Mushroom2,
-    B.Sand,        B.Gravel,           B.Sponge,          B.Red_Wool,          B.Orange_Wool,
-    B.Yellow_Wool, B.Chartreuse_Wool,  B.Green_Wool,      B.Spring_Green_Wool, B.Cyan_Wool,
-    B.Capri_Wool,  B.Ultramarine_Wool, B.Purple_Wool,     B.Violet_Wool,       B.Magenta_Wool,
-    B.Rose_Wool,   B.Dark_Gray_Wool,   B.Light_Gray_Wool, B.White_Wool,        B.Coal_Ore,
-    B.Iron_Ore,    B.Gold_Ore,         B.Iron,            B.Gold,              B.Bookshelf,
-    B.TNT,         B.Obsidian,
+const FILLED_BLOCKS = [_]Block{
+    .stone,       .cobblestone,      .brick,           .dirt,              .planks,
+    .log,         .leaves,           .glass,           .slab,              .mossy_rocks,
+    .sapling,     .flower_1,         .flower_2,        .mushroom_1,        .mushroom_2,
+    .sand,        .gravel,           .sponge,          .red_wool,          .orange_wool,
+    .yellow_wool, .chartreuse_wool,  .green_wool,      .spring_green_wool, .cyan_wool,
+    .capri_wool,  .ultramarine_wool, .purple_wool,     .violet_wool,       .magenta_wool,
+    .rose_wool,   .dark_gray_wool,   .light_gray_wool, .white_wool,        .coal_ore,
+    .iron_ore,    .gold_ore,         .iron,            .gold,              .bookshelf,
+    .tnt,         .obsidian,
 };
 
 comptime {
     std.debug.assert(FILLED_BLOCKS.len == FILLED);
 }
 
-const BLOCKS: [CAPACITY]u8 = FILLED_BLOCKS ++ ([_]u8{B.Air} ** (CAPACITY - FILLED_BLOCKS.len));
+const BLOCKS: [CAPACITY]Block = FILLED_BLOCKS ++ ([_]Block{.air} ** (CAPACITY - FILLED_BLOCKS.len));
 
 // -- Fields -----------------------------------------------------------------
 
@@ -128,7 +128,7 @@ pub fn update(self: *Self, ui_in: *const ui_input.UiInput, player: *Player) void
     // updated focus.
     if (ui_in.cursor_available) {
         if (cell_at_cursor(&lay, ui_in.cursor_x, ui_in.cursor_y)) |idx| {
-            if (BLOCKS[idx] != B.Air) self.focus = idx;
+            if (BLOCKS[idx] != .air) self.focus = idx;
         }
     }
 
@@ -147,14 +147,14 @@ pub fn update(self: *Self, ui_in: *const ui_input.UiInput, player: *Player) void
     var confirmed = ui_in.confirm_edge;
     if (ui_in.click_edge and ui_in.cursor_available) {
         if (cell_at_cursor(&lay, ui_in.cursor_x, ui_in.cursor_y)) |idx| {
-            if (BLOCKS[idx] != B.Air) {
+            if (BLOCKS[idx] != .air) {
                 self.focus = idx;
                 confirmed = true;
             }
         }
     }
 
-    if (confirmed and BLOCKS[self.focus] != B.Air) {
+    if (confirmed and BLOCKS[self.focus] != .air) {
         std.debug.assert(player.selected_slot < Player.HOTBAR_SLOTS);
         player.hotbar[player.selected_slot] = BLOCKS[self.focus];
         self.close_overlay(player);
@@ -168,7 +168,7 @@ fn try_move(self: *Self, delta: i16) void {
     const candidate: i16 = @as(i16, self.focus) + delta;
     if (candidate < 0 or candidate >= @as(i16, CAPACITY)) return;
     const idx: u8 = @intCast(candidate);
-    if (BLOCKS[idx] == B.Air) return;
+    if (BLOCKS[idx] == .air) return;
     self.focus = idx;
 }
 
@@ -253,11 +253,11 @@ pub fn draw(
     while (i < CAPACITY) : (i += 1) {
         if (i == self.focus) continue;
         const block = BLOCKS[i];
-        if (block == B.Air) continue;
+        if (block == .air) continue;
         const center = cell_center(&lay, i);
         iso.add_block(block, center[0], center[1], BLOCK_HALF_EXTENT);
     }
-    if (BLOCKS[self.focus] != B.Air) {
+    if (BLOCKS[self.focus] != .air) {
         const center = cell_center(&lay, self.focus);
 
         // Translucent light square behind the focused block for selection clarity.
