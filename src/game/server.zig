@@ -15,8 +15,11 @@ pub var io: std.Io = undefined;
 /// `init`.
 pub var data_dir: std.Io.Dir = undefined;
 
-pub var server_name: [64]u8 = pad("CrossCraft Server");
-pub var server_motd: [64]u8 = pad("Welcome to CrossCraft!");
+const default_server_name = "CrossCraft Server";
+const default_server_motd = "Welcome to CrossCraft!";
+
+pub var server_name: [64]u8 = pad(default_server_name);
+pub var server_motd: [64]u8 = pad(default_server_motd);
 
 pub var players: FAB(Client, consts.MAX_PLAYERS) = .init();
 
@@ -45,7 +48,7 @@ pub fn init(alloc: std.mem.Allocator, scratch_alloc: std.mem.Allocator, seed: u6
 
 fn load_config() void {
     const file = data_dir.openFile(io, "server.properties", .{}) catch {
-        log.info("No server.properties found, using defaults", .{});
+        write_default_config();
         return;
     };
     defer file.close(io);
@@ -83,6 +86,24 @@ fn load_config() void {
     }
 
     log.info("Loaded server.properties", .{});
+}
+
+fn write_default_config() void {
+    const file = data_dir.createFile(io, "server.properties", .{}) catch |err| {
+        log.info("No server.properties, failed to create ({}), using defaults", .{err});
+        return;
+    };
+    defer file.close(io);
+
+    const contents = "server-name:" ++ default_server_name ++ "\n" ++
+        "motd:" ++ default_server_motd ++ "\n";
+
+    file.writeStreamingAll(io, contents) catch |err| {
+        log.info("Failed to write default server.properties ({}), using defaults", .{err});
+        return;
+    };
+
+    log.info("Generated default server.properties", .{});
 }
 
 pub fn deinit() void {
