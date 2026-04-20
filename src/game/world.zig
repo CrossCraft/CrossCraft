@@ -567,6 +567,14 @@ fn process_block_update(loc: Location) void {
     } else if (block == B.Sapling and has_direct_sunlight(x, y, z)) {
         const height: u32 = rng.next_bounded(3) + 4;
         grow_tree(x, y, z, height);
+    } else if ((block == B.Sapling or block == B.Flower1 or block == B.Flower2) and
+        !has_direct_sunlight(x, y, z))
+    {
+        queue_block_change(x, y, z, B.Air);
+    } else if ((block == B.Mushroom1 or block == B.Mushroom2) and
+        has_direct_sunlight(x, y, z))
+    {
+        queue_block_change(x, y, z, B.Air);
     } else if (is_water(block) or is_lava(block)) {
         process_fluid(x, y, z, block);
     }
@@ -604,6 +612,10 @@ const has_behavior = blk: {
     table[B.Dirt] = true;
     table[B.Grass] = true;
     table[B.Sapling] = true;
+    table[B.Flower1] = true;
+    table[B.Flower2] = true;
+    table[B.Mushroom1] = true;
+    table[B.Mushroom2] = true;
     table[B.Sand] = true;
     table[B.Gravel] = true;
     table[B.Flowing_Water] = true;
