@@ -396,7 +396,7 @@ noinline fn stepStrata(blocks: []u8, heightmap: []const i16, rng: *Xorshift64) v
 
             for (0..H) |yi| {
                 const y: i32 = @intCast(yi);
-                const blk: u8 = if (y == 0) B.Bedrock else if (y <= stone_top) B.Stone else if (y <= h) B.Dirt else B.Air;
+                const blk: u8 = if (y == 0) B.Bedrock else if (y == 1) B.Still_Lava else if (y <= stone_top) B.Stone else if (y <= h) B.Dirt else B.Air;
                 blocks[blockIdx(x, @intCast(yi), z)] = blk;
             }
         }
@@ -431,7 +431,7 @@ noinline fn stepMerge(blocks: []u8, cave_mask: []const u8, ore_mask: []const u8)
                 const y: u32 = @intCast(yi);
                 const z: u32 = @intCast(zi);
                 const idx = blockIdx(x, y, z);
-                if (getCaveBit(cave_mask, idx) and y > 0) {
+                if (getCaveBit(cave_mask, idx) and y > 1) {
                     blocks[idx] = B.Air;
                 } else if (blocks[idx] == B.Stone) {
                     const ore = getOreBits(ore_mask, idx);
