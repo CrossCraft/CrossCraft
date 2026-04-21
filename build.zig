@@ -108,8 +108,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // OpenGL builds get a `_GL` suffix so the default (Vulkan on desktop,
+    // GE on PSP) keeps shipping under the canonical name while GL variants
+    // can sit alongside it in the release bin dir.
+    const client_name = switch (config.gfx) {
+        .opengl => "CrossCraft-Classic_GL",
+        else => "CrossCraft-Classic",
+    };
+
     const client_exe = Aether.addGame(ae_dep.builder, b, .{
-        .name = "CrossCraft-Classic",
+        .name = client_name,
         .root_source_file = b.path("src/client/main.zig"),
         .target = target,
         .optimize = optimize,

@@ -27,15 +27,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,    kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
-          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,    kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,      kind: game,   extra: "" }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,      kind: server, extra: "" }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,  kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,  kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_phat, kind: game,   extra: "" }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_slim, kind: game,   extra: -Dslim=true }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,      kind: server, extra: "" }
+          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
+          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux_gl,   kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
+          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: server, extra: -Dcpu=x86_64_v3 }
+          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: game,   extra: "" }
+          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: server, extra: "" }
+          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
+          - { os: windows-latest, target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
+          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
+          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_phat,   kind: game,   extra: "" }
+          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_slim,   kind: game,   extra: -Dslim=true }
+          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: server, extra: "" }
     runs-on: ${{ matrix.os }}
     name: dev ${{ matrix.kind }} (${{ matrix.name }})
     steps:
@@ -77,15 +79,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,    kind: game,   extra: -Dcpu=x86_64_v3 }
-          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,    kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,      kind: game,   extra: "" }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,      kind: server, extra: "" }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,  kind: game,   extra: -Dcpu=x86_64_v3 }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,  kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_phat, kind: game,   extra: "" }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_slim, kind: game,   extra: -Dslim=true }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,      kind: server, extra: "" }
+          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: game,   extra: -Dcpu=x86_64_v3 }
+          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux_gl,   kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
+          - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: server, extra: -Dcpu=x86_64_v3 }
+          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: game,   extra: "" }
+          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: server, extra: "" }
+          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: game,   extra: -Dcpu=x86_64_v3 }
+          - { os: windows-latest, target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
+          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
+          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_phat,   kind: game,   extra: "" }
+          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_slim,   kind: game,   extra: -Dslim=true }
+          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: server, extra: "" }
     runs-on: ${{ matrix.os }}
     name: rel ${{ matrix.kind }} (${{ matrix.name }})
     steps:
@@ -116,7 +120,7 @@ jobs:
       # Desktop game (linux/windows): -Duse-cwd=true so pack.zip ships as a
       # loose file in zig-out/bin/ next to the binary.
       - name: Build game (desktop)
-        if: matrix.kind == 'game' && (matrix.name == 'linux' || matrix.name == 'windows')
+        if: matrix.kind == 'game' && (startsWith(matrix.name, 'linux') || startsWith(matrix.name, 'windows'))
         run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} -Duse-cwd=true
 
       # macOS game: Aether.exportArtifact routes pack.zip into
@@ -134,7 +138,7 @@ jobs:
       # pack.zip size check guards against LFS regressions on every game
       # platform: a pointer stub is ~130 B, a real pack is multi-MB.
       - name: Verify desktop game artifact
-        if: matrix.kind == 'game' && (matrix.name == 'linux' || matrix.name == 'windows')
+        if: matrix.kind == 'game' && (startsWith(matrix.name, 'linux') || startsWith(matrix.name, 'windows'))
         shell: bash
         run: |
           pack="zig-out/bin/pack.zip"
