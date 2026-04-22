@@ -639,6 +639,13 @@ fn emit_mask(
         if (face == .y_pos and is_fluid) {
             assert_has_room(mesh, 12);
             face_mod.emit_fluid_top(mesh, lx, local_y, lz, tile, atlas, shadowed);
+        } else if (is_fluid and face != .y_neg) {
+            // Horizontal side of a fluid: match the top plane's inset height
+            // when this block's top is exposed, else span the full block so
+            // stacked fluid columns look continuous.
+            assert_has_room(mesh, 6);
+            const above_is_fluid = ((buf[by + 1][bz].flu >> bit_pos) & 1) != 0;
+            face_mod.emit_fluid_side_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed, above_is_fluid);
         } else if (is_slab) {
             assert_has_room(mesh, 6);
             face_mod.emit_slab_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);

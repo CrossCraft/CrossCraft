@@ -260,6 +260,44 @@ pub fn emit_slab_face(
     ));
 }
 
+/// Emit one side face of a fluid block (6 vertices). The top of the quad
+/// matches the fluid top plane (inset ~0.9 blocks) when the block above is
+/// not also fluid; otherwise it spans the full block so stacked fluid
+/// columns remain flush. Not valid for y_pos / y_neg faces.
+pub fn emit_fluid_side_face(
+    vertices: *std.ArrayList(Vertex),
+    face: Face,
+    x: u32,
+    y: u32,
+    z: u32,
+    tile: BlockRegistry.Tile,
+    atlas: *const TextureAtlas,
+    shadowed: bool,
+    above_is_fluid: bool,
+) void {
+    std.debug.assert(face != .y_pos and face != .y_neg);
+    const base = face_color(face);
+    const color = if (shadowed) apply_shadow(base) else base;
+    const uv = tile_uvs(tile, atlas);
+    const py_top: i16 = if (above_is_fluid) encode_pos(y + 1) else encode_pos_frac(y, 230);
+    const tile_h: i32 = @as(i32, uv.tv1) - @as(i32, uv.tv0);
+    const tv0: i16 = if (above_is_fluid) uv.tv0 else @intCast(@as(i32, uv.tv1) - @divTrunc(tile_h * 230, 256));
+    emit_quad_uniform(vertices, make_quad(
+        face,
+        encode_pos(x),
+        encode_pos(x + 1),
+        encode_pos(y),
+        py_top,
+        encode_pos(z),
+        encode_pos(z + 1),
+        uv.tu0,
+        tv0,
+        uv.tu1,
+        uv.tv1,
+        uniform_colors(color),
+    ));
+}
+
 /// Emit fluid top face at 0.9 block height, double-sided (12 vertices).
 pub fn emit_fluid_top(
     vertices: *std.ArrayList(Vertex),
