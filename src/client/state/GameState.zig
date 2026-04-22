@@ -708,6 +708,8 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (self.player.selected) |hit| blk: {
         const block_id = World.get_block(hit.x, hit.y, hit.z);
         if (block_id.is_air()) break :blk;
+        const bounds = block_id.bounds();
+        try self.selection.update(bounds);
         Rendering.Texture.Default.bind();
         var t = Rendering.Transform.new();
         const cp = @cos(self.player.camera.pitch);
@@ -716,7 +718,6 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
             .y = @sin(self.player.camera.pitch),
             .z = @cos(self.player.camera.yaw) * cp,
         };
-        const bounds = block_id.bounds();
         const Q: f32 = 0.0625;
         t.pos = .{
             .x = @as(f32, @floatFromInt(hit.x)) + @as(f32, @floatFromInt(bounds.min_x)) * Q + toward_camera.x * selection_depth_nudge,
