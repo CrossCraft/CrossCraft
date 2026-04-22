@@ -1,5 +1,7 @@
 const std = @import("std");
-const c = @import("common").consts;
+const common = @import("common");
+const c = common.consts;
+const prefetch = common.prefetch;
 const World = @import("game").World;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
@@ -34,6 +36,7 @@ fn face_sunlit(wx: u16, y: u32, wz: u16, face: Face) bool {
         return true;
     return World.is_sunlit(@intCast(nx), @intCast(ny), @intCast(nz));
 }
+
 const WORLD_H: u32 = c.WorldHeight;
 const WORLD_W: u32 = c.WorldLength;
 const WORLD_D: u32 = c.WorldDepth;
@@ -66,6 +69,21 @@ pub const SectionCounts = struct {
     transparent_verts: u32, // outer leaves + glass/cross
     fluid_verts: u32, // water/lava
 };
+
+// -- Prefetch -----------------------------------------------------------------
+
+/// 256 bytes (one chunk Y-slice: 16 z-rows x 16 x-blocks) = 4 cache lines.
+const Y_SLICE_BYTES: u32 = c.ChunkSize * c.ChunkSize;
+
+/// Streaming prefetch for one Y-level's worth of central-chunk data.
+/// Caller must ensure y_local is in [0, ChunkSize). No-op for callers
+/// whose pack path doesn't read this data (all-opaque chunks hit the
+/// boundary-only fast path).
+inline fn prefetch_y_slice(chunk_ptr: *const [c.ChunkVolume]c.Block, y_local: u32) void {
+    const offset: u32 = y_local * Y_SLICE_BYTES;
+    const slice = chunk_ptr[offset..][0..Y_SLICE_BYTES];
+    prefetch.prefetch_slice(c.Block, slice);
+}
 
 // -- Pack ---------------------------------------------------------------------
 
@@ -169,11 +187,42 @@ fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
     }
 }
 
-pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf) void {
+/// Pack the SectionBuf and return the per-mesh vertex counts so the caller
+/// can pre-allocate exact capacity before emit_section runs. emit_section
+/// recomputes face masks rather than reading from a cache because, on PSP,
+/// a 28 KiB FaceMasks cache exceeds the 16 KiB D-cache and the resulting
+/// thrash costs more than re-running compute_face_masks (~3.6 us/cell of
+/// bit ops on top of an already-resident SectionBuf).
+pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf) SectionCounts {
     const all_opaque = World.is_chunk_all_opaque(cx, sy, cz);
     const base_y: i32 = @as(i32, @intCast(sy)) * 16 - 1;
+
+    // Streaming prefetch only for non-opaque chunks: pack_row_opaque reads
+    // just the 2 boundary blocks, so warming the central chunk for opaque
+    // sections is pure waste. For non-opaque, prefetch each Y-slice (256 B
+    // = 4 cache lines) one iteration ahead so the misses overlap with the
+    // current iteration's compute (BlockRegistry props lookups, bit packing,
+    // SectionBuf writes) rather than blocking pack_row's reads.
+    const chunk_ptr: ?*const [c.ChunkVolume]c.Block = if (all_opaque)
+        null
+    else
+        World.get_chunk_ptr(cx, sy, cz);
+
+    // Pre-warm the first inner slice (read by by==1) before the loop, then
+    // each inner iteration issues the slice that the *next* iteration will
+    // read. by==0 (y-1 boundary) and by==16/17 don't read inner-chunk data
+    // either side, so the prefetch span is exactly y_local = 0..15.
+    if (chunk_ptr) |ptr| prefetch_y_slice(ptr, 0);
+
     for (0..BUF_Y) |by| {
         const wy: i32 = base_y + @as(i32, @intCast(by));
+
+        if (chunk_ptr) |ptr| {
+            if (by >= 1 and by <= 15) {
+                prefetch_y_slice(ptr, @intCast(by));
+            }
+        }
+
         for (0..BUF_Z) |bz| {
             const wz_raw: i32 = @as(i32, @intCast(cz)) * 16 + @as(i32, @intCast(bz)) - 1;
             buf[by][bz] = if (all_opaque and by >= 1 and by <= 16 and bz >= 1 and bz <= 16)
@@ -184,6 +233,8 @@ pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf)
     }
     // All-opaque chunks have no leaves; skip the solid-leaf pass.
     if (!all_opaque) compute_solid_leaves(buf, near_lod);
+
+    return count_section(buf);
 }
 
 /// Fast path for inner rows of all-opaque chunks. The 16 inner blocks are
@@ -400,9 +451,9 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     };
 }
 
-fn count_row_faces(by: u32, bz: u32, buf: *const SectionBuf) SectionCounts {
-    const f = compute_face_masks(by, bz, buf);
-
+/// Derive vertex counts for a single row from its precomputed face masks.
+/// Used by emit_section to size ArrayList capacity per row before appending.
+fn counts_from_masks(f: FaceMasks) SectionCounts {
     const sl_count = pop(f.sl_xp) + pop(f.sl_xn) + pop(f.sl_zp) + pop(f.sl_zn) + pop(f.sl_yp) + pop(f.sl_yn);
     // Slabs render to the opaque mesh even though they're not in `opq`
     // (which is the cull mask). Fold them in for vertex-count routing.
@@ -429,11 +480,15 @@ fn count_row_faces(by: u32, bz: u32, buf: *const SectionBuf) SectionCounts {
     };
 }
 
+/// Standalone counting pass. Retained for parity tests; emit_section now
+/// derives counts in-line from the same FaceMasks it consumes, so rebuild()
+/// no longer calls this on the hot path.
 pub fn count_section(buf: *const SectionBuf) SectionCounts {
     var total: SectionCounts = .{ .opaque_verts = 0, .transparent_verts = 0, .fluid_verts = 0 };
     for (1..BUF_Y - 1) |by| {
         for (1..BUF_Z - 1) |bz| {
-            const row = count_row_faces(@intCast(by), @intCast(bz), buf);
+            const f = compute_face_masks(@intCast(by), @intCast(bz), buf);
+            const row = counts_from_masks(f);
             total.opaque_verts += row.opaque_verts;
             total.transparent_verts += row.transparent_verts;
             total.fluid_verts += row.fluid_verts;
@@ -714,6 +769,10 @@ fn emit_fluid_overlay_mask(
     }
 }
 
+/// Walks the SectionBuf and emits faces. Caller pre-allocates the three
+/// meshes from the SectionCounts pack_section returned, so emit can use
+/// appendAssumeCapacity without any per-row growth checks. Recomputes face
+/// masks per cell (cheaper than caching them on PSP -- see pack_section).
 pub fn emit_section(
     buf: *const SectionBuf,
     cx: u32,
@@ -730,6 +789,13 @@ pub fn emit_section(
         for (0..16) |lz| {
             const bz: u32 = @as(u32, @intCast(lz)) + 1;
             const f = compute_face_masks(by, bz, buf);
+
+            // Skip rows that emit nothing. Avoids the chunk_row fetch.
+            const any = f.x_pos | f.x_neg | f.y_pos | f.y_neg | f.z_pos | f.z_neg |
+                f.sl_xp | f.sl_xn | f.sl_yp | f.sl_yn | f.sl_zp | f.sl_zn |
+                f.cross |
+                f.tfl_xp | f.tfl_xn | f.tfl_yp | f.tfl_yn | f.tfl_zp | f.tfl_zn;
+            if (any == 0) continue;
 
             const chunk_row = World.get_chunk_row(@intCast(cx * 16), @intCast(world_y), @intCast(cz * 16 + lz));
 

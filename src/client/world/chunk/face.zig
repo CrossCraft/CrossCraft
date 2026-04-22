@@ -132,6 +132,19 @@ fn emit_quad(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
     }
 }
 
+/// Specialization of emit_quad for uniform corner colors. brighter_along_02
+/// always picks diagonal 0-2 when the four greens match, so the per-quad
+/// 4 byte-extracts + add + compare are pure waste on the non-AO path. Any
+/// caller that builds verts via uniform_colors should use this.
+fn emit_quad_uniform(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
+    vertices.appendAssumeCapacity(verts[0]);
+    vertices.appendAssumeCapacity(verts[2]);
+    vertices.appendAssumeCapacity(verts[1]);
+    vertices.appendAssumeCapacity(verts[0]);
+    vertices.appendAssumeCapacity(verts[3]);
+    vertices.appendAssumeCapacity(verts[2]);
+}
+
 fn emit_quad_reversed(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
     vertices.appendAssumeCapacity(verts[0]);
     vertices.appendAssumeCapacity(verts[1]);
@@ -141,14 +154,15 @@ fn emit_quad_reversed(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
     vertices.appendAssumeCapacity(verts[3]);
 }
 
-fn emit_quad_double_sided(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
-    emit_quad(vertices, verts);
+fn emit_quad_uniform_double_sided(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
+    emit_quad_uniform(vertices, verts);
     emit_quad_reversed(vertices, verts);
 }
 
 // -- Public emission functions ------------------------------------------------
 
-/// Emit one block face (6 vertices).
+/// Emit one block face (6 vertices). All 4 corners share `color`, so the
+/// AO-aware brighter-diagonal pick is skipped.
 pub fn emit_face(
     vertices: *std.ArrayList(Vertex),
     face: Face,
@@ -161,7 +175,21 @@ pub fn emit_face(
 ) void {
     const base = face_color(face);
     const color = if (shadowed) apply_shadow(base) else base;
-    emit_face_colors(vertices, face, x, y, z, tile, atlas, uniform_colors(color));
+    const uv = tile_uvs(tile, atlas);
+    emit_quad_uniform(vertices, make_quad(
+        face,
+        encode_pos(x),
+        encode_pos(x + 1),
+        encode_pos(y),
+        encode_pos(y + 1),
+        encode_pos(z),
+        encode_pos(z + 1),
+        uv.tu0,
+        uv.tv0,
+        uv.tu1,
+        uv.tv1,
+        uniform_colors(color),
+    ));
 }
 
 /// Emit one block face (6 vertices) with per-corner colors. Used by the AO
@@ -222,7 +250,7 @@ pub fn emit_slab_face(
     const half_v: i16 = @intCast(@divTrunc(@as(i32, uv.tv1) - @as(i32, uv.tv0), 2));
     const tv0: i16 = if (use_lower_half) @intCast(@as(i32, uv.tv0) + half_v) else uv.tv0;
 
-    emit_quad(vertices, make_quad(
+    emit_quad_uniform(vertices, make_quad(
         face,
         encode_pos(x),
         encode_pos(x + 1),
@@ -250,7 +278,7 @@ pub fn emit_fluid_top(
 ) void {
     const color: u32 = if (shadowed) apply_shadow(0xFFFFFFFF) else 0xFFFFFFFF;
     const uv = tile_uvs(tile, atlas);
-    emit_quad_double_sided(vertices, make_quad(
+    emit_quad_uniform_double_sided(vertices, make_quad(
         .y_pos,
         encode_pos(x),
         encode_pos(x + 1),
@@ -340,7 +368,7 @@ pub fn emit_fluid_overlay(
         },
     }
 
-    emit_quad(vertices, make_quad(face, px, px1, py, py1, pz, pz1, uv.tu0, uv.tv0, uv.tu1, uv.tv1, uniform_colors(color)));
+    emit_quad_uniform(vertices, make_quad(face, px, px1, py, py1, pz, pz1, uv.tu0, uv.tv0, uv.tu1, uv.tv1, uniform_colors(color)));
 }
 
 /// Emit two intersecting diagonal planes for cross-plants (24 vertices).
@@ -364,7 +392,7 @@ pub fn emit_cross(
 
     // Back faces swap tu0/tu1 so the reversed winding does not mirror the
     // texture when the quad is viewed from behind.
-    emit_quad(vertices, .{
+    emit_quad_uniform(vertices, .{
         .{ .pos = .{ px, py, pz }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
         .{ .pos = .{ px1, py, pz1 }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
         .{ .pos = .{ px1, py1, pz1 }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
@@ -377,7 +405,7 @@ pub fn emit_cross(
         .{ .pos = .{ px, py1, pz }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
     });
 
-    emit_quad(vertices, .{
+    emit_quad_uniform(vertices, .{
         .{ .pos = .{ px1, py, pz }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
         .{ .pos = .{ px, py, pz1 }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
         .{ .pos = .{ px, py1, pz1 }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
