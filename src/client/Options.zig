@@ -76,7 +76,9 @@ pub const Options = struct {
 
     /// Cap frames to the display refresh rate.  Applied via
     /// `engine.set_vsync` on load and whenever the options menu is dismissed.
-    vsync: bool = true,
+    /// PSP defaults to off; the 60 Hz cap costs more than it's worth given the
+    /// platform's frame-time budget.
+    vsync: bool = @import("aether").platform != .psp,
 
     /// In-game controller prompt style.  `auto` picks glyphs from the
     /// connected controller on desktop, or the only available layout on PSP.
@@ -126,7 +128,7 @@ const JsonOptions = struct {
     sensitivity: f32 = 3.0,
     ambient_occlusion: bool = false,
     bouncy_chunks: bool = false,
-    vsync: bool = true,
+    vsync: bool = @import("aether").platform != .psp,
     controller_tooltips: u8 = 0,
 };
 
