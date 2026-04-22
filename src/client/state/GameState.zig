@@ -54,7 +54,7 @@ var lost_focus_sink: u8 = 0;
 
 const log = std.log.scoped(.game);
 
-const selection_depth_nudge: f32 = 1.0 / 160.0;
+const selection_depth_nudge: f32 = 1.0 / 320.0;
 
 fake_conn: FakeConn,
 conn: ClientConn,
@@ -696,8 +696,13 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.steve.draw_nametags(&self.player, &self.font_batcher);
 
     // Selection outline: still in the 3D pass, depth-tested against the world.
-    // Nudge it slightly toward the camera so it does not z-fight the selected
-    // block face, without making it show through other geometry.
+    // Nudge the whole outline toward the camera by a tiny world-space amount.
+    // The outline prisms extrude outward from the block's AABB, but their
+    // inner-facing quads still share a depth plane with the outer faces of
+    // any neighbouring block (floor tops, adjacent sides) that have the same
+    // outward normal -- pulling the outline a fraction of a block toward the
+    // viewer resolves that z-fight without making the outline show through
+    // other geometry.
     // The outline shape matches the block's subvoxel bounds (e.g. half-height
     // for slabs, small box for flowers/mushrooms).
     if (self.player.selected) |hit| blk: {
