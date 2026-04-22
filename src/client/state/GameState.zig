@@ -777,8 +777,12 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // *contents* swap per context in draw_hud_prompts.  Hidden only when
     // the pause screen draws its own strip.  Chat + inventory both ride
     // up by hud_y_shift so the strip never overlaps them.
-    const show_glyphs = PromptStrip.enabled() and !self.paused and !self.hud_hidden;
-    const hud_y_shift: i16 = if (show_glyphs) Buttons.strip_height() else 0;
+    //
+    // hud_y_shift keys off tooltip enablement alone so the hotbar does
+    // not snap down when the pause overlay replaces the in-world strip.
+    const tooltips_on = PromptStrip.enabled() and !self.hud_hidden;
+    const show_glyphs = tooltips_on and !self.paused;
+    const hud_y_shift: i16 = if (tooltips_on) Buttons.strip_height() else 0;
 
     if (!self.hud_hidden) {
         self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, ResourcePack.get_tex(.gui), self.inventory.open, hud_y_shift);
