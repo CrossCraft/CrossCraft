@@ -33,7 +33,6 @@ const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
 const Inventory = @import("../ui/Inventory.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
 const Chat = @import("../ui/Chat.zig");
-const BlockRegistry = @import("common").BlockRegistry;
 const Buttons = @import("../ui/Buttons.zig");
 const PromptStrip = @import("../ui/PromptStrip.zig");
 const Prompts = @import("../ui/Prompts.zig");
@@ -703,7 +702,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // for slabs, small box for flowers/mushrooms).
     if (self.player.selected) |hit| blk: {
         const block_id = World.get_block(hit.x, hit.y, hit.z);
-        if (block_id.id == .air) break :blk;
+        if (block_id.is_air()) break :blk;
         Rendering.Texture.Default.bind();
         var t = Rendering.Transform.new();
         const cp = @cos(self.player.camera.pitch);
@@ -796,7 +795,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // Rides the hotbar up when the controller-tooltip strip is visible.
     if (self.hotbar_tooltip_timer > 0 and !self.inventory.open and !self.hud_hidden) {
         const block = self.player.hotbar[self.player.selected_slot];
-        const name = BlockRegistry.global.display_name[@intFromEnum(block.id)];
+        const name = block.display_name();
         if (name.len > 0) {
             const alpha: u8 = if (self.hotbar_tooltip_timer >= 0.5)
                 255
@@ -898,7 +897,7 @@ fn draw_hud_prompts(self: *@This()) void {
         n += 1;
         if (self.player.selected) |hit| {
             const block_id = World.get_block(hit.x, hit.y, hit.z);
-            if (block_id.id != .air) {
+            if (!block_id.is_air()) {
                 if (hit.has_place) {
                     buf[n] = Prompts.place();
                     n += 1;

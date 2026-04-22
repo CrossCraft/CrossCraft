@@ -4,7 +4,6 @@ const Protocol = zb.Protocol;
 const assert = std.debug.assert;
 const common = @import("common");
 const c = common.consts;
-const BlockRegistry = common.BlockRegistry;
 const world = @import("world.zig");
 const proto = common.protocol;
 
@@ -361,7 +360,7 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     const block: c.Block = .{ .id = @enumFromInt(event.block) };
 
     // Prevent placement of fluid blocks.
-    if (event.mode == .Create and BlockRegistry.global.mesh_props[@intFromEnum(block.id)].fluid) {
+    if (event.mode == .Create and block.is_fluid()) {
         return;
     }
 

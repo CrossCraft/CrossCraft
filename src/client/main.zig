@@ -30,10 +30,6 @@ const MenuState = @import("state/MenuState.zig");
 const ResourcePack = @import("ResourcePack.zig");
 
 pub fn main(init: std.process.Init) !void {
-    if (ae.platform == .psp) {
-        try sdk.power.set_clock_frequency(333, 333, 166);
-    }
-
     const game_config = @import("config.zig");
     const memory = try init.gpa.alloc(u8, game_config.current.total_memory_mb * 1024 * 1024);
     defer init.gpa.free(memory);

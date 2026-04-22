@@ -5,7 +5,6 @@ const prefetch = common.prefetch;
 const World = @import("game").World;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
-const BlockRegistry = @import("common").BlockRegistry;
 const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 
@@ -114,7 +113,7 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
             continue;
         }
         const block = if (i >= 1 and i <= 16) chunk_row[i - 1] else World.get_block(@intCast(wx_raw), wy, wz);
-        const p = BlockRegistry.global.mesh_props[@intFromEnum(block.id)];
+        const p = block.mesh_props();
         const bit: u32 = @as(u32, 1) << @intCast(i);
         if (p.@"opaque") opq |= bit;
         if (p.visible) vis |= bit;
@@ -271,7 +270,7 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
 }
 
 inline fn classify_block(block: Block, bit_pos: u5, opq: *u32, vis: *u32, flu: *u32, cross_: *u32, leaf_: *u32, slab_: *u32, glass_: *u32) void {
-    const p = BlockRegistry.global.mesh_props[@intFromEnum(block.id)];
+    const p = block.mesh_props();
     const bit: u32 = @as(u32, 1) << bit_pos;
     if (p.@"opaque") opq.* |= bit;
     if (p.visible) vis.* |= bit;
@@ -623,10 +622,9 @@ fn emit_mask(
         const wx: u16 = @intCast(cx * 16 + lx);
         const wz: u16 = @intCast(cz * 16 + lz);
         const block = chunk_row[lx];
-        const reg = &BlockRegistry.global;
-        const tile = reg.get_face_tile(block, face);
+        const tile = block.face_tile(face);
 
-        const p = reg.mesh_props[@intFromEnum(block.id)];
+        const p = block.mesh_props();
         const is_slab = p.slab;
         const is_fluid = p.fluid;
         const mesh = if (p.@"opaque" or is_slab)
@@ -682,7 +680,7 @@ fn emit_opaque_leaf_mask(
         const wx: u16 = @intCast(cx * 16 + lx);
         const wz: u16 = @intCast(cz * 16 + lz);
         const block = chunk_row[lx];
-        const tile = BlockRegistry.global.get_face_tile(block, face);
+        const tile = block.face_tile(face);
         const shadowed = !face_sunlit(wx, y, wz, face);
         if (ao) {
             const colors = compute_ao_colors(buf, by, bz, bit_pos, face, shadowed);
@@ -714,7 +712,7 @@ fn emit_cross_mask(
         const wx: u16 = @intCast(cx * 16 + lx);
         const wz: u16 = @intCast(cz * 16 + lz);
         const block = chunk_row[lx];
-        const tile = BlockRegistry.global.get_face_tile(block, .y_pos);
+        const tile = block.face_tile(.y_pos);
         face_mod.emit_cross(transparent_mesh, lx, local_y, lz, tile, atlas, !World.is_sunlit(wx, @intCast(y), wz));
     }
 }
@@ -762,9 +760,8 @@ fn emit_fluid_overlay_mask(
         const ny: u16 = @intCast(@as(i32, @intCast(y)) + dy);
         const nz: u16 = @intCast(@as(i32, wz) + dz);
         const neighbor = World.get_block(nx, ny, nz);
-        const tile = BlockRegistry.global.get_face_tile(neighbor, face);
-        const neighbor_emits = BlockRegistry.global.mesh_props[@intFromEnum(neighbor.id)].emits_light;
-        const shadowed = !face_sunlit(wx, y, wz, face) and !neighbor_emits;
+        const tile = neighbor.face_tile(face);
+        const shadowed = !face_sunlit(wx, y, wz, face) and !neighbor.emits_light();
         face_mod.emit_fluid_overlay(fluid_mesh, face, lx, local_y, lz, tile, atlas, shadowed);
     }
 }

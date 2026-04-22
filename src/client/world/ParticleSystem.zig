@@ -9,7 +9,6 @@ const c = @import("common").consts;
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
-const BlockRegistry = @import("common").BlockRegistry;
 const face_mod = @import("chunk/face.zig");
 const Face = face_mod.Face;
 const collision = @import("../player/collision.zig");
@@ -107,9 +106,9 @@ pub fn deinit(self: *Self) void {
 /// `bx/by/bz` are world block coordinates; `face` selects which atlas tile
 /// (top/bottom/side) the shards sample from.
 pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, face: Face) void {
-    std.debug.assert(block_id.id != .air);
+    std.debug.assert(!block_id.is_air());
 
-    const tile = BlockRegistry.global.get_face_tile(block_id, face);
+    const tile = block_id.face_tile(face);
     const tu = self.atlas.tileU(tile.col);
     const tv = self.atlas.tileV(tile.row);
     const tw = self.atlas.tileWidth();

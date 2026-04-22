@@ -618,7 +618,7 @@ fn advance_view_bob(self: *Self) void {
             const curr_idx = @as(u32, @intFromFloat(@floor(self.walk_phase / std.math.pi)));
             if (curr_idx != prev_idx) {
                 const foot = block_under_feet(self);
-                if (foot.id != .air) SoundManager.play_step(foot);
+                if (!foot.is_air()) SoundManager.play_step(foot);
             }
         }
     } else {
@@ -790,7 +790,7 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
     // Virtual block collision: clip against a block the client placed
     // but the server has not yet committed to the world.
     if (self.pending_block) |pb| {
-        if (World.get_block(pb.x, pb.y, pb.z).id != .air) {
+        if (!World.get_block(pb.x, pb.y, pb.z).is_air()) {
             // Server has committed the block; real collision takes over.
             self.pending_block = null;
         } else {
@@ -1029,14 +1029,13 @@ fn in_world(x: i32, y: i32, z: i32) bool {
 }
 
 fn is_selectable(x: u16, y: u16, z: u16) bool {
-    const id = World.get_block(x, y, z);
-    return BlockRegistry.global.sim_props[@intFromEnum(id.id)].selectable;
+    return World.get_block(x, y, z).is_selectable();
 }
 
 // -- Subvoxel helpers (all integer) ------------------------------------------
 
 /// Point-in-bounds test using FP8 local coordinates directly.
-fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: Block.SubvoxelBounds) bool {
+fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: BlockRegistry.SubvoxelBounds) bool {
     // Bounds are in 1/16th-block units. In FP8: 1/16 block = 16 units.
     const STEP = ONE / 16;
     return lx >= @as(i32, b.min_x) * STEP and
@@ -1059,7 +1058,7 @@ fn ray_sub_aabb_fp(
     bx: i32,
     by: i32,
     bz: i32,
-    bounds: Block.SubvoxelBounds,
+    bounds: BlockRegistry.SubvoxelBounds,
     max_t_fp: i32,
 ) ?Face {
     const STEP = ONE / 16;
@@ -1311,8 +1310,8 @@ fn do_break(self: *Self) void {
     if (self.held_renderer) |hr| hr.trigger_dig();
     const hit = self.selected orelse return;
     const block_id = World.get_block(hit.x, hit.y, hit.z);
-    if (!BlockRegistry.global.sim_props[@intFromEnum(block_id.id)].breakable) return;
-    if (block_id.id != .air) {
+    if (!block_id.is_breakable()) return;
+    if (!block_id.is_air()) {
         if (self.particle_sink) |ps| {
             ps.spawn_break(block_id, hit.x, hit.y, hit.z, derive_break_face(hit));
         }
@@ -1367,7 +1366,7 @@ fn do_place(self: *Self) void {
     if (overlaps) return;
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
     const block = self.hotbar[self.selected_slot];
-    if (block.id == .air) return;
+    if (block.is_air()) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
     // Register a "virtual block" for collision so the player cannot

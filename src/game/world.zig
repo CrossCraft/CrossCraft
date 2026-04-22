@@ -2,7 +2,6 @@ const std = @import("std");
 const common = @import("common");
 const c = common.consts;
 const Xorshift64 = common.xorshift64.Xorshift64;
-const BlockRegistry = common.BlockRegistry;
 const assert = std.debug.assert;
 
 const Server = @import("server.zig");
@@ -10,14 +9,6 @@ const log = std.log.scoped(.world);
 
 const Block = c.Block;
 const Location = c.Location;
-
-inline fn sim_props(block: Block) BlockRegistry.SimProps {
-    return BlockRegistry.global.sim_props[@intFromEnum(block.id)];
-}
-
-inline fn mesh_props(block: Block) BlockRegistry.MeshProps {
-    return BlockRegistry.global.mesh_props[@intFromEnum(block.id)];
-}
 
 pub const BlockChange = struct {
     x: u16,
@@ -179,6 +170,8 @@ pub fn load() bool {
 /// (which fills `blocks` via the level-data-chunk decompression path and
 /// leaves `owned_locally` false so save/autosave paths are suppressed).
 pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.Dir, new_seed: u64) !void {
+    common.BlockRegistry.init();
+
     backing_allocator = allocator;
     io = _io;
     data_dir = _data_dir;
@@ -233,8 +226,8 @@ fn compute_chunk_counts() void {
         var non_air: u16 = 0;
         var non_opq: u16 = 0;
         for (blocks[base..][0..c.ChunkVolume]) |b| {
-            if (b.id != .air) non_air += 1;
-            if (!mesh_props(b).@"opaque") non_opq += 1;
+            if (!b.is_air()) non_air += 1;
+            if (!b.is_opaque()) non_opq += 1;
         }
         chunk_counts[ci] = non_air;
         chunk_non_opaque[ci] = non_opq;
@@ -323,13 +316,13 @@ pub fn set_block(x: u16, y: u16, z: u16, block: Block) void {
 
     // Maintain per-chunk counts for work-skipping.
     const ci = chunk_idx(x, y, z);
-    if (old.id == .air and block.id != .air) {
+    if (old.is_air() and !block.is_air()) {
         chunk_counts[ci] += 1;
-    } else if (old.id != .air and block.id == .air) {
+    } else if (!old.is_air() and block.is_air()) {
         chunk_counts[ci] -= 1;
     }
-    const old_opq = mesh_props(old).@"opaque";
-    const new_opq = mesh_props(block).@"opaque";
+    const old_opq = old.is_opaque();
+    const new_opq = block.is_opaque();
     if (old_opq and !new_opq) {
         chunk_non_opaque[ci] += 1;
     } else if (!old_opq and new_opq) {
@@ -398,7 +391,7 @@ fn column_height(x: u16, z: u16) u8 {
     while (y > 0) {
         y -= 1;
         const blk = get_block(x, y, z);
-        if (!sim_props(blk).light_passes) {
+        if (!blk.light_passes()) {
             return @intCast(y + 1);
         }
     }
@@ -424,7 +417,7 @@ pub fn is_sunlit(x: u16, y: u16, z: u16) bool {
 
 /// True when sunlight cannot pass through this block type.
 pub fn blocks_light(block: Block) bool {
-    return !sim_props(block).light_passes;
+    return !block.light_passes();
 }
 
 /// Incrementally update height map after a block change at (x,y,z).
@@ -452,14 +445,10 @@ pub fn find_spawn() [3]u16 {
         var by: u16 = c.WorldHeight - 1;
         while (by > 0) : (by -= 1) {
             const blk = get_block(bx, by, bz);
-            if (blk.id != .air and blk.id != .flowing_water and blk.id != .still_water and
-                blk.id != .flowing_lava and blk.id != .still_lava)
-            {
+            if (!blk.is_air() and !blk.is_fluid()) {
                 // Found solid ground; spawn one block above
                 const above: Block = if (by + 1 < c.WorldHeight) get_block(bx, by + 1, bz) else .{ .id = .air };
-                const in_fluid = above.id == .still_water or above.id == .flowing_water or
-                    above.id == .still_lava or above.id == .flowing_lava;
-                if (in_fluid and attempt < 9) break;
+                if (above.is_fluid() and attempt < 9) break;
                 return .{
                     @intCast(@as(u32, bx) * 32 + 16),
                     @intCast(@as(u32, by + 1) * 32 + 51),
@@ -474,9 +463,7 @@ pub fn find_spawn() [3]u16 {
     var fy: u16 = c.WorldHeight - 1;
     while (fy > 0) : (fy -= 1) {
         const blk = get_block(cx, fy, cz);
-        if (blk.id != .air and blk.id != .flowing_water and blk.id != .still_water and
-            blk.id != .flowing_lava and blk.id != .still_lava)
-        {
+        if (!blk.is_air() and !blk.is_fluid()) {
             return .{
                 @intCast(@as(u32, cx) * 32 + 16),
                 @intCast(@as(u32, fy + 1) * 32 + 51),
@@ -531,9 +518,7 @@ fn process_block_update(loc: Location) void {
 
     if ((block.id == .sand or block.id == .gravel) and y > 0) {
         const below = get_block(x, y - 1, z);
-        if (below.id == .air or below.id == .flowing_water or below.id == .still_water or
-            below.id == .flowing_lava or below.id == .still_lava)
-        {
+        if (below.is_air() or below.is_fluid()) {
             queue_block_change(x, y, z, .{ .id = .air });
             queue_block_change(x, y - 1, z, block);
         }
@@ -552,7 +537,7 @@ fn process_block_update(loc: Location) void {
         has_direct_sunlight(x, y, z))
     {
         queue_block_change(x, y, z, .{ .id = .air });
-    } else if (is_water(block) or is_lava(block)) {
+    } else if (block.is_fluid()) {
         process_fluid(x, y, z, block);
     }
 }
@@ -585,13 +570,13 @@ pub fn enqueue_neighbors_of(x: u16, y: u16, z: u16) void {
 
 /// Tick delay per block type: fluids and gravity use 4 ticks, vegetation is random.
 fn tick_delay(block: Block) u32 {
-    if (sim_props(block).fast_tick) return 4;
+    if (block.fast_tick()) return 4;
     return rng.next_bounded(900) + 100;
 }
 
 fn try_enqueue(x: u16, y: u16, z: u16) void {
     const block = get_block(x, y, z);
-    if (!sim_props(block).ticks) return;
+    if (!block.ticks()) return;
     const idx = get_index(x, y, z);
     if (std.mem.indexOfScalar(u32, enqueued.items, idx) != null) return;
     if (free_head == SENTINEL or enqueued.items.len >= POOL_CAPACITY) {
@@ -613,23 +598,15 @@ fn has_direct_sunlight(x: u16, y: u16, z: u16) bool {
     var check_y: u16 = y + 1;
     while (check_y < c.WorldHeight) : (check_y += 1) {
         const blk = get_block(x, check_y, z);
-        if (!sim_props(blk).light_passes) return false;
+        if (!blk.light_passes()) return false;
     }
     return true;
 }
 
 // -- Fluid physics ---------------------------------------------------------
 
-fn is_water(block: Block) bool {
-    return BlockRegistry.global.fluid_kind[@intFromEnum(block.id)] == .water;
-}
-
-fn is_lava(block: Block) bool {
-    return BlockRegistry.global.fluid_kind[@intFromEnum(block.id)] == .lava;
-}
-
 fn process_fluid(x: u16, y: u16, z: u16, block: Block) void {
-    const water = is_water(block);
+    const water = block.is_water();
     const flow: Block = if (water) .{ .id = .flowing_water } else .{ .id = .flowing_lava };
 
     // Water converts adjacent lava to stone; lava adjacent to water becomes stone
@@ -644,7 +621,7 @@ fn process_fluid(x: u16, y: u16, z: u16, block: Block) void {
     }
 
     // Spread down
-    if (y > 0 and get_block(x, y - 1, z).id == .air) {
+    if (y > 0 and get_block(x, y - 1, z).is_air()) {
         if (!water or !is_near_sponge(x, y - 1, z)) {
             queue_block_change(x, y - 1, z, flow);
             return;
@@ -658,20 +635,20 @@ fn process_fluid(x: u16, y: u16, z: u16, block: Block) void {
 /// Returns true if the current block was consumed (lava turned to stone).
 fn check_lava_water(x: u16, y: u16, z: u16, water: bool) bool {
     if (water) {
-        if (x > 0 and is_lava(get_block(x - 1, y, z))) queue_block_change(x - 1, y, z, .{ .id = .stone });
-        if (x + 1 < c.WorldLength and is_lava(get_block(x + 1, y, z))) queue_block_change(x + 1, y, z, .{ .id = .stone });
-        if (y > 0 and is_lava(get_block(x, y - 1, z))) queue_block_change(x, y - 1, z, .{ .id = .stone });
-        if (y + 1 < c.WorldHeight and is_lava(get_block(x, y + 1, z))) queue_block_change(x, y + 1, z, .{ .id = .stone });
-        if (z > 0 and is_lava(get_block(x, y, z - 1))) queue_block_change(x, y, z - 1, .{ .id = .stone });
-        if (z + 1 < c.WorldDepth and is_lava(get_block(x, y, z + 1))) queue_block_change(x, y, z + 1, .{ .id = .stone });
+        if (x > 0 and get_block(x - 1, y, z).is_lava()) queue_block_change(x - 1, y, z, .{ .id = .stone });
+        if (x + 1 < c.WorldLength and get_block(x + 1, y, z).is_lava()) queue_block_change(x + 1, y, z, .{ .id = .stone });
+        if (y > 0 and get_block(x, y - 1, z).is_lava()) queue_block_change(x, y - 1, z, .{ .id = .stone });
+        if (y + 1 < c.WorldHeight and get_block(x, y + 1, z).is_lava()) queue_block_change(x, y + 1, z, .{ .id = .stone });
+        if (z > 0 and get_block(x, y, z - 1).is_lava()) queue_block_change(x, y, z - 1, .{ .id = .stone });
+        if (z + 1 < c.WorldDepth and get_block(x, y, z + 1).is_lava()) queue_block_change(x, y, z + 1, .{ .id = .stone });
         return false;
     } else {
-        if ((x > 0 and is_water(get_block(x - 1, y, z))) or
-            (x + 1 < c.WorldLength and is_water(get_block(x + 1, y, z))) or
-            (y > 0 and is_water(get_block(x, y - 1, z))) or
-            (y + 1 < c.WorldHeight and is_water(get_block(x, y + 1, z))) or
-            (z > 0 and is_water(get_block(x, y, z - 1))) or
-            (z + 1 < c.WorldDepth and is_water(get_block(x, y, z + 1))))
+        if ((x > 0 and get_block(x - 1, y, z).is_water()) or
+            (x + 1 < c.WorldLength and get_block(x + 1, y, z).is_water()) or
+            (y > 0 and get_block(x, y - 1, z).is_water()) or
+            (y + 1 < c.WorldHeight and get_block(x, y + 1, z).is_water()) or
+            (z > 0 and get_block(x, y, z - 1).is_water()) or
+            (z + 1 < c.WorldDepth and get_block(x, y, z + 1).is_water()))
         {
             queue_block_change(x, y, z, .{ .id = .stone });
             return true;
@@ -691,17 +668,17 @@ fn has_fluid_neighbor(x: u16, y: u16, z: u16, water: bool) bool {
 }
 
 fn is_same_fluid(block: Block, water: bool) bool {
-    return if (water) is_water(block) else is_lava(block);
+    return if (water) block.is_water() else block.is_lava();
 }
 
 fn spread_horizontal(x: u16, y: u16, z: u16, flow: Block, water: bool) void {
-    if (x > 0 and get_block(x - 1, y, z).id == .air and (!water or !is_near_sponge(x - 1, y, z)))
+    if (x > 0 and get_block(x - 1, y, z).is_air() and (!water or !is_near_sponge(x - 1, y, z)))
         queue_block_change(x - 1, y, z, flow);
-    if (x + 1 < c.WorldLength and get_block(x + 1, y, z).id == .air and (!water or !is_near_sponge(x + 1, y, z)))
+    if (x + 1 < c.WorldLength and get_block(x + 1, y, z).is_air() and (!water or !is_near_sponge(x + 1, y, z)))
         queue_block_change(x + 1, y, z, flow);
-    if (z > 0 and get_block(x, y, z - 1).id == .air and (!water or !is_near_sponge(x, y, z - 1)))
+    if (z > 0 and get_block(x, y, z - 1).is_air() and (!water or !is_near_sponge(x, y, z - 1)))
         queue_block_change(x, y, z - 1, flow);
-    if (z + 1 < c.WorldDepth and get_block(x, y, z + 1).id == .air and (!water or !is_near_sponge(x, y, z + 1)))
+    if (z + 1 < c.WorldDepth and get_block(x, y, z + 1).is_air() and (!water or !is_near_sponge(x, y, z + 1)))
         queue_block_change(x, y, z + 1, flow);
 }
 
@@ -721,7 +698,7 @@ pub fn sponge_absorb(cx: u16, cy: u16, cz: u16) void {
                 const uy: u16 = @intCast(ny);
                 const uz: u16 = @intCast(nz);
                 const blk = get_block(ux, uy, uz);
-                if (blk.id == .flowing_water or blk.id == .still_water) {
+                if (blk.is_water()) {
                     set_block(ux, uy, uz, .{ .id = .air });
                     Server.broadcast_block_change(ux, uy, uz, .{ .id = .air });
                     enqueue_neighbors_of(ux, uy, uz);
@@ -788,7 +765,7 @@ fn grow_tree(x: u16, y: u16, z: u16, height: u32) void {
     var check_y: u32 = @as(u32, y) + 1;
     while (check_y <= base_y + height + 2) : (check_y += 1) {
         if (check_y >= c.WorldHeight) return;
-        if (get_block(x, @intCast(check_y), z).id != .air) return;
+        if (!get_block(x, @intCast(check_y), z).is_air()) return;
     }
 
     // Trunk
@@ -818,7 +795,7 @@ fn grow_tree_leaves(x: u16, base_y: u32, z: u16, height: u32) void {
                 if (lx < 0 or lx >= c.WorldLength or lz < 0 or lz >= c.WorldDepth) continue;
                 const ux: u16 = @intCast(lx);
                 const uz: u16 = @intCast(lz);
-                if (get_block(ux, @intCast(ly), uz).id == .air) {
+                if (get_block(ux, @intCast(ly), uz).is_air()) {
                     queue_block_change(ux, @intCast(ly), uz, .{ .id = .leaves });
                 }
             }

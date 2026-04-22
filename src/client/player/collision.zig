@@ -4,7 +4,6 @@ const std = @import("std");
 const World = @import("game").World;
 const c = @import("common").consts;
 const Block = c.Block;
-const BlockRegistry = @import("common").BlockRegistry;
 
 // -- Player dimensions -------------------------------------------------------
 
@@ -18,8 +17,7 @@ const EPSILON: f32 = 0.0001;
 
 /// Collision AABB top of a block, in world-space units.
 pub fn block_height(id: Block) f32 {
-    const h16 = BlockRegistry.global.collision_height_16[@intFromEnum(id.id)];
-    return @as(f32, @floatFromInt(h16)) * (1.0 / 16.0);
+    return id.collision_height();
 }
 
 // -- Liquid detection --------------------------------------------------------
@@ -87,7 +85,7 @@ fn zone_liquid(px: f32, pz: f32, by0: i32, by1: i32) ?Liquid {
 }
 
 fn classify_liquid(block: Block) ?Liquid {
-    return switch (BlockRegistry.global.fluid_kind[@intFromEnum(block.id)]) {
+    return switch (block.fluid_kind()) {
         .water => .water,
         .lava => .lava,
         .none => null,

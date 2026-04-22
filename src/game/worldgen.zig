@@ -482,7 +482,7 @@ fn floodFromQueue(blocks: []Block, queue: []u32, tail_in: u32, fluid: Block) voi
             const nz = bz + d[2];
             if (nx < 0 or nx >= W or ny < 1 or ny >= H or nz < 0 or nz >= D) continue;
             const nidx = blockIdx(@intCast(nx), @intCast(ny), @intCast(nz));
-            if (blocks[nidx].id != .air) continue;
+            if (!blocks[nidx].is_air()) continue;
             blocks[nidx] = fluid;
             const next_tail = (tail + 1) % cap;
             if (next_tail == head) return;
@@ -496,7 +496,7 @@ fn floodFromQueue(blocks: []Block, queue: []u32, tail_in: u32, fluid: Block) voi
 /// underground water and lava sources.
 fn bfsFloodDown(blocks: []Block, queue: []u32, sx: u32, sy: u32, sz: u32, fluid: Block) void {
     const start_idx = blockIdx(sx, sy, sz);
-    if (blocks[start_idx].id != .air) return;
+    if (!blocks[start_idx].is_air()) return;
     blocks[start_idx] = fluid;
     queue[0] = packCoord(sx, sy, sz);
     floodFromQueue(blocks, queue, 1, fluid);
@@ -516,7 +516,7 @@ noinline fn stepFloodWater(blocks: []Block, rng: *Xorshift64, flood_queue: []u32
         const x: u32 = @intCast(xi);
         for ([_]u32{ 0, D - 1 }) |z| {
             const idx = blockIdx(x, water_y, z);
-            if (blocks[idx].id == .air and tail < cap) {
+            if (blocks[idx].is_air() and tail < cap) {
                 blocks[idx] = .{ .id = .still_water };
                 flood_queue[tail] = packCoord(x, water_y, z);
                 tail += 1;
@@ -529,7 +529,7 @@ noinline fn stepFloodWater(blocks: []Block, rng: *Xorshift64, flood_queue: []u32
         const z: u32 = @intCast(zi);
         for ([_]u32{ 0, W - 1 }) |x| {
             const idx = blockIdx(x, water_y, z);
-            if (blocks[idx].id == .air and tail < cap) {
+            if (blocks[idx].is_air() and tail < cap) {
                 blocks[idx] = .{ .id = .still_water };
                 flood_queue[tail] = packCoord(x, water_y, z);
                 tail += 1;
@@ -586,7 +586,7 @@ noinline fn stepSurface(blocks: []Block, heightmap: []const i16, rng: *Xorshift6
 
             if (above.id == .still_water and is_gravel) {
                 blocks[blockIdx(x, y, z)] = .{ .id = .gravel };
-            } else if (above.id == .air) {
+            } else if (above.is_air()) {
                 if (h <= WATER and is_sand) {
                     blocks[blockIdx(x, y, z)] = .{ .id = .sand };
                 } else {
@@ -603,7 +603,7 @@ pub fn placeTree(blocks: []Block, tx: u32, base_y: u32, tz: u32, height: u32, rn
     // Check space
     var check_y: u32 = base_y + 1;
     while (check_y <= base_y + height + 2 and check_y < H) : (check_y += 1) {
-        if (blocks[blockIdx(tx, check_y, tz)].id != .air) return;
+        if (!blocks[blockIdx(tx, check_y, tz)].is_air()) return;
     }
     if (base_y + height + 2 >= H) return;
 
@@ -632,7 +632,7 @@ pub fn placeTree(blocks: []Block, tx: u32, base_y: u32, tz: u32, height: u32, rn
                 const lz = @as(i32, @intCast(tz)) + dz;
                 if (lx < 0 or lx >= W or lz < 0 or lz >= D) continue;
                 const idx = blockIdx(@intCast(lx), y, @intCast(lz));
-                if (blocks[idx].id == .air) blocks[idx] = .{ .id = .leaves };
+                if (blocks[idx].is_air()) blocks[idx] = .{ .id = .leaves };
             }
         }
     }
@@ -682,7 +682,7 @@ fn placePatches(blocks: []Block, heightmap: []const i16, rng: *Xorshift64, flowe
                 const h: i32 = heightmap[hmIdx(ux, uz)];
                 if (h < 1 or h >= @as(i32, H) - 1) continue;
                 const uy: u32 = @intCast(h + 1);
-                if (blocks[blockIdx(ux, uy, uz)].id != .air) continue;
+                if (!blocks[blockIdx(ux, uy, uz)].is_air()) continue;
                 if (blocks[blockIdx(ux, @intCast(h), uz)].id != .grass) continue;
                 blocks[blockIdx(ux, uy, uz)] = flower;
             }
@@ -707,7 +707,7 @@ fn placeMushrooms(blocks: []Block, heightmap: []const i16, rng: *Xorshift64) voi
                 const uy: u32 = @intCast(py);
                 const uz: u32 = @intCast(pz);
                 if (uy >= @as(u32, @intCast(heightmap[hmIdx(ux, uz)]))) continue;
-                if (blocks[blockIdx(ux, uy, uz)].id != .air) continue;
+                if (!blocks[blockIdx(ux, uy, uz)].is_air()) continue;
                 if (uy < 1) continue;
                 if (blocks[blockIdx(ux, uy - 1, uz)].id != .stone) continue;
                 blocks[blockIdx(ux, uy, uz)] = mtype;

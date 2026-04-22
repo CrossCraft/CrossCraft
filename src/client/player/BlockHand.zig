@@ -21,7 +21,6 @@ const Block = c.Block;
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Camera = @import("Camera.zig");
-const BlockRegistry = @import("common").BlockRegistry;
 const face_mod = @import("../world/chunk/face.zig");
 const Face = face_mod.Face;
 
@@ -209,12 +208,11 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
 
 fn rebuild(self: *Self, block: Block, shadowed: bool) void {
     self.mesh.vertices.clearRetainingCapacity();
-    if (block.id == .air) {
+    if (block.is_air()) {
         self.mesh.update();
         return;
     }
-    const reg = &BlockRegistry.global;
-    const p = reg.mesh_props[@intFromEnum(block.id)];
+    const p = block.mesh_props();
     // Lava ignores shadowing in chunk meshing; mirror that here so a held
     // lava block always reads as glowing.
     const shade = shadowed and !p.emits_light;
@@ -226,13 +224,13 @@ fn rebuild(self: *Self, block: Block, shadowed: bool) void {
     if (p.cross) {
         // All faces of a cross-plant share one tile (registered via `all`),
         // so the face argument is arbitrary.
-        const tile = reg.get_face_tile(block, .y_pos);
+        const tile = block.face_tile(.y_pos);
         face_mod.emit_cross(&self.mesh.vertices, 0, 0, 0, tile, &self.atlas, shade);
     } else {
         const is_slab = p.slab;
         const faces = [_]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
         for (faces) |face| {
-            const tile = reg.get_face_tile(block, face);
+            const tile = block.face_tile(face);
             if (is_slab) {
                 face_mod.emit_slab_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
             } else {
@@ -253,7 +251,7 @@ fn rebuild(self: *Self, block: Block, shadowed: bool) void {
 // -- Draw --------------------------------------------------------------------
 
 pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camera) void {
-    if (self.cached_block.id == .air or self.mesh.vertices.items.len == 0) return;
+    if (self.cached_block.is_air() or self.mesh.vertices.items.len == 0) return;
 
     // Clear depth so the cube is never clipped by nearby world geometry.
     // The existing clear_depth before the UI pass isolates the next layer.
@@ -274,8 +272,7 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
     terrain.bind();
 
     const anim = self.compute_anim();
-    const reg = &BlockRegistry.global;
-    const held_p = reg.mesh_props[@intFromEnum(self.cached_block.id)];
+    const held_p = self.cached_block.mesh_props();
     const y_lift: f32 = if (held_p.slab or held_p.cross) HELD_Y_LIFT else 0;
 
     // View-space placement: scale the normalised [0, 0.0625] SNORM16 cube

@@ -30,7 +30,7 @@ const max_variants = 4;
 const music_count: u8 = 7;
 
 pub fn block_material(id: Block) Material {
-    return BlockRegistry.global.material[@intFromEnum(id.id)];
+    return id.material();
 }
 
 // -- sound entry (location of PCM data inside pack.zip) ---------------------
@@ -375,7 +375,7 @@ pub fn play_dig(block: Block, bx: u16, by: u16, bz: u16) void {
 pub fn play_step(block: Block) void {
     if (!initialised) return;
     if (Options.current.sound_volume == 0.0) return;
-    if (!BlockRegistry.global.sim_props[@intFromEnum(block.id)].step_sound) return;
+    if (!block.has_step_sound()) return;
     var mat = @intFromEnum(block_material(block));
     var count = step_counts[mat];
     if (count == 0) {

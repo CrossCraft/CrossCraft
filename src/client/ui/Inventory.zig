@@ -64,7 +64,7 @@ const TOOLTIP_LAYER: u8 = 252;
 
 /// Block shown in slot `idx`. Slots past INVENTORY_FILLED are .air padding.
 fn slot(idx: u8) Block {
-    return .{ .id = BlockRegistry.global.inventory_order[idx] };
+    return BlockRegistry.inventory_block(idx);
 }
 
 // -- Fields -----------------------------------------------------------------
@@ -119,7 +119,7 @@ pub fn update(self: *Self, ui_in: *const ui_input.UiInput, player: *Player) void
     // updated focus.
     if (ui_in.cursor_available) {
         if (cell_at_cursor(&lay, ui_in.cursor_x, ui_in.cursor_y)) |idx| {
-            if (slot(idx).id != .air) self.focus = idx;
+            if (!slot(idx).is_air()) self.focus = idx;
         }
     }
 
@@ -138,7 +138,7 @@ pub fn update(self: *Self, ui_in: *const ui_input.UiInput, player: *Player) void
     var confirmed = ui_in.confirm_edge;
     if (ui_in.click_edge and ui_in.cursor_available) {
         if (cell_at_cursor(&lay, ui_in.cursor_x, ui_in.cursor_y)) |idx| {
-            if (slot(idx).id != .air) {
+            if (!slot(idx).is_air()) {
                 self.focus = idx;
                 confirmed = true;
             }
@@ -146,7 +146,7 @@ pub fn update(self: *Self, ui_in: *const ui_input.UiInput, player: *Player) void
     }
 
     const focused = slot(self.focus);
-    if (confirmed and focused.id != .air) {
+    if (confirmed and !focused.is_air()) {
         std.debug.assert(player.selected_slot < Player.HOTBAR_SLOTS);
         player.hotbar[player.selected_slot] = focused;
         self.close_overlay(player);
@@ -160,7 +160,7 @@ fn try_move(self: *Self, delta: i16) void {
     const candidate: i16 = @as(i16, self.focus) + delta;
     if (candidate < 0 or candidate >= @as(i16, CAPACITY)) return;
     const idx: u8 = @intCast(candidate);
-    if (slot(idx).id == .air) return;
+    if (slot(idx).is_air()) return;
     self.focus = idx;
 }
 
@@ -245,12 +245,12 @@ pub fn draw(
     while (i < CAPACITY) : (i += 1) {
         if (i == self.focus) continue;
         const block = slot(i);
-        if (block.id == .air) continue;
+        if (block.is_air()) continue;
         const center = cell_center(&lay, i);
         iso.add_block(block, center[0], center[1], BLOCK_HALF_EXTENT);
     }
     const focused = slot(self.focus);
-    if (focused.id != .air) {
+    if (!focused.is_air()) {
         const center = cell_center(&lay, self.focus);
 
         // Translucent light square behind the focused block for selection clarity.
@@ -274,7 +274,7 @@ pub fn draw(
     // Tooltip: focused block name centered horizontally above the grid. The
     // panel is itself horizontally centered, so a screen-anchored top_center
     // text aligns with the panel automatically.
-    const name = BlockRegistry.global.display_name[@intFromEnum(focused.id)];
+    const name = focused.display_name();
     if (name.len > 0) {
         fonts.add_text(&.{
             .str = name,

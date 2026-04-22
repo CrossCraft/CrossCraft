@@ -35,7 +35,6 @@ const Block = c.Block;
 
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
-const BlockRegistry = @import("common").BlockRegistry;
 const Face = @import("../world/chunk/face.zig").Face;
 const Scaling = @import("Scaling.zig");
 const layout = @import("layout.zig");
@@ -114,10 +113,9 @@ pub fn add_block(
     half_extent_px: f32,
 ) void {
     std.debug.assert(half_extent_px > 0);
-    if (block.id == .air) return;
+    if (block.is_air()) return;
 
-    const reg = &BlockRegistry.global;
-    const p = reg.mesh_props[@intFromEnum(block.id)];
+    const p = block.mesh_props();
 
     // Cross-plant blocks (saplings, flowers, mushrooms) have no cube faces;
     // ClassiCube draws them as a single front-facing quad.
@@ -215,8 +213,7 @@ fn emit_iso_face(
     block: Block,
     is_slab: bool,
 ) void {
-    const reg = &BlockRegistry.global;
-    const tile = reg.get_face_tile(block, face);
+    const tile = block.face_tile(face);
     const base_u: i32 = self.atlas.tileU(tile.col);
     const base_v: i32 = self.atlas.tileV(tile.row);
     const tw: i32 = self.atlas.tileWidth();
@@ -279,8 +276,7 @@ fn emit_iso_face(
 }
 
 fn add_flat(self: *Self, block: Block, cx: f32, cy: f32, scale: f32) void {
-    const reg = &BlockRegistry.global;
-    const tile = reg.get_face_tile(block, .z_pos);
+    const tile = block.face_tile(.z_pos);
     const base_u: i32 = self.atlas.tileU(tile.col);
     const base_v: i32 = self.atlas.tileV(tile.row);
     const tw: i32 = self.atlas.tileWidth();

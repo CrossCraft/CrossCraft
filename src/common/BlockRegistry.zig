@@ -24,6 +24,29 @@ pub const Material = enum(u3) { stone, grass, gravel, wood, glass, cloth, sand }
 /// Fluid classification for submersion and interaction checks. `none` for non-fluids.
 pub const FluidKind = enum(u2) { none, water, lava };
 
+/// Subvoxel AABB in sixteenths of a block. `max_*` = 16 means the full face,
+/// not one past the last subvoxel. Shared by collision and selection code.
+pub const SubvoxelBounds = struct {
+    min_x: u5,
+    min_y: u5,
+    min_z: u5,
+    max_x: u5,
+    max_y: u5,
+    max_z: u5,
+
+    pub const full: SubvoxelBounds = .{ .min_x = 0, .min_y = 0, .min_z = 0, .max_x = 16, .max_y = 16, .max_z = 16 };
+    pub const slab: SubvoxelBounds = .{ .min_x = 0, .min_y = 0, .min_z = 0, .max_x = 16, .max_y = 8, .max_z = 16 };
+    pub const dandelion: SubvoxelBounds = .{ .min_x = 6, .min_y = 0, .min_z = 6, .max_x = 10, .max_y = 8, .max_z = 10 };
+    pub const rose: SubvoxelBounds = .{ .min_x = 6, .min_y = 0, .min_z = 6, .max_x = 10, .max_y = 12, .max_z = 10 };
+    pub const mushroom: SubvoxelBounds = .{ .min_x = 5, .min_y = 0, .min_z = 5, .max_x = 11, .max_y = 6, .max_z = 11 };
+    pub const sapling: SubvoxelBounds = .{ .min_x = 2, .min_y = 0, .min_z = 2, .max_x = 14, .max_y = 16, .max_z = 14 };
+
+    pub fn is_full(self: SubvoxelBounds) bool {
+        return self.min_x == 0 and self.min_y == 0 and self.min_z == 0 and
+            self.max_x == 16 and self.max_y == 16 and self.max_z == 16;
+    }
+};
+
 const Self = @This();
 
 /// Mesher-path flags. Touched in the chunk-meshing hot loop every block per
@@ -81,14 +104,38 @@ material: [256]Material,
 fluid_kind: [256]FluidKind,
 /// Collision AABB top height in sixteenths of a block (0 = passable, 8 = slab, 16 = full).
 collision_height_16: [256]u8,
+/// Subvoxel AABB per block id. Used by selection and precise collision.
+bounds: [256]SubvoxelBounds,
 /// Player-facing display name for the block-picker tooltip. Empty string for
 /// technical/unnamed ids (air, bedrock, fluids, double_slab, undefined).
 display_name: [256][]const u8,
 inventory_order: [INVENTORY_SLOTS]T,
 
-/// Global registry instance. `defaults()` is comptime-evaluable so the full
-/// table baked into the binary; no init call is required at startup.
-pub const global: Self = defaults();
+/// Global registry singleton. Populate via `BlockRegistry.init()` before any
+/// call to a Block accessor method. Both main entry points call init() at
+/// process start; tests must call it explicitly.
+pub var global: Self = undefined;
+
+/// Populate the singleton with the default Classic block set. Idempotent:
+/// rewrites all tables from the registered helpers below. No allocation.
+pub fn init() void {
+    global = empty();
+    register_mesh_props(&global);
+    register_sim_props(&global);
+    register_fluids(&global);
+    register_collision(&global);
+    register_bounds(&global);
+    register_sound(&global);
+    register_face_tiles(&global);
+    register_inventory(&global);
+    register_display_names(&global);
+}
+
+/// Lookup helper for the inventory grid. Returns the block at slot `idx`,
+/// `.air` for padding slots.
+pub inline fn inventory_block(slot: u8) Block {
+    return .{ .id = global.inventory_order[slot] };
+}
 
 /// Returns the atlas tile for a given block and face direction.
 pub fn get_face_tile(self: *const Self, block: Block, face: Face) Tile {
@@ -121,28 +168,18 @@ fn idx(b: T) usize {
 
 // -- Default registration -----------------------------------------------------
 
-fn defaults() Self {
-    var self: Self = .{
+fn empty() Self {
+    return .{
         .mesh_props = [_]MeshProps{.{}} ** 256,
         .sim_props = [_]SimProps{.{}} ** 256,
         .face_tiles = [_]FaceTiles{all(0, 0)} ** 256,
         .material = [_]Material{.grass} ** 256,
         .fluid_kind = [_]FluidKind{.none} ** 256,
         .collision_height_16 = [_]u8{0} ** 256,
+        .bounds = [_]SubvoxelBounds{SubvoxelBounds.full} ** 256,
         .display_name = [_][]const u8{""} ** 256,
         .inventory_order = [_]T{.air} ** INVENTORY_SLOTS,
     };
-
-    register_mesh_props(&self);
-    register_sim_props(&self);
-    register_fluids(&self);
-    register_collision(&self);
-    register_sound(&self);
-    register_face_tiles(&self);
-    register_inventory(&self);
-    register_display_names(&self);
-
-    return self;
 }
 
 fn register_mesh_props(self: *Self) void {
@@ -251,6 +288,17 @@ fn register_collision(self: *Self) void {
     };
     for (passables) |b| self.collision_height_16[idx(b)] = 0;
     self.collision_height_16[idx(.slab)] = 8;
+}
+
+fn register_bounds(self: *Self) void {
+    // Default is SubvoxelBounds.full (set in empty()); override only shapes
+    // that deviate from a full cube.
+    self.bounds[idx(.slab)] = SubvoxelBounds.slab;
+    self.bounds[idx(.flower_1)] = SubvoxelBounds.dandelion;
+    self.bounds[idx(.flower_2)] = SubvoxelBounds.rose;
+    self.bounds[idx(.sapling)] = SubvoxelBounds.sapling;
+    self.bounds[idx(.mushroom_1)] = SubvoxelBounds.mushroom;
+    self.bounds[idx(.mushroom_2)] = SubvoxelBounds.mushroom;
 }
 
 fn register_sound(self: *Self) void {
