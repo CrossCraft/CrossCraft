@@ -756,24 +756,15 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
         self.vel_x,
         self.vel_y,
         self.vel_z,
+        was_on_ground,
     );
 
-    // Track horizontal collision for water exit boost next tick
+    // Track horizontal collision for the water-exit boost next tick.
+    // Grounded step-up now happens inside move_and_collide (ClassiCube
+    // DidSlide), so we only keep a post-hoc step-up for the water-to-land
+    // exit, which must fire even when airborne.
     self.hit_horizontal = result.hit_x or result.hit_z;
 
-    // Step-up when blocked horizontally while on ground
-    if (self.hit_horizontal and was_on_ground) {
-        if (collision.try_step_up(self.pos_x, self.pos_y, self.pos_z, self.vel_x, self.vel_z)) |stepped| {
-            self.pos_x = stepped.x;
-            self.pos_y = stepped.y;
-            self.pos_z = stepped.z;
-            self.on_ground = true;
-            self.vel_y = 0;
-            return;
-        }
-    }
-
-    // Water-to-land step-up: only accept if the stepped position exits liquid
     if (self.hit_horizontal and liquid != null) {
         if (collision.try_step_up(self.pos_x, self.pos_y, self.pos_z, self.vel_x, self.vel_z)) |stepped| {
             if (collision.liquid_feet(stepped.x, stepped.y, stepped.z) == null) {
@@ -820,15 +811,6 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
     if (result.hit_y_above and self.vel_y > 0) self.vel_y = 0;
 
     self.on_ground = result.on_ground;
-
-    // Step-down: was on ground, now airborne, not in liquid
-    if (was_on_ground and !self.on_ground and self.vel_y <= 0 and liquid == null) {
-        if (collision.try_snap_down(self.pos_x, self.pos_y, self.pos_z, collision.STEP_HEIGHT)) |landed_y| {
-            self.pos_y = landed_y;
-            self.on_ground = true;
-            self.vel_y = 0;
-        }
-    }
 }
 
 // -- Camera sync (interpolation) ---------------------------------------------
@@ -1373,7 +1355,18 @@ fn do_place(self: *Self) void {
     // Register a "virtual block" for collision so the player cannot
     // fall through before the server commits the placement to the
     // world on its next tick.
-    if (collision.block_height(block) > 0) {
+    //
+    // Exception: slab-on-slab. The server promotes the slab below the
+    // place cell to a double_slab and reverts the place cell to whatever
+    // was there before (usually air). A pending_block at the place cell
+    // would therefore never clear -- the "cell became non-air" condition
+    // in collide_and_move is never met -- leaving a permanent ghost
+    // half-slab. The `overlaps` check already guarantees the player
+    // cannot intersect the place cell, so no virtual surface is needed
+    // for this case.
+    const promotes_to_double_slab = block.id == .slab and hit.place_y > 0 and
+        World.get_block(hit.place_x, hit.place_y - 1, hit.place_z).id == .slab;
+    if (collision.block_height(block) > 0 and !promotes_to_double_slab) {
         self.pending_block = .{
             .x = hit.place_x,
             .y = hit.place_y,
