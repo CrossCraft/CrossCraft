@@ -254,6 +254,15 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(zip_tests).step);
 
+    const nbt_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/nbt/nbt.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(nbt_tests).step);
+
     // Standalone build step for the pack_zip host tool.
     // Usage: zig build pack-tool
     // Produces zig-out/bin/pack_zip (host-native binary).
