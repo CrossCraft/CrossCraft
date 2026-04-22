@@ -23,8 +23,10 @@ const PER_BREAK: u16 = 48;
 /// this window so a burst doesn't vanish all at once.
 const LIFETIME_MIN: f32 = 0.6;
 const LIFETIME_MAX: f32 = 1.4;
-/// Downward acceleration in blocks/s^2.
+/// Default downward acceleration in blocks/s^2. Per-particle gravity is set
+/// from this at spawn; lightweight materials (leaves, flowers) override it.
 const GRAVITY: f32 = 12.0;
+const GRAVITY_LEAVES: f32 = 7.5;
 /// Half extent of a particle quad in blocks.
 const HALF_SIZE: f32 = 0.06;
 /// Subdivisions of the broken block's face tile; each particle samples one cell.
@@ -65,7 +67,15 @@ const Particle = struct {
     u1: i16,
     v1: i16,
     life: f32,
+    gravity: f32,
 };
+
+fn gravity_for(block_id: c.Block) f32 {
+    return switch (block_id.id) {
+        .leaves => GRAVITY_LEAVES,
+        else => GRAVITY,
+    };
+}
 
 const Self = @This();
 
@@ -105,9 +115,10 @@ pub fn deinit(self: *Self) void {
 /// Emit a burst of particles for a block that just got broken.
 /// `bx/by/bz` are world block coordinates; `face` selects which atlas tile
 /// (top/bottom/side) the shards sample from.
-pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, face: Face) void {
+pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, _: Face) void {
     std.debug.assert(!block_id.is_air());
 
+    const face: Face = .x_neg;
     const tile = block_id.face_tile(face);
     const tu = self.atlas.tileU(tile.col);
     const tv = self.atlas.tileV(tile.row);
@@ -121,6 +132,7 @@ pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, fa
     const cz: f32 = @as(f32, @floatFromInt(bz)) + 0.5;
 
     var rand = self.rng.random();
+    const gravity = gravity_for(block_id);
 
     var i: u16 = 0;
     while (i < PER_BREAK) : (i += 1) {
@@ -138,9 +150,9 @@ pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, fa
         // small jitter so neighboring particles don't fly in lockstep.
         // The outward speed scales with offset magnitude (corner spawns fly
         // faster than near-center ones), giving a natural radial burst.
-        const burst_speed: f32 = 2.5;
+        const burst_speed: f32 = 3.25;
         const jitter: f32 = 0.4;
-        const upward_bias: f32 = 0.6;
+        const upward_bias: f32 = 2.0;
         self.particles[self.count] = .{
             .px = cx + ox,
             .py = cy + oy,
@@ -153,6 +165,7 @@ pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, fa
             .u1 = tu + (sx + 1) * du,
             .v1 = tv + (sy + 1) * dv,
             .life = LIFETIME_MIN + rand.float(f32) * (LIFETIME_MAX - LIFETIME_MIN),
+            .gravity = gravity,
         };
         self.count += 1;
     }
@@ -174,7 +187,7 @@ pub fn update(self: *Self, dt: f32) void {
             self.particles[i] = self.particles[self.count];
             continue;
         }
-        p.vy -= GRAVITY * dt;
+        p.vy -= p.gravity * dt;
         // Per-axis voxel collision: integrate one axis at a time and revert
         // (zeroing the velocity component) on contact. Treats the particle
         // as a point - its visual extent is much smaller than a block.
@@ -194,14 +207,21 @@ pub fn update(self: *Self, dt: f32) void {
 
 // Particles spawn inside the block they came from (the local world isn't
 // overwritten to Air until the server round-trips the break). To let them
-// escape, each axis step only blocks when the destination is solid AND the
-// current position is empty -- i.e. we're trying to enter a new solid
-// voxel. Particles already embedded in a solid voxel pass through freely
-// until they reach open space.
+// escape, each axis step only blocks when the destination AABB overlaps a
+// solid voxel AND the current AABB doesn't -- i.e. we're trying to enter
+// new solid geometry. Particles already embedded in a solid voxel pass
+// through freely until they reach open space.
+//
+// Testing an AABB (instead of the center point) means a particle's center
+// stops COLLISION_RADIUS away from any block face. The billboard quad
+// extends at most HALF_SIZE per axis from the center, so a radius of
+// HALF_SIZE guarantees the quad never clips terrain on any side -- floor,
+// ceiling, or walls -- at typical viewing angles.
+const COLLISION_RADIUS: f32 = HALF_SIZE;
 
 fn step_axis_x(p: *Particle, dx: f32) void {
     const nx = p.px + dx;
-    if (point_solid(nx, p.py, p.pz) and !point_solid(p.px, p.py, p.pz)) {
+    if (aabb_hits_solid(nx, p.py, p.pz) and !aabb_hits_solid(p.px, p.py, p.pz)) {
         p.vx = 0;
         return;
     }
@@ -210,7 +230,7 @@ fn step_axis_x(p: *Particle, dx: f32) void {
 
 fn step_axis_y(p: *Particle, dy: f32) void {
     const ny = p.py + dy;
-    if (point_solid(p.px, ny, p.pz) and !point_solid(p.px, p.py, p.pz)) {
+    if (aabb_hits_solid(p.px, ny, p.pz) and !aabb_hits_solid(p.px, p.py, p.pz)) {
         // Downward Y collision == hit the floor: arrest the whole particle
         // so it sticks where it landed instead of sliding across the
         // surface. Upward collisions only stop vertical motion (lets the
@@ -227,25 +247,41 @@ fn step_axis_y(p: *Particle, dy: f32) void {
 
 fn step_axis_z(p: *Particle, dz: f32) void {
     const nz = p.pz + dz;
-    if (point_solid(p.px, p.py, nz) and !point_solid(p.px, p.py, p.pz)) {
+    if (aabb_hits_solid(p.px, p.py, nz) and !aabb_hits_solid(p.px, p.py, p.pz)) {
         p.vz = 0;
         return;
     }
     p.pz = nz;
 }
 
-/// True when (wx,wy,wz) lies inside a solid voxel. Out-of-world coords are
-/// reported as non-solid so particles that drift past the edge can fall
-/// freely instead of pinning to the boundary.
-fn point_solid(wx: f32, wy: f32, wz: f32) bool {
-    const bx: i32 = @intFromFloat(@floor(wx));
-    const by: i32 = @intFromFloat(@floor(wy));
-    const bz: i32 = @intFromFloat(@floor(wz));
-    if (bx < 0 or bx >= c.WorldLength) return false;
-    if (by < 0 or by >= c.WorldHeight) return false;
-    if (bz < 0 or bz >= c.WorldDepth) return false;
-    const id = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-    return collision.block_height(id) > 0.0;
+/// True when the axis-aligned box of half-extent COLLISION_RADIUS centered
+/// at (wx,wy,wz) overlaps any solid voxel. Out-of-world voxels are treated
+/// as non-solid so particles that drift past the edge don't pin to the
+/// boundary. HALF_SIZE is small (~0.06), so the box spans at most 2 voxels
+/// per axis -- the loop body runs 1-8 times in the worst case.
+fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
+    const bx0: i32 = @intFromFloat(@floor(wx - COLLISION_RADIUS));
+    const bx1: i32 = @intFromFloat(@floor(wx + COLLISION_RADIUS));
+    const by0: i32 = @intFromFloat(@floor(wy - COLLISION_RADIUS));
+    const by1: i32 = @intFromFloat(@floor(wy + COLLISION_RADIUS));
+    const bz0: i32 = @intFromFloat(@floor(wz - COLLISION_RADIUS));
+    const bz1: i32 = @intFromFloat(@floor(wz + COLLISION_RADIUS));
+
+    var bx = bx0;
+    while (bx <= bx1) : (bx += 1) {
+        if (bx < 0 or bx >= c.WorldLength) continue;
+        var by = by0;
+        while (by <= by1) : (by += 1) {
+            if (by < 0 or by >= c.WorldHeight) continue;
+            var bz = bz0;
+            while (bz <= bz1) : (bz += 1) {
+                if (bz < 0 or bz >= c.WorldDepth) continue;
+                const id = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
+                if (collision.block_height(id) > 0.0) return true;
+            }
+        }
+    }
+    return false;
 }
 
 /// Match chunk/cross-plant shadowing for the voxel containing a particle.
@@ -310,7 +346,10 @@ fn emit_particle(
     //   v1 bottom-right ( r - up)
     //   v2 top-right    ( r + up)
     //   v3 top-left     (-r + up)
-    const color: u32 = if (point_sunlit(p.px, p.py, p.pz)) 0xFFFFFFFF else face_mod.apply_shadow(0xFFFFFFFF);
+    // Shards render a touch darker than full-bright block faces so they read
+    // as debris rather than bright specks against the broken voxel.
+    const base: u32 = 0xFFCCCCCC;
+    const color: u32 = if (point_sunlit(p.px, p.py, p.pz)) base else face_mod.apply_shadow(base);
 
     const v0 = make_vertex(p.px - rx - upx, p.py - upy, p.pz - rz - upz, p.u0, p.v1, color);
     const v1 = make_vertex(p.px + rx - upx, p.py - upy, p.pz + rz - upz, p.u1, p.v1, color);
