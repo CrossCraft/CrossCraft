@@ -5,7 +5,7 @@ const prefetch = common.prefetch;
 const World = @import("game").World;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
-const BlockRegistry = @import("../block/BlockRegistry.zig");
+const BlockRegistry = @import("common").BlockRegistry;
 const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 
@@ -114,7 +114,7 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
             continue;
         }
         const block = if (i >= 1 and i <= 16) chunk_row[i - 1] else World.get_block(@intCast(wx_raw), wy, wz);
-        const p = BlockRegistry.global.props[@intFromEnum(block)];
+        const p = BlockRegistry.global.mesh_props[@intFromEnum(block.id)];
         const bit: u32 = @as(u32, 1) << @intCast(i);
         if (p.@"opaque") opq |= bit;
         if (p.visible) vis |= bit;
@@ -271,7 +271,7 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
 }
 
 inline fn classify_block(block: Block, bit_pos: u5, opq: *u32, vis: *u32, flu: *u32, cross_: *u32, leaf_: *u32, slab_: *u32, glass_: *u32) void {
-    const p = BlockRegistry.global.props[@intFromEnum(block)];
+    const p = BlockRegistry.global.mesh_props[@intFromEnum(block.id)];
     const bit: u32 = @as(u32, 1) << bit_pos;
     if (p.@"opaque") opq.* |= bit;
     if (p.visible) vis.* |= bit;
@@ -626,17 +626,17 @@ fn emit_mask(
         const reg = &BlockRegistry.global;
         const tile = reg.get_face_tile(block, face);
 
-        const is_slab = reg.slab.isSet(@intFromEnum(block));
-        const is_fluid = reg.fluid.isSet(@intFromEnum(block));
-        const mesh = if (reg.@"opaque".isSet(@intFromEnum(block)) or is_slab)
+        const p = reg.mesh_props[@intFromEnum(block.id)];
+        const is_slab = p.slab;
+        const is_fluid = p.fluid;
+        const mesh = if (p.@"opaque" or is_slab)
             m.@"opaque"
         else if (is_fluid)
             m.fluid
         else
             m.transparent;
 
-        const shadowed = !face_sunlit(wx, y, wz, face) and
-            block != .flowing_lava and block != .still_lava;
+        const shadowed = !face_sunlit(wx, y, wz, face) and !p.emits_light;
 
         if (face == .y_pos and is_fluid) {
             assert_has_room(mesh, 12);
@@ -763,8 +763,8 @@ fn emit_fluid_overlay_mask(
         const nz: u16 = @intCast(@as(i32, wz) + dz);
         const neighbor = World.get_block(nx, ny, nz);
         const tile = BlockRegistry.global.get_face_tile(neighbor, face);
-        const shadowed = !face_sunlit(wx, y, wz, face) and
-            neighbor != .flowing_lava and neighbor != .still_lava;
+        const neighbor_emits = BlockRegistry.global.mesh_props[@intFromEnum(neighbor.id)].emits_light;
+        const shadowed = !face_sunlit(wx, y, wz, face) and !neighbor_emits;
         face_mod.emit_fluid_overlay(fluid_mesh, face, lx, local_y, lz, tile, atlas, shadowed);
     }
 }

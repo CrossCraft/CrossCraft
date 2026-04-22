@@ -11,7 +11,6 @@ const config = @import("../config.zig").current;
 const Options = @import("../Options.zig");
 
 const ChunkMesh = @import("chunk/ChunkMesh.zig");
-const BlockRegistry = @import("block/BlockRegistry.zig");
 const Sky = @import("sky/sky.zig");
 const ParticleSystem = @import("ParticleSystem.zig");
 
@@ -91,8 +90,6 @@ pub fn init(
     atlas: TextureAtlas,
     camera: *const Camera,
 ) !Self {
-    BlockRegistry.init();
-
     const row_false = [_]bool{false} ** WORLD_CZ;
     const section_false = [_]bool{false} ** SECTIONS_Y;
     const col_section_false = [_][SECTIONS_Y]bool{section_false} ** WORLD_CZ;
@@ -133,7 +130,7 @@ pub fn init(
     while (self.build_cursor < self.build_end and self.build_estimator.is_warming_up()) {
         const ref = self.build_queue[self.build_cursor];
         self.build_estimator.begin(io);
-        self.grid[ref.cx][ref.cz][ref.sy].rebuild(io, &self.atlas) catch break;
+        self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch break;
         self.build_estimator.end(io);
         mark_first_built(&self.grid[ref.cx][ref.cz][ref.sy]);
         self.built[ref.cx][ref.cz][ref.sy] = true;
@@ -221,7 +218,7 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
     for (self.build_cursor..end) |i| {
         const ref = self.build_queue[i];
         self.build_estimator.begin(self.io);
-        if (self.grid[ref.cx][ref.cz][ref.sy].rebuild(self.io, &self.atlas)) {
+        if (self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas)) {
             self.build_estimator.end(self.io);
         } else |_| {
             self.build_estimator.end(self.io);

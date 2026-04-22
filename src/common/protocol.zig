@@ -67,7 +67,7 @@ pub fn send_set_block_to_server(writer: *Writer, x: u16, y: u16, z: u16, mode: u
         .y = y,
         .z = z,
         .mode = @enumFromInt(mode),
-        .block = @intFromEnum(block),
+        .block = @intFromEnum(block.id),
     };
     try packet.write(writer);
 }
@@ -121,7 +121,7 @@ pub fn send_block_change_to_client(writer: *Writer, x: u16, y: u16, z: u16, bloc
         .x = x,
         .y = y,
         .z = z,
-        .block = @intFromEnum(block),
+        .block = @intFromEnum(block.id),
     };
     try packet.write(writer);
 }

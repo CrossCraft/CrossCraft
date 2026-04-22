@@ -21,7 +21,7 @@ const Block = c.Block;
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Camera = @import("Camera.zig");
-const BlockRegistry = @import("../world/block/BlockRegistry.zig");
+const BlockRegistry = @import("common").BlockRegistry;
 const face_mod = @import("../world/chunk/face.zig");
 const Face = face_mod.Face;
 
@@ -67,7 +67,7 @@ const DIG_PITCH_RAD: f32 = -20.0 * std.math.pi / 180.0;
 const VERT_CAPACITY: usize = 36;
 // Sentinel distinct from any real block id. Classic block ids occupy 0..49;
 // 50..255 are unused, so 0xFF is safely outside the assigned range.
-const SENTINEL: Block = @enumFromInt(0xFF);
+const SENTINEL: Block = .{ .id = @enumFromInt(0xFF) };
 
 const SwingKind = enum { idle, place, dig };
 
@@ -140,7 +140,7 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     std.debug.assert(dt >= 0);
 
     // First frame: bootstrap cache without an animation.
-    if (self.cached_block == SENTINEL) {
+    if (self.cached_block.id == SENTINEL.id) {
         self.rebuild(current_block, shadowed);
         self.cached_block = current_block;
         self.pending_block = current_block;
@@ -163,7 +163,7 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     // place). Mid-swing changes just update `pending_block`; the current
     // animation plays out and the swap happens at its rising edge (place)
     // or on completion (dig).
-    if (current_block != self.pending_block) {
+    if (current_block.id != self.pending_block.id) {
         self.pending_block = current_block;
         if (self.swing_kind == .idle) {
             self.swing_kind = .place;
@@ -179,7 +179,7 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     if (self.swing_time >= self.swing_period) {
         // End of swing: force-sync the cache if a pending swap (or a tint
         // change deferred during a dig) never landed.
-        if (self.cached_block != self.pending_block or self.cached_shadowed != shadowed) {
+        if (self.cached_block.id != self.pending_block.id or self.cached_shadowed != shadowed) {
             self.rebuild(self.pending_block, shadowed);
             self.cached_block = self.pending_block;
             self.cached_shadowed = shadowed;
@@ -196,7 +196,7 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     if (self.swing_kind == .place) {
         const t = self.swing_time / self.swing_period;
         const swing_y = SWING_AMPLITUDE_Y * @sin(t * std.math.pi);
-        if (swing_y > self.prev_swing_y and self.cached_block != self.pending_block) {
+        if (swing_y > self.prev_swing_y and self.cached_block.id != self.pending_block.id) {
             self.rebuild(self.pending_block, shadowed);
             self.cached_block = self.pending_block;
             self.cached_shadowed = shadowed;
@@ -209,26 +209,27 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
 
 fn rebuild(self: *Self, block: Block, shadowed: bool) void {
     self.mesh.vertices.clearRetainingCapacity();
-    if (block == .air) {
+    if (block.id == .air) {
         self.mesh.update();
         return;
     }
     const reg = &BlockRegistry.global;
+    const p = reg.mesh_props[@intFromEnum(block.id)];
     // Lava ignores shadowing in chunk meshing; mirror that here so a held
     // lava block always reads as glowing.
-    const shade = shadowed and block != .flowing_lava and block != .still_lava;
+    const shade = shadowed and !p.emits_light;
 
     // Cross-plants (saplings, flowers, mushrooms) have no cube faces -- the
     // chunk mesher emits two intersecting flat planes for them via
     // emit_cross. Mirror that here so the held viewmodel reads as a real
     // sapling/flower/mushroom instead of a cube wrapped in cross-PNG faces.
-    if (reg.cross.isSet(@intFromEnum(block))) {
+    if (p.cross) {
         // All faces of a cross-plant share one tile (registered via `all`),
         // so the face argument is arbitrary.
         const tile = reg.get_face_tile(block, .y_pos);
         face_mod.emit_cross(&self.mesh.vertices, 0, 0, 0, tile, &self.atlas, shade);
     } else {
-        const is_slab = reg.slab.isSet(@intFromEnum(block));
+        const is_slab = p.slab;
         const faces = [_]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
         for (faces) |face| {
             const tile = reg.get_face_tile(block, face);
@@ -252,7 +253,7 @@ fn rebuild(self: *Self, block: Block, shadowed: bool) void {
 // -- Draw --------------------------------------------------------------------
 
 pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camera) void {
-    if (self.cached_block == .air or self.mesh.vertices.items.len == 0) return;
+    if (self.cached_block.id == .air or self.mesh.vertices.items.len == 0) return;
 
     // Clear depth so the cube is never clipped by nearby world geometry.
     // The existing clear_depth before the UI pass isolates the next layer.
@@ -274,10 +275,8 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
 
     const anim = self.compute_anim();
     const reg = &BlockRegistry.global;
-    const y_lift: f32 = if (reg.slab.isSet(@intFromEnum(self.cached_block)) or reg.cross.isSet(@intFromEnum(self.cached_block)))
-        HELD_Y_LIFT
-    else
-        0;
+    const held_p = reg.mesh_props[@intFromEnum(self.cached_block.id)];
+    const y_lift: f32 = if (held_p.slab or held_p.cross) HELD_Y_LIFT else 0;
 
     // View-space placement: scale the normalised [0, 0.0625] SNORM16 cube
     // to a HELD_SCALE (0.4) world-unit cube, pivot it around its centre,

@@ -4,6 +4,7 @@ const std = @import("std");
 const World = @import("game").World;
 const c = @import("common").consts;
 const Block = c.Block;
+const BlockRegistry = @import("common").BlockRegistry;
 
 // -- Player dimensions -------------------------------------------------------
 
@@ -15,30 +16,10 @@ pub const STEP_HEIGHT: f32 = 0.5;
 /// Used when converting open AABB maxima to inclusive voxel scan ranges.
 const EPSILON: f32 = 0.0001;
 
-// -- Collision solidity table (comptime) -------------------------------------
-
-/// True for block IDs the player cannot pass through.
-const collision_solid = blk: {
-    var table: [256]bool = @splat(false);
-    // All defined blocks (1-49) default solid, then carve out passable ones.
-    for (1..50) |i| table[i] = true;
-    table[@intFromEnum(Block.sapling)] = false;
-    table[@intFromEnum(Block.flowing_water)] = false;
-    table[@intFromEnum(Block.still_water)] = false;
-    table[@intFromEnum(Block.flowing_lava)] = false;
-    table[@intFromEnum(Block.still_lava)] = false;
-    table[@intFromEnum(Block.flower_1)] = false;
-    table[@intFromEnum(Block.flower_2)] = false;
-    table[@intFromEnum(Block.mushroom_1)] = false;
-    table[@intFromEnum(Block.mushroom_2)] = false;
-    break :blk table;
-};
-
-/// Collision height of a block: 0.0 (passable), 0.5 (slab), or 1.0 (full).
+/// Collision AABB top of a block, in world-space units.
 pub fn block_height(id: Block) f32 {
-    if (!collision_solid[@intFromEnum(id)]) return 0.0;
-    if (id == .slab) return 0.5;
-    return 1.0;
+    const h16 = BlockRegistry.global.collision_height_16[@intFromEnum(id.id)];
+    return @as(f32, @floatFromInt(h16)) * (1.0 / 16.0);
 }
 
 // -- Liquid detection --------------------------------------------------------
@@ -60,9 +41,7 @@ pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
     const by: i32 = @intFromFloat(fy);
     const bz: i32 = @intFromFloat(fz);
     const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-    if (block == .flowing_water or block == .still_water) return .water;
-    if (block == .flowing_lava or block == .still_lava) return .lava;
-    return null;
+    return classify_liquid(block);
 }
 
 /// Feet zone: the single block-row at floor(py).
@@ -100,12 +79,19 @@ fn zone_liquid(px: f32, pz: f32, by0: i32, by1: i32) ?Liquid {
             while (bz <= max_bz) : (bz += 1) {
                 if (bz < 0 or bz >= c.WorldDepth) continue;
                 const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-                if (block == .flowing_water or block == .still_water) return .water;
-                if (block == .flowing_lava or block == .still_lava) return .lava;
+                if (classify_liquid(block)) |liq| return liq;
             }
         }
     }
     return null;
+}
+
+fn classify_liquid(block: Block) ?Liquid {
+    return switch (BlockRegistry.global.fluid_kind[@intFromEnum(block.id)]) {
+        .water => .water,
+        .lava => .lava,
+        .none => null,
+    };
 }
 
 // -- Result types ------------------------------------------------------------

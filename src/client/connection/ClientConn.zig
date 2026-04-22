@@ -197,7 +197,7 @@ fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
     // Apply the change locally. Singleplayer's in-process server already
     // wrote it to the shared World singleton, so this is a no-op echo there;
     // for real multiplayer it is the only path that updates the client world.
-    World.set_block(event.x, event.y, event.z, @enumFromInt(event.block));
+    World.set_block(event.x, event.y, event.z, .{ .id = @enumFromInt(event.block) });
     // Translate world block coords to (cx, sy, cz) section indices.
     const cx: u8 = @intCast(event.x >> 4);
     const cz: u8 = @intCast(event.z >> 4);

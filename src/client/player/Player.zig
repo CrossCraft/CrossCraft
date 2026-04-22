@@ -31,6 +31,7 @@ const Scaling = @import("../ui/Scaling.zig");
 const layout = @import("../ui/layout.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
+const BlockRegistry = @import("common").BlockRegistry;
 const SoundManager = @import("../SoundManager.zig");
 const Face = @import("../world/chunk/face.zig").Face;
 
@@ -56,15 +57,15 @@ pub const HOTBAR_SLOTS: u8 = 9;
 
 /// Default hotbar contents in slot order.
 const DEFAULT_HOTBAR: [HOTBAR_SLOTS]Block = .{
-    .stone,
-    .cobblestone,
-    .brick,
-    .dirt,
-    .planks,
-    .log,
-    .leaves,
-    .glass,
-    .slab,
+    .{ .id = .stone },
+    .{ .id = .cobblestone },
+    .{ .id = .brick },
+    .{ .id = .dirt },
+    .{ .id = .planks },
+    .{ .id = .log },
+    .{ .id = .leaves },
+    .{ .id = .glass },
+    .{ .id = .slab },
 };
 
 // gui.png layout (Minecraft Classic): hotbar bg at (0,0) 182x22; selector
@@ -617,7 +618,7 @@ fn advance_view_bob(self: *Self) void {
             const curr_idx = @as(u32, @intFromFloat(@floor(self.walk_phase / std.math.pi)));
             if (curr_idx != prev_idx) {
                 const foot = block_under_feet(self);
-                if (foot != .air) SoundManager.play_step(foot);
+                if (foot.id != .air) SoundManager.play_step(foot);
             }
         }
     } else {
@@ -733,9 +734,9 @@ fn block_under_feet(self: *const Self) Block {
     const by_f = @floor(self.pos_y - 0.01);
     const bx_f = @floor(self.pos_x);
     const bz_f = @floor(self.pos_z);
-    if (by_f < 0 or by_f >= @as(f32, @floatFromInt(c.WorldHeight))) return .air;
-    if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(c.WorldLength))) return .air;
-    if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(c.WorldDepth))) return .air;
+    if (by_f < 0 or by_f >= @as(f32, @floatFromInt(c.WorldHeight))) return .{ .id = .air };
+    if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(c.WorldLength))) return .{ .id = .air };
+    if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(c.WorldDepth))) return .{ .id = .air };
     return World.get_block(
         @intCast(@as(i32, @intFromFloat(bx_f))),
         @intCast(@as(i32, @intFromFloat(by_f))),
@@ -789,7 +790,7 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
     // Virtual block collision: clip against a block the client placed
     // but the server has not yet committed to the world.
     if (self.pending_block) |pb| {
-        if (World.get_block(pb.x, pb.y, pb.z) != .air) {
+        if (World.get_block(pb.x, pb.y, pb.z).id != .air) {
             // Server has committed the block; real collision takes over.
             self.pending_block = null;
         } else {
@@ -917,7 +918,7 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     // Check the voxel containing the eye first.
     if (in_world(bx, by, bz)) {
         if (is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) {
-            const bounds = c.block_bounds(World.get_block(@intCast(bx), @intCast(by), @intCast(bz)));
+            const bounds = World.get_block(@intCast(bx), @intCast(by), @intCast(bz)).bounds();
             if (point_in_bounds_fp(frac_x, frac_y, frac_z, bounds)) {
                 return .{
                     .x = @intCast(bx),
@@ -959,7 +960,7 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
         if (!is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) continue;
 
         const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-        const bounds = c.block_bounds(block);
+        const bounds = block.bounds();
 
         if (bounds.is_full()) {
             const has_place = in_world(prev_x, prev_y, prev_z);
@@ -1029,21 +1030,13 @@ fn in_world(x: i32, y: i32, z: i32) bool {
 
 fn is_selectable(x: u16, y: u16, z: u16) bool {
     const id = World.get_block(x, y, z);
-    return switch (id) {
-        .air,
-        .flowing_water,
-        .still_water,
-        .flowing_lava,
-        .still_lava,
-        => false,
-        else => true,
-    };
+    return BlockRegistry.global.sim_props[@intFromEnum(id.id)].selectable;
 }
 
 // -- Subvoxel helpers (all integer) ------------------------------------------
 
 /// Point-in-bounds test using FP8 local coordinates directly.
-fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: c.SubvoxelBounds) bool {
+fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: Block.SubvoxelBounds) bool {
     // Bounds are in 1/16th-block units. In FP8: 1/16 block = 16 units.
     const STEP = ONE / 16;
     return lx >= @as(i32, b.min_x) * STEP and
@@ -1066,7 +1059,7 @@ fn ray_sub_aabb_fp(
     bx: i32,
     by: i32,
     bz: i32,
-    bounds: c.SubvoxelBounds,
+    bounds: Block.SubvoxelBounds,
     max_t_fp: i32,
 ) ?Face {
     const STEP = ONE / 16;
@@ -1318,14 +1311,14 @@ fn do_break(self: *Self) void {
     if (self.held_renderer) |hr| hr.trigger_dig();
     const hit = self.selected orelse return;
     const block_id = World.get_block(hit.x, hit.y, hit.z);
-    if (block_id == .bedrock) return;
-    if (block_id != .air) {
+    if (!BlockRegistry.global.sim_props[@intFromEnum(block_id.id)].breakable) return;
+    if (block_id.id != .air) {
         if (self.particle_sink) |ps| {
             ps.spawn_break(block_id, hit.x, hit.y, hit.z, derive_break_face(hit));
         }
         SoundManager.play_dig(block_id, hit.x, hit.y, hit.z);
     }
-    send_block_change(self.writer, hit.x, hit.y, hit.z, 0, .air);
+    send_block_change(self.writer, hit.x, hit.y, hit.z, 0, .{ .id = .air });
 }
 
 /// Recover which face the player struck from the raycast result. The
@@ -1374,7 +1367,7 @@ fn do_place(self: *Self) void {
     if (overlaps) return;
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
     const block = self.hotbar[self.selected_slot];
-    if (block == .air) return;
+    if (block.id == .air) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
     // Register a "virtual block" for collision so the player cannot

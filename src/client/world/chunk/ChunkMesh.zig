@@ -8,8 +8,6 @@ const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const mesher = @import("mesher.zig");
 const World = @import("game").World;
 
-const log = std.log.scoped(.mesh);
-
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
 /// One 16x16x16 section with 3 meshes:
@@ -81,7 +79,7 @@ pub fn clear(self: *Self) void {
     self.fluid.vertices.clearAndFree(a);
 }
 
-pub fn rebuild(self: *Self, io: std.Io, atlas: *const TextureAtlas) error{OutOfMemory}!void {
+pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void {
     // All-air chunks have no visible faces -- skip pack/count/emit entirely.
     if (World.is_chunk_all_air(self.cx, self.sy, self.cz)) {
         self.@"opaque".vertices.clearRetainingCapacity();
@@ -90,14 +88,11 @@ pub fn rebuild(self: *Self, io: std.Io, atlas: *const TextureAtlas) error{OutOfM
         return;
     }
 
-    const t0 = std.Io.Clock.Timestamp.now(io, .boot);
-
     var buf: mesher.SectionBuf = undefined;
     // pack_section bundles the count phase and returns per-mesh totals so
     // we can pre-allocate exact capacity before emit. emit_section then
     // sticks to appendAssumeCapacity -- no per-row growth, no realloc thrash.
     const counts = mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
-    const t2 = std.Io.Clock.Timestamp.now(io, .boot);
 
     const a = self.allocator;
     self.@"opaque".vertices.clearRetainingCapacity();
@@ -113,19 +108,10 @@ pub fn rebuild(self: *Self, io: std.Io, atlas: *const TextureAtlas) error{OutOfM
         .transparent = &self.trans.vertices,
         .fluid = &self.fluid.vertices,
     }, atlas, self.ao_enabled);
-    const t4 = std.Io.Clock.Timestamp.now(io, .boot);
 
     inline for (&.{ &self.@"opaque", &self.trans, &self.fluid }) |mesh| {
         if (mesh.vertices.items.len > 0) mesh.update();
     }
-
-    const pk_us = @divTrunc(@as(i64, @truncate(t2.raw.nanoseconds - t0.raw.nanoseconds)), std.time.ns_per_us);
-    const em_us = @divTrunc(@as(i64, @truncate(t4.raw.nanoseconds - t2.raw.nanoseconds)), std.time.ns_per_us);
-    log.info("({d},{d},{d}) pack={d}us emit={d}us verts={d}/{d}/{d}", .{
-        self.cx,                  self.sy,             self.cz,
-        pk_us,                    em_us,               counts.opaque_verts,
-        counts.transparent_verts, counts.fluid_verts,
-    });
 }
 
 pub fn center_x(self: *const Self) f32 {

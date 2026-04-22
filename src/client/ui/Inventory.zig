@@ -26,7 +26,7 @@ const Scaling = @import("Scaling.zig");
 const layout_mod = @import("layout.zig");
 const ui_input = @import("input.zig");
 const Color = @import("../graphics/Color.zig").Color;
-const BlockNames = @import("BlockNames.zig");
+const BlockRegistry = @import("common").BlockRegistry;
 
 const Self = @This();
 
@@ -35,7 +35,11 @@ const Self = @This();
 pub const COLS: u8 = 9;
 pub const ROWS: u8 = 5;
 pub const CAPACITY: u8 = COLS * ROWS; // 45 cells
-pub const FILLED: u8 = 42; // last 3 cells are Air placeholders
+pub const FILLED: u8 = BlockRegistry.INVENTORY_FILLED; // first N cells hold real blocks
+
+comptime {
+    std.debug.assert(CAPACITY == BlockRegistry.INVENTORY_SLOTS);
+}
 
 // Hotbar slot stride is 20 px; the inventory uses a slightly larger 24 px to
 // give the bigger blocks (and the hover-grow state) breathing room without
@@ -56,25 +60,12 @@ const PANEL_LAYER: u8 = 247;
 const HIGHLIGHT_LAYER: u8 = 248;
 const TOOLTIP_LAYER: u8 = 252;
 
-// -- The 9x5 grid (top-left to bottom-right) --------------------------------
+// -- Grid accessor ----------------------------------------------------------
 
-const FILLED_BLOCKS = [_]Block{
-    .stone,       .cobblestone,      .brick,           .dirt,              .planks,
-    .log,         .leaves,           .glass,           .slab,              .mossy_rocks,
-    .sapling,     .flower_1,         .flower_2,        .mushroom_1,        .mushroom_2,
-    .sand,        .gravel,           .sponge,          .red_wool,          .orange_wool,
-    .yellow_wool, .chartreuse_wool,  .green_wool,      .spring_green_wool, .cyan_wool,
-    .capri_wool,  .ultramarine_wool, .purple_wool,     .violet_wool,       .magenta_wool,
-    .rose_wool,   .dark_gray_wool,   .light_gray_wool, .white_wool,        .coal_ore,
-    .iron_ore,    .gold_ore,         .iron,            .gold,              .bookshelf,
-    .tnt,         .obsidian,
-};
-
-comptime {
-    std.debug.assert(FILLED_BLOCKS.len == FILLED);
+/// Block shown in slot `idx`. Slots past INVENTORY_FILLED are .air padding.
+fn slot(idx: u8) Block {
+    return .{ .id = BlockRegistry.global.inventory_order[idx] };
 }
-
-const BLOCKS: [CAPACITY]Block = FILLED_BLOCKS ++ ([_]Block{.air} ** (CAPACITY - FILLED_BLOCKS.len));
 
 // -- Fields -----------------------------------------------------------------
 
@@ -128,7 +119,7 @@ pub fn update(self: *Self, ui_in: *const ui_input.UiInput, player: *Player) void
     // updated focus.
     if (ui_in.cursor_available) {
         if (cell_at_cursor(&lay, ui_in.cursor_x, ui_in.cursor_y)) |idx| {
-            if (BLOCKS[idx] != .air) self.focus = idx;
+            if (slot(idx).id != .air) self.focus = idx;
         }
     }
 
@@ -147,16 +138,17 @@ pub fn update(self: *Self, ui_in: *const ui_input.UiInput, player: *Player) void
     var confirmed = ui_in.confirm_edge;
     if (ui_in.click_edge and ui_in.cursor_available) {
         if (cell_at_cursor(&lay, ui_in.cursor_x, ui_in.cursor_y)) |idx| {
-            if (BLOCKS[idx] != .air) {
+            if (slot(idx).id != .air) {
                 self.focus = idx;
                 confirmed = true;
             }
         }
     }
 
-    if (confirmed and BLOCKS[self.focus] != .air) {
+    const focused = slot(self.focus);
+    if (confirmed and focused.id != .air) {
         std.debug.assert(player.selected_slot < Player.HOTBAR_SLOTS);
-        player.hotbar[player.selected_slot] = BLOCKS[self.focus];
+        player.hotbar[player.selected_slot] = focused;
         self.close_overlay(player);
         return;
     }
@@ -168,7 +160,7 @@ fn try_move(self: *Self, delta: i16) void {
     const candidate: i16 = @as(i16, self.focus) + delta;
     if (candidate < 0 or candidate >= @as(i16, CAPACITY)) return;
     const idx: u8 = @intCast(candidate);
-    if (BLOCKS[idx] == .air) return;
+    if (slot(idx).id == .air) return;
     self.focus = idx;
 }
 
@@ -252,12 +244,13 @@ pub fn draw(
     var i: u8 = 0;
     while (i < CAPACITY) : (i += 1) {
         if (i == self.focus) continue;
-        const block = BLOCKS[i];
-        if (block == .air) continue;
+        const block = slot(i);
+        if (block.id == .air) continue;
         const center = cell_center(&lay, i);
         iso.add_block(block, center[0], center[1], BLOCK_HALF_EXTENT);
     }
-    if (BLOCKS[self.focus] != .air) {
+    const focused = slot(self.focus);
+    if (focused.id != .air) {
         const center = cell_center(&lay, self.focus);
 
         // Translucent light square behind the focused block for selection clarity.
@@ -275,13 +268,13 @@ pub fn draw(
             .origin = .top_left,
         });
 
-        iso.add_block(BLOCKS[self.focus], center[0], center[1], HOVER_HALF_EXTENT);
+        iso.add_block(focused, center[0], center[1], HOVER_HALF_EXTENT);
     }
 
     // Tooltip: focused block name centered horizontally above the grid. The
     // panel is itself horizontally centered, so a screen-anchored top_center
     // text aligns with the panel automatically.
-    const name = BlockNames.get(BLOCKS[self.focus]);
+    const name = BlockRegistry.global.display_name[@intFromEnum(focused.id)];
     if (name.len > 0) {
         fonts.add_text(&.{
             .str = name,

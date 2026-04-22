@@ -1,16 +1,10 @@
 const std = @import("std");
-const BlockRegistry = @import("../block/BlockRegistry.zig");
+const common = @import("common");
+const BlockRegistry = common.BlockRegistry;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Vertex = @import("../../graphics/Vertex.zig").Vertex;
 
-pub const Face = enum(u3) {
-    x_neg = 0,
-    x_pos = 1,
-    y_neg = 2,
-    y_pos = 3,
-    z_neg = 4,
-    z_pos = 5,
-};
+pub const Face = common.consts.Face;
 
 /// Map local coordinate [0, 16] to SNORM16 [0, 32767].
 pub fn encode_pos(local: u32) i16 {

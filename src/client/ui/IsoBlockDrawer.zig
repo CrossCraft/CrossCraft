@@ -35,7 +35,7 @@ const Block = c.Block;
 
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
-const BlockRegistry = @import("../world/block/BlockRegistry.zig");
+const BlockRegistry = @import("common").BlockRegistry;
 const Face = @import("../world/chunk/face.zig").Face;
 const Scaling = @import("Scaling.zig");
 const layout = @import("layout.zig");
@@ -114,18 +114,19 @@ pub fn add_block(
     half_extent_px: f32,
 ) void {
     std.debug.assert(half_extent_px > 0);
-    if (block == .air) return;
+    if (block.id == .air) return;
 
     const reg = &BlockRegistry.global;
+    const p = reg.mesh_props[@intFromEnum(block.id)];
 
     // Cross-plant blocks (saplings, flowers, mushrooms) have no cube faces;
     // ClassiCube draws them as a single front-facing quad.
-    if (reg.cross.isSet(@intFromEnum(block))) {
+    if (p.cross) {
         self.add_flat(block, cx, cy, half_extent_px);
         return;
     }
 
-    const is_slab = reg.slab.isSet(@intFromEnum(block));
+    const is_slab = p.slab;
 
     // Object-space half-extent: chosen so the projected screen-x extent of
     // a unit cube ((+/-h, +/-h, +/-h)) equals 2 * half_extent_px.

@@ -12,6 +12,7 @@ const c = @import("common").consts;
 const Block = c.Block;
 const Options = @import("Options.zig");
 const ResourcePack = @import("ResourcePack.zig");
+const BlockRegistry = @import("common").BlockRegistry;
 const Zip = @import("util/Zip.zig");
 
 const flate = std.compress.flate;
@@ -22,51 +23,14 @@ const log = std.log.scoped(.audio);
 
 // -- material classification ------------------------------------------------
 
-pub const Material = enum(u3) { stone, grass, gravel, wood, glass, cloth, sand };
+pub const Material = BlockRegistry.Material;
 
-const material_count = 7;
+const material_count = @typeInfo(Material).@"enum".fields.len;
 const max_variants = 4;
 const music_count: u8 = 7;
 
 pub fn block_material(id: Block) Material {
-    return switch (id) {
-        .stone,
-        .cobblestone,
-        .bedrock,
-        .gold_ore,
-        .iron_ore,
-        .coal_ore,
-        .gold,
-        .iron,
-        .double_slab,
-        .slab,
-        .brick,
-        .mossy_rocks,
-        .obsidian,
-        => .stone,
-        .planks, .log, .bookshelf => .wood,
-        .dirt, .gravel => .gravel,
-        .sand => .sand,
-        .glass => .glass,
-        .red_wool,
-        .orange_wool,
-        .yellow_wool,
-        .chartreuse_wool,
-        .green_wool,
-        .spring_green_wool,
-        .cyan_wool,
-        .capri_wool,
-        .ultramarine_wool,
-        .purple_wool,
-        .violet_wool,
-        .magenta_wool,
-        .rose_wool,
-        .dark_gray_wool,
-        .light_gray_wool,
-        .white_wool,
-        => .cloth,
-        else => .grass,
-    };
+    return BlockRegistry.global.material[@intFromEnum(id.id)];
 }
 
 // -- sound entry (location of PCM data inside pack.zip) ---------------------
@@ -411,10 +375,7 @@ pub fn play_dig(block: Block, bx: u16, by: u16, bz: u16) void {
 pub fn play_step(block: Block) void {
     if (!initialised) return;
     if (Options.current.sound_volume == 0.0) return;
-    switch (block) {
-        .flowing_water, .still_water, .flowing_lava, .still_lava => return,
-        else => {},
-    }
+    if (!BlockRegistry.global.sim_props[@intFromEnum(block.id)].step_sound) return;
     var mat = @intFromEnum(block_material(block));
     var count = step_counts[mat];
     if (count == 0) {
