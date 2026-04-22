@@ -1353,20 +1353,21 @@ fn do_place(self: *Self) void {
     if (!self.mouse_captured) return;
     const hit = self.selected orelse return;
     if (!hit.has_place) return;
-    // Avoid placing a block inside the player's own AABB.
-    const bx0: f32 = @floatFromInt(hit.place_x);
-    const by0: f32 = @floatFromInt(hit.place_y);
-    const bz0: f32 = @floatFromInt(hit.place_z);
-    const overlaps = self.pos_x + collision.HALF_W > bx0 and
-        self.pos_x - collision.HALF_W < bx0 + 1.0 and
-        self.pos_y + collision.HEIGHT > by0 and
-        self.pos_y < by0 + 1.0 and
-        self.pos_z + collision.HALF_W > bz0 and
-        self.pos_z - collision.HALF_W < bz0 + 1.0;
-    if (overlaps) return;
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
     const block = self.hotbar[self.selected_slot];
     if (block.is_air()) return;
+    const bx0: f32 = @floatFromInt(hit.place_x);
+    const by0: f32 = @floatFromInt(hit.place_y);
+    const bz0: f32 = @floatFromInt(hit.place_z);
+    const bh: f32 = collision.block_height(block);
+    const overlaps = bh > 0 and
+        self.pos_x + collision.HALF_W > bx0 and
+        self.pos_x - collision.HALF_W < bx0 + 1.0 and
+        self.pos_y + collision.HEIGHT > by0 and
+        self.pos_y < by0 + bh and
+        self.pos_z + collision.HALF_W > bz0 and
+        self.pos_z - collision.HALF_W < bz0 + 1.0;
+    if (overlaps) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
     // Register a "virtual block" for collision so the player cannot
