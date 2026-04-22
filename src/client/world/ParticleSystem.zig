@@ -348,7 +348,7 @@ fn emit_particle(
     //   v3 top-left     (-r + up)
     // Shards render a touch darker than full-bright block faces so they read
     // as debris rather than bright specks against the broken voxel.
-    const base: u32 = 0xFFCCCCCC;
+    const base: u32 = 0xFF999999;
     const color: u32 = if (point_sunlit(p.px, p.py, p.pz)) base else face_mod.apply_shadow(base);
 
     const v0 = make_vertex(p.px - rx - upx, p.py - upy, p.pz - rz - upz, p.u0, p.v1, color);
