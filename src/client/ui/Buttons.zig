@@ -7,9 +7,9 @@
 //!
 //! Sheet conventions (resources/default/assets/crosscraft/textures/
 //! interface/controller_glyphs/):
-//!   pc.png  (256x256, 32x32 tiles).  Rows come in pairs: Nintendo 0-1,
-//!           Xbox 2-3, PlayStation 4-5, KB+M 6-7.
-//!           Controller row N: B, A, X, Y, DpadUp, DpadDown, DpadLeft, DpadRight.
+//!   pc.png  (256x256, 32x32 tiles).  Rows come in pairs: Xbox 0-1,
+//!           Nintendo 2-3, PlayStation 4-5, KB+M 6-7.
+//!           Controller row N: A, B, X, Y, DpadUp, DpadDown, DpadLeft, DpadRight.
 //!           Controller row N+1: LStick, RStick, LButton, RButton,
 //!             LTrigger, RTrigger, Start, Select.
 //!           KB+M row 7 (cols 0-4): LMB, RMB, BlankKey, Enter, Escape.
@@ -130,8 +130,8 @@ const PC_RENDER: i16 = 16;
 
 fn pc_row_pair_base(style: Style) i16 {
     return switch (style) {
-        .nintendo => 0,
-        .xbox => 2 * PC_TILE,
+        .xbox => 0,
+        .nintendo => 2 * PC_TILE,
         .playstation => 4 * PC_TILE,
         .kbm => 6 * PC_TILE,
         .psp => unreachable,
@@ -153,8 +153,8 @@ fn lookup_controller(button: Button, style: Style) Rect {
     const row0 = pc_row_pair_base(style);
     const row1 = row0 + PC_TILE;
     return switch (button) {
-        .B => pc_tile(0, row0),
-        .A => pc_tile(1, row0),
+        .A => pc_tile(0, row0),
+        .B => pc_tile(1, row0),
         .X => pc_tile(2, row0),
         .Y => pc_tile(3, row0),
         .DpadUp => pc_tile(4, row0),
