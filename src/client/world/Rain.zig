@@ -16,14 +16,18 @@ const collision = @import("../player/collision.zig");
 // -- Tunables ----------------------------------------------------------------
 
 /// Half-extent of the rain column grid in blocks.  Grid is (2*EXTENT+1)^2.
-const EXTENT: i32 = 4;
+/// PSP halves the grid radius to drop the streak column count from 81 to 25
+/// (5x5 vs 9x9), keeping the streak mesh build + fill in budget.
+const EXTENT: i32 = if (ae.platform == .psp) 2 else 4;
 const EXTENT_U: u32 = @intCast(EXTENT);
 const EXTENT_F: f32 = @floatFromInt(EXTENT);
 
 /// Streak extends from camera.y - RAIN_BELOW up to camera.y + RAIN_ABOVE,
-/// clipped against surface and world ceiling.
+/// clipped against surface and world ceiling.  PSP uses a shorter overhead
+/// span so fewer vertical sections fit inside the PSP 4096 virtual viewport
+/// after MODEL_SCALE, keeping per-frame vertex counts manageable.
 const RAIN_BELOW: f32 = 6.0;
-const RAIN_ABOVE: f32 = 16.0;
+const RAIN_ABOVE: f32 = if (ae.platform == .psp) 4.0 else 16.0;
 /// Streak is cut into SECTION_HEIGHT-tall quad slices stacked vertically so
 /// V_PER_BLOCK can be much larger than a single i16 would allow across the
 /// full streak, giving a proper drop density instead of ~1 repeat per 30
@@ -64,7 +68,9 @@ const BASE_ALPHA: f32 = 255.0;
 const SPLASH_MAX: u16 = 192;
 /// Particles spawned per second (subject to column availability).  With
 /// ~0.4 s life the steady-state onscreen count settles near SPLASH_MAX.
-const SPLASH_SPAWNS_PER_SEC: f32 = 500.0;
+/// PSP runs a much lower spawn rate to keep splash mesh build / fill cost
+/// in budget; ~150 spawns/s gives a sparse but still visible splash field.
+const SPLASH_SPAWNS_PER_SEC: f32 = if (ae.platform == .psp) 150.0 else 500.0;
 const SPLASH_GRAVITY: f32 = 12.0;
 const SPLASH_LIFE_MIN: f32 = 0.25;
 const SPLASH_LIFE_MAX: f32 = 0.55;
@@ -95,8 +101,12 @@ const QUADS_PER_SECTION: u32 = 2; // crossed X-plane + Z-plane per section
 const COLUMNS_DIAM: u32 = 2 * EXTENT_U + 1;
 const MAX_COLUMNS: u32 = COLUMNS_DIAM * COLUMNS_DIAM;
 /// Upper bound on sections per column: ceil((RAIN_BELOW+RAIN_ABOVE)/SECTION_HEIGHT)
-/// plus slack for fractional endpoints.
-const MAX_SECTIONS_PER_COLUMN: u32 = @intFromFloat(@ceil((RAIN_BELOW + RAIN_ABOVE) / SECTION_HEIGHT) + 1.0);
+/// plus slack for fractional endpoints.  Each section may be split once at
+/// the SNORM V wrap to keep stored UVs non-negative (PSP texture pipeline
+/// doesn't interpolate across the wrap cleanly), so budget 2x after the
+/// base count.
+const MAX_SECTIONS_BASE: u32 = @intFromFloat(@ceil((RAIN_BELOW + RAIN_ABOVE) / SECTION_HEIGHT) + 1.0);
+const MAX_SECTIONS_PER_COLUMN: u32 = MAX_SECTIONS_BASE * 2;
 const STREAK_MAX_VERTS: u32 = MAX_COLUMNS * MAX_SECTIONS_PER_COLUMN * QUADS_PER_SECTION * VERTS_PER_QUAD;
 const SPLASH_MAX_VERTS: u32 = @as(u32, SPLASH_MAX) * 6;
 
@@ -214,7 +224,7 @@ fn maybe_spawn_splash(self: *Self, camera: *const Camera) void {
     if (gx < 0 or gx >= c.WorldLength) return;
     if (gz < 0 or gz >= c.WorldDepth) return;
 
-    const surface: i32 = light_map_at(gx, gz);
+    const surface: i32 = rain_surface_at(gx, gz);
     if (surface <= 0 or surface >= c.WorldHeight) return;
     if (camera.y < @as(f32, @floatFromInt(surface))) return; // camera under a roof here
 
@@ -248,11 +258,16 @@ pub fn draw_streaks(self: *Self, camera: *const Camera) void {
     // quads don't occlude each other on the depth buffer.
     Rendering.gfx.api.set_alpha_blend(true);
     Rendering.gfx.api.set_depth_write(false);
+    // Streaks sit close to the camera and span tall vertical columns; on PSP
+    // the MODEL_SCALE * world coordinate can exit the 4096 virtual viewport,
+    // so enable hardware clip planes to guarantee correct GU clipping.
+    Rendering.gfx.api.set_clip_planes(true);
 
     const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE)
         .mul(Math.Mat4.translation(cam_tile_x, 0, cam_tile_z));
     self.streak_mesh.draw(&m);
 
+    Rendering.gfx.api.set_clip_planes(false);
     Rendering.gfx.api.set_depth_write(true);
 }
 
@@ -311,7 +326,7 @@ fn build_streaks(mesh: *Rendering.Mesh(Vertex), camera: *const Camera, scroll_v:
             if (gx < 0 or gx >= c.WorldLength) continue;
             if (gz < 0 or gz >= c.WorldDepth) continue;
 
-            const surface_i: i32 = light_map_at(gx, gz);
+            const surface_i: i32 = rain_surface_at(gx, gz);
             if (surface_i >= c.WorldHeight) continue; // sky-blocked to ceiling
             const surface_f: f32 = @as(f32, @floatFromInt(surface_i));
             if (camera.y < surface_f) continue; // camera below surface -> in a cave
@@ -338,7 +353,12 @@ fn build_streaks(mesh: *Rendering.Mesh(Vertex), camera: *const Camera, scroll_v:
 /// high (dense drops) while the per-quad SNORM16 delta stays within i16, the
 /// streak is stacked as SECTION_HEIGHT-tall quads.  Section boundaries share
 /// the same i32 V value (computed from world Y via a single linear formula),
-/// so their @mod(32768) SNORM16s tile seamlessly across the seam.
+/// so their @mod(32768) SNORM16s tile seamlessly across the seam.  Within a
+/// section the UV span crosses the SNORM16 wrap only if scroll_v happens to
+/// land so; in that case we split the section at the wrap Y and emit two
+/// sub-quads whose UVs both stay in [0, 32767] (PSP interpolation across a
+/// positive->negative UV produces a visible "bouncing" glitch that OpenGL
+/// REPEAT handles transparently).
 fn emit_column_quads(
     mesh: *Rendering.Mesh(Vertex),
     dx: i32,
@@ -352,6 +372,83 @@ fn emit_column_quads(
     const fz: f32 = @floatFromInt(dz);
     const x_ctr = fx + 0.5;
     const z_ctr = fz + 0.5;
+
+    var section_bottom: f32 = bottom_y;
+    while (section_bottom < top_y) {
+        const section_top: f32 = @min(section_bottom + SECTION_HEIGHT, top_y);
+        const section_h: f32 = section_top - section_bottom;
+        if (section_h <= 0.0) break;
+        const section_diff: i32 = @intFromFloat(@round(section_h * V_PER_BLOCK_F));
+        std.debug.assert(section_diff >= 0 and section_diff <= 32767);
+
+        // V(y) = scroll_v + y * V_PER_BLOCK (in i32).  Pinning the section's
+        // low-Y V to @mod(., 32768) puts it in [0, 32767]; the high-Y V sits
+        // section_diff above it, which may exceed 32767 and thus cross the
+        // SNORM16 wrap exactly once within the section.
+        const v_bot_raw: i32 = scroll_v + @as(i32, @intFromFloat(@round(section_bottom * V_PER_BLOCK_F)));
+        const v_bot_mod: i32 = @mod(v_bot_raw, 32768);
+        const v_top_from_bot: i32 = v_bot_mod + section_diff;
+
+        if (v_top_from_bot <= 32767) {
+            emit_section_geom(
+                mesh,
+                x_ctr,
+                z_ctr,
+                section_bottom,
+                section_top,
+                @intCast(v_bot_mod),
+                @intCast(v_top_from_bot),
+                color,
+            );
+        } else {
+            // Wrap at v_raw = v_bot_raw + (32768 - v_bot_mod); in the quad's
+            // local fraction that's (32768 - v_bot_mod) / section_diff of
+            // the way up.  Lower sub-quad runs v_bot_mod..32767 (1 SNORM
+            // unit below the true wrap boundary -- REPEAT samples the same
+            // texel), upper sub-quad runs 0..(v_top_from_bot - 32768).
+            const wrap_offset: f32 = @floatFromInt(32768 - v_bot_mod);
+            const section_diff_f: f32 = @floatFromInt(section_diff);
+            const wrap_y: f32 = section_bottom + (wrap_offset / section_diff_f) * section_h;
+
+            emit_section_geom(
+                mesh,
+                x_ctr,
+                z_ctr,
+                section_bottom,
+                wrap_y,
+                @intCast(v_bot_mod),
+                32767,
+                color,
+            );
+            emit_section_geom(
+                mesh,
+                x_ctr,
+                z_ctr,
+                wrap_y,
+                section_top,
+                0,
+                @intCast(v_top_from_bot - 32768),
+                color,
+            );
+        }
+
+        section_bottom = section_top;
+    }
+}
+
+/// Emit the crossed X-shaped pair of quads that make up a single section (or
+/// sub-section after a wrap split).  v_bot/v_top must both be non-negative
+/// so PSP hardware interpolates a monotonically increasing UV.
+fn emit_section_geom(
+    mesh: *Rendering.Mesh(Vertex),
+    x_ctr: f32,
+    z_ctr: f32,
+    y_bot: f32,
+    y_top: f32,
+    v_bot: i16,
+    v_top: i16,
+    color: u32,
+) void {
     // X-shaped (diagonal) crossed planes.  An axis-aligned + cross reads
     // edge-on when the camera looks along X or Z.  Rotating the cross 45
     // degrees means neither plane is ever edge-on simultaneously and the
@@ -363,83 +460,63 @@ fn emit_column_quads(
     const u_left: i16 = 0;
     const u_right: i16 = @intCast(U_SPAN);
 
-    var section_bottom: f32 = bottom_y;
-    while (section_bottom < top_y) {
-        const section_top: f32 = @min(section_bottom + SECTION_HEIGHT, top_y);
-        const section_h: f32 = section_top - section_bottom;
-        if (section_h <= 0.0) break;
-        const section_diff: i32 = @intFromFloat(@round(section_h * V_PER_BLOCK_F));
-        std.debug.assert(section_diff >= 0 and section_diff <= 32767);
+    const by = encode(y_bot);
+    const ty = encode(y_top);
 
-        // V(y) = scroll_v + y * V_PER_BLOCK (in i32).  Pinning the section's
-        // high-Y V to @mod(., 32768) puts it in [0, 32767]; v_low sits
-        // section_diff below it, in [-32767, 32767].  Same formula across
-        // sections -> seamless tiling at section seams.
-        const v_i32_top: i32 = scroll_v + @as(i32, @intFromFloat(@round(section_top * V_PER_BLOCK_F)));
-        const v_high_mod: i32 = @mod(v_i32_top, 32768);
-        const v_high: i16 = @intCast(v_high_mod);
-        const v_low: i16 = @intCast(v_high_mod - section_diff);
+    // Diagonal A: runs from (x_lo, z_lo) to (x_hi, z_hi).  Low-Y corners
+    // get v_bot, high-Y corners v_top so V increases with world Y and
+    // positive scroll_v animates drop content downward.
+    emit_quad_both_sides(
+        mesh,
+        encode(x_lo),
+        by,
+        encode(z_lo),
+        u_left,
+        v_bot,
+        encode(x_hi),
+        by,
+        encode(z_hi),
+        u_right,
+        v_bot,
+        encode(x_hi),
+        ty,
+        encode(z_hi),
+        u_right,
+        v_top,
+        encode(x_lo),
+        ty,
+        encode(z_lo),
+        u_left,
+        v_top,
+        color,
+    );
 
-        const by = encode(section_bottom);
-        const ty = encode(section_top);
-
-        // Diagonal A: runs from (x_lo, z_lo) to (x_hi, z_hi).  Low-Y corners
-        // get v_low, high-Y corners v_high so V increases with world Y and
-        // positive scroll_v animates drop content downward.
-        emit_quad_both_sides(
-            mesh,
-            encode(x_lo),
-            by,
-            encode(z_lo),
-            u_left,
-            v_low,
-            encode(x_hi),
-            by,
-            encode(z_hi),
-            u_right,
-            v_low,
-            encode(x_hi),
-            ty,
-            encode(z_hi),
-            u_right,
-            v_high,
-            encode(x_lo),
-            ty,
-            encode(z_lo),
-            u_left,
-            v_high,
-            color,
-        );
-
-        // Diagonal B: runs from (x_lo, z_hi) to (x_hi, z_lo), crossing A at
-        // the column center to form the X shape.
-        emit_quad_both_sides(
-            mesh,
-            encode(x_lo),
-            by,
-            encode(z_hi),
-            u_left,
-            v_low,
-            encode(x_hi),
-            by,
-            encode(z_lo),
-            u_right,
-            v_low,
-            encode(x_hi),
-            ty,
-            encode(z_lo),
-            u_right,
-            v_high,
-            encode(x_lo),
-            ty,
-            encode(z_hi),
-            u_left,
-            v_high,
-            color,
-        );
-
-        section_bottom = section_top;
-    }
+    // Diagonal B: runs from (x_lo, z_hi) to (x_hi, z_lo), crossing A at
+    // the column center to form the X shape.
+    emit_quad_both_sides(
+        mesh,
+        encode(x_lo),
+        by,
+        encode(z_hi),
+        u_left,
+        v_bot,
+        encode(x_hi),
+        by,
+        encode(z_lo),
+        u_right,
+        v_bot,
+        encode(x_hi),
+        ty,
+        encode(z_lo),
+        u_right,
+        v_top,
+        encode(x_lo),
+        ty,
+        encode(z_hi),
+        u_left,
+        v_top,
+        color,
+    );
 }
 
 /// Emit a quad as 12 verts (front + back winding) so both sides are visible
@@ -537,6 +614,22 @@ fn light_map_at(x: i32, z: i32) i32 {
     std.debug.assert(z >= 0 and z < c.WorldDepth);
     const idx: u32 = @intCast(z * @as(i32, @intCast(c.WorldLength)) + x);
     return @intCast(World.light_map[idx]);
+}
+
+/// Y+1 of the highest block that physically blocks rain in column (x, z).
+/// Differs from light_map_at: leaves and glass pass light but still stop a
+/// streak visually and catch splash spawns, so we walk down from the world
+/// ceiling to find the topmost block with non-zero collision height.  Scan
+/// bails at light_map_at since any collision block at or below that point is
+/// already covered by a light-blocker above it.
+fn rain_surface_at(x: i32, z: i32) i32 {
+    const light_surface: i32 = light_map_at(x, z);
+    var y: i32 = @as(i32, @intCast(c.WorldHeight)) - 1;
+    while (y >= light_surface) : (y -= 1) {
+        const id = World.get_block(@intCast(x), @intCast(y), @intCast(z));
+        if (collision.block_height(id) > 0.0) return y + 1;
+    }
+    return light_surface;
 }
 
 fn out_of_world(wx: f32, wy: f32, wz: f32) bool {
