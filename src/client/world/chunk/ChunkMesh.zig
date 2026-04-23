@@ -89,11 +89,12 @@ pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void 
     }
 
     var buf: mesher.SectionBuf = undefined;
-    mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
+    // pack_section bundles the count phase and returns per-mesh totals so
+    // we can pre-allocate exact capacity before emit. emit_section then
+    // sticks to appendAssumeCapacity -- no per-row growth, no realloc thrash.
+    const counts = mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
 
-    const counts = mesher.count_section(&buf);
     const a = self.allocator;
-
     self.@"opaque".vertices.clearRetainingCapacity();
     self.trans.vertices.clearRetainingCapacity();
     self.fluid.vertices.clearRetainingCapacity();

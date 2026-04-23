@@ -31,7 +31,7 @@ var mp_server_motd: [64]u8 = @splat(' ');
 
 fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) void {
     // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
-    Server.init(alloc, scratch, seed, io, data_dir) catch |err| {
+    Server.init(alloc, scratch, seed, io, data_dir, true) catch |err| {
         log.err("server init failed: {}", .{err});
         session_error = err;
         return;

@@ -62,10 +62,12 @@ var lbl_bouncy: [label_max]u8 = undefined;
 var lbl_bouncy_len: u8 = 0;
 var lbl_vsync: [label_max]u8 = undefined;
 var lbl_vsync_len: u8 = 0;
+var lbl_rain: [label_max]u8 = undefined;
+var lbl_rain_len: u8 = 0;
 
 // -- component storage -------------------------------------------------------
-// 1 title label + 10 option buttons + 1 Controls (disabled) + 1 Done = 13.
-const total_components = 13;
+// 1 title label + 11 option buttons + 1 Controls (disabled) + 1 Done = 14.
+const total_components = 14;
 var components_buf: [total_components]Component = undefined;
 
 // -- option step tables -------------------------------------------------------
@@ -136,6 +138,7 @@ fn refresh_labels() void {
     fmt_label(&lbl_ct, &lbl_ct_len, "Controllers: {s}", .{ct_display(c.controller_tooltips)});
     fmt_label(&lbl_bouncy, &lbl_bouncy_len, "Bouncy Chunks: {s}", .{bool_str(c.bouncy_chunks)});
     fmt_label(&lbl_vsync, &lbl_vsync_len, "VSync: {s}", .{bool_str(c.vsync)});
+    fmt_label(&lbl_rain, &lbl_rain_len, "Rain: {s}", .{bool_str(c.rain)});
 }
 
 fn rebuild_components() void {
@@ -256,19 +259,30 @@ fn rebuild_components() void {
         .origin = .middle_center,
         .on_activate = on_vsync,
     } };
-    // Row 5: Controls (col 0, disabled) | Done (col 1) -- both drawn centered.
+    // Row 5: Rain (L) | Controls (R, disabled).
     components_buf[10] = .{ .button = .{
+        .label = lbl_rain[0..lbl_rain_len],
+        .width = w2,
+        .height = bh,
+        .pos_x = lx,
+        .pos_y = 48,
+        .reference = .middle_center,
+        .origin = .middle_center,
+        .on_activate = on_rain,
+    } };
+    components_buf[11] = .{ .button = .{
         .label = "Controls...",
         .width = w2,
         .height = bh,
-        .pos_x = 0,
+        .pos_x = rx,
         .pos_y = 48,
         .reference = .middle_center,
         .origin = .middle_center,
         .enabled = false,
         .on_activate = on_noop,
     } };
-    components_buf[11] = .{ .button = .{
+    // Row 6: Done spans the row, drawn centered.
+    components_buf[12] = .{ .button = .{
         .label = "Done",
         .width = wf,
         .height = bh,
@@ -279,7 +293,7 @@ fn rebuild_components() void {
         .on_activate = on_done,
     } };
     // Title is unfocusable; parked past the interactive grid so nav math stays clean.
-    components_buf[12] = .{ .label = .{
+    components_buf[13] = .{ .label = .{
         .text = "Options",
         .pos_x = 0,
         .pos_y = -96,
@@ -353,6 +367,11 @@ fn on_bouncy(_: *anyopaque) void {
 
 fn on_vsync(_: *anyopaque) void {
     Options.current.vsync = !Options.current.vsync;
+    refresh();
+}
+
+fn on_rain(_: *anyopaque) void {
+    Options.current.rain = !Options.current.rain;
     refresh();
 }
 

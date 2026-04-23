@@ -1,54 +1,20 @@
 const std = @import("std");
-const c = @import("common").consts;
-const Xorshift64 = @import("common").xorshift64.Xorshift64;
+const common = @import("common");
+const c = common.consts;
+const Xorshift64 = common.xorshift64.Xorshift64;
 const assert = std.debug.assert;
 
 const Server = @import("server.zig");
 const log = std.log.scoped(.world);
 
-const B = c.Block;
+const Block = c.Block;
 const Location = c.Location;
-
-/// Comptime lookup: true means sunlight passes through this block.
-const light_passes = blk: {
-    var table: [50]bool = @splat(false);
-    table[B.Air] = true;
-    table[B.Sapling] = true;
-    table[B.Leaves] = true;
-    table[B.Glass] = true;
-    table[B.Flower1] = true;
-    table[B.Flower2] = true;
-    table[B.Mushroom1] = true;
-    table[B.Mushroom2] = true;
-    break :blk table;
-};
-
-/// Comptime lookup: true means the block fully fills its voxel and is not
-/// transparent. Used for the per-chunk all-opaque flag so pack can skip
-/// reading inner blocks entirely for solid underground chunks.
-const block_opaque = blk: {
-    var table: [50]bool = @splat(true);
-    table[B.Air] = false;
-    table[B.Sapling] = false;
-    table[B.Flowing_Water] = false;
-    table[B.Still_Water] = false;
-    table[B.Flowing_Lava] = false;
-    table[B.Still_Lava] = false;
-    table[B.Leaves] = false;
-    table[B.Glass] = false;
-    table[B.Flower1] = false;
-    table[B.Flower2] = false;
-    table[B.Mushroom1] = false;
-    table[B.Mushroom2] = false;
-    table[B.Slab] = false;
-    break :blk table;
-};
 
 pub const BlockChange = struct {
     x: u16,
     y: u16,
     z: u16,
-    block: u8,
+    block: Block,
 };
 
 const MAX_PENDING_CHANGES: u32 = 512;
@@ -111,7 +77,7 @@ pub var autosave_enabled: bool = true;
 
 pub var backing_allocator: std.mem.Allocator = undefined;
 pub var raw_blocks: []u8 = undefined;
-pub var blocks: []u8 = undefined;
+pub var blocks: []Block = undefined;
 pub var world_size: [3]u16 = undefined;
 pub var seed: u64 = undefined;
 pub var tick_count: u64 = 0;
@@ -204,6 +170,8 @@ pub fn load() bool {
 /// (which fills `blocks` via the level-data-chunk decompression path and
 /// leaves `owned_locally` false so save/autosave paths are suppressed).
 pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.Dir, new_seed: u64) !void {
+    common.BlockRegistry.init();
+
     backing_allocator = allocator;
     io = _io;
     data_dir = _data_dir;
@@ -224,7 +192,7 @@ pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.D
     try enqueued.ensureTotalCapacityPrecise(allocator, POOL_CAPACITY);
 
     raw_blocks = try allocator.alloc(u8, c.WorldDepth * c.WorldHeight * c.WorldLength + 4);
-    blocks = raw_blocks[4..];
+    blocks = @ptrCast(raw_blocks[4..]);
 
     world_size = .{ c.WorldLength, c.WorldHeight, c.WorldDepth };
     @memset(raw_blocks, 0x00);
@@ -258,8 +226,8 @@ fn compute_chunk_counts() void {
         var non_air: u16 = 0;
         var non_opq: u16 = 0;
         for (blocks[base..][0..c.ChunkVolume]) |b| {
-            if (b != B.Air) non_air += 1;
-            if (b >= block_opaque.len or !block_opaque[b]) non_opq += 1;
+            if (!b.is_air()) non_air += 1;
+            if (!b.is_opaque()) non_opq += 1;
         }
         chunk_counts[ci] = non_air;
         chunk_non_opaque[ci] = non_opq;
@@ -319,7 +287,7 @@ fn get_index(x: u16, y: u16, z: u16) u32 {
     return c.block_index(@as(u32, x), @as(u32, y), @as(u32, z));
 }
 
-pub fn get_block(x: u16, y: u16, z: u16) u8 {
+pub fn get_block(x: u16, y: u16, z: u16) Block {
     const idx = get_index(x, y, z);
     return blocks[idx];
 }
@@ -327,7 +295,7 @@ pub fn get_block(x: u16, y: u16, z: u16) u8 {
 /// Pointer to ChunkSize contiguous blocks at chunk-aligned x.
 /// In the chunk-aware layout, blocks at (x..x+15, y, z) are contiguous,
 /// so callers can avoid per-block index computation in tight loops.
-pub fn get_chunk_row(x: u16, y: u16, z: u16) *const [c.ChunkSize]u8 {
+pub fn get_chunk_row(x: u16, y: u16, z: u16) *const [c.ChunkSize]Block {
     assert(x % c.ChunkSize == 0);
     const base = get_index(x, y, z);
     return blocks[base..][0..c.ChunkSize];
@@ -336,25 +304,25 @@ pub fn get_chunk_row(x: u16, y: u16, z: u16) *const [c.ChunkSize]u8 {
 /// Pointer to an entire 16x16x16 chunk (4 KiB). Index within the chunk
 /// with `(ly * ChunkSize + lz) * ChunkSize + lx` -- the same 4-op
 /// arithmetic as the old contiguous formula.
-pub fn get_chunk_ptr(chunk_cx: u32, chunk_cy: u32, chunk_cz: u32) *const [c.ChunkVolume]u8 {
+pub fn get_chunk_ptr(chunk_cx: u32, chunk_cy: u32, chunk_cz: u32) *const [c.ChunkVolume]Block {
     const ci = (chunk_cy * c.ChunksZ + chunk_cz) * c.ChunksX + chunk_cx;
     return blocks[ci * c.ChunkVolume ..][0..c.ChunkVolume];
 }
 
-pub fn set_block(x: u16, y: u16, z: u16, block: u8) void {
+pub fn set_block(x: u16, y: u16, z: u16, block: Block) void {
     const idx = get_index(x, y, z);
     const old = blocks[idx];
     blocks[idx] = block;
 
     // Maintain per-chunk counts for work-skipping.
     const ci = chunk_idx(x, y, z);
-    if (old == B.Air and block != B.Air) {
+    if (old.is_air() and !block.is_air()) {
         chunk_counts[ci] += 1;
-    } else if (old != B.Air and block == B.Air) {
+    } else if (!old.is_air() and block.is_air()) {
         chunk_counts[ci] -= 1;
     }
-    const old_opq = old < block_opaque.len and block_opaque[old];
-    const new_opq = block < block_opaque.len and block_opaque[block];
+    const old_opq = old.is_opaque();
+    const new_opq = block.is_opaque();
     if (old_opq and !new_opq) {
         chunk_non_opaque[ci] += 1;
     } else if (!old_opq and new_opq) {
@@ -395,7 +363,8 @@ pub fn write_blocks_yzx(writer: *std.Io.Writer) !void {
         for (0..c.WorldDepth) |zi| {
             for (0..c.ChunksX) |cxi| {
                 const base = c.block_index(@intCast(cxi * c.ChunkSize), @intCast(yi), @intCast(zi));
-                try writer.writeAll(blocks[base..][0..c.ChunkSize]);
+                const slice: *const [c.ChunkSize]u8 = @ptrCast(blocks[base..][0..c.ChunkSize]);
+                try writer.writeAll(slice);
             }
         }
     }
@@ -407,7 +376,8 @@ pub fn read_blocks_yzx(reader: *std.Io.Reader) !void {
         for (0..c.WorldDepth) |zi| {
             for (0..c.ChunksX) |cxi| {
                 const base = c.block_index(@intCast(cxi * c.ChunkSize), @intCast(yi), @intCast(zi));
-                try reader.readSliceAll(blocks[base..][0..c.ChunkSize]);
+                const slice: *[c.ChunkSize]u8 = @ptrCast(blocks[base..][0..c.ChunkSize]);
+                try reader.readSliceAll(slice);
             }
         }
     }
@@ -421,7 +391,7 @@ fn column_height(x: u16, z: u16) u8 {
     while (y > 0) {
         y -= 1;
         const blk = get_block(x, y, z);
-        if (blk >= light_passes.len or !light_passes[blk]) {
+        if (!blk.light_passes()) {
             return @intCast(y + 1);
         }
     }
@@ -446,12 +416,12 @@ pub fn is_sunlit(x: u16, y: u16, z: u16) bool {
 }
 
 /// True when sunlight cannot pass through this block type.
-pub fn blocks_light(block: u8) bool {
-    return block >= light_passes.len or !light_passes[block];
+pub fn blocks_light(block: Block) bool {
+    return !block.light_passes();
 }
 
 /// Incrementally update height map after a block change at (x,y,z).
-fn update_height_column(x: u16, y: u16, z: u16, block: u8) void {
+fn update_height_column(x: u16, y: u16, z: u16, block: Block) void {
     const col_idx: u32 = @as(u32, z) * c.WorldLength + x;
     const cur = light_map[col_idx];
     const is_blocker = blocks_light(block);
@@ -475,14 +445,10 @@ pub fn find_spawn() [3]u16 {
         var by: u16 = c.WorldHeight - 1;
         while (by > 0) : (by -= 1) {
             const blk = get_block(bx, by, bz);
-            if (blk != B.Air and blk != B.Flowing_Water and blk != B.Still_Water and
-                blk != B.Flowing_Lava and blk != B.Still_Lava)
-            {
+            if (!blk.is_air() and !blk.is_fluid()) {
                 // Found solid ground; spawn one block above
-                const above = if (by + 1 < c.WorldHeight) get_block(bx, by + 1, bz) else B.Air;
-                const in_fluid = above == B.Still_Water or above == B.Flowing_Water or
-                    above == B.Still_Lava or above == B.Flowing_Lava;
-                if (in_fluid and attempt < 9) break;
+                const above: Block = if (by + 1 < c.WorldHeight) get_block(bx, by + 1, bz) else .{ .id = .air };
+                if (above.is_fluid() and attempt < 9) break;
                 return .{
                     @intCast(@as(u32, bx) * 32 + 16),
                     @intCast(@as(u32, by + 1) * 32 + 51),
@@ -497,9 +463,7 @@ pub fn find_spawn() [3]u16 {
     var fy: u16 = c.WorldHeight - 1;
     while (fy > 0) : (fy -= 1) {
         const blk = get_block(cx, fy, cz);
-        if (blk != B.Air and blk != B.Flowing_Water and blk != B.Still_Water and
-            blk != B.Flowing_Lava and blk != B.Still_Lava)
-        {
+        if (!blk.is_air() and !blk.is_fluid()) {
             return .{
                 @intCast(@as(u32, cx) * 32 + 16),
                 @intCast(@as(u32, fy + 1) * 32 + 51),
@@ -552,22 +516,28 @@ fn process_block_update(loc: Location) void {
     const z: u16 = loc.z;
     const block = get_block(x, y, z);
 
-    if ((block == B.Sand or block == B.Gravel) and y > 0) {
+    if ((block.id == .sand or block.id == .gravel) and y > 0) {
         const below = get_block(x, y - 1, z);
-        if (below == B.Air or below == B.Flowing_Water or below == B.Still_Water or
-            below == B.Flowing_Lava or below == B.Still_Lava)
-        {
-            queue_block_change(x, y, z, B.Air);
+        if (below.is_air() or below.is_fluid()) {
+            queue_block_change(x, y, z, .{ .id = .air });
             queue_block_change(x, y - 1, z, block);
         }
-    } else if (block == B.Dirt and has_direct_sunlight(x, y, z)) {
-        queue_block_change(x, y, z, B.Grass);
-    } else if (block == B.Grass and !has_direct_sunlight(x, y, z)) {
-        queue_block_change(x, y, z, B.Dirt);
-    } else if (block == B.Sapling and has_direct_sunlight(x, y, z)) {
+    } else if (block.id == .dirt and has_direct_sunlight(x, y, z)) {
+        queue_block_change(x, y, z, .{ .id = .grass });
+    } else if (block.id == .grass and !has_direct_sunlight(x, y, z)) {
+        queue_block_change(x, y, z, .{ .id = .dirt });
+    } else if (block.id == .sapling and has_direct_sunlight(x, y, z)) {
         const height: u32 = rng.next_bounded(3) + 4;
         grow_tree(x, y, z, height);
-    } else if (is_water(block) or is_lava(block)) {
+    } else if ((block.id == .sapling or block.id == .flower_1 or block.id == .flower_2) and
+        !has_direct_sunlight(x, y, z))
+    {
+        queue_block_change(x, y, z, .{ .id = .air });
+    } else if ((block.id == .mushroom_1 or block.id == .mushroom_2) and
+        has_direct_sunlight(x, y, z))
+    {
+        queue_block_change(x, y, z, .{ .id = .air });
+    } else if (block.is_fluid()) {
         process_fluid(x, y, z, block);
     }
 }
@@ -598,30 +568,15 @@ pub fn enqueue_neighbors_of(x: u16, y: u16, z: u16) void {
     if (z + 1 < c.WorldDepth) try_enqueue(x, y, z + 1);
 }
 
-/// Comptime lookup: true means this block type has update behavior.
-const has_behavior = blk: {
-    var table: [50]bool = @splat(false);
-    table[B.Dirt] = true;
-    table[B.Grass] = true;
-    table[B.Sapling] = true;
-    table[B.Sand] = true;
-    table[B.Gravel] = true;
-    table[B.Flowing_Water] = true;
-    table[B.Still_Water] = true;
-    table[B.Flowing_Lava] = true;
-    table[B.Still_Lava] = true;
-    break :blk table;
-};
-
 /// Tick delay per block type: fluids and gravity use 4 ticks, vegetation is random.
-fn tick_delay(block: u8) u32 {
-    if (block == B.Sand or block == B.Gravel or is_water(block) or is_lava(block)) return 4;
+fn tick_delay(block: Block) u32 {
+    if (block.fast_tick()) return 4;
     return rng.next_bounded(900) + 100;
 }
 
 fn try_enqueue(x: u16, y: u16, z: u16) void {
     const block = get_block(x, y, z);
-    if (block >= has_behavior.len or !has_behavior[block]) return;
+    if (!block.ticks()) return;
     const idx = get_index(x, y, z);
     if (std.mem.indexOfScalar(u32, enqueued.items, idx) != null) return;
     if (free_head == SENTINEL or enqueued.items.len >= POOL_CAPACITY) {
@@ -643,38 +598,30 @@ fn has_direct_sunlight(x: u16, y: u16, z: u16) bool {
     var check_y: u16 = y + 1;
     while (check_y < c.WorldHeight) : (check_y += 1) {
         const blk = get_block(x, check_y, z);
-        if (blk >= light_passes.len or !light_passes[blk]) return false;
+        if (!blk.light_passes()) return false;
     }
     return true;
 }
 
 // -- Fluid physics ---------------------------------------------------------
 
-fn is_water(block: u8) bool {
-    return block == B.Flowing_Water or block == B.Still_Water;
-}
-
-fn is_lava(block: u8) bool {
-    return block == B.Flowing_Lava or block == B.Still_Lava;
-}
-
-fn process_fluid(x: u16, y: u16, z: u16, block: u8) void {
-    const water = is_water(block);
-    const flow: u8 = if (water) B.Flowing_Water else B.Flowing_Lava;
+fn process_fluid(x: u16, y: u16, z: u16, block: Block) void {
+    const water = block.is_water();
+    const flow: Block = if (water) .{ .id = .flowing_water } else .{ .id = .flowing_lava };
 
     // Water converts adjacent lava to stone; lava adjacent to water becomes stone
     if (check_lava_water(x, y, z, water)) return;
 
     // Flowing blocks without a fluid neighbor vanish
-    if ((block == B.Flowing_Water or block == B.Flowing_Lava) and
+    if ((block.id == .flowing_water or block.id == .flowing_lava) and
         !has_fluid_neighbor(x, y, z, water))
     {
-        queue_block_change(x, y, z, B.Air);
+        queue_block_change(x, y, z, .{ .id = .air });
         return;
     }
 
     // Spread down
-    if (y > 0 and get_block(x, y - 1, z) == B.Air) {
+    if (y > 0 and get_block(x, y - 1, z).is_air()) {
         if (!water or !is_near_sponge(x, y - 1, z)) {
             queue_block_change(x, y - 1, z, flow);
             return;
@@ -688,22 +635,22 @@ fn process_fluid(x: u16, y: u16, z: u16, block: u8) void {
 /// Returns true if the current block was consumed (lava turned to stone).
 fn check_lava_water(x: u16, y: u16, z: u16, water: bool) bool {
     if (water) {
-        if (x > 0 and is_lava(get_block(x - 1, y, z))) queue_block_change(x - 1, y, z, B.Stone);
-        if (x + 1 < c.WorldLength and is_lava(get_block(x + 1, y, z))) queue_block_change(x + 1, y, z, B.Stone);
-        if (y > 0 and is_lava(get_block(x, y - 1, z))) queue_block_change(x, y - 1, z, B.Stone);
-        if (y + 1 < c.WorldHeight and is_lava(get_block(x, y + 1, z))) queue_block_change(x, y + 1, z, B.Stone);
-        if (z > 0 and is_lava(get_block(x, y, z - 1))) queue_block_change(x, y, z - 1, B.Stone);
-        if (z + 1 < c.WorldDepth and is_lava(get_block(x, y, z + 1))) queue_block_change(x, y, z + 1, B.Stone);
+        if (x > 0 and get_block(x - 1, y, z).is_lava()) queue_block_change(x - 1, y, z, .{ .id = .stone });
+        if (x + 1 < c.WorldLength and get_block(x + 1, y, z).is_lava()) queue_block_change(x + 1, y, z, .{ .id = .stone });
+        if (y > 0 and get_block(x, y - 1, z).is_lava()) queue_block_change(x, y - 1, z, .{ .id = .stone });
+        if (y + 1 < c.WorldHeight and get_block(x, y + 1, z).is_lava()) queue_block_change(x, y + 1, z, .{ .id = .stone });
+        if (z > 0 and get_block(x, y, z - 1).is_lava()) queue_block_change(x, y, z - 1, .{ .id = .stone });
+        if (z + 1 < c.WorldDepth and get_block(x, y, z + 1).is_lava()) queue_block_change(x, y, z + 1, .{ .id = .stone });
         return false;
     } else {
-        if ((x > 0 and is_water(get_block(x - 1, y, z))) or
-            (x + 1 < c.WorldLength and is_water(get_block(x + 1, y, z))) or
-            (y > 0 and is_water(get_block(x, y - 1, z))) or
-            (y + 1 < c.WorldHeight and is_water(get_block(x, y + 1, z))) or
-            (z > 0 and is_water(get_block(x, y, z - 1))) or
-            (z + 1 < c.WorldDepth and is_water(get_block(x, y, z + 1))))
+        if ((x > 0 and get_block(x - 1, y, z).is_water()) or
+            (x + 1 < c.WorldLength and get_block(x + 1, y, z).is_water()) or
+            (y > 0 and get_block(x, y - 1, z).is_water()) or
+            (y + 1 < c.WorldHeight and get_block(x, y + 1, z).is_water()) or
+            (z > 0 and get_block(x, y, z - 1).is_water()) or
+            (z + 1 < c.WorldDepth and get_block(x, y, z + 1).is_water()))
         {
-            queue_block_change(x, y, z, B.Stone);
+            queue_block_change(x, y, z, .{ .id = .stone });
             return true;
         }
         return false;
@@ -720,18 +667,18 @@ fn has_fluid_neighbor(x: u16, y: u16, z: u16, water: bool) bool {
     return false;
 }
 
-fn is_same_fluid(block: u8, water: bool) bool {
-    return if (water) is_water(block) else is_lava(block);
+fn is_same_fluid(block: Block, water: bool) bool {
+    return if (water) block.is_water() else block.is_lava();
 }
 
-fn spread_horizontal(x: u16, y: u16, z: u16, flow: u8, water: bool) void {
-    if (x > 0 and get_block(x - 1, y, z) == B.Air and (!water or !is_near_sponge(x - 1, y, z)))
+fn spread_horizontal(x: u16, y: u16, z: u16, flow: Block, water: bool) void {
+    if (x > 0 and get_block(x - 1, y, z).is_air() and (!water or !is_near_sponge(x - 1, y, z)))
         queue_block_change(x - 1, y, z, flow);
-    if (x + 1 < c.WorldLength and get_block(x + 1, y, z) == B.Air and (!water or !is_near_sponge(x + 1, y, z)))
+    if (x + 1 < c.WorldLength and get_block(x + 1, y, z).is_air() and (!water or !is_near_sponge(x + 1, y, z)))
         queue_block_change(x + 1, y, z, flow);
-    if (z > 0 and get_block(x, y, z - 1) == B.Air and (!water or !is_near_sponge(x, y, z - 1)))
+    if (z > 0 and get_block(x, y, z - 1).is_air() and (!water or !is_near_sponge(x, y, z - 1)))
         queue_block_change(x, y, z - 1, flow);
-    if (z + 1 < c.WorldDepth and get_block(x, y, z + 1) == B.Air and (!water or !is_near_sponge(x, y, z + 1)))
+    if (z + 1 < c.WorldDepth and get_block(x, y, z + 1).is_air() and (!water or !is_near_sponge(x, y, z + 1)))
         queue_block_change(x, y, z + 1, flow);
 }
 
@@ -751,9 +698,9 @@ pub fn sponge_absorb(cx: u16, cy: u16, cz: u16) void {
                 const uy: u16 = @intCast(ny);
                 const uz: u16 = @intCast(nz);
                 const blk = get_block(ux, uy, uz);
-                if (blk == B.Flowing_Water or blk == B.Still_Water) {
-                    set_block(ux, uy, uz, B.Air);
-                    Server.broadcast_block_change(ux, uy, uz, B.Air);
+                if (blk.is_water()) {
+                    set_block(ux, uy, uz, .{ .id = .air });
+                    Server.broadcast_block_change(ux, uy, uz, .{ .id = .air });
                     enqueue_neighbors_of(ux, uy, uz);
                 }
             }
@@ -792,14 +739,14 @@ fn is_near_sponge(x: u16, y: u16, z: u16) bool {
                 const ny = @as(i32, y) + dy;
                 const nz = @as(i32, z) + dz;
                 if (nx < 0 or nx >= c.WorldLength or ny < 0 or ny >= c.WorldHeight or nz < 0 or nz >= c.WorldDepth) continue;
-                if (get_block(@intCast(nx), @intCast(ny), @intCast(nz)) == B.Sponge) return true;
+                if (get_block(@intCast(nx), @intCast(ny), @intCast(nz)).id == .sponge) return true;
             }
         }
     }
     return false;
 }
 
-fn queue_block_change(x: u16, y: u16, z: u16, block: u8) void {
+fn queue_block_change(x: u16, y: u16, z: u16, block: Block) void {
     assert(pending_count < MAX_PENDING_CHANGES);
     set_block(x, y, z, block);
     pending_changes[pending_count] = .{ .x = x, .y = y, .z = z, .block = block };
@@ -818,13 +765,13 @@ fn grow_tree(x: u16, y: u16, z: u16, height: u32) void {
     var check_y: u32 = @as(u32, y) + 1;
     while (check_y <= base_y + height + 2) : (check_y += 1) {
         if (check_y >= c.WorldHeight) return;
-        if (get_block(x, @intCast(check_y), z) != B.Air) return;
+        if (!get_block(x, @intCast(check_y), z).is_air()) return;
     }
 
     // Trunk
     for (0..height) |i| {
         const ty: u32 = base_y + 1 + @as(u32, @intCast(i));
-        if (ty < c.WorldHeight) queue_block_change(x, @intCast(ty), z, B.Log);
+        if (ty < c.WorldHeight) queue_block_change(x, @intCast(ty), z, .{ .id = .log });
     }
 
     grow_tree_leaves(x, base_y, z, height);
@@ -848,8 +795,8 @@ fn grow_tree_leaves(x: u16, base_y: u32, z: u16, height: u32) void {
                 if (lx < 0 or lx >= c.WorldLength or lz < 0 or lz >= c.WorldDepth) continue;
                 const ux: u16 = @intCast(lx);
                 const uz: u16 = @intCast(lz);
-                if (get_block(ux, @intCast(ly), uz) == B.Air) {
-                    queue_block_change(ux, @intCast(ly), uz, B.Leaves);
+                if (get_block(ux, @intCast(ly), uz).is_air()) {
+                    queue_block_change(ux, @intCast(ly), uz, .{ .id = .leaves });
                 }
             }
         }

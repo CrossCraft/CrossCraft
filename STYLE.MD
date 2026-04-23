@@ -73,6 +73,9 @@ avoid unbounded work, unexpected allocation, and platform-specific leakage.
 		* Disallowed:
 			* `std.os`, `std.c`, and `std.posix` in portable gameplay, world, protocol, rendering, UI, and allocator code.
 			* Platform boundary code may use these APIs when Aether does not provide the needed hook, such as server signal handling or socket shutdown. Keep these uses narrow and behind `builtin.os` branches.
+* #### Use Types Maximally
+  * When you can use a scalar type, use a wrapped type. For example `percent_complete: u8` and `block_type: u8` does not mean `percent_complete = block_type` makes semantic sense. Types catch this.
+  * When you have a list of arguments (except for `std.mem.Allocator` and `std.Io`, use `struct` for args)
 * #### Design with performance in mind
 	* Design is the easiest time to create a good, performant system
 	* Optimize for the slowest resources (Network, Disk, Memory, GPU, CPU)

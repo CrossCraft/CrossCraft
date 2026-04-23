@@ -33,7 +33,6 @@ const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
 const Inventory = @import("../ui/Inventory.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
 const Chat = @import("../ui/Chat.zig");
-const BlockNames = @import("../ui/BlockNames.zig");
 const Buttons = @import("../ui/Buttons.zig");
 const PromptStrip = @import("../ui/PromptStrip.zig");
 const Prompts = @import("../ui/Prompts.zig");
@@ -55,7 +54,7 @@ var lost_focus_sink: u8 = 0;
 
 const log = std.log.scoped(.game);
 
-const selection_depth_nudge: f32 = 1.0 / 160.0;
+const selection_depth_nudge: f32 = 1.0 / 320.0;
 
 fake_conn: FakeConn,
 conn: ClientConn,
@@ -209,7 +208,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.render_alloc = render_alloc;
 
     // Textures
-    try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still, .char, .glyphs });
+    try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still, .char, .glyphs, .rain, .particles });
 
     // World renderer
     self.world = try WorldRenderer.init(
@@ -218,6 +217,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         self.pipeline,
         ResourcePack.get_tex(.terrain),
         ResourcePack.get_tex(.clouds),
+        ResourcePack.get_tex(.rain),
+        ResourcePack.get_tex(.particles),
         ResourcePack.atlas,
         &self.player.camera,
     );
@@ -568,6 +569,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         // periodic report keep ticking in the shared tail below.
         self.player.inventory_toggle_pending = false;
         self.player.hud_toggle_pending = false;
+        self.player.rain_toggle_pending = false;
         self.player.chat_open_pending = false;
         self.player.chat_cmd_pending = false;
         self.player.chat_send_pending = false;
@@ -575,6 +577,12 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         if (self.player.hud_toggle_pending) {
             self.player.hud_toggle_pending = false;
             self.hud_hidden = !self.hud_hidden;
+        }
+
+        if (self.player.rain_toggle_pending) {
+            self.player.rain_toggle_pending = false;
+            Options.current.rain = !Options.current.rain;
+            Options.save(engine.io, engine.dirs.data);
         }
 
         if (self.player.inventory_toggle_pending) {
@@ -691,19 +699,31 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.player.camera.apply();
     self.world.draw_world_pass(&self.player.camera);
 
+    // Rain: streaks + impact splashes.  No-op when Options.rain is off.
+    // Slotted here so streaks depth-test against opaque+transparent terrain
+    // and the fluid pass still draws on top of rain in submerged areas.
+    self.world.draw_rain_pass(&self.player.camera);
+
     // Remote player models: drawn in the 3D pass, depth-tested against the world.
     // Slotted before the fluid pass so water/lava correctly occludes them.
     self.steve.draw(&self.player);
     self.steve.draw_nametags(&self.player, &self.font_batcher);
 
     // Selection outline: still in the 3D pass, depth-tested against the world.
-    // Nudge it slightly toward the camera so it does not z-fight the selected
-    // block face, without making it show through other geometry.
+    // Nudge the whole outline toward the camera by a tiny world-space amount.
+    // The outline prisms extrude outward from the block's AABB, but their
+    // inner-facing quads still share a depth plane with the outer faces of
+    // any neighbouring block (floor tops, adjacent sides) that have the same
+    // outward normal -- pulling the outline a fraction of a block toward the
+    // viewer resolves that z-fight without making the outline show through
+    // other geometry.
     // The outline shape matches the block's subvoxel bounds (e.g. half-height
     // for slabs, small box for flowers/mushrooms).
     if (self.player.selected) |hit| blk: {
         const block_id = World.get_block(hit.x, hit.y, hit.z);
-        if (block_id == c.Block.Air) break :blk;
+        if (block_id.is_air()) break :blk;
+        const bounds = block_id.bounds();
+        try self.selection.update(bounds);
         Rendering.Texture.Default.bind();
         var t = Rendering.Transform.new();
         const cp = @cos(self.player.camera.pitch);
@@ -712,7 +732,6 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
             .y = @sin(self.player.camera.pitch),
             .z = @cos(self.player.camera.yaw) * cp,
         };
-        const bounds = c.block_bounds(block_id);
         const Q: f32 = 0.0625;
         t.pos = .{
             .x = @as(f32, @floatFromInt(hit.x)) + @as(f32, @floatFromInt(bounds.min_x)) * Q + toward_camera.x * selection_depth_nudge,
@@ -772,8 +791,12 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // *contents* swap per context in draw_hud_prompts.  Hidden only when
     // the pause screen draws its own strip.  Chat + inventory both ride
     // up by hud_y_shift so the strip never overlaps them.
-    const show_glyphs = PromptStrip.enabled() and !self.paused and !self.hud_hidden;
-    const hud_y_shift: i16 = if (show_glyphs) Buttons.strip_height() else 0;
+    //
+    // hud_y_shift keys off tooltip enablement alone so the hotbar does
+    // not snap down when the pause overlay replaces the in-world strip.
+    const tooltips_on = PromptStrip.enabled() and !self.hud_hidden;
+    const show_glyphs = tooltips_on and !self.paused;
+    const hud_y_shift: i16 = if (tooltips_on) Buttons.strip_height() else 0;
 
     if (!self.hud_hidden) {
         self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, ResourcePack.get_tex(.gui), self.inventory.open, hud_y_shift);
@@ -796,7 +819,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // Rides the hotbar up when the controller-tooltip strip is visible.
     if (self.hotbar_tooltip_timer > 0 and !self.inventory.open and !self.hud_hidden) {
         const block = self.player.hotbar[self.player.selected_slot];
-        const name = BlockNames.get(block);
+        const name = block.display_name();
         if (name.len > 0) {
             const alpha: u8 = if (self.hotbar_tooltip_timer >= 0.5)
                 255
@@ -898,7 +921,7 @@ fn draw_hud_prompts(self: *@This()) void {
         n += 1;
         if (self.player.selected) |hit| {
             const block_id = World.get_block(hit.x, hit.y, hit.z);
-            if (block_id != c.Block.Air) {
+            if (!block_id.is_air()) {
                 if (hit.has_place) {
                     buf[n] = Prompts.place();
                     n += 1;

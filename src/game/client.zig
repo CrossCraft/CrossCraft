@@ -2,9 +2,10 @@ const std = @import("std");
 const zb = @import("protocol");
 const Protocol = zb.Protocol;
 const assert = std.debug.assert;
-const c = @import("common").consts;
+const common = @import("common");
+const c = common.consts;
 const world = @import("world.zig");
-const proto = @import("common").protocol;
+const proto = common.protocol;
 
 const Server = @import("server.zig");
 
@@ -148,7 +149,7 @@ pub fn send_despawn(self: *Self, id: i8) !void {
     try proto.send_despawn_to_client(self.writer, id);
 }
 
-pub fn send_block_change(self: *Self, x: u16, y: u16, z: u16, block: u8) !void {
+pub fn send_block_change(self: *Self, x: u16, y: u16, z: u16, block: c.Block) !void {
     try proto.send_block_change_to_client(self.writer, x, y, z, block);
 }
 
@@ -244,18 +245,23 @@ pub fn handshake(self: *Self) !void {
     try proto.send_position_to_client(self.writer, -1, self.x, self.y, self.z, 0, 0);
     try self.writer.flush();
 
-    var msg_buf: c.Message = @splat(' ');
-    std.mem.copyForwards(u8, &msg_buf, "&eWelcome to the world!");
-
-    try self.send_message(self.id, &msg_buf);
-    try self.writer.flush();
-
-    msg_buf = @splat(' ');
-    _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
-
     self.initialized = true;
-    Server.broadcast_chat_message(self.id, &msg_buf);
-    try self.writer.flush();
+
+    // Skip welcome + join-broadcast chat in singleplayer: the lone local
+    // player would just be seeing themselves "join" their own world.
+    if (!Server.internal_use) {
+        var msg_buf: c.Message = @splat(' ');
+        std.mem.copyForwards(u8, &msg_buf, "&eWelcome to the world!");
+
+        try self.send_message(self.id, &msg_buf);
+        try self.writer.flush();
+
+        msg_buf = @splat(' ');
+        _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
+
+        Server.broadcast_chat_message(self.id, &msg_buf);
+        try self.writer.flush();
+    }
 }
 
 fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
@@ -350,49 +356,45 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     if (event.mode == .Destroy and event.y == 0)
         return;
 
+    // Convert wire-format u8 to the typed Block at the protocol boundary.
+    const block: c.Block = .{ .id = @enumFromInt(event.block) };
+
     // Prevent placement of fluid blocks.
-    if (event.mode == .Create) {
-        switch (event.block) {
-            c.Block.Flowing_Water,
-            c.Block.Still_Water,
-            c.Block.Flowing_Lava,
-            c.Block.Still_Lava,
-            => return,
-            else => {},
-        }
+    if (event.mode == .Create and block.is_fluid()) {
+        return;
     }
 
     const old_block = world.get_block(event.x, event.y, event.z);
 
     if (event.mode == .Destroy) {
-        world.set_block(event.x, event.y, event.z, 0);
-        Server.broadcast_block_change(event.x, event.y, event.z, 0);
+        world.set_block(event.x, event.y, event.z, .{ .id = .air });
+        Server.broadcast_block_change(event.x, event.y, event.z, .{ .id = .air });
     } else {
         // Slab-on-slab → double slab. The originating client (and any other
         // client doing optimistic placement, e.g. ClassiCube) already drew a
         // slab into (x, y, z); re-assert whatever block actually lives at
         // that cell so those predictions are reverted, then upgrade the
         // slab below.
-        if (event.block == c.Block.Slab and event.y > 0) {
+        if (block.id == .slab and event.y > 0) {
             const below = world.get_block(event.x, event.y - 1, event.z);
-            if (below == c.Block.Slab) {
+            if (below.id == .slab) {
                 const existing_above = world.get_block(event.x, event.y, event.z);
                 Server.broadcast_block_change(event.x, event.y, event.z, existing_above);
-                world.set_block(event.x, event.y - 1, event.z, c.Block.Double_Slab);
-                Server.broadcast_block_change(event.x, event.y - 1, event.z, c.Block.Double_Slab);
+                world.set_block(event.x, event.y - 1, event.z, .{ .id = .double_slab });
+                Server.broadcast_block_change(event.x, event.y - 1, event.z, .{ .id = .double_slab });
                 world.enqueue_neighbors_of(event.x, event.y - 1, event.z);
                 return;
             }
         }
-        world.set_block(event.x, event.y, event.z, event.block);
-        Server.broadcast_block_change(event.x, event.y, event.z, event.block);
+        world.set_block(event.x, event.y, event.z, block);
+        Server.broadcast_block_change(event.x, event.y, event.z, block);
     }
     world.enqueue_neighbors_of(event.x, event.y, event.z);
 
-    if (event.mode == .Create and event.block == c.Block.Sponge) {
+    if (event.mode == .Create and block.id == .sponge) {
         world.sponge_absorb(event.x, event.y, event.z);
     }
-    if (event.mode == .Destroy and old_block == c.Block.Sponge) {
+    if (event.mode == .Destroy and old_block.id == .sponge) {
         world.sponge_release(event.x, event.y, event.z);
     }
 }

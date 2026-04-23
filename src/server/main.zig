@@ -282,7 +282,7 @@ fn run_server(backing_allocator: std.mem.Allocator, io: std.Io) !void {
     // no Finder-style CWD=/ hazard the client has to deal with. If we
     // ever ship a Server.app or Vita server, wire ae.Core.paths.resolve
     // here like the client does.
-    try Server.init(allocator, allocator, seed, io, std.Io.Dir.cwd());
+    try Server.init(allocator, allocator, seed, io, std.Io.Dir.cwd(), false);
     defer Server.deinit();
 
     counting.print();

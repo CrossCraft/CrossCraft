@@ -76,11 +76,16 @@ pub const Options = struct {
 
     /// Cap frames to the display refresh rate.  Applied via
     /// `engine.set_vsync` on load and whenever the options menu is dismissed.
-    vsync: bool = true,
+    /// PSP defaults to off; the 60 Hz cap costs more than it's worth given the
+    /// platform's frame-time budget.
+    vsync: bool = @import("aether").platform != .psp,
 
     /// In-game controller prompt style.  `auto` picks glyphs from the
     /// connected controller on desktop, or the only available layout on PSP.
     controller_tooltips: ControllerTooltips = .auto,
+
+    /// Weather: rain on/off.  Defaults off on every platform.
+    rain: bool = false,
 
     /// Returns the active texture pack path as a slice (may be empty).
     pub fn active_texturepack(self: *const Options) []const u8 {
@@ -126,8 +131,9 @@ const JsonOptions = struct {
     sensitivity: f32 = 3.0,
     ambient_occlusion: bool = false,
     bouncy_chunks: bool = false,
-    vsync: bool = true,
+    vsync: bool = @import("aether").platform != .psp,
     controller_tooltips: u8 = 0,
+    rain: bool = false,
 };
 
 // -- public API --------------------------------------------------------------
@@ -185,6 +191,7 @@ pub fn load(io: Io, dir: Io.Dir) void {
         if (!mode.platform_supports()) break :blk .auto;
         break :blk mode;
     };
+    current.rain = j.rain;
 }
 
 /// Write current options to `options.json` in `dir`.
@@ -206,6 +213,7 @@ pub fn save(io: Io, dir: Io.Dir) void {
         .bouncy_chunks = current.bouncy_chunks,
         .vsync = current.vsync,
         .controller_tooltips = @intFromEnum(current.controller_tooltips),
+        .rain = current.rain,
     };
 
     var json_buf: [max_json_size]u8 = undefined;

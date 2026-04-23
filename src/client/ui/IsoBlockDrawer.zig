@@ -31,11 +31,10 @@ const Math = ae.Math;
 const Rendering = ae.Rendering;
 
 const c = @import("common").consts;
-const B = c.Block;
+const Block = c.Block;
 
 const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
-const BlockRegistry = @import("../world/block/BlockRegistry.zig");
 const Face = @import("../world/chunk/face.zig").Face;
 const Scaling = @import("Scaling.zig");
 const layout = @import("layout.zig");
@@ -108,24 +107,24 @@ pub fn begin(self: *Self) void {
 /// logical pixels: a value of 10 yields a ~20 px wide block.
 pub fn add_block(
     self: *Self,
-    block: u8,
+    block: Block,
     cx: f32,
     cy: f32,
     half_extent_px: f32,
 ) void {
     std.debug.assert(half_extent_px > 0);
-    if (block == B.Air) return;
+    if (block.is_air()) return;
 
-    const reg = &BlockRegistry.global;
+    const p = block.mesh_props();
 
     // Cross-plant blocks (saplings, flowers, mushrooms) have no cube faces;
     // ClassiCube draws them as a single front-facing quad.
-    if (reg.cross.isSet(block)) {
+    if (p.cross) {
         self.add_flat(block, cx, cy, half_extent_px);
         return;
     }
 
-    const is_slab = reg.slab.isSet(block);
+    const is_slab = p.slab;
 
     // Object-space half-extent: chosen so the projected screen-x extent of
     // a unit cube ((+/-h, +/-h, +/-h)) equals 2 * half_extent_px.
@@ -211,11 +210,10 @@ fn emit_iso_face(
     y_top: f32,
     cx: f32,
     cy: f32,
-    block: u8,
+    block: Block,
     is_slab: bool,
 ) void {
-    const reg = &BlockRegistry.global;
-    const tile = reg.get_face_tile(block, face);
+    const tile = block.face_tile(face);
     const base_u: i32 = self.atlas.tileU(tile.col);
     const base_v: i32 = self.atlas.tileV(tile.row);
     const tw: i32 = self.atlas.tileWidth();
@@ -277,9 +275,8 @@ fn emit_iso_face(
     self.emit_quad(&verts);
 }
 
-fn add_flat(self: *Self, block: u8, cx: f32, cy: f32, scale: f32) void {
-    const reg = &BlockRegistry.global;
-    const tile = reg.get_face_tile(block, .z_pos);
+fn add_flat(self: *Self, block: Block, cx: f32, cy: f32, scale: f32) void {
+    const tile = block.face_tile(.z_pos);
     const base_u: i32 = self.atlas.tileU(tile.col);
     const base_v: i32 = self.atlas.tileV(tile.row);
     const tw: i32 = self.atlas.tileWidth();
