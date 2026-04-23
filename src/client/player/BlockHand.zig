@@ -46,13 +46,13 @@ const BASE_Z: f32 = -0.72;
 const HELD_Y_LIFT: f32 = 0.1;
 
 // Swing animation.
-const PLACE_PERIOD: f32 = 0.125;
+const PLACE_PERIOD: f32 = 0.25;
 const DIG_PERIOD: f32 = 0.35;
 // Smaller than the Classic reference's -0.4 because our BASE_Y sits the
 // cube near the bottom of the screen already; a full dip would send it
 // entirely off-screen and hide the swap itself, so the user never sees
 // the "old block down, new block up" transition.
-const SWING_AMPLITUDE_Y: f32 = -0.15;
+const SWING_AMPLITUDE_Y: f32 = -0.3;
 const DIG_AMP_X: f32 = -0.4;
 const DIG_AMP_Y: f32 = 0.2;
 const DIG_AMP_Z: f32 = -0.2;
@@ -158,10 +158,12 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
         self.cached_shadowed = shadowed;
     }
 
-    // A slot change while idle kicks off a switch swing (same shape as
-    // place). Mid-swing changes just update `pending_block`; the current
-    // animation plays out and the swap happens at its rising edge (place)
-    // or on completion (dig).
+    // A slot change interrupts any in-flight swing. When idle, start a
+    // fresh place swing from stage 0. When an animation is already
+    // running, seek to the trough of the place wave (t = period/2, the
+    // lowest point of the block on screen) so the visible block drops
+    // the rest of the way down and then rises with the new block --
+    // avoids a hard snap back to the top of the arc.
     if (current_block.id != self.pending_block.id) {
         self.pending_block = current_block;
         if (self.swing_kind == .idle) {
@@ -169,6 +171,13 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
             self.swing_period = PLACE_PERIOD;
             self.swing_time = 0;
             self.prev_swing_y = 0;
+        } else {
+            self.swing_kind = .place;
+            self.swing_period = PLACE_PERIOD;
+            self.swing_time = PLACE_PERIOD * 0.5;
+            // Seed prev_swing_y with the trough value so the next frame,
+            // which is on the rising edge, triggers the block swap.
+            self.prev_swing_y = SWING_AMPLITUDE_Y;
         }
     }
 
@@ -239,7 +248,10 @@ fn rebuild(self: *Self, block: Block, shadowed: bool) void {
         }
     }
 
-    const uniform: u32 = if (shade) face_mod.apply_shadow(0xFFFFFFFF) else 0xFFFFFFFF;
+    // Held block is shaded uniformly at 0.8 brightness (matches side-face
+    // shading) so it reads as a solid 3D object rather than a flat white
+    // decal against the bright sky.
+    const uniform: u32 = if (shade) face_mod.apply_shadow(0xFFCCCCCC) else 0xFFCCCCCC;
     for (self.mesh.vertices.items) |*v| {
         v.color = uniform;
     }
