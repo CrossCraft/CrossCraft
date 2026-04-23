@@ -251,6 +251,10 @@ psp_osk_edge: bool,
 /// each frame to flip its `hud_hidden` state.
 hud_toggle_pending: bool,
 
+/// Rising edge of the rain_toggle press (desktop F5); consumed by GameState
+/// each frame to flip `Options.current.rain` and persist the change.
+rain_toggle_pending: bool,
+
 /// Edge flags set by the chat action callbacks; GameState polls and clears
 /// them each frame.  chat_open: blank field; chat_cmd: '/' prefix field;
 /// chat_send: Enter key (send pending message).
@@ -333,6 +337,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .playerlist_edge = false,
         .psp_osk_edge = false,
         .hud_toggle_pending = false,
+        .rain_toggle_pending = false,
         .chat_open_pending = false,
         .chat_cmd_pending = false,
         .chat_send_pending = false,
@@ -366,6 +371,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     try input.add_button_callback("playerlist", @ptrCast(self), on_playerlist);
     if (ae.platform != .psp) {
         try input.add_button_callback("hud_toggle", @ptrCast(self), on_hud_toggle);
+        try input.add_button_callback("rain_toggle", @ptrCast(self), on_rain_toggle);
     }
     try input.add_button_callback("chat_open", @ptrCast(self), on_chat_open);
     try input.add_button_callback("chat_cmd", @ptrCast(self), on_chat_cmd);
@@ -1420,6 +1426,12 @@ fn on_hud_toggle(ctx: *anyopaque, event: input.ButtonEvent) void {
     if (event != .pressed) return;
     const self: *Self = @ptrCast(@alignCast(ctx));
     self.hud_toggle_pending = true;
+}
+
+fn on_rain_toggle(ctx: *anyopaque, event: input.ButtonEvent) void {
+    if (event != .pressed) return;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.rain_toggle_pending = true;
 }
 
 fn on_chat_open(ctx: *anyopaque, event: input.ButtonEvent) void {

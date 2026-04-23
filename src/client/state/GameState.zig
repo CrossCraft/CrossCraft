@@ -569,6 +569,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         // periodic report keep ticking in the shared tail below.
         self.player.inventory_toggle_pending = false;
         self.player.hud_toggle_pending = false;
+        self.player.rain_toggle_pending = false;
         self.player.chat_open_pending = false;
         self.player.chat_cmd_pending = false;
         self.player.chat_send_pending = false;
@@ -576,6 +577,12 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         if (self.player.hud_toggle_pending) {
             self.player.hud_toggle_pending = false;
             self.hud_hidden = !self.hud_hidden;
+        }
+
+        if (self.player.rain_toggle_pending) {
+            self.player.rain_toggle_pending = false;
+            Options.current.rain = !Options.current.rain;
+            Options.save(engine.io, engine.dirs.data);
         }
 
         if (self.player.inventory_toggle_pending) {
