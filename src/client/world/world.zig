@@ -13,6 +13,7 @@ const Options = @import("../Options.zig");
 const ChunkMesh = @import("chunk/ChunkMesh.zig");
 const Sky = @import("sky/sky.zig");
 const ParticleSystem = @import("ParticleSystem.zig");
+const Rain = @import("Rain.zig");
 
 const SECTIONS_Y: u32 = 4;
 const WORLD_CX: u32 = 16;
@@ -70,10 +71,13 @@ frame_clip_count: u32,
 
 terrain: *const Rendering.Texture,
 clouds: *const Rendering.Texture,
+rain_tex: *const Rendering.Texture,
+particles_tex: *const Rendering.Texture,
 atlas: TextureAtlas,
 pipeline: Rendering.Pipeline.Handle,
 sky: Sky,
 particles: ParticleSystem,
+rain: Rain,
 cam_cx: i32,
 cam_cz: i32,
 allocator: std.mem.Allocator,
@@ -87,6 +91,8 @@ pub fn init(
     pipeline: Rendering.Pipeline.Handle,
     terrain: *const Rendering.Texture,
     clouds: *const Rendering.Texture,
+    rain_tex: *const Rendering.Texture,
+    particles_tex: *const Rendering.Texture,
     atlas: TextureAtlas,
     camera: *const Camera,
 ) !Self {
@@ -114,10 +120,13 @@ pub fn init(
         .frame_clip_count = 0,
         .terrain = terrain,
         .clouds = clouds,
+        .rain_tex = rain_tex,
+        .particles_tex = particles_tex,
         .atlas = atlas,
         .pipeline = pipeline,
         .sky = try Sky.init(allocator, pipeline),
         .particles = try ParticleSystem.init(allocator, pipeline, atlas),
+        .rain = try Rain.init(allocator, pipeline),
         .cam_cx = camera_chunk(camera.x),
         .cam_cz = camera_chunk(camera.z),
         .allocator = allocator,
@@ -142,6 +151,7 @@ pub fn init(
 }
 
 pub fn deinit(self: *Self) void {
+    self.rain.deinit();
     self.particles.deinit();
     self.sky.deinit();
     for (0..WORLD_CX) |cx| {
@@ -155,6 +165,7 @@ pub fn deinit(self: *Self) void {
 pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
     self.sky.update(dt);
     self.particles.update(dt);
+    self.rain.update(dt, camera);
 
     // Advance the bouncy-rise animation for every loaded section. Runs before
     // the early-return below so the animation keeps ticking even when there
@@ -323,6 +334,18 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     // Particles between transparent and fluid so they depth-test against
     // opaque + transparent geometry and blend before water is drawn.
     self.particles.draw(camera);
+}
+
+/// Draw rain streaks + impact splashes.  Slots between draw_world_pass and
+/// the selection/fluid overlays so streaks depth-test against terrain and
+/// blend over particles.  No-op when the rain option is off.
+pub fn draw_rain_pass(self: *Self, camera: *const Camera) void {
+    if (!Options.current.rain) return;
+    Rendering.Pipeline.bind(self.pipeline);
+    self.rain_tex.bind();
+    self.rain.draw_streaks(camera);
+    self.particles_tex.bind();
+    self.rain.draw_splashes(camera);
 }
 
 /// Draw the fluid (water/lava) pass. Must be called after draw_world_pass on

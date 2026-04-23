@@ -208,7 +208,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.render_alloc = render_alloc;
 
     // Textures
-    try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still, .char, .glyphs });
+    try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still, .char, .glyphs, .rain, .particles });
 
     // World renderer
     self.world = try WorldRenderer.init(
@@ -217,6 +217,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         self.pipeline,
         ResourcePack.get_tex(.terrain),
         ResourcePack.get_tex(.clouds),
+        ResourcePack.get_tex(.rain),
+        ResourcePack.get_tex(.particles),
         ResourcePack.atlas,
         &self.player.camera,
     );
@@ -689,6 +691,11 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     }
     self.player.camera.apply();
     self.world.draw_world_pass(&self.player.camera);
+
+    // Rain: streaks + impact splashes.  No-op when Options.rain is off.
+    // Slotted here so streaks depth-test against opaque+transparent terrain
+    // and the fluid pass still draws on top of rain in submerged areas.
+    self.world.draw_rain_pass(&self.player.camera);
 
     // Remote player models: drawn in the 3D pass, depth-tested against the world.
     // Slotted before the fluid pass so water/lava correctly occludes them.
