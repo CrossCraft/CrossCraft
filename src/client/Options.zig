@@ -84,6 +84,9 @@ pub const Options = struct {
     /// connected controller on desktop, or the only available layout on PSP.
     controller_tooltips: ControllerTooltips = .auto,
 
+    /// Weather: rain on/off.  Defaults off on every platform.
+    rain: bool = false,
+
     /// Returns the active texture pack path as a slice (may be empty).
     pub fn active_texturepack(self: *const Options) []const u8 {
         return self.active_texturepack_buf[0..self.active_texturepack_len];
@@ -130,6 +133,7 @@ const JsonOptions = struct {
     bouncy_chunks: bool = false,
     vsync: bool = @import("aether").platform != .psp,
     controller_tooltips: u8 = 0,
+    rain: bool = false,
 };
 
 // -- public API --------------------------------------------------------------
@@ -187,6 +191,7 @@ pub fn load(io: Io, dir: Io.Dir) void {
         if (!mode.platform_supports()) break :blk .auto;
         break :blk mode;
     };
+    current.rain = j.rain;
 }
 
 /// Write current options to `options.json` in `dir`.
@@ -208,6 +213,7 @@ pub fn save(io: Io, dir: Io.Dir) void {
         .bouncy_chunks = current.bouncy_chunks,
         .vsync = current.vsync,
         .controller_tooltips = @intFromEnum(current.controller_tooltips),
+        .rain = current.rain,
     };
 
     var json_buf: [max_json_size]u8 = undefined;
