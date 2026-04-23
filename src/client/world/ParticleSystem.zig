@@ -21,12 +21,12 @@ const MAX_PARTICLES: u16 = 512;
 const PER_BREAK: u16 = 48;
 /// Particle lifetime range in seconds. Each spawn picks uniformly within
 /// this window so a burst doesn't vanish all at once.
-const LIFETIME_MIN: f32 = 0.6;
-const LIFETIME_MAX: f32 = 1.4;
+const LIFETIME_MIN: f32 = 0.3;
+const LIFETIME_MAX: f32 = 1.0;
 /// Default downward acceleration in blocks/s^2. Per-particle gravity is set
 /// from this at spawn; lightweight materials (leaves, flowers) override it.
-const GRAVITY: f32 = 12.0;
-const GRAVITY_LEAVES: f32 = 7.5;
+const GRAVITY: f32 = 16.0;
+const GRAVITY_LEAVES: f32 = 10.0;
 /// Half extent of a particle quad in blocks.
 const HALF_SIZE: f32 = 0.06;
 /// Subdivisions of the broken block's face tile; each particle samples one cell.
@@ -150,7 +150,7 @@ pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, _:
         // small jitter so neighboring particles don't fly in lockstep.
         // The outward speed scales with offset magnitude (corner spawns fly
         // faster than near-center ones), giving a natural radial burst.
-        const burst_speed: f32 = 3.25;
+        const burst_speed: f32 = 4.0;
         const jitter: f32 = 0.4;
         const upward_bias: f32 = 2.0;
         self.particles[self.count] = .{
