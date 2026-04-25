@@ -9,6 +9,7 @@ const Engine = ae.Engine;
 const State = ae.Core.State;
 
 const Server = game.Server;
+const GameClient = game.Server.Client;
 const Consts = common.consts;
 
 const log = std.log.scoped(.server);
@@ -28,12 +29,17 @@ const ConnectionData = struct {
 // `init` populates them; `deinit` clears them.
 var global_engine: ?*Engine = null;
 var global_listener: ?*std.Io.net.Server = null;
+// Compressor worker is a non-Io-tracked Util.Thread; capturing engine.io
+// through Util.Thread.spawn args crashes on PSP, so park it at module
+// scope and read it directly from the worker.
+var compressor_io: std.Io = undefined;
 
 const Self = @This();
 
 conn_handles: []?ConnectionData,
 tasks: std.Io.Group,
 listener: std.Io.net.Server,
+compressor_thread: Util.Thread,
 
 pub fn state(self: *Self) State {
     return .{ .ptr = self, .tab = &.{
@@ -48,7 +54,7 @@ pub fn state(self: *Self) State {
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(Self, ctx);
 
-    const alloc = engine.allocator(.game);
+    const alloc = engine.allocator(.user);
 
     self.conn_handles = try alloc.alloc(?ConnectionData, Consts.MAX_PLAYERS);
     @memset(self.conn_handles, null);
@@ -57,6 +63,17 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(engine.io, .boot).raw.nanoseconds)));
     try Server.init(alloc, alloc, seed, engine.io, engine.dirs.data, false);
+
+    // Dedicated thread for world compression. Off-loads the deep `flate` call
+    // frames out of the per-connection IO stacks (see `psp_async_stack_size`
+    // in main.zig).
+    compressor_io = engine.io;
+    self.compressor_thread = try Util.Thread.spawn(.{
+        .name = "world_compress",
+        .stack_size = 384 * 1024,
+        .priority = .normal,
+        .allocator = alloc,
+    }, compressor_worker_main, .{});
 
     engine.report();
 
@@ -103,15 +120,28 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     global_listener = null;
     self.listener.deinit(engine.io);
 
+    // tasks.cancel above drained the IO read loops; any in-flight world-send
+    // job now writes against a closed socket and exits with WriteFailed.
+    GameClient.signal_worker_exit();
+    self.compressor_thread.join();
+
     Server.deinit();
 
-    engine.allocator(.game).free(self.conn_handles);
+    engine.allocator(.user).free(self.conn_handles);
 
     global_engine = null;
 }
 
 fn client_read_loop(client: *Server.Client) std.Io.Cancelable!void {
     client.read_loop();
+}
+
+fn compressor_worker_main() void {
+    while (!GameClient.worker_should_exit()) {
+        if (!GameClient.worker_drain_once()) {
+            std.Io.sleep(compressor_io, .fromMilliseconds(10), .real) catch {};
+        }
+    }
 }
 
 fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
@@ -160,7 +190,10 @@ fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
         }
 
         if (!assigned) {
-            log.info("Server full, rejecting connection", .{});
+            log.info("&4Server full, rejecting connection", .{});
+            var write_buf: [128]u8 = undefined;
+            var writer = std.Io.net.Stream.Writer.init(conn, engine.io, &write_buf);
+            common.protocol.send_disconnect_to_client(&writer.interface, "Server is full!") catch {};
             conn.close(engine.io);
         }
     }

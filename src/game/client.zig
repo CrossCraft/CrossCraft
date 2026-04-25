@@ -16,6 +16,20 @@ var compress_buf: *[flate.max_window_len]u8 = undefined;
 var compressor: *flate.Compress = undefined;
 var compress_in_use: bool = false;
 
+/// World-send job submitted by an IO read loop and processed by the dedicated
+/// compressor worker thread (`worker_main`). One slot per player; the slots
+/// outlive any individual `Client` so a late-arriving worker store after the
+/// IO thread bails on cancel never lands on a freed stack frame.
+const WorldSendJob = struct {
+    client: *Self,
+    next: ?*WorldSendJob,
+    done: std.atomic.Value(bool),
+    err: ?anyerror,
+};
+var jobs: [c.MAX_PLAYERS]WorldSendJob = undefined;
+var queue_head: std.atomic.Value(?*WorldSendJob) = .init(null);
+var worker_exit: std.atomic.Value(bool) = .init(false);
+
 /// Compress Writer vtable resolved at comptime to avoid referencing private fns.
 const compress_writer_vtable: *const std.Io.Writer.VTable = blk: {
     var dummy_buf: [16]u8 = undefined;
@@ -157,36 +171,89 @@ fn send_world(self: *Self) !void {
     try proto.send_level_initialize_to_client(self.writer);
     try self.writer.flush();
 
-    if (!self.local) {
-        var chunk_buf: [1024]u8 = @splat(0);
-
-        assert(!compress_in_use);
-        compress_in_use = true;
-        defer compress_in_use = false;
-
-        var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.raw_blocks.len));
-        try reset_compressor(&sender.interface);
-
-        // Feed 4-byte size header, then block data in contiguous YZX wire
-        // order (Java Classic compatible) from chunk-aware memory layout.
-        try compressor.writer.writeAll(world.raw_blocks[0..4]);
-        sender.raw_written = 4;
-        try world.write_blocks_yzx(&compressor.writer);
-        sender.raw_written = @intCast(world.raw_blocks.len);
-        try compressor.finish();
-
-        // Send any remaining partial chunk as the final packet.
-        if (sender.interface.end > 0) {
-            var final_chunk: [1024]u8 = @splat(0);
-            @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
-            try proto.send_level_chunk_to_client(self.writer, @intCast(sender.interface.end), &final_chunk, sender.percent());
-            try self.writer.flush();
-        }
+    if (self.local) {
+        // Local client reads World.blocks directly - no chunks needed.
+        try proto.send_level_finalize_to_client(self.writer, c.WorldLength, c.WorldHeight, c.WorldDepth);
+        try self.writer.flush();
+        return;
     }
-    // Local client reads World.blocks directly - no chunks needed.
+
+    const job = &jobs[@intCast(self.id)];
+    job.* = .{ .client = self, .next = null, .done = .init(false), .err = null };
+    enqueue(job);
+    while (!job.done.load(.acquire)) {
+        try Server.io.sleep(.fromMilliseconds(20), .real);
+    }
+    if (job.err) |e| return e;
+}
+
+fn send_world_impl(self: *Self) !void {
+    var chunk_buf: [1024]u8 = @splat(0);
+
+    assert(!compress_in_use);
+    compress_in_use = true;
+    defer compress_in_use = false;
+
+    var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.raw_blocks.len));
+    try reset_compressor(&sender.interface);
+
+    // Feed 4-byte size header, then block data in contiguous YZX wire
+    // order (Java Classic compatible) from chunk-aware memory layout.
+    try compressor.writer.writeAll(world.raw_blocks[0..4]);
+    sender.raw_written = 4;
+    try world.write_blocks_yzx(&compressor.writer);
+    sender.raw_written = @intCast(world.raw_blocks.len);
+    try compressor.finish();
+
+    // Send any remaining partial chunk as the final packet.
+    if (sender.interface.end > 0) {
+        var final_chunk: [1024]u8 = @splat(0);
+        @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
+        try proto.send_level_chunk_to_client(self.writer, @intCast(sender.interface.end), &final_chunk, sender.percent());
+        try self.writer.flush();
+    }
 
     try proto.send_level_finalize_to_client(self.writer, c.WorldLength, c.WorldHeight, c.WorldDepth);
     try self.writer.flush();
+}
+
+fn enqueue(job: *WorldSendJob) void {
+    while (true) {
+        const head = queue_head.load(.monotonic);
+        job.next = head;
+        if (queue_head.cmpxchgWeak(head, job, .release, .monotonic) == null) return;
+    }
+}
+
+/// Drain one batch of pending world-send jobs. Returns true if at least one
+/// job was processed, false if the queue was empty. Caller (the worker
+/// thread, see `ServerState.compressor_worker_main`) is expected to loop
+/// and sleep when this returns false. The worker thread is spawned by
+/// ServerState rather than `std.Io.concurrent`, so it must NOT call
+/// `Server.io.sleep` -- that returns immediately from non-tracked threads
+/// on PSP, hot-spinning the CPU and starving the IO threads.
+pub fn worker_drain_once() bool {
+    const head = queue_head.swap(null, .acquire) orelse return false;
+    var node: ?*WorldSendJob = head;
+    while (node) |j| {
+        const next = j.next;
+        send_world_impl(j.client) catch |e| {
+            j.err = e;
+        };
+        j.done.store(true, .release);
+        node = next;
+    }
+    return true;
+}
+
+pub fn worker_should_exit() bool {
+    return worker_exit.load(.acquire);
+}
+
+/// Tell the compressor worker to exit on its next loop iteration. Caller is
+/// responsible for joining the OS thread afterward.
+pub fn signal_worker_exit() void {
+    worker_exit.store(true, .release);
 }
 
 pub fn handshake(self: *Self) !void {
@@ -404,6 +471,8 @@ pub fn init_compressor(alloc: std.mem.Allocator) !void {
     compress_buf = try alloc.create([flate.max_window_len]u8);
     compressor = try alloc.create(flate.Compress);
     compressor.* = undefined;
+    queue_head = .init(null);
+    worker_exit = .init(false);
 }
 
 /// Resets the compressor for a new gzip stream directed at `output`.

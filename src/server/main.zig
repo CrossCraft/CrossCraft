@@ -12,8 +12,8 @@ comptime {
 }
 
 pub const psp_stack_size: u32 = 256 * 1024;
-pub const psp_async_stack_size: u32 = 384 * 1024;
-pub const psp_heap_reserve_kb_size: u32 = 3072;
+pub const psp_async_stack_size: u32 = 32 * 1024;
+pub const psp_heap_reserve_kb_size: u32 = 2048;
 
 pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
 pub const std_options_debug_threaded_io = if (ae.platform == .psp) null else std.Io.Threaded.global_single_threaded;
@@ -63,8 +63,8 @@ pub fn main(init: std.process.Init) !void {
         .memory = .{
             .render = 64, // Default texture TODO: Fix this in Aether?
             .audio = 0,
-            .game = (total_mb - 1) * 1024 * 1024,
-            .user = 512 * 1024,
+            .game = 512 * 1024,
+            .user = (total_mb - 1) * 1024 * 1024,
         },
         .title = "CrossCraft Classic Server",
         .vsync = false,
