@@ -158,7 +158,7 @@ pub fn build(b: *std.Build) void {
         .output_dir = psp_client_dir,
         .bundle_id = "com.iridescentrose.crosscraft-classic",
         .resources = mac_resources,
-        // Reusing the Vita icon as a placeholder — 128×128 upscales for
+        // Reusing the Vita icon as a placeholder. 128×128 upscales for
         // the larger .icns slots but it's serviceable. Swap in a 1024×1024
         // PNG later if you want sharper Dock/Finder rendering.
         .icon_png = if (is_macos) b.path("assets/vita/icon0.png") else null,
@@ -166,27 +166,14 @@ pub fn build(b: *std.Build) void {
         .pic1 = if (is_psp) b.path("assets/psp/PIC1.png") else null,
     });
 
-    // The server has no graphics — only use Aether.addGame for PSP
-    // (which provides the pspsdk import and linker script). All other
-    // targets build a plain executable with no engine dependency.
-
-    const server_exe = if (is_psp)
-        Aether.addGame(ae_dep.builder, b, .{
-            .name = "CrossCraft-Classic-Server",
-            .root_source_file = b.path("src/server/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .overrides = overrides,
-        })
-    else
-        b.addExecutable(.{
-            .name = "CrossCraft-Classic-Server",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/server/main.zig"),
-                .target = target,
-                .optimize = optimize,
-            }),
-        });
+    const server_overrides: Aether.Config.Overrides = .{ .use_cwd = true };
+    const server_exe = Aether.addHeadless(ae_dep.builder, b, .{
+        .name = "CrossCraft-Classic-Server",
+        .root_source_file = b.path("src/server/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .overrides = server_overrides,
+    });
     server_exe.root_module.addImport("game", game);
     server_exe.root_module.addImport("common", common);
 
