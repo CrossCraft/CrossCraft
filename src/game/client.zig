@@ -433,6 +433,15 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
 
     const old_block = world.get_block(event.x, event.y, event.z);
 
+    // Cross-blocks (flowers, saplings, mushrooms) have a narrow subvoxel
+    // selection bound, so a raycast can pass through them and target the
+    // cell they occupy via the surface below. Re-broadcast the existing
+    // block so any optimistic client that drew the new block reverts.
+    if (event.mode == .Create and old_block.mesh_props().cross) {
+        Server.broadcast_block_change(event.x, event.y, event.z, old_block);
+        return;
+    }
+
     if (event.mode == .Destroy) {
         world.set_block(event.x, event.y, event.z, .{ .id = .air });
         Server.broadcast_block_change(event.x, event.y, event.z, .{ .id = .air });

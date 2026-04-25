@@ -1356,6 +1356,8 @@ fn do_place(self: *Self) void {
         self.pos_z + collision.HALF_W > bz0 and
         self.pos_z - collision.HALF_W < bz0 + 1.0;
     if (overlaps) return;
+    const target = World.get_block(hit.place_x, hit.place_y, hit.place_z);
+    if (target.mesh_props().cross) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
     // Register a "virtual block" for collision so the player cannot
