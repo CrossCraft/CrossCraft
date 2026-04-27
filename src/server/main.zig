@@ -12,7 +12,7 @@ comptime {
 }
 
 pub const psp_stack_size: u32 = 256 * 1024;
-pub const psp_async_stack_size: u32 = 32 * 1024;
+pub const psp_async_stack_size: u32 = 64 * 1024;
 pub const psp_heap_reserve_kb_size: u32 = 2048;
 
 pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);

@@ -30,7 +30,7 @@ const ConnectionData = struct {
 var global_engine: ?*Engine = null;
 var global_listener: ?*std.Io.net.Server = null;
 // Compressor worker is a non-Io-tracked Util.Thread; capturing engine.io
-// through Util.Thread.spawn args crashes on PSP, so park it at module
+// through Util.Thread.spawn args crashes, so park it at module
 // scope and read it directly from the worker.
 var compressor_io: std.Io = undefined;
 

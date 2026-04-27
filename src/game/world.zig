@@ -88,6 +88,10 @@ pub var io: std.Io = undefined;
 pub var data_dir: std.Io.Dir = undefined;
 var save_counter: u32 = 0;
 
+// In-flight async save bookkeeping. `save()` is a fire-and-forget dispatcher
+var save_future: ?std.Io.Future(void) = null;
+var save_in_flight: std.atomic.Value(bool) = .init(false);
+
 /// For each (x,z) column, stores Y+1 of the highest light-blocking block.
 /// A value of 0 means the entire column is sunlit. Consumed by
 /// `is_sunlit` and tree/grass growth checks, so it describes a light
@@ -95,12 +99,45 @@ var save_counter: u32 = 0;
 pub var light_map: [c.WorldLength * c.WorldDepth]u8 = undefined;
 
 const BLOCK_SIZE = 32768;
-/// File header: 3 little-endian u16 (x, y, z), 1 little-endian u64 (seed), then raw block data.
-pub fn save() !void {
+
+/// Dispatch an async world save. Returns immediately; the worker runs on an
+/// io-managed task and logs its own errors. Single-flight: a second call while
+/// a save is still running logs a warn and is dropped. Callers needing the
+/// save to finish (e.g. shutdown) must follow with `wait_for_save()`.
+///
+/// Concurrency note: the worker reads `raw_blocks` while `tick()` may still
+/// mutate `blocks` on the engine thread, so a save that overlaps tick activity
+/// can produce a per-byte-torn world.dat.
+pub fn save() void {
     if (!owned_locally) return;
+    if (save_in_flight.load(.acquire)) {
+        log.warn("save already in flight; skipping", .{});
+        return;
+    }
+    save_in_flight.store(true, .release);
+    save_future = io.concurrent(save_worker, .{}) catch |err| {
+        log.err("Failed to dispatch save worker: {}", .{err});
+        save_in_flight.store(false, .release);
+        return;
+    };
+}
+
+/// Block until any in-flight save finishes. Idempotent. Must run before
+/// `raw_blocks` is freed in `deinit` -- the worker reads it directly.
+pub fn wait_for_save() void {
+    if (save_future) |*f| {
+        f.await(io);
+        save_future = null;
+    }
+}
+
+/// File header: 3 little-endian u16 (x, y, z), 1 little-endian u64 (seed), then raw block data.
+fn save_worker() void {
+    defer save_in_flight.store(false, .release);
+
     const file = data_dir.createFile(io, "world.dat", .{}) catch |err| {
         log.err("Failed to create world.dat: {}", .{err});
-        return err;
+        return;
     };
     defer file.close(io);
 
@@ -108,14 +145,10 @@ pub fn save() !void {
     var writer = file.writer(io, &write_buf);
 
     const start = std.Io.Clock.Timestamp.now(io, .boot);
-    try writer.interface.writeSliceEndian(u16, &world_size, .little);
-    const seed_arr = [1]u64{seed};
-    try writer.interface.writeSliceEndian(u64, &seed_arr, .little);
-    const tick_arr = [1]u64{tick_count};
-    try writer.interface.writeSliceEndian(u64, &tick_arr, .little);
-    try writer.interface.writeAll(raw_blocks[0..4]);
-    try write_blocks_yzx(&writer.interface);
-    try writer.interface.flush();
+    save_write(&writer) catch |err| {
+        log.err("Failed to write world.dat: {}", .{err});
+        return;
+    };
     const end = std.Io.Clock.Timestamp.now(io, .boot);
 
     const total_bytes: u64 = 6 + 8 + 8 + 4 +
@@ -127,6 +160,17 @@ pub fn save() !void {
     log.info("Saved world to world.dat ({d} bytes in {d}us, {d} MiB/s)", .{
         total_bytes, elapsed_us, mib_per_s,
     });
+}
+
+fn save_write(writer: anytype) !void {
+    try writer.interface.writeSliceEndian(u16, &world_size, .little);
+    const seed_arr = [1]u64{seed};
+    try writer.interface.writeSliceEndian(u64, &seed_arr, .little);
+    const tick_arr = [1]u64{tick_count};
+    try writer.interface.writeSliceEndian(u64, &tick_arr, .little);
+    try writer.interface.writeAll(raw_blocks[0..4]);
+    try write_blocks_yzx(&writer.interface);
+    try writer.interface.flush();
 }
 
 pub fn load() bool {
@@ -252,17 +296,14 @@ pub fn init(allocator: std.mem.Allocator, scratch: std.mem.Allocator, _io: std.I
         const elapsed_ns: i64 = @truncate(end.raw.nanoseconds - start.raw.nanoseconds);
         const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
         log.info("World generation took {d}ms", .{elapsed_ms});
-        save() catch |err| {
-            log.err("failed to save world: {}", .{err});
-        };
+        save();
     }
     finalize_loaded();
 }
 
 pub fn deinit() void {
-    save() catch |err| {
-        log.err("failed to save world: {}", .{err});
-    };
+    save();
+    wait_for_save();
 
     log.info("world update wheel peak: {d}/{d}", .{ pool_used_peak, POOL_CAPACITY });
 
@@ -497,9 +538,7 @@ pub fn tick() void {
         save_counter += 1;
         if (save_counter >= 6000) {
             save_counter = 0;
-            save() catch |err| {
-                log.err("failed to save world: {}", .{err});
-            };
+            save();
         }
     }
 }

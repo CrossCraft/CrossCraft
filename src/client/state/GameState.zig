@@ -532,10 +532,9 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
                 PauseMenuScreen.pending_save = false;
                 // World.save no-ops in MP (owned_locally is false there); the
                 // pause menu also disables the button in MP, so this is a
-                // belt-and-braces guard.
-                World.save() catch |err| {
-                    log.err("Save level failed: {}", .{err});
-                };
+                // belt-and-braces guard. Dispatch is fire-and-forget; the
+                // worker logs its own errors.
+                World.save();
             }
             if (PauseMenuScreen.pending_quit) {
                 // SP saves automatically inside Server.deinit -> World.deinit;
