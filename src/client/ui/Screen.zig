@@ -179,13 +179,11 @@ fn apply_text_input(self: *Self, in: *const UiInput) bool {
 
     var consumed = false;
 
-    // Backspace
     if (in.backspace and ti.len.* > 0) {
         ti.len.* -= 1;
         consumed = true;
     }
 
-    // Append typed characters
     for (in.char_buf[0..in.char_count]) |ch| {
         if (ti.len.* < ti.max_len) {
             ti.buf[ti.len.*] = ch;

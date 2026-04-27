@@ -21,7 +21,7 @@ const MAX_PENDING_CHANGES: u32 = 512;
 pub var pending_changes: [MAX_PENDING_CHANGES]BlockChange = undefined;
 pub var pending_count: u32 = 0;
 
-// -- Timer wheel -----------------------------------------------------------
+// --- Timer wheel ---
 // 1024 buckets (one per tick modulo WHEEL_SIZE). Each bucket is a singly-
 // linked list threaded through a pool of fixed-size nodes. Entries land in
 // bucket[ready_tick % WHEEL_SIZE] so only the current tick's bucket is
@@ -44,12 +44,12 @@ var pool_used: u32 = 0; // live count
 var pool_used_peak: u32 = 0; // high-water across the session, logged on deinit
 var rng: Xorshift64 = .{ .state = 1 };
 
-// -- Per-chunk block counts (work-skipping) --------------------------------
+// --- Per-chunk block counts (work-skipping) ---
 const CHUNK_COUNT: u32 = c.ChunksX * c.ChunksZ * c.ChunksY;
 var chunk_counts: [CHUNK_COUNT]u16 = undefined; // non-air blocks
 var chunk_non_opaque: [CHUNK_COUNT]u16 = undefined; // non-opaque blocks
 
-// -- Enqueue dedup (fixed-capacity flat set, linear scan) ------------------
+// --- Enqueue dedup (fixed-capacity flat set, linear scan) ---
 // At POOL_CAPACITY=8192 entries, a flat u32 array is 32 KiB and every op
 // fits in a single SIMD-friendly scan - faster and ~40x smaller than a
 // hashmap once the index table and load-factor padding are counted.
@@ -138,7 +138,6 @@ pub fn load() bool {
     var read_buf: [BLOCK_SIZE]u8 = undefined;
     var reader = file.reader(io, &read_buf);
 
-    // Header: world dimensions.
     var dims: [3]u16 = undefined;
     reader.interface.readSliceEndian(u16, &dims, .little) catch return false;
 
@@ -178,7 +177,6 @@ pub fn init_empty(allocator: std.mem.Allocator, _io: std.Io, _data_dir: std.Io.D
     owned_locally = false;
 
     node_pool = try allocator.alloc(WheelNode, POOL_CAPACITY);
-    // Build free list: each node points to the next, last points to SENTINEL
     for (0..POOL_CAPACITY) |i| {
         node_pool[i] = .{
             .loc = .{ .x = 0, .z = 0, .y = 0 },
@@ -353,7 +351,7 @@ fn chunk_idx(x: u16, y: u16, z: u16) u32 {
     return (@as(u32, y) / c.ChunkSize * c.ChunksZ + @as(u32, z) / c.ChunkSize) * c.ChunksX + @as(u32, x) / c.ChunkSize;
 }
 
-// -- Protocol-order serialization (contiguous YZX for Java Classic compat) ----
+// --- Protocol-order serialization (contiguous YZX for Java Classic compat) ---
 
 /// Write all blocks in contiguous YZX wire order from chunk-aware memory.
 /// Within each (y,z) row, the 16 x-values per chunk are contiguous in the
@@ -383,7 +381,7 @@ pub fn read_blocks_yzx(reader: *std.Io.Reader) !void {
     }
 }
 
-// -- Sunlight height map ------------------------------------------------------
+// --- Sunlight height map ---
 
 /// Scan a single column top-down; return Y+1 of highest light-blocking block (0 if none).
 fn column_height(x: u16, z: u16) u8 {
@@ -441,12 +439,10 @@ pub fn find_spawn() [3]u16 {
     for (0..10) |attempt| {
         const bx: u16 = @intCast(spawn_rng.next_bounded(c.WorldLength));
         const bz: u16 = @intCast(spawn_rng.next_bounded(c.WorldDepth));
-        // Walk down from top to find surface
         var by: u16 = c.WorldHeight - 1;
         while (by > 0) : (by -= 1) {
             const blk = get_block(bx, by, bz);
             if (!blk.is_air() and !blk.is_fluid()) {
-                // Found solid ground; spawn one block above
                 const above: Block = if (by + 1 < c.WorldHeight) get_block(bx, by + 1, bz) else .{ .id = .air };
                 if (above.is_fluid() and attempt < 9) break;
                 return .{
@@ -457,7 +453,7 @@ pub fn find_spawn() [3]u16 {
             }
         }
     }
-    // Fallback: world center, walk down to find surface
+    // Fallback: world center.
     const cx: u16 = c.WorldLength / 2;
     const cz: u16 = c.WorldDepth / 2;
     var fy: u16 = c.WorldHeight - 1;
@@ -488,7 +484,6 @@ pub fn tick() void {
     while (node_idx != SENTINEL) {
         const node = node_pool[node_idx];
         const next = node.next;
-        // Return node to free list
         node_pool[node_idx].next = free_head;
         free_head = node_idx;
         pool_used -= 1;
@@ -542,7 +537,7 @@ fn process_block_update(loc: Location) void {
     }
 }
 
-// -- Timer wheel operations ------------------------------------------------
+// --- Timer wheel operations ---
 
 fn wheel_insert(loc: Location, delay: u32) void {
     assert(delay < WHEEL_SIZE);
@@ -603,7 +598,7 @@ fn has_direct_sunlight(x: u16, y: u16, z: u16) bool {
     return true;
 }
 
-// -- Fluid physics ---------------------------------------------------------
+// --- Fluid physics ---
 
 fn process_fluid(x: u16, y: u16, z: u16, block: Block) void {
     const water = block.is_water();
@@ -620,7 +615,6 @@ fn process_fluid(x: u16, y: u16, z: u16, block: Block) void {
         return;
     }
 
-    // Spread down
     if (y > 0 and get_block(x, y - 1, z).is_air()) {
         if (!water or !is_near_sponge(x, y - 1, z)) {
             queue_block_change(x, y - 1, z, flow);
@@ -628,7 +622,7 @@ fn process_fluid(x: u16, y: u16, z: u16, block: Block) void {
         }
     }
 
-    // Spread horizontal (only when no downward spread)
+    // Horizontal spread only fires when downward spread didn't.
     spread_horizontal(x, y, z, flow, water);
 }
 
@@ -761,14 +755,12 @@ fn grow_tree(x: u16, y: u16, z: u16, height: u32) void {
     const base_y: u32 = @as(u32, y) - 1;
     if (base_y + height + 2 >= c.WorldHeight) return;
 
-    // Check space above sapling
     var check_y: u32 = @as(u32, y) + 1;
     while (check_y <= base_y + height + 2) : (check_y += 1) {
         if (check_y >= c.WorldHeight) return;
         if (!get_block(x, @intCast(check_y), z).is_air()) return;
     }
 
-    // Trunk
     for (0..height) |i| {
         const ty: u32 = base_y + 1 + @as(u32, @intCast(i));
         if (ty < c.WorldHeight) queue_block_change(x, @intCast(ty), z, .{ .id = .log });

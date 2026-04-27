@@ -18,7 +18,7 @@ const Color = @import("../graphics/Color.zig").Color;
 
 const Self = @This();
 
-// -- Layout constants (logical pixels) --------------------------------------
+// --- Layout constants (logical pixels) ---
 
 const ROW_H: i16 = 10;
 const PAD: i16 = 6;
@@ -39,7 +39,7 @@ const TEXT_LAYER: u8 = 245;
 // also clamped to what fits on screen in draw(), so this is a safety backstop.
 const MAX_VISIBLE: u8 = if (ae.platform == .psp) 4 else 60;
 
-// -- Data -------------------------------------------------------------------
+// --- Data ---
 
 const Entry = struct {
     active: bool,
@@ -54,13 +54,13 @@ const Entry = struct {
 
 entries: [c.MAX_PLAYERS]Entry,
 
-// -- Lifecycle --------------------------------------------------------------
+// --- Lifecycle ---
 
 pub fn init() Self {
     return .{ .entries = std.mem.zeroes([c.MAX_PLAYERS]Entry) };
 }
 
-// -- Data mutations (called from ClientConn packet handlers) ----------------
+// --- Data mutations (called from ClientConn packet handlers) ---
 
 /// Register a remote player. `raw` is the 64-byte space-padded name from the
 /// SpawnPlayer packet. Only the first 16 non-space bytes are stored.
@@ -105,7 +105,7 @@ pub fn update_position(self: *Self, pid: i8, x: u16, y: u16, z: u16, yaw: u8, pi
     self.entries[idx].pitch = pitch;
 }
 
-// -- Draw -------------------------------------------------------------------
+// --- Draw ---
 
 pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, local_name: []const u8) void {
     const screen_w = Rendering.gfx.surface.get_width();

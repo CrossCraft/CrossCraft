@@ -69,7 +69,7 @@ pub const SectionCounts = struct {
     fluid_verts: u32, // water/lava
 };
 
-// -- Prefetch -----------------------------------------------------------------
+// --- Prefetch ---
 
 /// 256 bytes (one chunk Y-slice: 16 z-rows x 16 x-blocks) = 4 cache lines.
 const Y_SLICE_BYTES: u32 = c.ChunkSize * c.ChunkSize;
@@ -84,7 +84,7 @@ inline fn prefetch_y_slice(chunk_ptr: *const [c.ChunkVolume]c.Block, y_local: u3
     prefetch.prefetch_slice(c.Block, slice);
 }
 
-// -- Pack ---------------------------------------------------------------------
+// --- Pack ---
 
 fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
@@ -281,7 +281,7 @@ inline fn classify_block(block: Block, bit_pos: u5, opq: *u32, vis: *u32, flu: *
     if (p.glass) glass_.* |= bit;
 }
 
-// -- Count --------------------------------------------------------------------
+// --- Count ---
 
 fn pop(v: u32) u32 {
     return @as(u32, @popCount(v));
@@ -382,7 +382,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     // not fluid and not opaque) always emit. Tops with opaque above only
     // emit when adjacent (within 1 block horizontally) to a naked top, to
     // form a one-plane border that hides the inset seam. Deep-covered
-    // interior culls — huge win in water/lava-filled caves.
+    // interior culls -- huge win in water/lava-filled caves.
     const n_yp_zp = &buf[by + 1][bz + 1];
     const n_yp_zn = &buf[by + 1][bz - 1];
     const eff_yp_zp = n_yp_zp.opq | n_yp_zp.solid_leaf;
@@ -496,13 +496,13 @@ pub fn count_section(buf: *const SectionBuf) SectionCounts {
     return total;
 }
 
-// -- Emit ---------------------------------------------------------------------
+// --- Emit ---
 
 fn assert_has_room(verts: *const std.ArrayList(Vertex), n: u32) void {
     std.debug.assert(verts.items.len + n <= verts.capacity);
 }
 
-// -- Ambient Occlusion --------------------------------------------------------
+// --- Ambient Occlusion ---
 // Per-vertex AO: sample 3 neighbors in the face's neighbor plane (two tangent
 // edges + the diagonal), classify to a 4-level brightness ramp, and modulate
 // the base directional face tint. Opaque-eff = opq | solid_leaf so solid-leaf

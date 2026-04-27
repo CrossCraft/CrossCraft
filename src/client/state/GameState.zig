@@ -177,7 +177,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // Redistribute memory for game state
     @import("../config.zig").apply_runtime_budgets(engine);
 
-    // Pipeline
     const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     self.pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
@@ -207,10 +206,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
 
-    // Textures
     try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still, .char, .glyphs, .rain, .particles });
 
-    // World renderer
     self.world = try WorldRenderer.init(
         render_alloc,
         engine.io,

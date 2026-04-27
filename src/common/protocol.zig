@@ -4,7 +4,7 @@ const Block = @import("consts.zig").Block;
 
 const Writer = std.Io.Writer;
 
-// -- Packet lengths ----------------------------------------------------------
+// --- Packet lengths ---
 
 pub fn packet_length_to_server(packet_id: u8) !u8 {
     return switch (packet_id) {
@@ -34,7 +34,7 @@ pub fn packet_length_to_client(packet_id: u8) !u16 {
     };
 }
 
-// -- Client -> Server (C->S) --------------------------------------------------
+// --- Client -> Server (C->S) ---
 
 pub fn send_player_id_to_server(writer: *Writer, username: []const u8) !void {
     var username_buf: [64]u8 = @splat(' ');
@@ -72,7 +72,7 @@ pub fn send_set_block_to_server(writer: *Writer, x: u16, y: u16, z: u16, mode: u
     try packet.write(writer);
 }
 
-// -- Server -> Client (S->C) --------------------------------------------------
+// --- Server -> Client (S->C) ---
 
 pub fn send_player_id_to_client(writer: *Writer, server_name: *const [64]u8, server_motd: *const [64]u8) !void {
     var packet = zb.PlayerIDToClient{
@@ -148,7 +148,7 @@ pub fn send_level_finalize_to_client(writer: *Writer, x: u16, y: u16, z: u16) !v
     try packet.write(writer);
 }
 
-// -- Bidirectional -----------------------------------------------------------
+// --- Bidirectional ---
 
 pub fn send_message(writer: *Writer, pid: i8, message: []const u8) !void {
     var msg_buf: [64]u8 = @splat(' ');

@@ -9,7 +9,7 @@ const physics = common.physics;
 const c = common.consts;
 const Block = c.Block;
 
-// -- Player dimensions -------------------------------------------------------
+// --- Player dimensions ---
 
 pub const HALF_W: f32 = 0.3; // half-width on X and Z
 pub const HEIGHT: f32 = 1.8; // feet to top of head
@@ -24,7 +24,7 @@ pub fn block_height(id: Block) f32 {
     return id.collision_height();
 }
 
-// -- Liquid detection --------------------------------------------------------
+// --- Liquid detection ---
 
 pub const Liquid = enum { water, lava };
 
@@ -96,7 +96,7 @@ fn classify_liquid(block: Block) ?Liquid {
     };
 }
 
-// -- Core collision ----------------------------------------------------------
+// --- Core collision ---
 
 pub const MoveResult = physics.MoveResult;
 
@@ -145,7 +145,7 @@ pub fn try_step_up(
     return .{ .x = p[0], .y = p[1], .z = p[2] };
 }
 
-// -- Internal helpers --------------------------------------------------------
+// --- Internal helpers ---
 
 /// True when a floored f32 can be losslessly cast to i32.
 fn safe_for_i32(v: f32) bool {

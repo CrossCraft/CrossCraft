@@ -35,7 +35,7 @@ ao_enabled: bool,
 /// first time a section is meshed when the bouncy_chunks option is enabled,
 /// then advances toward 1 over 1 second via update_animation().
 anim_progress: f32,
-/// True until the first successful rebuild() — used by World to distinguish
+/// True until the first successful rebuild() -- used by World to distinguish
 /// newly-meshed sections from dirty rebuilds.
 first_build: bool,
 allocator: std.mem.Allocator,

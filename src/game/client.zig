@@ -340,7 +340,6 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
         return;
     }
 
-    // Username copy
     self.name = @splat(' ');
     for (0..self.name.len) |i| {
         if (event.username[i] == ' ') {
@@ -352,7 +351,6 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     }
     // TODO: Verify key for login... maybe
 
-    // Reject duplicate usernames.
     for (0..Server.players.items.len) |i| {
         if (Server.players.items[i]) |p| {
             if (p.id == self.id or !p.initialized)
@@ -419,14 +417,12 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     if (event.x >= c.WorldLength or event.y >= c.WorldHeight or event.z >= c.WorldDepth)
         return;
 
-    // Prevent breaking bedrock layer.
     if (event.mode == .Destroy and event.y == 0)
         return;
 
     // Convert wire-format u8 to the typed Block at the protocol boundary.
     const block: c.Block = .{ .id = @enumFromInt(event.block) };
 
-    // Prevent placement of fluid blocks.
     if (event.mode == .Create and block.is_fluid()) {
         return;
     }
@@ -446,7 +442,7 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
         world.set_block(event.x, event.y, event.z, .{ .id = .air });
         Server.broadcast_block_change(event.x, event.y, event.z, .{ .id = .air });
     } else {
-        // Slab-on-slab → double slab. The originating client (and any other
+        // Slab-on-slab -> double slab. The originating client (and any other
         // client doing optimistic placement, e.g. ClassiCube) already drew a
         // slab into (x, y, z); re-assert whatever block actually lives at
         // that cell so those predictions are reverted, then upgrade the
@@ -484,7 +480,6 @@ pub fn init_compressor(alloc: std.mem.Allocator) !void {
     worker_exit = .init(false);
 }
 
-/// Resets the compressor for a new gzip stream directed at `output`.
 fn reset_compressor(output: *std.Io.Writer) !void {
     try output.writeAll(flate.Container.gzip.header());
     compressor.writer = .{

@@ -13,7 +13,7 @@ const face_mod = @import("chunk/face.zig");
 const Face = face_mod.Face;
 const collision = @import("../player/collision.zig");
 
-// -- Tunables ----------------------------------------------------------------
+// --- Tunables ---
 
 /// Hard cap on simultaneously alive particles. 6 verts each => 3072 verts.
 const MAX_PARTICLES: u16 = 512;
@@ -35,7 +35,7 @@ const SUBTILE_DIV: i16 = 4;
 /// triangles/lines, so quads are expanded just like face.zig:emit_quad).
 const VERTS_PER_PARTICLE: u16 = 6;
 
-// -- Vertex/model space ------------------------------------------------------
+// --- Vertex/model space ---
 //
 // ChunkMesh encodes block-local positions as `local * 2048` (i16) and uses
 // `Mat4.scaling(16) * translation(world)`. The shader applies SNORM dequant
@@ -53,7 +53,7 @@ const VERTS_PER_PARTICLE: u16 = 6;
 const POS_SCALE: f32 = 128.0;
 const MODEL_SCALE: f32 = 256.0;
 
-// -- Types -------------------------------------------------------------------
+// --- Types ---
 
 const Particle = struct {
     px: f32,
@@ -86,7 +86,7 @@ count: u16,
 rng: std.Random.DefaultPrng,
 allocator: std.mem.Allocator,
 
-// -- Lifecycle ---------------------------------------------------------------
+// --- Lifecycle ---
 
 pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, atlas: TextureAtlas) !Self {
     var self: Self = .{
@@ -110,7 +110,7 @@ pub fn deinit(self: *Self) void {
     self.mesh.deinit(self.allocator);
 }
 
-// -- Spawn -------------------------------------------------------------------
+// --- Spawn ---
 
 /// Emit a burst of particles for a block that just got broken.
 /// `bx/by/bz` are world block coordinates; `face` selects which atlas tile
@@ -171,7 +171,7 @@ pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, _:
     }
 }
 
-// -- Simulation --------------------------------------------------------------
+// --- Simulation ---
 
 pub fn update(self: *Self, dt: f32) void {
     std.debug.assert(dt >= 0);
@@ -296,7 +296,7 @@ fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
     return World.is_sunlit(@intCast(bx), @intCast(by), @intCast(bz));
 }
 
-// -- Rendering ---------------------------------------------------------------
+// --- Rendering ---
 
 pub fn draw(self: *Self, camera: *const Camera) void {
     if (self.count == 0) return;

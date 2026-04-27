@@ -5,9 +5,8 @@ const ae = @import("aether");
 const input = ae.Core.input;
 
 pub fn init() !void {
-    // ---- movement (vector2: x = strafe, y = forward/back) ----
+    // --- movement (vector2: x = strafe, y = forward/back) ---
     try input.register_action("move", .vector2);
-    // Keyboard
     try input.bind_action("move", .{ .source = .{ .key = .W }, .component = .y, .multiplier = 1.0 });
     try input.bind_action("move", .{ .source = .{ .key = .S }, .component = .y, .multiplier = -1.0 });
     try input.bind_action("move", .{ .source = .{ .key = .A }, .component = .x, .multiplier = -1.0 });
@@ -25,7 +24,7 @@ pub fn init() !void {
         try input.bind_action("move", .{ .source = .{ .gamepad_axis = .LeftY }, .component = .y, .multiplier = -1.0 });
     }
 
-    // ---- jump / sneak ----
+    // --- jump / sneak ---
     try input.register_action("jump", .button);
     try input.bind_action("jump", .{ .source = .{ .key = .Space } });
     try input.register_action("sneak", .button);
@@ -41,7 +40,7 @@ pub fn init() !void {
         try input.bind_action("sneak", .{ .source = .{ .gamepad_button = .X } });
     }
 
-    // ---- noclip toggle ----
+    // --- noclip toggle ---
     // Debug-only dev tool. Not available in release builds and never on PSP,
     // so the gamepad Back button stays free for the inventory overlay.
     if (comptime builtin.mode == .Debug and ae.platform != .psp) {
@@ -49,7 +48,7 @@ pub fn init() !void {
         try input.bind_action("noclip", .{ .source = .{ .key = .X } });
     }
 
-    // ---- HUD toggle (desktop only) ----
+    // --- HUD toggle (desktop only) ---
     // F1 hides/reveals the crosshair, hotbar, version text, and held-block
     // viewmodel. Not bound on PSP; there's no comparable key and the strip
     // is already minimal at that resolution.
@@ -58,7 +57,7 @@ pub fn init() !void {
         try input.bind_action("hud_toggle", .{ .source = .{ .key = .F1 } });
     }
 
-    // ---- rain toggle (desktop only) ----
+    // --- rain toggle (desktop only) ---
     // F5 flips Options.current.rain in-place and persists it. PSP users
     // toggle rain from the options menu.
     if (ae.platform != .psp) {
@@ -66,7 +65,7 @@ pub fn init() !void {
         try input.bind_action("rain_toggle", .{ .source = .{ .key = .F5 } });
     }
 
-    // ---- inventory toggle ----
+    // --- inventory toggle ---
     // Opens the Classic block-picker overlay. Desktop keyboard uses B and
     // gamepad uses Y; PSP uses L+R chord (detected in Player via shoulder_l /
     // shoulder_r callbacks).
@@ -76,12 +75,12 @@ pub fn init() !void {
         try input.bind_action("inventory_toggle", .{ .source = .{ .gamepad_button = .Y } });
     }
 
-    // ---- mouse look (delta-based) ----
+    // --- mouse look (delta-based) ---
     try input.register_action("look", .vector2);
     try input.bind_action("look", .{ .source = .{ .mouse_relative = .X }, .component = .x });
     try input.bind_action("look", .{ .source = .{ .mouse_relative = .Y }, .component = .y });
 
-    // ---- stick look (rate-based, applied as velocity * dt) ----
+    // --- stick look (rate-based, applied as velocity * dt) ---
     try input.register_action("look_stick", .vector2);
     if (ae.platform == .psp) {
         // PSP analog nub: no right stick exists, so left stick aims the camera.
@@ -93,7 +92,7 @@ pub fn init() !void {
         try input.bind_action("look_stick", .{ .source = .{ .gamepad_axis = .RightY }, .component = .y });
     }
 
-    // ---- break / place ----
+    // --- break / place ---
     // Keyboard/mouse always bound. On desktop the analog triggers also map:
     // RT = break, LT = place. PSP uses shoulder_l / shoulder_r callbacks for
     // chord detection (L+R = inventory) instead of binding break/place here.
@@ -108,7 +107,7 @@ pub fn init() !void {
         try input.bind_action("place", .{ .source = .{ .gamepad_axis = .LeftTrigger } });
     }
 
-    // ---- gamepad shoulder buttons (L/R) ----
+    // --- gamepad shoulder buttons (L/R) ---
     // PSP only: separated from break/place so the L+R chord can toggle the
     // inventory without firing a spurious break or place on the same frame.
     // R = break, L = place, L+R = inventory toggle.  Desktop uses the triggers
@@ -120,12 +119,12 @@ pub fn init() !void {
         try input.bind_action("shoulder_l", .{ .source = .{ .gamepad_button = .LButton } });
     }
 
-    // ---- playerlist (held overlay) ----
+    // --- playerlist (held overlay) ---
     try input.register_action("playerlist", .button);
     try input.bind_action("playerlist", .{ .source = .{ .key = .Tab } });
     try input.bind_action("playerlist", .{ .source = .{ .gamepad_button = .Back } });
 
-    // ---- chat ----
+    // --- chat ---
     // chat_open (T): opens a blank input field.
     // chat_cmd (/): opens with '/' pre-typed for commands.
     // chat_send (Enter): sends the composed message; kept separate from
@@ -147,7 +146,7 @@ pub fn init() !void {
         try input.bind_action("psp_osk", .{ .source = .{ .gamepad_button = .A } }); // Cross
     }
 
-    // ---- hotbar slot cycle ----
+    // --- hotbar slot cycle ---
     // D-pad is button-typed (one event per press). Mouse scroll is axis-typed
     // because get_mouse_scroll() returns a per-frame delta and is consumed on
     // read -- binding it to two button actions would let only the first fire.
@@ -163,7 +162,7 @@ pub fn init() !void {
         try input.bind_action("hotbar_right", .{ .source = .{ .gamepad_button = .RButton } });
     }
 
-    // ---- direct hotbar slot select (keyboard 1-9) ----
+    // --- direct hotbar slot select (keyboard 1-9) ---
     try input.register_action("hotbar_slot_1", .button);
     try input.bind_action("hotbar_slot_1", .{ .source = .{ .key = .Num1 } });
     try input.register_action("hotbar_slot_2", .button);

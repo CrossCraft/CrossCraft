@@ -153,7 +153,7 @@ pub fn flush(self: *Self) void {
     self.mesh.draw(&ident);
 }
 
-// -- Internals ---------------------------------------------------------------
+// --- Internals ---
 
 /// Same per-direction shading the world mesher uses, so the cube's three
 /// visible faces read at three distinct brightness levels.

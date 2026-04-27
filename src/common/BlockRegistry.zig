@@ -91,23 +91,18 @@ pub const SimProps = packed struct(u8) {
 pub const INVENTORY_SLOTS: u8 = 45;
 pub const INVENTORY_FILLED: u8 = 42;
 
-// -- Tables ------------------------------------------------------------------
+// --- Tables ---
 
 /// Mesh-path flags indexed by block id. See MeshProps for cache rationale.
 mesh_props: [256]MeshProps,
-/// Gameplay flags indexed by block id.
 sim_props: [256]SimProps,
 face_tiles: [256]FaceTiles,
-/// Sound material per block id. Drives dig/step sound bank selection.
 material: [256]Material,
-/// Fluid kind per block id (none for non-fluids).
 fluid_kind: [256]FluidKind,
 /// Collision AABB top height in sixteenths of a block (0 = passable, 8 = slab, 16 = full).
 collision_height_16: [256]u8,
-/// Subvoxel AABB per block id. Used by selection and precise collision.
 bounds: [256]SubvoxelBounds,
-/// Player-facing display name for the block-picker tooltip. Empty string for
-/// technical/unnamed ids (air, bedrock, fluids, double_slab, undefined).
+/// Empty string for technical/unnamed ids (air, bedrock, fluids, double_slab, undefined).
 display_name: [256][]const u8,
 inventory_order: [INVENTORY_SLOTS]T,
 
@@ -131,13 +126,11 @@ pub fn init() void {
     register_display_names(&global);
 }
 
-/// Lookup helper for the inventory grid. Returns the block at slot `idx`,
 /// `.air` for padding slots.
 pub inline fn inventory_block(slot: u8) Block {
     return .{ .id = global.inventory_order[slot] };
 }
 
-/// Returns the atlas tile for a given block and face direction.
 pub fn get_face_tile(self: *const Self, block: Block, face: Face) Tile {
     const ft = self.face_tiles[@intFromEnum(block.id)];
     return switch (face) {
@@ -147,7 +140,7 @@ pub fn get_face_tile(self: *const Self, block: Block, face: Face) Tile {
     };
 }
 
-// -- Helpers ------------------------------------------------------------------
+// --- Helpers ---
 
 fn all(col: u8, row: u8) FaceTiles {
     const t = Tile{ .col = col, .row = row };
@@ -166,7 +159,7 @@ fn idx(b: T) usize {
     return @intFromEnum(b);
 }
 
-// -- Default registration -----------------------------------------------------
+// --- Default registration ---
 
 fn empty() Self {
     return .{

@@ -8,7 +8,7 @@ const PromptStrip = @import("PromptStrip.zig");
 
 pub const Prompt = PromptStrip.Prompt;
 
-// -- menu actions -----------------------------------------------------------
+// --- menu actions ---
 
 pub fn select() Prompt {
     return switch (Buttons.resolve_style()) {
@@ -24,7 +24,7 @@ pub fn back() Prompt {
     };
 }
 
-// -- in-game HUD actions ----------------------------------------------------
+// --- in-game HUD actions ---
 
 pub fn inventory() Prompt {
     return switch (Buttons.resolve_style()) {
@@ -50,7 +50,7 @@ pub fn break_() Prompt {
     };
 }
 
-// -- playerlist / chat overlays --------------------------------------------
+// --- playerlist / chat overlays ---
 
 /// PSP social-mode hint.  No desktop equivalent since the list is shown
 /// while Tab is held.

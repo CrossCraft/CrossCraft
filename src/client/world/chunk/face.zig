@@ -153,7 +153,7 @@ fn emit_quad_uniform_double_sided(vertices: *std.ArrayList(Vertex), verts: [4]Ve
     emit_quad_reversed(vertices, verts);
 }
 
-// -- Public emission functions ------------------------------------------------
+// --- Public emission functions ---
 
 /// Emit one block face (6 vertices). All 4 corners share `color`, so the
 /// AO-aware brighter-diagonal pick is skipped.

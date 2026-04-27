@@ -42,7 +42,6 @@ pub fn init(alloc: std.mem.Allocator, scratch_alloc: std.mem.Allocator, seed: u6
 
     if (!internal_use) load_config();
 
-    // Temporary scratch allocations
     var scratch = std.heap.ArenaAllocator.init(scratch_alloc);
     defer scratch.deinit();
 

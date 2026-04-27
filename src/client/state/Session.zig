@@ -34,9 +34,7 @@ pub var mp_writer: std.Io.net.Stream.Writer = undefined;
 /// the disconnect handler observe it so the main loop can request quit.
 pub var mp_connected: std.atomic.Value(bool) = .init(false);
 
-// ---------------------------------------------------------------------------
-// Disconnect reason
-// ---------------------------------------------------------------------------
+// --- Disconnect reason ---
 
 /// Human-readable reason for the last disconnect, set before mp_connected is
 /// cleared (or before quit_requested is set for the DisconnectPlayer packet).

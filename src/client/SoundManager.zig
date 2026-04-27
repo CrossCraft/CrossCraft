@@ -21,7 +21,7 @@ const File = Io.File;
 
 const log = std.log.scoped(.audio);
 
-// -- material classification ------------------------------------------------
+// --- material classification ---
 
 pub const Material = BlockRegistry.Material;
 
@@ -33,7 +33,7 @@ pub fn block_material(id: Block) Material {
     return id.material();
 }
 
-// -- sound entry (location of PCM data inside pack.zip) ---------------------
+// --- sound entry (location of PCM data inside pack.zip) ---
 
 const SoundEntry = struct {
     data_offset: u64 = 0,
@@ -64,7 +64,7 @@ var step_entries: [material_count][max_variants]SoundEntry = init_entry_grid();
 var step_counts: [material_count]u8 = .{ 0, 0, 0, 0, 0, 0, 0 };
 var music_entries: [music_count]SoundEntry = init_entry_row();
 
-// -- voice pool -------------------------------------------------------------
+// --- voice pool ---
 
 const max_voices: u32 = if (ae.platform == .psp) 8 else 17;
 const music_slot: u32 = if (ae.platform == .psp) 7 else 16;
@@ -90,7 +90,7 @@ fn init_voices() [max_voices]Voice {
 
 var voices: [max_voices]Voice = init_voices();
 
-// -- shared DEFLATE decompression streams -----------------------------------
+// --- shared DEFLATE decompression streams ---
 //
 // Only two exist -- enough for the rare case where a custom resource pack
 // ships compressed audio.  A voice that needs DEFLATE grabs a slot; the
@@ -117,7 +117,7 @@ fn find_free_deflate_slot() ?*DeflateSlot {
     return null;
 }
 
-// -- shared state -----------------------------------------------------------
+// --- shared state ---
 
 var stored_file: File = undefined;
 var stored_io: Io = undefined;
@@ -132,7 +132,7 @@ var music_index: u8 = 0;
 const min_music_delay: f32 = 60.0;
 const max_music_delay: f32 = 300.0;
 
-// -- RNG (variant & delay selection) ----------------------------------------
+// --- RNG (variant & delay selection) ---
 
 var rng: u64 = 0xDEAD_BEEF_CAFE_BABE;
 
@@ -153,7 +153,7 @@ fn rand_f32() f32 {
     return @as(f32, @floatFromInt(xorshift(&rng) & 0xFFFF)) / 65536.0;
 }
 
-// -- resource paths ---------------------------------------------------------
+// --- resource paths ---
 
 const mat_names: [material_count][]const u8 = .{ "stone", "grass", "gravel", "wood", "glass", "cloth", "sand" };
 const dig_max: [material_count]u8 = .{ 4, 4, 4, 4, 3, 4, 4 };
@@ -169,7 +169,7 @@ const music_paths: [music_count][]const u8 = .{
     "assets/minecraft/music/hal4.wav",
 };
 
-// -- init / deinit ----------------------------------------------------------
+// --- init / deinit ---
 
 /// Opens a second handle to the pack archive so music / sfx can stream
 /// PCM data without seek contention with texture reads.
@@ -282,12 +282,11 @@ fn resolve_wav(pack: *Zip, path: []const u8) !SoundEntry {
     };
 }
 
-// -- per-frame update -------------------------------------------------------
+// --- per-frame update ---
 
 pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32) void {
     if (!initialised) return;
 
-    // Listener
     const sy = @sin(yaw);
     const cy = @cos(yaw);
     const cp = @cos(pitch);
@@ -366,7 +365,7 @@ fn advance_and_play_music() void {
     music_state = .playing;
 }
 
-// -- play API ---------------------------------------------------------------
+// --- play API ---
 
 pub fn play_dig(block: Block, bx: u16, by: u16, bz: u16) void {
     play_material_sound(&dig_entries, &dig_counts, block, bx, by, bz, 1.0);
@@ -422,7 +421,7 @@ fn play_material_sound(
     }) catch return;
 }
 
-// -- internals --------------------------------------------------------------
+// --- internals ---
 
 fn find_free_sfx() ?*Voice {
     for (voices[0..music_slot]) |*v| {

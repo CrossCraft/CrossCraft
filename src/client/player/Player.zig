@@ -101,7 +101,7 @@ const PendingBlock = struct {
     block: Block,
 };
 
-// -- Physics constants (blocks/tick, Classic units) --------------------------
+// --- Physics constants (blocks/tick, Classic units) ---
 
 const TICK: f32 = 0.05; // 50 ms, 20 TPS
 const MAX_FRAME_DT: f32 = 0.25;
@@ -136,13 +136,13 @@ const LIQUID_ACCEL: f32 = 0.02;
 const WATER_DRAG: f32 = 0.8;
 const LAVA_DRAG: f32 = 0.5;
 
-// -- Hold-to-repeat timing ---------------------------------------------------
+// --- Hold-to-repeat timing ---
 // First action fires immediately on press. After REPEAT_DELAY the action
 // repeats every REPEAT_INTERVAL while the button stays held.
 const REPEAT_DELAY: f32 = 0.20; // seconds before first repeat
 const REPEAT_INTERVAL: f32 = 0.20; // seconds between subsequent repeats (~5/sec)
 
-// -- View bobbing tuning -----------------------------------------------------
+// --- View bobbing tuning ---
 // Drives both the camera sway and the held-block screen-space sway. The
 // underlying state is a walk phase (advanced by horizontal travel), an
 // envelope (walk_swing) that fades in/out with motion, and a smoothed
@@ -175,7 +175,7 @@ const BOB_STRENGTH_SUBSTEPS: u32 = 3;
 const FALL_TILT_GAIN: f32 = 0.05;
 const FALL_TILT_GRAVITY_OFFSET: f32 = 0.08;
 
-// -- Fields ------------------------------------------------------------------
+// --- Fields ---
 
 camera: Camera,
 // Current tick position (feet)
@@ -475,7 +475,7 @@ pub fn update(self: *Self, dt: f32) void {
     self.selected = self.raycast_block(REACH);
 }
 
-// -- Look --------------------------------------------------------------------
+// --- Look ---
 
 fn apply_look(self: *Self, dt: f32) void {
     if (self.mouse_captured) {
@@ -507,7 +507,7 @@ fn apply_stick_curve(raw: [2]f32) [2]f32 {
     return .{ raw[0] * scale, raw[1] * scale };
 }
 
-// -- Noclip (freecam) -------------------------------------------------------
+// --- Noclip (freecam) ---
 
 fn update_noclip(self: *Self, dt: f32) void {
     const sin_yaw = @sin(self.camera.yaw);
@@ -529,7 +529,7 @@ fn update_noclip(self: *Self, dt: f32) void {
     self.prev_z = self.pos_z;
 }
 
-// -- Fixed-rate tick loop ----------------------------------------------------
+// --- Fixed-rate tick loop ---
 
 fn run_ticks(self: *Self, dt: f32) void {
     const clamped = @min(dt, MAX_FRAME_DT);
@@ -601,7 +601,7 @@ fn physics_tick(self: *Self) void {
     self.advance_view_bob();
 }
 
-// -- View bob (advance per tick, compute per frame) --------------------------
+// --- View bob (advance per tick, compute per frame) ---
 
 fn advance_view_bob(self: *Self) void {
     // Snapshot prev for sub-tick interpolation, then update.
@@ -683,7 +683,7 @@ fn compute_view_bob(self: *const Self, alpha: f32) ViewBob {
     return .{ .hor = hor, .ver = ver, .tilt = tilt };
 }
 
-// -- Vertical state (3-phase water exit) -------------------------------------
+// --- Vertical state (3-phase water exit) ---
 
 fn update_vertical_state(
     self: *Self,
@@ -750,7 +750,7 @@ fn block_under_feet(self: *const Self) Block {
     );
 }
 
-// -- Collision + integration -------------------------------------------------
+// --- Collision + integration ---
 
 fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
     const was_on_ground = self.on_ground;
@@ -819,7 +819,7 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
     self.on_ground = result.on_ground;
 }
 
-// -- Camera sync (interpolation) ---------------------------------------------
+// --- Camera sync (interpolation) ---
 
 fn sync_camera(self: *Self) void {
     if (self.noclip) {
@@ -853,7 +853,7 @@ fn sync_camera(self: *Self) void {
     self.camera.bob_ver = bob.ver;
 }
 
-// -- Voxel raycast (Amanatides & Woo) ----------------------------------------
+// --- Voxel raycast (Amanatides & Woo) ---
 
 /// Walk voxels along the camera's forward ray and return the first non-air
 /// block within `range` blocks of the eye, or null if none. Used for the
@@ -984,7 +984,7 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     return null;
 }
 
-// -- Fixed-point DDA helpers (no float division) -----------------------------
+// --- Fixed-point DDA helpers (no float division) ---
 
 const FRAC: u5 = 8;
 const ONE: i32 = 1 << FRAC; // 256 = one block in FP8
@@ -1020,7 +1020,7 @@ fn is_selectable(x: u16, y: u16, z: u16) bool {
     return World.get_block(x, y, z).is_selectable();
 }
 
-// -- Subvoxel helpers (all integer) ------------------------------------------
+// --- Subvoxel helpers (all integer) ---
 
 /// Point-in-bounds test using FP8 local coordinates directly.
 fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: BlockRegistry.SubvoxelBounds) bool {
@@ -1139,7 +1139,7 @@ fn face_normal(face: Face) [3]i32 {
     };
 }
 
-// -- UI / HUD ----------------------------------------------------------------
+// --- UI / HUD ---
 
 /// HUD pass: queues every 2D sprite (crosshair, hotbar background, selector
 /// frame) into `batcher`, and queues hotbar block icons into `iso`. Caller
@@ -1234,7 +1234,7 @@ fn draw_hotbar_blocks(self: *const Self, iso: *IsoBlockDrawer, hud_y_shift: i16)
     }
 }
 
-// -- Input callbacks ---------------------------------------------------------
+// --- Input callbacks ---
 
 fn on_move(ctx: *anyopaque, value: [2]f32) void {
     const self: *Self = @ptrCast(@alignCast(ctx));
@@ -1384,7 +1384,7 @@ fn do_place(self: *Self) void {
     }
 }
 
-// -- Gamepad shoulder chord (L+R = inventory) --------------------------------
+// --- Gamepad shoulder chord (L+R = inventory) ---
 
 fn on_shoulder_r(ctx: *anyopaque, event: input.ButtonEvent) void {
     const self: *Self = @ptrCast(@alignCast(ctx));

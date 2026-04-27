@@ -91,7 +91,7 @@ pub const Iterator = struct {
 };
 
 /// Opens the archive at `path` (resolved against `dir`). Pass the
-/// engine-owned resources or data dir — not `Io.Dir.cwd()`, which is not
+/// engine-owned resources or data dir -- not `Io.Dir.cwd()`, which is not
 /// guaranteed to match the app root under Finder-launched `.app` bundles.
 pub fn init(allocator: std.mem.Allocator, _io: Io, dir: Io.Dir, path: []const u8) !*Zip {
     std.debug.assert(path.len > 0);
@@ -241,9 +241,7 @@ pub fn closeStream(self: *Zip, stream: *const Stream) void {
     slot.in_use = false;
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 const testing = std.testing;
 

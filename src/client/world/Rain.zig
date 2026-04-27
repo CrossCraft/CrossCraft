@@ -13,7 +13,7 @@ const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Options = @import("../Options.zig");
 const collision = @import("../player/collision.zig");
 
-// -- Tunables ----------------------------------------------------------------
+// --- Tunables ---
 
 /// Half-extent of the rain column grid in blocks.  Grid is (2*EXTENT+1)^2.
 /// PSP halves the grid radius to drop the streak column count from 81 to 25
@@ -110,7 +110,7 @@ const MAX_SECTIONS_PER_COLUMN: u32 = MAX_SECTIONS_BASE * 2;
 const STREAK_MAX_VERTS: u32 = MAX_COLUMNS * MAX_SECTIONS_PER_COLUMN * QUADS_PER_SECTION * VERTS_PER_QUAD;
 const SPLASH_MAX_VERTS: u32 = @as(u32, SPLASH_MAX) * 6;
 
-// -- Types -------------------------------------------------------------------
+// --- Types ---
 
 const Splash = struct {
     px: f32,
@@ -134,7 +134,7 @@ splash_count: u16,
 rng: std.Random.DefaultPrng,
 allocator: std.mem.Allocator,
 
-// -- Lifecycle ---------------------------------------------------------------
+// --- Lifecycle ---
 
 pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
     var self: Self = .{
@@ -158,7 +158,7 @@ pub fn deinit(self: *Self) void {
     self.splash_mesh.deinit(self.allocator);
 }
 
-// -- Update ------------------------------------------------------------------
+// --- Update ---
 
 pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
     if (!Options.current.rain) {
@@ -240,7 +240,7 @@ fn maybe_spawn_splash(self: *Self, camera: *const Camera) void {
     self.splash_count += 1;
 }
 
-// -- Drawing -----------------------------------------------------------------
+// --- Drawing ---
 
 /// Build and draw the scrolling streak planes.  Caller must bind rain.png.
 pub fn draw_streaks(self: *Self, camera: *const Camera) void {
@@ -308,7 +308,7 @@ pub fn draw_splashes(self: *Self, camera: *const Camera) void {
     self.splash_mesh.draw(&m);
 }
 
-// -- Streak mesh build -------------------------------------------------------
+// --- Streak mesh build ---
 
 fn build_streaks(mesh: *Rendering.Mesh(Vertex), camera: *const Camera, scroll_v: i32) void {
     const cam_tile_x: i32 = @intFromFloat(@floor(camera.x));
@@ -570,7 +570,7 @@ fn emit_quad_both_sides(
     mesh.vertices.appendAssumeCapacity(tr);
 }
 
-// -- Splash mesh build -------------------------------------------------------
+// --- Splash mesh build ---
 
 fn emit_splash(
     mesh: *Rendering.Mesh(Vertex),
@@ -598,7 +598,7 @@ fn emit_splash(
     mesh.vertices.appendAssumeCapacity(tl);
 }
 
-// -- Utility -----------------------------------------------------------------
+// --- Utility ---
 
 fn encode(world: f32) i16 {
     const scaled = @round(world * POS_SCALE);
