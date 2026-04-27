@@ -87,6 +87,17 @@ avoid unbounded work, unexpected allocation, and platform-specific leakage.
 * #### Explain Why
 	* Explain why a decision was made over another
 	* Always reach to explain why something is done, rather than how it is done
+* #### Use Types Maximally
+  * Domain values must not share their types with unrelated domain values. When two values with the same representation could be confused at a call site or struct literal, give each its own named type.
+    * Examples that must be wrapped: entity IDs, coordinate components when both are present (block space, world space, chunk space), packet ID vs block ID, etc.
+    * Prefer non-exhaustive enums `enum(u8) {a, b, c, _}` for sets with specific values
+    * Prefer a single-field `struct` or distinct non-exhaustive `enum` when no closed set exists.
+  * Bare scalars are fine when the value has no confusable sibling in its scope. A loop counter, a returned count, a single byte read, etc.
+  * Do not wrap stable Zig conventions. `std.mem.Allocator`, `std.Io`, `std.Io.Reader`/`Writer`, and error sets pass through because they communicate more information about a function and should not be in an arg-struct.
+    * Additionally do not wrap `self: *@This()`, which will cause invalid code
+  * As a general rule, an arg-struct should be constructed when a function takes 3 or more non-exempted arguments
+  * Private helpers whose call sites are all in the same file may use bare scalars when wrapping would obscure short mechanical operations. The public API of a module must not.
+  * Why: Scalar types describe representations, not meaning. The compiler can catch incompatible representations, but it cannot catch swapped IDs or parameters if not properly typed.
 
 ## Code Style
 * Use snake_case for ordinary functions and variables. The `_` is the closest you can get to a space and helps with understanding.
