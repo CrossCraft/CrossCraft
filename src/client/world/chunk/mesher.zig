@@ -337,11 +337,13 @@ const FaceMasks = struct {
 fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const cur = buf[by][bz];
 
-    // Empty-row early-out: with no visible blocks in this row, no face can
-    // originate here. vis is a superset of flu, sleaf, and cross (all those
-    // block types are also visible), so this single check covers every output.
-    // Common in sections above the surface where most cells are pure air.
-    if (cur.vis == 0) return std.mem.zeroes(FaceMasks);
+    // Empty-row early-out: with no visible blocks and no cross blocks in this
+    // row, no face can originate here. vis covers fluids and (solid_)leaf, but
+    // cross blocks (saplings, flowers, mushrooms) are flagged visible=false in
+    // BlockRegistry, so they must be checked separately or they vanish from
+    // the mesh in otherwise-empty rows. Common in sections above the surface
+    // where most cells are pure air.
+    if (cur.vis == 0 and cur.cross == 0) return std.mem.zeroes(FaceMasks);
 
     const opq = cur.opq;
     const vis = cur.vis;
