@@ -8,12 +8,48 @@ const zb = @import("protocol");
 
 const log = std.log.scoped(.server);
 
+// --- Boot configuration ---
+
+/// Inputs the world needs to materialise. `save_location` is a relative
+/// path (under the engine data dir) to the world save *file*, including
+/// its filename -- e.g. "world.dat" or "saves/foo.dat". The world spec
+/// saves the file at exactly this path, and in standalone mode
+/// server.properties is rooted in the same directory so a save dir is
+/// self-contained. An empty string is rejected at init.
+pub const WorldConfig = struct {
+    seed: u64,
+    save_location: []const u8,
+};
+
+pub const StandaloneBoot = struct {
+    world: WorldConfig,
+};
+
+pub const EmbeddedBoot = struct {
+    world: WorldConfig,
+};
+
+/// The host's chosen launch shape, captured once at boot.
+pub const GameConfig = union(enum) {
+    standalone: StandaloneBoot,
+    embedded: EmbeddedBoot,
+
+    pub fn world(self: GameConfig) WorldConfig {
+        return switch (self) {
+            .standalone => |s| s.world,
+            .embedded => |e| e.world,
+        };
+    }
+};
+
 var allocator: StaticAllocator = undefined;
 pub var io: std.Io = undefined;
-/// User-writable data dir (ae.Core.paths.Dirs.data). Used for reading
-/// server.properties and passed through to world.save/load. Set by
-/// `init`.
-pub var data_dir: std.Io.Dir = undefined;
+/// Directory containing the active save. The world save file and
+/// (standalone only) server.properties live here. Resolved at `init`
+/// from the parent of `WorldConfig.save_location`; the directory is
+/// created if it does not already exist.
+pub var save_dir: std.Io.Dir = undefined;
+var save_dir_owned: bool = false;
 
 const default_server_name = "CrossCraft Server";
 const default_server_motd = "Welcome to CrossCraft!";
@@ -34,25 +70,72 @@ fn pad(comptime s: []const u8) [64]u8 {
     return buf;
 }
 
-pub fn init(alloc: std.mem.Allocator, scratch_alloc: std.mem.Allocator, seed: u64, _io: std.Io, _data_dir: std.Io.Dir, _internal_use: bool) !void {
+pub fn init(
+    alloc: std.mem.Allocator,
+    scratch_alloc: std.mem.Allocator,
+    _io: std.Io,
+    data_dir: std.Io.Dir,
+    config: GameConfig,
+) !void {
     allocator = .init(alloc);
     io = _io;
-    data_dir = _data_dir;
-    internal_use = _internal_use;
+
+    const wcfg = config.world();
+    if (wcfg.save_location.len == 0) {
+        log.err("WorldConfig.save_location must not be empty", .{});
+        return error.InvalidSaveLocation;
+    }
+    internal_use = config == .embedded;
+
+    const split = split_save_location(wcfg.save_location);
+    save_dir = try resolve_save_dir(data_dir, split.parent);
+    save_dir_owned = split.parent.len > 0;
 
     if (!internal_use) load_config();
 
     var scratch = std.heap.ArenaAllocator.init(scratch_alloc);
     defer scratch.deinit();
 
-    try world.init(allocator.allocator(), scratch.allocator(), io, data_dir, seed);
+    try world.init(
+        allocator.allocator(),
+        scratch.allocator(),
+        io,
+        save_dir,
+        split.file_name,
+        wcfg.seed,
+    );
     try Client.init_compressor(allocator.allocator());
 
     allocator.transition_from_init_to_static();
 }
 
+const SplitPath = struct {
+    parent: []const u8,
+    file_name: []const u8,
+};
+
+/// Split a save_location like "saves/foo.dat" into ("saves", "foo.dat").
+/// "world.dat" -> ("", "world.dat"). Forward slash only -- the engine
+/// data dir API takes POSIX-style sub-paths on every platform.
+fn split_save_location(path: []const u8) SplitPath {
+    if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| {
+        return .{ .parent = path[0..sep], .file_name = path[sep + 1 ..] };
+    }
+    return .{ .parent = "", .file_name = path };
+}
+
+/// Open `data_dir/sub_path`, creating it (and parents) if missing. An
+/// empty `sub_path` returns `data_dir` unchanged.
+fn resolve_save_dir(data_dir: std.Io.Dir, sub_path: []const u8) !std.Io.Dir {
+    if (sub_path.len == 0) return data_dir;
+    return data_dir.createDirPathOpen(io, sub_path, .{}) catch |err| {
+        log.err("Failed to open/create save dir '{s}': {}", .{ sub_path, err });
+        return err;
+    };
+}
+
 fn load_config() void {
-    const file = data_dir.openFile(io, "server.properties", .{}) catch {
+    const file = save_dir.openFile(io, "server.properties", .{}) catch {
         write_default_config();
         return;
     };
@@ -94,7 +177,7 @@ fn load_config() void {
 }
 
 fn write_default_config() void {
-    const file = data_dir.createFile(io, "server.properties", .{}) catch |err| {
+    const file = save_dir.createFile(io, "server.properties", .{}) catch |err| {
         log.info("No server.properties, failed to create ({}), using defaults", .{err});
         return;
     };
@@ -118,6 +201,12 @@ pub fn deinit() void {
     world.deinit();
 
     allocator.deinit();
+
+    if (save_dir_owned) {
+        save_dir.close(io);
+        save_dir_owned = false;
+    }
+    save_dir = undefined;
 
     // Reset the player table so a subsequent Server.init() starts with no
     // stale slots (the FAB is module-static and survives re-init).

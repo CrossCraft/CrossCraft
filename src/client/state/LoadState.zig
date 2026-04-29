@@ -31,7 +31,12 @@ var mp_server_motd: [64]u8 = @splat(' ');
 
 fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) void {
     // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
-    Server.init(alloc, scratch, seed, io, data_dir, true) catch |err| {
+    const config: Server.GameConfig = .{
+        .embedded = .{
+            .world = .{ .seed = seed, .save_location = "saves/world.dat" },
+        },
+    };
+    Server.init(alloc, scratch, io, data_dir, config) catch |err| {
         log.err("server init failed: {}", .{err});
         session_error = err;
         return;
@@ -74,7 +79,9 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
             log.warn("TCP_NODELAY failed: {}", .{err});
     }
 
-    try World.init_empty(alloc, io, data_dir, seed);
+    // Multiplayer never persists (owned_locally stays false), so the
+    // save filename is unused; pass the convention for symmetry.
+    try World.init_empty(alloc, io, data_dir, "world.dat", seed);
 
     try proto.send_player_id_to_server(&Session.mp_writer.interface, Session.username());
     try Session.mp_writer.interface.flush();

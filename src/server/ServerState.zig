@@ -62,7 +62,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.tasks = .init;
 
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(engine.io, .boot).raw.nanoseconds)));
-    try Server.init(alloc, alloc, seed, engine.io, engine.dirs.data, false);
+    const config: Server.GameConfig = .{
+        .standalone = .{
+            .world = .{ .seed = seed, .save_location = "world.dat" },
+        },
+    };
+    try Server.init(alloc, alloc, engine.io, engine.dirs.data, config);
 
     // Dedicated thread for world compression. Off-loads the deep `flate` call
     // frames out of the per-connection IO stacks (see `psp_async_stack_size`
