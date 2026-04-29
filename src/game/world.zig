@@ -91,8 +91,10 @@ pub var save_dir: std.Io.Dir = undefined;
 pub var save_file_name: []const u8 = "";
 var save_counter: u32 = 0;
 
-// In-flight async save bookkeeping. `save()` is a fire-and-forget dispatcher
-var save_future: ?std.Io.Future(void) = null;
+// In-flight async save bookkeeping. `save()` is a fire-and-forget dispatcher.
+// Tasks live in a long-lived Group so per-task resources are released as each
+// worker returns -- avoiding the Future-overwrite leak the old code had.
+var save_group: std.Io.Group = .init;
 var save_in_flight: std.atomic.Value(bool) = .init(false);
 
 /// For each (x,z) column, stores Y+1 of the highest light-blocking block.
@@ -117,12 +119,8 @@ pub fn save() void {
         log.warn("save already in flight; skipping", .{});
         return;
     }
-    if (save_future) |*f| {
-        f.await(io);
-        save_future = null;
-    }
     save_in_flight.store(true, .release);
-    save_future = io.concurrent(save_worker, .{}) catch |err| {
+    save_group.concurrent(io, save_worker, .{}) catch |err| {
         log.err("Failed to dispatch save worker: {}", .{err});
         save_in_flight.store(false, .release);
         return;
@@ -132,10 +130,7 @@ pub fn save() void {
 /// Block until any in-flight save finishes. Idempotent. Must run before
 /// `raw_blocks` is freed in `deinit` -- the worker reads it directly.
 pub fn wait_for_save() void {
-    if (save_future) |*f| {
-        f.await(io);
-        save_future = null;
-    }
+    save_group.await(io) catch {};
 }
 
 /// File header: 3 little-endian u16 (x, y, z), 1 little-endian u64 (seed), then raw block data.
