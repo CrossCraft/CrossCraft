@@ -117,6 +117,10 @@ pub fn save() void {
         log.warn("save already in flight; skipping", .{});
         return;
     }
+    if (save_future) |*f| {
+        f.await(io);
+        save_future = null;
+    }
     save_in_flight.store(true, .release);
     save_future = io.concurrent(save_worker, .{}) catch |err| {
         log.err("Failed to dispatch save worker: {}", .{err});
