@@ -70,6 +70,10 @@ fn pad(comptime s: []const u8) [64]u8 {
     return buf;
 }
 
+/// Buffer holding a save_location override read from server.properties.
+/// Sized for the longest path we expect to see in a config file.
+var save_location_buf: [256]u8 = undefined;
+
 pub fn init(
     alloc: std.mem.Allocator,
     scratch_alloc: std.mem.Allocator,
@@ -80,22 +84,28 @@ pub fn init(
     allocator = .init(alloc);
     io = _io;
 
-    const wcfg = config.world();
+    var wcfg = config.world();
     if (wcfg.save_location.len == 0) {
         log.err("WorldConfig.save_location must not be empty", .{});
         return error.InvalidSaveLocation;
     }
     internal_use = config == .embedded;
 
+    // Standalone reads server.properties from the data_dir root (a stable
+    // location independent of save_location), so an operator can edit
+    // seed and save-location before the world has ever been generated.
+    // Embedded mode never touches server.properties (NoServerPropertiesIO).
+    if (!internal_use) load_config(data_dir, &wcfg);
+
     const split = split_save_location(wcfg.save_location);
     save_dir = try resolve_save_dir(data_dir, split.parent);
     save_dir_owned = split.parent.len > 0;
 
-    if (!internal_use) load_config();
-
     var scratch = std.heap.ArenaAllocator.init(scratch_alloc);
     defer scratch.deinit();
 
+    // wcfg.seed is used only on first generation; world.load() restores
+    // the saved seed when an existing world.dat is found.
     try world.init(
         allocator.allocator(),
         scratch.allocator(),
@@ -134,9 +144,9 @@ fn resolve_save_dir(data_dir: std.Io.Dir, sub_path: []const u8) !std.Io.Dir {
     };
 }
 
-fn load_config() void {
-    const file = save_dir.openFile(io, "server.properties", .{}) catch {
-        write_default_config();
+fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
+    const file = data_dir.openFile(io, "server.properties", .{}) catch {
+        write_default_config(data_dir, wcfg.*);
         return;
     };
     defer file.close(io);
@@ -169,6 +179,24 @@ fn load_config() void {
                 server_motd = @splat(' ');
                 const vlen = @min(value.len, 64);
                 @memcpy(server_motd[0..vlen], value[0..vlen]);
+            } else if (std.mem.eql(u8, key, "seed")) {
+                // seed: applies on first generation only. world.load()
+                // restores the saved seed when world.dat already exists
+                // and silently ignores this value.
+                if (std.fmt.parseInt(u64, value, 10)) |parsed| {
+                    wcfg.seed = parsed;
+                } else |_| {
+                    log.warn("server.properties seed value '{s}' is not a u64; ignoring", .{value});
+                }
+            } else if (std.mem.eql(u8, key, "save-location")) {
+                if (value.len == 0) {
+                    log.warn("server.properties save-location is empty; ignoring", .{});
+                } else if (value.len > save_location_buf.len) {
+                    log.warn("server.properties save-location too long ({d} bytes); ignoring", .{value.len});
+                } else {
+                    @memcpy(save_location_buf[0..value.len], value);
+                    wcfg.save_location = save_location_buf[0..value.len];
+                }
             }
         }
     }
@@ -176,15 +204,21 @@ fn load_config() void {
     log.info("Loaded server.properties", .{});
 }
 
-fn write_default_config() void {
-    const file = save_dir.createFile(io, "server.properties", .{}) catch |err| {
+fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
+    const file = data_dir.createFile(io, "server.properties", .{}) catch |err| {
         log.info("No server.properties, failed to create ({}), using defaults", .{err});
         return;
     };
     defer file.close(io);
 
-    const contents = "server-name:" ++ default_server_name ++ "\n" ++
-        "motd:" ++ default_server_motd ++ "\n";
+    var buf: [512]u8 = undefined;
+    const contents = std.fmt.bufPrint(&buf,
+        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\n",
+        .{ default_server_name, default_server_motd, wcfg.seed, wcfg.save_location },
+    ) catch |err| {
+        log.info("Failed to format default server.properties ({}), using defaults", .{err});
+        return;
+    };
 
     file.writeStreamingAll(io, contents) catch |err| {
         log.info("Failed to write default server.properties ({}), using defaults", .{err});
