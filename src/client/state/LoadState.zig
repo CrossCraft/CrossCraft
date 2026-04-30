@@ -41,7 +41,7 @@ fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, i
         session_error = err;
         return;
     };
-    World.autosave_enabled = false;
+    World.saver.autosave_enabled = false;
     server_ready.store(true, .release);
 }
 
@@ -81,7 +81,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
 
     // Multiplayer never persists (owned_locally stays false), so the
     // save filename is unused; pass the convention for symmetry.
-    try World.init_empty(alloc, io, data_dir, "world.dat", seed);
+    try World.init_empty(alloc, io, data_dir, "world.dat", seed, World.default_format);
 
     try proto.send_player_id_to_server(&Session.mp_writer.interface, Session.username());
     try Session.mp_writer.interface.flush();
@@ -136,11 +136,11 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     var window_buf: [flate.max_window_len]u8 = undefined;
     var decompress = flate.Decompress.init(&src, .gzip, &window_buf);
 
-    decompress.reader.readSliceAll(World.raw_blocks[0..4]) catch |err| {
+    decompress.reader.readSliceAll(World.data.raw_blocks[0..4]) catch |err| {
         log.err("level decompress header failed: {}", .{err});
         return err;
     };
-    World.read_blocks_yzx(&decompress.reader) catch |err| {
+    World.data.read_blocks_yzx(&decompress.reader) catch |err| {
         log.err("level decompress failed: {}", .{err});
         return err;
     };

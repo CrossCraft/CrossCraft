@@ -42,7 +42,7 @@ pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
     const bx: i32 = @intFromFloat(fx);
     const by: i32 = @intFromFloat(fy);
     const bz: i32 = @intFromFloat(fz);
-    const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
+    const block = World.data.get_block(@intCast(bx), @intCast(by), @intCast(bz));
     return classify_liquid(block);
 }
 
@@ -80,7 +80,7 @@ fn zone_liquid(px: f32, pz: f32, by0: i32, by1: i32) ?Liquid {
             var bz: i32 = min_bz;
             while (bz <= max_bz) : (bz += 1) {
                 if (bz < 0 or bz >= c.WorldDepth) continue;
-                const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
+                const block = World.data.get_block(@intCast(bx), @intCast(by), @intCast(bz));
                 if (classify_liquid(block)) |liq| return liq;
             }
         }

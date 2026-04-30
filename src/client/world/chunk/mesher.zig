@@ -104,7 +104,7 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     // The 16 inner blocks (bits 1..16) share a chunk and are contiguous in
     // the chunk-aware layout. Read them as a single slice to avoid 16
     // individual block_index computations on the hot path.
-    const chunk_row = World.get_chunk_row(@intCast(cx * 16), wy, wz);
+    const chunk_row = World.data.get_chunk_row(@intCast(cx * 16), wy, wz);
 
     for (0..18) |i| {
         const wx_raw: i32 = @as(i32, @intCast(cx)) * 16 + @as(i32, @intCast(i)) - 1;
@@ -193,7 +193,7 @@ fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
 /// already-resident SectionBuf is cheaper than the alternative of carrying a
 /// large mask buffer across the count -> emit boundary.
 pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf) SectionCounts {
-    const all_opaque = World.is_chunk_all_opaque(cx, sy, cz);
+    const all_opaque = World.data.is_chunk_all_opaque(cx, sy, cz);
     const base_y: i32 = @as(i32, @intCast(sy)) * 16 - 1;
 
     // Streaming prefetch only for non-opaque chunks: pack_row_opaque reads
@@ -205,7 +205,7 @@ pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf)
     const chunk_ptr: ?*const [c.ChunkVolume]c.Block = if (all_opaque)
         null
     else
-        World.get_chunk_ptr(cx, sy, cz);
+        World.data.get_chunk_ptr(cx, sy, cz);
 
     // Pre-warm the first inner slice (read by by==1) before the loop, then
     // each inner iteration issues the slice that the *next* iteration will
@@ -842,7 +842,7 @@ pub fn emit_section(
                 f.tfl_xp | f.tfl_xn | f.tfl_yp | f.tfl_yn | f.tfl_zp | f.tfl_zn;
             if (any == 0) continue;
 
-            const chunk_row = World.get_chunk_row(@intCast(cx * 16), @intCast(world_y), @intCast(cz * 16 + lz));
+            const chunk_row = World.data.get_chunk_row(@intCast(cx * 16), @intCast(world_y), @intCast(cz * 16 + lz));
 
             // Standard faces - emit_mask routes opaque blocks to the opaque
             // mesh and outer leaves / glass / fluids to the transparent mesh.

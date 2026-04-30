@@ -81,7 +81,7 @@ pub fn clear(self: *Self) void {
 
 pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void {
     // All-air chunks have no visible faces -- skip pack/count/emit entirely.
-    if (World.is_chunk_all_air(self.cx, self.sy, self.cz)) {
+    if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) {
         self.@"opaque".vertices.clearRetainingCapacity();
         self.trans.vertices.clearRetainingCapacity();
         self.fluid.vertices.clearRetainingCapacity();

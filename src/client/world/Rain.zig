@@ -613,7 +613,7 @@ fn light_map_at(x: i32, z: i32) i32 {
     std.debug.assert(x >= 0 and x < c.WorldLength);
     std.debug.assert(z >= 0 and z < c.WorldDepth);
     const idx: u32 = @intCast(z * @as(i32, @intCast(c.WorldLength)) + x);
-    return @intCast(World.light_map[idx]);
+    return @intCast(World.data.light_map[idx]);
 }
 
 /// Y+1 of the highest block that physically blocks rain in column (x, z).
@@ -626,7 +626,7 @@ fn rain_surface_at(x: i32, z: i32) i32 {
     const light_surface: i32 = light_map_at(x, z);
     var y: i32 = @as(i32, @intCast(c.WorldHeight)) - 1;
     while (y >= light_surface) : (y -= 1) {
-        const id = World.get_block(@intCast(x), @intCast(y), @intCast(z));
+        const id = World.data.get_block(@intCast(x), @intCast(y), @intCast(z));
         if (collision.block_height(id) > 0.0) return y + 1;
     }
     return light_surface;
@@ -660,7 +660,7 @@ fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
             var bz = bz0;
             while (bz <= bz1) : (bz += 1) {
                 if (bz < 0 or bz >= c.WorldDepth) continue;
-                const id = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
+                const id = World.data.get_block(@intCast(bx), @intCast(by), @intCast(bz));
                 if (collision.block_height(id) > 0.0) return true;
             }
         }

@@ -716,7 +716,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // The outline shape matches the block's subvoxel bounds (e.g. half-height
     // for slabs, small box for flowers/mushrooms).
     if (self.player.selected) |hit| blk: {
-        const block_id = World.get_block(hit.x, hit.y, hit.z);
+        const block_id = World.data.get_block(hit.x, hit.y, hit.z);
         if (block_id.is_air()) break :blk;
         const bounds = block_id.bounds();
         try self.selection.update(bounds);
@@ -916,7 +916,7 @@ fn draw_hud_prompts(self: *@This()) void {
         buf[n] = Prompts.inventory();
         n += 1;
         if (self.player.selected) |hit| {
-            const block_id = World.get_block(hit.x, hit.y, hit.z);
+            const block_id = World.data.get_block(hit.x, hit.y, hit.z);
             if (!block_id.is_air()) {
                 if (hit.has_place) {
                     buf[n] = Prompts.place();

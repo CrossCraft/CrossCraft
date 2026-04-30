@@ -16,9 +16,15 @@ const log = std.log.scoped(.server);
 /// saves the file at exactly this path, and in standalone mode
 /// server.properties is rooted in the same directory so a save dir is
 /// self-contained. An empty string is rejected at init.
+///
+/// `save_format` picks which on-disk format to use. classic_dat is the
+/// existing custom binary; classic_cw is reserved for the upcoming
+/// ClassicWorld NBT/gzip format. Sourced from server.properties
+/// `save-format:` in standalone mode; embedded mode uses the default.
 pub const WorldConfig = struct {
     seed: u64,
     save_location: []const u8,
+    save_format: world.SaveFormat = world.default_format,
 };
 
 pub const StandaloneBoot = struct {
@@ -104,8 +110,9 @@ pub fn init(
     var scratch = std.heap.ArenaAllocator.init(scratch_alloc);
     defer scratch.deinit();
 
-    // wcfg.seed is used only on first generation; world.load() restores
-    // the saved seed when an existing world.dat is found.
+    // wcfg.seed is used only on first generation; the saver restores
+    // the saved seed when an existing save file is found. Format choice
+    // comes from server.properties via wcfg; embedded mode uses default.
     try world.init(
         allocator.allocator(),
         scratch.allocator(),
@@ -113,6 +120,7 @@ pub fn init(
         save_dir,
         split.file_name,
         wcfg.seed,
+        wcfg.save_format,
     );
     try Client.init_compressor(allocator.allocator());
 
@@ -197,6 +205,12 @@ fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
                     @memcpy(save_location_buf[0..value.len], value);
                     wcfg.save_location = save_location_buf[0..value.len];
                 }
+            } else if (std.mem.eql(u8, key, "save-format")) {
+                if (world.SaveFormat.parse(value)) |fmt| {
+                    wcfg.save_format = fmt;
+                } else {
+                    log.warn("server.properties save-format '{s}' unknown; using default", .{value});
+                }
             }
         }
     }
@@ -212,8 +226,9 @@ fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
     defer file.close(io);
 
     var buf: [512]u8 = undefined;
-    const contents = std.fmt.bufPrint(&buf,
-        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\n",
+    const contents = std.fmt.bufPrint(
+        &buf,
+        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nsave-format:classic_dat\n",
         .{ default_server_name, default_server_motd, wcfg.seed, wcfg.save_location },
     ) catch |err| {
         log.info("Failed to format default server.properties ({}), using defaults", .{err});
@@ -372,11 +387,11 @@ pub fn tick() void {
 
     world.tick();
 
-    for (0..world.pending_count) |i| {
-        const change = world.pending_changes[i];
+    for (0..world.sim.pending_count) |i| {
+        const change = world.sim.pending_changes[i];
         broadcast_block_change(change.x, change.y, change.z, change.block);
     }
-    world.pending_count = 0;
+    world.sim.pending_count = 0;
 
     broadcast_player_positions();
 

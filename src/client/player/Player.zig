@@ -743,7 +743,7 @@ fn block_under_feet(self: *const Self) Block {
     if (by_f < 0 or by_f >= @as(f32, @floatFromInt(c.WorldHeight))) return .{ .id = .air };
     if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(c.WorldLength))) return .{ .id = .air };
     if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(c.WorldDepth))) return .{ .id = .air };
-    return World.get_block(
+    return World.data.get_block(
         @intCast(@as(i32, @intFromFloat(bx_f))),
         @intCast(@as(i32, @intFromFloat(by_f))),
         @intCast(@as(i32, @intFromFloat(bz_f))),
@@ -787,7 +787,7 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
     // Virtual block collision: clip against a block the client placed
     // but the server has not yet committed to the world.
     if (self.pending_block) |pb| {
-        if (!World.get_block(pb.x, pb.y, pb.z).is_air()) {
+        if (!World.data.get_block(pb.x, pb.y, pb.z).is_air()) {
             // Server has committed the block; real collision takes over.
             self.pending_block = null;
         } else {
@@ -906,7 +906,7 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     // Check the voxel containing the eye first.
     if (in_world(bx, by, bz)) {
         if (is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) {
-            const bounds = World.get_block(@intCast(bx), @intCast(by), @intCast(bz)).bounds();
+            const bounds = World.data.get_block(@intCast(bx), @intCast(by), @intCast(bz)).bounds();
             if (point_in_bounds_fp(frac_x, frac_y, frac_z, bounds)) {
                 return .{
                     .x = @intCast(bx),
@@ -947,7 +947,7 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
         if (!in_world(bx, by, bz)) return null;
         if (!is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) continue;
 
-        const block = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
+        const block = World.data.get_block(@intCast(bx), @intCast(by), @intCast(bz));
         const bounds = block.bounds();
 
         if (bounds.is_full()) {
@@ -1017,7 +1017,7 @@ fn in_world(x: i32, y: i32, z: i32) bool {
 }
 
 fn is_selectable(x: u16, y: u16, z: u16) bool {
-    return World.get_block(x, y, z).is_selectable();
+    return World.data.get_block(x, y, z).is_selectable();
 }
 
 // --- Subvoxel helpers (all integer) ---
@@ -1297,7 +1297,7 @@ fn do_break(self: *Self) void {
     // Swing on every click, regardless of whether we actually struck a block.
     if (self.held_renderer) |hr| hr.trigger_dig();
     const hit = self.selected orelse return;
-    const block_id = World.get_block(hit.x, hit.y, hit.z);
+    const block_id = World.data.get_block(hit.x, hit.y, hit.z);
     if (!block_id.is_breakable()) return;
     if (!block_id.is_air()) {
         if (self.particle_sink) |ps| {
@@ -1356,7 +1356,7 @@ fn do_place(self: *Self) void {
         self.pos_z + collision.HALF_W > bz0 and
         self.pos_z - collision.HALF_W < bz0 + 1.0;
     if (overlaps) return;
-    const target = World.get_block(hit.place_x, hit.place_y, hit.place_z);
+    const target = World.data.get_block(hit.place_x, hit.place_y, hit.place_z);
     if (target.mesh_props().cross) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
@@ -1373,7 +1373,7 @@ fn do_place(self: *Self) void {
     // cannot intersect the place cell, so no virtual surface is needed
     // for this case.
     const promotes_to_double_slab = block.id == .slab and hit.place_y > 0 and
-        World.get_block(hit.place_x, hit.place_y - 1, hit.place_z).id == .slab;
+        World.data.get_block(hit.place_x, hit.place_y - 1, hit.place_z).id == .slab;
     if (collision.block_height(block) > 0 and !promotes_to_double_slab) {
         self.pending_block = .{
             .x = hit.place_x,

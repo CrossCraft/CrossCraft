@@ -194,15 +194,15 @@ fn send_world_impl(self: *Self) !void {
     compress_in_use = true;
     defer compress_in_use = false;
 
-    var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.raw_blocks.len));
+    var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.data.raw_blocks.len));
     try reset_compressor(&sender.interface);
 
     // Feed 4-byte size header, then block data in contiguous YZX wire
     // order (Java Classic compatible) from chunk-aware memory layout.
-    try compressor.writer.writeAll(world.raw_blocks[0..4]);
+    try compressor.writer.writeAll(world.data.raw_blocks[0..4]);
     sender.raw_written = 4;
-    try world.write_blocks_yzx(&compressor.writer);
-    sender.raw_written = @intCast(world.raw_blocks.len);
+    try world.data.write_blocks_yzx(&compressor.writer);
+    sender.raw_written = @intCast(world.data.raw_blocks.len);
     try compressor.finish();
 
     // Send any remaining partial chunk as the final packet.
@@ -427,7 +427,7 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
         return;
     }
 
-    const old_block = world.get_block(event.x, event.y, event.z);
+    const old_block = world.data.get_block(event.x, event.y, event.z);
 
     // Cross-blocks (flowers, saplings, mushrooms) have a narrow subvoxel
     // selection bound, so a raycast can pass through them and target the
@@ -448,9 +448,9 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
         // that cell so those predictions are reverted, then upgrade the
         // slab below.
         if (block.id == .slab and event.y > 0) {
-            const below = world.get_block(event.x, event.y - 1, event.z);
+            const below = world.data.get_block(event.x, event.y - 1, event.z);
             if (below.id == .slab) {
-                const existing_above = world.get_block(event.x, event.y, event.z);
+                const existing_above = world.data.get_block(event.x, event.y, event.z);
                 Server.broadcast_block_change(event.x, event.y, event.z, existing_above);
                 world.set_block(event.x, event.y - 1, event.z, .{ .id = .double_slab });
                 Server.broadcast_block_change(event.x, event.y - 1, event.z, .{ .id = .double_slab });
