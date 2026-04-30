@@ -66,7 +66,7 @@ pub fn send_set_block_to_server(writer: *Writer, x: u16, y: u16, z: u16, mode: u
         .x = x,
         .y = y,
         .z = z,
-        .mode = @enumFromInt(mode),
+        .mode = mode,
         .block = @intFromEnum(block.id),
     };
     try packet.write(writer);
@@ -75,11 +75,12 @@ pub fn send_set_block_to_server(writer: *Writer, x: u16, y: u16, z: u16, mode: u
 // --- Server -> Client (S->C) ---
 
 pub fn send_player_id_to_client(writer: *Writer, server_name: *const [64]u8, server_motd: *const [64]u8) !void {
+    // TODO: Lookup if player is OP or not
     var packet = zb.PlayerIDToClient{
         .protocol_version = 0x07,
         .server_name = server_name.*,
         .server_motd = server_motd.*,
-        .user_type = .Normal,
+        .user_type = .normal,
     };
     try packet.write(writer);
 }

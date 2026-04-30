@@ -417,13 +417,18 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     if (event.x >= c.WorldLength or event.y >= c.WorldHeight or event.z >= c.WorldDepth)
         return;
 
-    if (event.mode == .Destroy and event.y == 0)
+    // Wire byte to typed mode at the protocol boundary. Bare `@enumFromInt`
+    // would panic in ReleaseSafe on any value outside {0, 1}, so a single
+    // malformed packet from any peer would crash the server.
+    const mode = std.enums.fromInt(zb.ClickMode, event.mode) orelse return;
+
+    if (mode == .destroy and event.y == 0)
         return;
 
     // Convert wire-format u8 to the typed Block at the protocol boundary.
     const block: c.Block = .{ .id = @enumFromInt(event.block) };
 
-    if (event.mode == .Create and block.is_fluid()) {
+    if (mode == .create and block.is_fluid()) {
         return;
     }
 
@@ -433,12 +438,12 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     // selection bound, so a raycast can pass through them and target the
     // cell they occupy via the surface below. Re-broadcast the existing
     // block so any optimistic client that drew the new block reverts.
-    if (event.mode == .Create and old_block.mesh_props().cross) {
+    if (mode == .create and old_block.mesh_props().cross) {
         Server.broadcast_block_change(event.x, event.y, event.z, old_block);
         return;
     }
 
-    if (event.mode == .Destroy) {
+    if (mode == .destroy) {
         world.set_block(event.x, event.y, event.z, .{ .id = .air });
         Server.broadcast_block_change(event.x, event.y, event.z, .{ .id = .air });
     } else {
@@ -463,10 +468,10 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     }
     world.enqueue_neighbors_of(event.x, event.y, event.z);
 
-    if (event.mode == .Create and block.id == .sponge) {
+    if (mode == .create and block.id == .sponge) {
         world.sponge_absorb(event.x, event.y, event.z);
     }
-    if (event.mode == .Destroy and old_block.id == .sponge) {
+    if (mode == .destroy and old_block.id == .sponge) {
         world.sponge_release(event.x, event.y, event.z);
     }
 }

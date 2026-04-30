@@ -10,14 +10,18 @@ states {
 
 # -- Enums -----------------------------------------------------------------
 
+# ClickMode is decoded Zig-side via `std.meta.intToEnum` after the wire
+# `mode: u8` is read - an exhaustive enum on the wire field would panic in
+# the auto-generated `@enumFromInt`, letting any connected peer crash the
+# server with a single malformed SetBlockToServer packet.
 enum ClickMode : u8 {
-    Destroy = 0,
-    Create  = 1,
+    destroy = 0,
+    create  = 1,
 }
 
 enum PlayerType : u8 {
-    Normal = 0x00,
-    Op     = 0x64,
+    normal = 0x00,
+    op     = 0x64,
 }
 
 # -- Server-bound packets (Client -> Server) -------------------------------
@@ -33,7 +37,7 @@ packet SetBlockToServer : Connected[0x05] -> Server {
     x:     u16,
     y:     u16,
     z:     u16,
-    mode:  ClickMode,
+    mode:  u8,
     block: u8,
 }
 
