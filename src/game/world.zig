@@ -99,7 +99,11 @@ pub fn init(
     } else if (saver.needs_format_upgrade) {
         // Loaded an older on-disk format; rewrite it now under the
         // configured save format so subsequent boots take the fast path.
+        // Wait synchronously: the rewrite serialises against the legacy
+        // rename in `Server.init`, and a failure here should surface on
+        // the boot thread rather than on a background worker.
         saver.save(&data);
+        saver.wait_for_save();
     }
     finalize_loaded();
 }

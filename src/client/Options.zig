@@ -195,11 +195,10 @@ pub fn load(io: Io, dir: Io.Dir) void {
 }
 
 /// Write current options to `options.json` in `dir`.
-/// On non-PSP targets the write goes through an atomic temp-file replace so a
-/// crash mid-write never leaves a truncated file.  On PSP, `dirCreateFileAtomic`
-/// is unimplemented in the pspsdk Io vtable; fall back to a direct `createFile`
-/// write instead.  options.json is ~300 bytes, so load()'s parse-error fallback
-/// to defaults is sufficient protection against the negligible partial-write risk.
+/// Uses a direct `createFile` on every platform.  Atomic temp-file replace
+/// is unimplemented on PSP and the partial-write risk is negligible here:
+/// options.json is ~300 bytes, and `load`'s parse-error fallback to
+/// defaults already covers a torn write.
 pub fn save(io: Io, dir: Io.Dir) void {
     const j = JsonOptions{
         .active_texturepack = current.active_texturepack(),
@@ -224,29 +223,12 @@ pub fn save(io: Io, dir: Io.Dir) void {
     };
     const slice = out.buffered();
 
-    if (comptime @import("aether").platform == .psp) {
-        const file = dir.createFile(io, options_file, .{}) catch |err| {
-            log.err("create options.json failed: {}", .{err});
-            return;
-        };
-        defer file.close(io);
-        file.writeStreamingAll(io, slice) catch |err| {
-            log.err("write options.json failed: {}", .{err});
-        };
-        return;
-    }
-
-    var atomic = dir.createFileAtomic(io, options_file, .{ .replace = true }) catch |err| {
+    const file = dir.createFile(io, options_file, .{}) catch |err| {
         log.err("create options.json failed: {}", .{err});
         return;
     };
-    defer atomic.deinit(io);
-
-    atomic.file.writeStreamingAll(io, slice) catch |err| {
+    defer file.close(io);
+    file.writeStreamingAll(io, slice) catch |err| {
         log.err("write options.json failed: {}", .{err});
-        return;
-    };
-    atomic.replace(io) catch |err| {
-        log.err("finalize options.json failed: {}", .{err});
     };
 }

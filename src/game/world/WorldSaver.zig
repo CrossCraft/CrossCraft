@@ -12,6 +12,7 @@
 // saver-owned scratch buffer at dispatch time.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const WorldData = @import("WorldData.zig");
 const fmt_mod = @import("SaveFormat.zig");
@@ -132,8 +133,21 @@ fn cw_save_run(base: *compress_worker.Job) anyerror!void {
 fn save_worker(self: *WorldSaver) void {
     defer self.save_in_flight.store(false, .release);
 
+    // PSP-only: drop the existing directory entry before recreating it.
+    // After a rename or autosave, sceIoOpen with O_CREAT|O_TRUNC over a
+    // freshly-created entry can fail with the catch-all SCE error that
+    // pspsdk surfaces as `error.AccessDenied`. Removing first sidesteps
+    // that window. dirDeleteFile on pspsdk maps the missing-file case
+    // to `error.AccessDenied` too, so swallow that variant.
+    if (comptime builtin.os.tag == .psp) {
+        self.save_dir.deleteFile(self.io, self.save_file_name) catch |err| switch (err) {
+            error.AccessDenied => {},
+            else => log.warn("pre-delete '{s}' failed: {}", .{ self.save_file_name, err }),
+        };
+    }
+
     const file = self.save_dir.createFile(self.io, self.save_file_name, .{}) catch |err| {
-        log.err("Failed to create save file: {}", .{err});
+        log.err("Failed to create save file '{s}': {}", .{ self.save_file_name, err });
         return;
     };
     defer file.close(self.io);

@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 const log = std.log.scoped(.players_db);
 
@@ -362,26 +361,11 @@ fn save() void {
     };
     const slice = w.buffered();
 
-    if (comptime builtin.os.tag == .psp) {
-        const file = save_dir.createFile(save_io, file_name, .{}) catch |err| {
-            log.warn("create {s} failed: {}", .{ file_name, err });
-            return;
-        };
-        defer file.close(save_io);
-        file.writeStreamingAll(save_io, slice) catch |err|
-            log.warn("write {s} failed: {}", .{ file_name, err });
-        return;
-    }
-
-    var atomic = save_dir.createFileAtomic(save_io, file_name, .{ .replace = true }) catch |err| {
-        log.warn("createFileAtomic {s} failed: {}", .{ file_name, err });
+    const file = save_dir.createFile(save_io, file_name, .{}) catch |err| {
+        log.warn("create {s} failed: {}", .{ file_name, err });
         return;
     };
-    defer atomic.deinit(save_io);
-    atomic.file.writeStreamingAll(save_io, slice) catch |err| {
+    defer file.close(save_io);
+    file.writeStreamingAll(save_io, slice) catch |err|
         log.warn("write {s} failed: {}", .{ file_name, err });
-        return;
-    };
-    atomic.replace(save_io) catch |err|
-        log.warn("commit {s} failed: {}", .{ file_name, err });
 }

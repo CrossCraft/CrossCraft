@@ -98,17 +98,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // data dir on first run, then load from there every run.
     if (build_options.embed_pack) {
         engine.dirs.data.access(engine.io, "pack.zip", .{}) catch {
-            var atomic = try engine.dirs.data.createFileAtomic(
-                engine.io,
-                "pack.zip",
-                .{ .replace = true },
-            );
-            defer atomic.deinit(engine.io);
-            atomic.file.writeStreamingAll(engine.io, embedded_pack) catch |err| {
+            const file = try engine.dirs.data.createFile(engine.io, "pack.zip", .{});
+            defer file.close(engine.io);
+            file.writeStreamingAll(engine.io, embedded_pack) catch |err| {
                 log.err("failed to extract pack.zip to data dir: {}", .{err});
                 return err;
             };
-            try atomic.replace(engine.io);
         };
     }
 
