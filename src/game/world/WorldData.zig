@@ -23,6 +23,16 @@ blocks: []Block,
 world_size: [3]u16,
 seed: u64,
 tick_count: u64,
+/// World name as it appears in the ClassicWorld save. Padded with zeros
+/// past `name_len`. Defaults to `"world"`; persisted/loaded by classic_cw.
+name: [64]u8,
+name_len: u8,
+/// 16-byte stable identifier persisted in the ClassicWorld save. Random
+/// at first generation; round-tripped through load.
+uuid: [16]u8,
+/// Java unix milliseconds at world creation. 0 if unknown (legacy
+/// classic_dat saves don't carry it).
+time_created: i64,
 /// For each (x,z) column, stores Y+1 of the highest light-blocking block.
 /// A value of 0 means the entire column is sunlit. Consumed by
 /// `is_sunlit` and tree/grass growth checks, so it describes a light
@@ -30,6 +40,8 @@ tick_count: u64,
 light_map: [c.WorldLength * c.WorldDepth]u8,
 chunk_counts: [CHUNK_COUNT]u16,
 chunk_non_opaque: [CHUNK_COUNT]u16,
+
+const default_name = "world";
 
 pub fn init(allocator: std.mem.Allocator, new_seed: u64) !WorldData {
     var self: WorldData = undefined;
@@ -39,6 +51,12 @@ pub fn init(allocator: std.mem.Allocator, new_seed: u64) !WorldData {
     self.world_size = .{ c.WorldLength, c.WorldHeight, c.WorldDepth };
     self.seed = new_seed;
     self.tick_count = 0;
+
+    self.name = @splat(0);
+    @memcpy(self.name[0..default_name.len], default_name);
+    self.name_len = @intCast(default_name.len);
+    self.uuid = @splat(0);
+    self.time_created = 0;
 
     @memset(self.raw_blocks, 0x00);
     @memset(&self.light_map, 0);
@@ -52,6 +70,17 @@ pub fn init(allocator: std.mem.Allocator, new_seed: u64) !WorldData {
     std.mem.writeInt(u32, self.raw_blocks[0..4], size, .big);
 
     return self;
+}
+
+/// Stamp the world with a fresh random UUID and the current real-clock
+/// time. Called on first generation; load paths instead populate these
+/// fields from the save file.
+pub fn stamp_creation_metadata(self: *WorldData, io: std.Io) void {
+    const real_ns: i64 = @truncate(std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds);
+    var rng = Xorshift64.init(@bitCast(real_ns));
+    std.mem.writeInt(u64, self.uuid[0..8], rng.next(), .little);
+    std.mem.writeInt(u64, self.uuid[8..16], rng.next(), .little);
+    self.time_created = @divTrunc(real_ns, std.time.ns_per_ms);
 }
 
 pub fn deinit(self: *WorldData) void {

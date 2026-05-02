@@ -1,43 +1,23 @@
 const std = @import("std");
 const zb = @import("protocol");
 const Protocol = zb.Protocol;
-const assert = std.debug.assert;
 const common = @import("common");
 const c = common.consts;
 const world = @import("world.zig");
 const proto = common.protocol;
 
 const Server = @import("server.zig");
+const compress_worker = @import("compress_worker.zig");
 
-const flate = std.compress.flate;
-
-var backing_allocator: std.mem.Allocator = undefined;
-var compress_buf: *[flate.max_window_len]u8 = undefined;
-var compressor: *flate.Compress = undefined;
-var compress_in_use: bool = false;
-
-/// World-send job submitted by an IO read loop and processed by the dedicated
-/// compressor worker thread (`worker_main`). One slot per player; the slots
-/// outlive any individual `Client` so a late-arriving worker store after the
-/// IO thread bails on cancel never lands on a freed stack frame.
+/// World-send job submitted by an IO read loop and processed by the shared
+/// compressor worker. One slot per player; the slots outlive any individual
+/// `Client` so a late-arriving worker store after the IO thread bails on
+/// cancel never lands on a freed stack frame.
 const WorldSendJob = struct {
+    base: compress_worker.Job,
     client: *Self,
-    next: ?*WorldSendJob,
-    done: std.atomic.Value(bool),
-    err: ?anyerror,
 };
 var jobs: [c.MAX_PLAYERS]WorldSendJob = undefined;
-var queue_head: std.atomic.Value(?*WorldSendJob) = .init(null);
-var worker_exit: std.atomic.Value(bool) = .init(false);
-
-/// Compress Writer vtable resolved at comptime to avoid referencing private fns.
-const compress_writer_vtable: *const std.Io.Writer.VTable = blk: {
-    var dummy_buf: [16]u8 = undefined;
-    var dummy = std.Io.Writer.fixed(&dummy_buf);
-    var buf: [flate.max_window_len]u8 = undefined;
-    const comp = flate.Compress.init(&dummy, &buf, .gzip, .fastest) catch unreachable;
-    break :blk comp.writer.vtable;
-};
 
 const Self = @This();
 
@@ -179,31 +159,35 @@ fn send_world(self: *Self) !void {
     }
 
     const job = &jobs[@intCast(self.id)];
-    job.* = .{ .client = self, .next = null, .done = .init(false), .err = null };
-    enqueue(job);
-    while (!job.done.load(.acquire)) {
+    job.* = .{
+        .base = .{ .run = world_send_run },
+        .client = self,
+    };
+    compress_worker.submit(&job.base);
+    while (!job.base.done.load(.acquire)) {
         try Server.io.sleep(.fromMilliseconds(20), .real);
     }
-    if (job.err) |e| return e;
+    if (job.base.err) |e| return e;
+}
+
+fn world_send_run(base: *compress_worker.Job) anyerror!void {
+    const job: *WorldSendJob = @fieldParentPtr("base", base);
+    try send_world_impl(job.client);
 }
 
 fn send_world_impl(self: *Self) !void {
     var chunk_buf: [1024]u8 = @splat(0);
 
-    assert(!compress_in_use);
-    compress_in_use = true;
-    defer compress_in_use = false;
-
     var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.data.raw_blocks.len));
-    try reset_compressor(&sender.interface);
+    try compress_worker.reset(&sender.interface);
 
     // Feed 4-byte size header, then block data in contiguous YZX wire
     // order (Java Classic compatible) from chunk-aware memory layout.
-    try compressor.writer.writeAll(world.data.raw_blocks[0..4]);
+    try compress_worker.compressor.writer.writeAll(world.data.raw_blocks[0..4]);
     sender.raw_written = 4;
-    try world.data.write_blocks_yzx(&compressor.writer);
+    try world.data.write_blocks_yzx(&compress_worker.compressor.writer);
     sender.raw_written = @intCast(world.data.raw_blocks.len);
-    try compressor.finish();
+    try compress_worker.compressor.finish();
 
     // Send any remaining partial chunk as the final packet.
     if (sender.interface.end > 0) {
@@ -215,45 +199,6 @@ fn send_world_impl(self: *Self) !void {
 
     try proto.send_level_finalize_to_client(self.writer, c.WorldLength, c.WorldHeight, c.WorldDepth);
     try self.writer.flush();
-}
-
-fn enqueue(job: *WorldSendJob) void {
-    while (true) {
-        const head = queue_head.load(.monotonic);
-        job.next = head;
-        if (queue_head.cmpxchgWeak(head, job, .release, .monotonic) == null) return;
-    }
-}
-
-/// Drain one batch of pending world-send jobs. Returns true if at least one
-/// job was processed, false if the queue was empty. Caller (the worker
-/// thread, see `ServerState.compressor_worker_main`) is expected to loop
-/// and sleep when this returns false. The worker thread is spawned by
-/// ServerState rather than `std.Io.concurrent`, so it must NOT call
-/// `Server.io.sleep` -- that returns immediately from non-tracked threads
-/// on PSP, hot-spinning the CPU and starving the IO threads.
-pub fn worker_drain_once() bool {
-    const head = queue_head.swap(null, .acquire) orelse return false;
-    var node: ?*WorldSendJob = head;
-    while (node) |j| {
-        const next = j.next;
-        send_world_impl(j.client) catch |e| {
-            j.err = e;
-        };
-        j.done.store(true, .release);
-        node = next;
-    }
-    return true;
-}
-
-pub fn worker_should_exit() bool {
-    return worker_exit.load(.acquire);
-}
-
-/// Tell the compressor worker to exit on its next loop iteration. Caller is
-/// responsible for joining the OS thread afterward.
-pub fn signal_worker_exit() void {
-    worker_exit.store(true, .release);
 }
 
 pub fn handshake(self: *Self) !void {
@@ -474,50 +419,6 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     if (mode == .destroy and old_block.id == .sponge) {
         world.sponge_release(event.x, event.y, event.z);
     }
-}
-
-pub fn init_compressor(alloc: std.mem.Allocator) !void {
-    backing_allocator = alloc;
-    compress_buf = try alloc.create([flate.max_window_len]u8);
-    compressor = try alloc.create(flate.Compress);
-    compressor.* = undefined;
-    queue_head = .init(null);
-    worker_exit = .init(false);
-}
-
-fn reset_compressor(output: *std.Io.Writer) !void {
-    try output.writeAll(flate.Container.gzip.header());
-    compressor.writer = .{
-        .vtable = compress_writer_vtable,
-        .buffer = compress_buf,
-    };
-    compressor.history_len = 0;
-    compressor.history_end_unhashed = false;
-    compressor.bit_writer = .{
-        .output = output,
-        .buffered = 0,
-        .buffered_n = 0,
-    };
-    compressor.buffered_tokens = .{
-        .list = undefined,
-        .pos = 0,
-        .n = 0,
-        .lit_freqs = @splat(0),
-        .dist_freqs = @splat(0),
-    };
-    compressor.lookup = .{
-        .head = @splat(.{ .value = std.math.maxInt(u15), .is_null = true }),
-        .chain = undefined,
-        .chain_pos = std.math.maxInt(u15),
-    };
-    compressor.container = .gzip;
-    compressor.hasher = .init(.gzip);
-    compressor.opts = .fastest;
-}
-
-pub fn deinit_compressor() void {
-    backing_allocator.destroy(compressor);
-    backing_allocator.destroy(compress_buf);
 }
 
 pub fn init(self: *Self) void {

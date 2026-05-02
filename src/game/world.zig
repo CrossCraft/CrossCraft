@@ -36,9 +36,9 @@ pub const LoadStatus = union(enum) {
     complete,
 };
 
-// Default format for both init paths until Phase 4 sources the choice
-// from server.properties.
-pub const default_format: SaveFormat = .{ .classic_dat = .{} };
+// Default format for both init paths. Standalone overrides via
+// server.properties; embedded singleplayer takes this value as-is.
+pub const default_format: SaveFormat = .{ .classic_cw = .{} };
 
 pub var data: WorldData = undefined;
 pub var sim: WorldSimulation = undefined;
@@ -94,6 +94,11 @@ pub fn init(
         const elapsed_ns: i64 = @truncate(end.raw.nanoseconds - start.raw.nanoseconds);
         const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
         log.info("World generation took {d}ms", .{elapsed_ms});
+        data.stamp_creation_metadata(io);
+        saver.save(&data);
+    } else if (saver.needs_format_upgrade) {
+        // Loaded an older on-disk format; rewrite it now under the
+        // configured save format so subsequent boots take the fast path.
         saver.save(&data);
     }
     finalize_loaded();

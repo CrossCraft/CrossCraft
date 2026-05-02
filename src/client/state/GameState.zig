@@ -9,6 +9,7 @@ const State = Core.State;
 const game = @import("game");
 const Server = game.Server;
 const World = game.World;
+const CompressWorker = game.CompressWorker;
 const c = @import("common").consts;
 const proto = @import("common").protocol;
 const collision = @import("../player/collision.zig");
@@ -61,6 +62,12 @@ conn: ClientConn,
 // MP read-loop task: owns the TCP read side, drives ClientConn
 // callbacks, clears `Session.mp_connected` on exit.
 mp_read_future: ?std.Io.Future(void),
+/// Singleplayer-only: the shared compressor worker thread that drains
+/// classic_cw save jobs (and any future world-stream jobs queued for
+/// local clients). Standalone servers spawn an equivalent thread in
+/// `ServerState.init`; multiplayer clients leave this null since they
+/// never run the in-process server.
+sp_compressor_thread: ?Util.Thread,
 pipeline: Rendering.Pipeline.Handle,
 world: WorldRenderer,
 player: Player,
@@ -105,6 +112,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
     self.mp_read_future = null;
+    self.sp_compressor_thread = null;
 
     // Wipe any leftover input actions from the previous state (MenuState
     // registered ui_*; a previous GameState may have registered movement /
@@ -126,6 +134,18 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
                 &self.fake_conn.server_writer,
                 &self.fake_conn.connected,
             ) orelse return error.ServerFull;
+
+            // Drain classic_cw save jobs queued by Server.init (the
+            // initial post-worldgen save and any format-upgrade save
+            // from a v1.0 -> v1.1 migration sit on the lock-free LIFO
+            // until this thread picks them up). Mirrors the standalone
+            // server's pattern in ServerState.init.
+            self.sp_compressor_thread = try Util.Thread.spawn(.{
+                .name = "world_compress",
+                .stack_size = 384 * 1024,
+                .priority = .normal,
+                .allocator = engine.allocator(.user),
+            }, CompressWorker.worker_main, .{});
 
             self.conn.init(&self.fake_conn.client_reader, &self.fake_conn.client_writer);
             try self.conn.join(Session.username());
@@ -347,7 +367,17 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     // World.init_empty, so only World.deinit is needed (Server.deinit would
     // try to free a compressor that was never initialised).
     switch (Session.mode) {
-        .singleplayer => Server.deinit(),
+        .singleplayer => {
+            // Server.deinit triggers the final classic_cw save; the
+            // compressor thread must still be alive to drain it before
+            // we signal exit and join.
+            Server.deinit();
+            if (self.sp_compressor_thread) |*t| {
+                CompressWorker.signal_exit();
+                t.join();
+                self.sp_compressor_thread = null;
+            }
+        },
         .multiplayer => World.deinit(),
     }
     self.inited = false;

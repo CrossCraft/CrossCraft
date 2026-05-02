@@ -38,6 +38,12 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const nbt = b.addModule("nbt", .{
+        .root_source_file = b.path("src/nbt/nbt.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const game = b.addModule("game", .{
         .root_source_file = b.path("src/game/root.zig"),
         .target = target,
@@ -45,6 +51,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "protocol", .module = protocol },
             .{ .name = "common", .module = common },
+            .{ .name = "nbt", .module = nbt },
         },
     });
 

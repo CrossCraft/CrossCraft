@@ -11,30 +11,31 @@
 // Body:
 //   blocks in YZX wire order, traversed as 16-byte chunk rows so the chunk-
 //   aware in-memory layout streams without a scatter pass.
+//
+// classic_dat does not carry the ClassicWorld metadata (name, uuid,
+// timestamps); LoadOutcome is filled with defaults on load.
 
 const std = @import("std");
 const common = @import("common");
 const c = common.consts;
 
 const Block = c.Block;
+const SaveContext = @import("../SaveFormat.zig").SaveContext;
+const LoadOutcome = @import("../SaveFormat.zig").LoadOutcome;
 
 pub const ClassicDat = struct {
     pub fn save_world(
         _: ClassicDat,
-        world_size: [3]u16,
-        seed: u64,
-        tick_count: u64,
-        raw_blocks: []const u8,
-        blocks: []const Block,
+        ctx: SaveContext,
         writer: *std.Io.Writer,
     ) !void {
-        try writer.writeSliceEndian(u16, &world_size, .little);
-        const seed_arr = [1]u64{seed};
+        try writer.writeSliceEndian(u16, &ctx.world_size, .little);
+        const seed_arr = [1]u64{ctx.seed};
         try writer.writeSliceEndian(u64, &seed_arr, .little);
-        const tick_arr = [1]u64{tick_count};
+        const tick_arr = [1]u64{ctx.tick_count};
         try writer.writeSliceEndian(u64, &tick_arr, .little);
-        try writer.writeAll(raw_blocks[0..4]);
-        try write_blocks_yzx(blocks, writer);
+        try writer.writeAll(ctx.raw_blocks[0..4]);
+        try write_blocks_yzx(ctx.blocks, writer);
         try writer.flush();
     }
 
@@ -58,12 +59,6 @@ pub const ClassicDat = struct {
             .tick_count = saved_tick[0],
         };
     }
-};
-
-pub const LoadOutcome = struct {
-    dimensions: [3]u16,
-    seed: u64,
-    tick_count: u64,
 };
 
 fn write_blocks_yzx(blocks: []const Block, writer: *std.Io.Writer) !void {

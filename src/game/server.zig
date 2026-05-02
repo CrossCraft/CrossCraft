@@ -4,6 +4,7 @@ const FAB = @import("common").fa_buffer.FirstAvailableBuffer;
 pub const Client = @import("client.zig");
 const StaticAllocator = @import("common").static_allocator;
 const world = @import("world.zig");
+const compress_worker = @import("compress_worker.zig");
 const zb = @import("protocol");
 
 const log = std.log.scoped(.server);
@@ -12,20 +13,31 @@ const log = std.log.scoped(.server);
 
 /// Inputs the world needs to materialise. `save_location` is a relative
 /// path (under the engine data dir) to the world save *file*, including
-/// its filename -- e.g. "world.dat" or "saves/foo.dat". The world spec
-/// saves the file at exactly this path, and in standalone mode
+/// its filename -- e.g. "saves/world.cw" or "saves/foo.dat". The world
+/// spec saves the file at exactly this path, and in standalone mode
 /// server.properties is rooted in the same directory so a save dir is
 /// self-contained. An empty string is rejected at init.
 ///
-/// `save_format` picks which on-disk format to use. classic_dat is the
-/// existing custom binary; classic_cw is reserved for the upcoming
-/// ClassicWorld NBT/gzip format. Sourced from server.properties
-/// `save-format:` in standalone mode; embedded mode uses the default.
+/// `save_format` picks which on-disk format to use. classic_cw is the
+/// gzip-NBT ClassicWorld format and the default; classic_dat is the
+/// legacy CrossCraft custom binary, retained for backward compatibility
+/// and selectable via server.properties `save-format:` in standalone mode.
 pub const WorldConfig = struct {
     seed: u64,
     save_location: []const u8,
     save_format: world.SaveFormat = world.default_format,
 };
+
+/// The v1.1 default save path. Used by both standalone and embedded
+/// hosts when no override is supplied; also the gate condition for the
+/// legacy v1.0 `world.dat` migration in `Server.init` -- a custom
+/// `save-location` in server.properties skips the migration entirely.
+pub const default_save_location: []const u8 = "saves/world.cw";
+
+/// v1.0 layout: a single classic_dat save file at the data dir root.
+/// `Server.init` promotes this to `default_save_location` on first boot
+/// when the new path doesn't already exist.
+pub const legacy_save_file_name: []const u8 = "world.dat";
 
 pub const StandaloneBoot = struct {
     world: WorldConfig,
@@ -103,12 +115,25 @@ pub fn init(
     // Embedded mode never touches server.properties (NoServerPropertiesIO).
     if (!internal_use) load_config(data_dir, &wcfg);
 
+    // Promote a v1.0-shaped legacy save (world.dat at the data dir root)
+    // into the v1.1 default location before the saver opens it. Format
+    // sniffing on load handles the still-classic_dat content; the
+    // post-load upgrade save (world.zig) rewrites it as classic_cw.
+    migrate_legacy_save(data_dir, wcfg);
+
     const split = split_save_location(wcfg.save_location);
     save_dir = try resolve_save_dir(data_dir, split.parent);
     save_dir_owned = split.parent.len > 0;
 
     var scratch = std.heap.ArenaAllocator.init(scratch_alloc);
     defer scratch.deinit();
+
+    // Initialise the shared compression worker BEFORE world.init: a
+    // fresh classic_cw world fires its first save during generation,
+    // which submits a job to compress_worker's queue. Reordering
+    // compress_worker.init after world.init would reset the queue
+    // head and silently drop that initial save.
+    try compress_worker.init(allocator.allocator(), io);
 
     // wcfg.seed is used only on first generation; the saver restores
     // the saved seed when an existing save file is found. Format choice
@@ -122,7 +147,6 @@ pub fn init(
         wcfg.seed,
         wcfg.save_format,
     );
-    try Client.init_compressor(allocator.allocator());
 
     allocator.transition_from_init_to_static();
 }
@@ -150,6 +174,44 @@ fn resolve_save_dir(data_dir: std.Io.Dir, sub_path: []const u8) !std.Io.Dir {
         log.err("Failed to open/create save dir '{s}': {}", .{ sub_path, err });
         return err;
     };
+}
+
+/// Move a v1.0-shaped `world.dat` from the data dir root into the v1.1
+/// default location. Gated on the configured save_location matching the
+/// default, so an operator who set a custom `save-location:` in
+/// server.properties is left alone. No-op when the new file already
+/// exists or the legacy file is missing. Logs and skips on rename
+/// failure -- the saver then falls through to worldgen, which is the
+/// same outcome as having no save at all.
+fn migrate_legacy_save(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
+    if (!std.mem.eql(u8, wcfg.save_location, default_save_location)) return;
+
+    // Skip if the new-path file already exists -- never clobber.
+    if (data_dir.openFile(io, wcfg.save_location, .{})) |f| {
+        f.close(io);
+        return;
+    } else |_| {}
+    // Skip if the legacy file is missing.
+    if (data_dir.openFile(io, legacy_save_file_name, .{})) |f| {
+        f.close(io);
+    } else |_| return;
+
+    const split = split_save_location(wcfg.save_location);
+    if (split.parent.len > 0) {
+        var new_dir = data_dir.createDirPathOpen(io, split.parent, .{}) catch |err| {
+            log.warn("legacy save migration: failed to create '{s}': {}", .{ split.parent, err });
+            return;
+        };
+        new_dir.close(io);
+    }
+
+    data_dir.rename(legacy_save_file_name, data_dir, wcfg.save_location, io) catch |err| {
+        log.warn("legacy save migration failed: {}", .{err});
+        return;
+    };
+    log.info("Migrated legacy save '{s}' -> '{s}'", .{
+        legacy_save_file_name, wcfg.save_location,
+    });
 }
 
 fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
@@ -228,7 +290,7 @@ fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
     var buf: [512]u8 = undefined;
     const contents = std.fmt.bufPrint(
         &buf,
-        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nsave-format:classic_dat\n",
+        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nsave-format:classic_cw\n",
         .{ default_server_name, default_server_motd, wcfg.seed, wcfg.save_location },
     ) catch |err| {
         log.info("Failed to format default server.properties ({}), using defaults", .{err});
@@ -246,7 +308,7 @@ fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
 pub fn deinit() void {
     allocator.transition_from_static_to_deinit();
 
-    Client.deinit_compressor();
+    compress_worker.deinit();
     world.deinit();
 
     allocator.deinit();

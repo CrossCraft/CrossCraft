@@ -19,7 +19,35 @@ const classic_cw_mod = @import("formats/classic_cw.zig");
 
 pub const ClassicDat = classic_dat_mod.ClassicDat;
 pub const ClassicCw = classic_cw_mod.ClassicCw;
-pub const LoadOutcome = classic_dat_mod.LoadOutcome;
+
+/// Everything a format may need to write a save. Formats are free to
+/// ignore the metadata fields they don't carry on disk -- classic_dat
+/// uses only world_size/seed/tick_count/raw_blocks/blocks; classic_cw
+/// consumes all of them.
+pub const SaveContext = struct {
+    world_size: [3]u16,
+    seed: u64,
+    tick_count: u64,
+    raw_blocks: []const u8,
+    blocks: []const Block,
+    name: []const u8,
+    uuid: [16]u8,
+    spawn: [3]u16,
+    time_created: i64,
+    last_modified: i64,
+};
+
+/// Everything a format returns from a successful load. Formats that don't
+/// carry a field on disk fill it with a sensible default (zero / empty).
+pub const LoadOutcome = struct {
+    dimensions: [3]u16,
+    seed: u64,
+    tick_count: u64,
+    name: [64]u8 = @splat(0),
+    name_len: u8 = 0,
+    uuid: [16]u8 = @splat(0),
+    time_created: i64 = 0,
+};
 
 pub const SaveFormat = union(enum) {
     classic_dat: ClassicDat,
@@ -33,24 +61,50 @@ pub const SaveFormat = union(enum) {
         return null;
     }
 
+    /// Sniff the on-disk format from a file's leading bytes. classic_cw
+    /// files start with the gzip magic 1f 8b; anything else is treated as
+    /// classic_dat (whose header begins with the little-endian world
+    /// length, which never collides with the gzip magic for any sane
+    /// world dimension). The gzip arm is a *candidate* -- callers should
+    /// confirm with `verify_classic_cw` before committing, because legacy
+    /// formats (notably Minecraft Classic .mclevel) also use gzip but
+    /// carry a Java-serialized payload rather than NBT. Returns null when
+    /// the prefix is too short to classify.
+    pub fn detect(prefix: []const u8) ?SaveFormat {
+        if (prefix.len < 2) return null;
+        if (prefix[0] == 0x1f and prefix[1] == 0x8b) return .{ .classic_cw = .{} };
+        return .{ .classic_dat = .{} };
+    }
+
+    /// Confirm that a gzip-prefixed file is actually classic_cw by
+    /// inflating just enough to inspect the first NBT tag byte. Returns
+    /// true only when the inflated stream begins with TAG_Compound (0x0A),
+    /// matching the ClassicWorld outer compound. False on any decode
+    /// failure, short prefix, or non-NBT payload (e.g. Java serialization
+    /// magic ac ed in legacy .mclevel files). The caller-supplied prefix
+    /// must include the gzip header plus enough deflate bytes to yield
+    /// one inflated byte -- 256 bytes covers every real-world classic_cw
+    /// save by a wide margin.
+    pub fn verify_classic_cw(prefix: []const u8) bool {
+        // Gzip header alone is 10 bytes; need at least one deflated byte
+        // beyond it to yield an inflated tag.
+        if (prefix.len < 12) return false;
+        var src = std.Io.Reader.fixed(prefix);
+        var window_buf: [std.compress.flate.max_window_len]u8 = undefined;
+        var decompress = std.compress.flate.Decompress.init(&src, .gzip, &window_buf);
+        const first = decompress.reader.takeByte() catch return false;
+        // 0x0A == nbt.Tag.compound; named here as a literal so this module
+        // doesn't pull in nbt for a single comparison.
+        return first == 0x0A;
+    }
+
     pub fn save_world(
         self: SaveFormat,
-        world_size: [3]u16,
-        seed: u64,
-        tick_count: u64,
-        raw_blocks: []const u8,
-        blocks: []const Block,
+        ctx: SaveContext,
         writer: *std.Io.Writer,
     ) !void {
         switch (self) {
-            inline else => |arm| try arm.save_world(
-                world_size,
-                seed,
-                tick_count,
-                raw_blocks,
-                blocks,
-                writer,
-            ),
+            inline else => |arm| try arm.save_world(ctx, writer),
         }
     }
 

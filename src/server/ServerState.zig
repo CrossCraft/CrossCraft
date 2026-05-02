@@ -9,7 +9,7 @@ const Engine = ae.Engine;
 const State = ae.Core.State;
 
 const Server = game.Server;
-const GameClient = game.Server.Client;
+const CompressWorker = game.CompressWorker;
 const Consts = common.consts;
 
 const log = std.log.scoped(.server);
@@ -29,10 +29,6 @@ const ConnectionData = struct {
 // `init` populates them; `deinit` clears them.
 var global_engine: ?*Engine = null;
 var global_listener: ?*std.Io.net.Server = null;
-// Compressor worker is a non-Io-tracked Util.Thread; capturing engine.io
-// through Util.Thread.spawn args crashes, so park it at module
-// scope and read it directly from the worker.
-var compressor_io: std.Io = undefined;
 
 const Self = @This();
 
@@ -64,21 +60,21 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(engine.io, .boot).raw.nanoseconds)));
     const config: Server.GameConfig = .{
         .standalone = .{
-            .world = .{ .seed = seed, .save_location = "world.dat" },
+            .world = .{ .seed = seed, .save_location = Server.default_save_location },
         },
     };
     try Server.init(alloc, alloc, engine.io, engine.dirs.data, config);
 
-    // Dedicated thread for world compression. Off-loads the deep `flate` call
-    // frames out of the per-connection IO stacks (see `psp_async_stack_size`
-    // in main.zig).
-    compressor_io = engine.io;
+    // Dedicated thread for world compression -- shared across world-send
+    // (network) and world-save (classic_cw, gzip-on-disk). Off-loads the
+    // deep `flate` call frames out of the per-task IO stacks (see
+    // `psp_async_stack_size` in main.zig).
     self.compressor_thread = try Util.Thread.spawn(.{
         .name = "world_compress",
         .stack_size = 384 * 1024,
         .priority = .normal,
         .allocator = alloc,
-    }, compressor_worker_main, .{});
+    }, CompressWorker.worker_main, .{});
 
     engine.report();
 
@@ -125,12 +121,15 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     global_listener = null;
     self.listener.deinit(engine.io);
 
-    // tasks.cancel above drained the IO read loops; any in-flight world-send
-    // job now writes against a closed socket and exits with WriteFailed.
-    GameClient.signal_worker_exit();
-    self.compressor_thread.join();
-
+    // Server.deinit triggers the final world save and waits for it. For
+    // classic_cw that save runs on the compressor thread, so the thread
+    // must still be alive here. Tear it down only after Server.deinit
+    // returns. Any in-flight world-send job aborts with WriteFailed
+    // because tasks.cancel above drained the IO read loops.
     Server.deinit();
+
+    CompressWorker.signal_exit();
+    self.compressor_thread.join();
 
     engine.allocator(.user).free(self.conn_handles);
 
@@ -139,14 +138,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
 
 fn client_read_loop(client: *Server.Client) std.Io.Cancelable!void {
     client.read_loop();
-}
-
-fn compressor_worker_main() void {
-    while (!GameClient.worker_should_exit()) {
-        if (!GameClient.worker_drain_once()) {
-            std.Io.sleep(compressor_io, .fromMilliseconds(10), .real) catch {};
-        }
-    }
 }
 
 fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {

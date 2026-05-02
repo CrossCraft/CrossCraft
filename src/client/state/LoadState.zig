@@ -33,7 +33,7 @@ fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, i
     // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
     const config: Server.GameConfig = .{
         .embedded = .{
-            .world = .{ .seed = seed, .save_location = "saves/world.dat" },
+            .world = .{ .seed = seed, .save_location = Server.default_save_location },
         },
     };
     Server.init(alloc, scratch, io, data_dir, config) catch |err| {
