@@ -15,6 +15,7 @@
 // and not reentrant.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const flate = std.compress.flate;
 
 pub const Job = struct {
@@ -129,6 +130,21 @@ pub fn drain_once() bool {
 /// pegs a core during compression, and at idle the thread still yields
 /// at OS-scheduler granularity.
 pub fn worker_main() void {
+    // PSP: pspsdk's per-thread kernel cwd is only initialised by io-tracked
+    // thread entries (futureThreadEntry / groupThreadEntry call its private
+    // inheritCwd). `Util.Thread.spawn` skips that, so without this the
+    // worker starts with whatever the SCE default cwd is and every
+    // relative-path file open from here returns the catch-all
+    // `error.AccessDenied`. Re-apply the tracked cwd by reading it back
+    // and pushing it through `setCurrentPath`, which calls `sceIoChdir`
+    // on the calling thread.
+    if (comptime builtin.os.tag == .psp) {
+        var cwd_buf: [1024]u8 = undefined;
+        if (std.process.currentPath(stored_io, &cwd_buf)) |n| {
+            std.process.setCurrentPath(stored_io, cwd_buf[0..n]) catch {};
+        } else |_| {}
+    }
+
     while (!should_exit()) {
         if (!drain_once()) {
             std.Io.sleep(stored_io, .fromMilliseconds(10), .real) catch {};
