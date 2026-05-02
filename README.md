@@ -23,11 +23,29 @@ Classic v1.0 is a feature-complete, clean-room reimplementation of Minecraft Cla
 - **Zero post-init allocation on the server.** Minimal hot-path allocation on the client.
 - **Full in-game settings UI** - options persist in a JSON file and are wired into every system.
 
+## Classic Server v1.1
+
+v1.1 is the smallest set of administrative tooling that lets the server stand up to the open internet without immediately being cooked. The headline is the persistent player database and the console; the rest is plumbing that had to land alongside it.
+
+**Administrative controls.** A persistent player database tracks ops, bans, IP bans, and a whitelist. All operator actions are IP-keyed so a renamed account does not reset enforcement.
+
+- `/ipop <username>` - grant op to the IP currently behind `<username>`.
+- `/ipban <username> [reason]` - ban the IP currently behind `<username>`.
+- `/kick <username> [reason]` - drop a connected player.
+- `/ipwhitelist <ip>` - add an IP to the whitelist (whitelist mode toggled in `server.properties`).
+- Player database capacity is bounded and configurable in `server.properties`; LRU eviction warns before dropping any record carrying a persistent flag.
+
+**Console mode.** The standalone server uses stdio as a real operator console: `stdin` accepts commands, `stdout` carries chat, `stderr` carries logs. Pipe each one separately if you want to.
+
+**Persistence.** World saving is fully async. The default save format is now ClassicWorld; existing worlds migrate on first save. Save path and world seed are command-line arguments and `server.properties` keys.
+
+**Networking and threading.** TCP_NODELAY on PSP cuts a noticeable chunk of latency on real hardware. The threading model and `std.Io` integration were overhauled, with the chunk compressor moved to a proper worker. Connections that arrive over the player limit now receive a clean disconnect message instead of being dropped silently. Various accuracy fixes from Classic v1.0 / v1.0.1 are also rolled in.
+
 ## Status
 
 | Component        | State       | Notes                                                       |
 |------------------|-------------|-------------------------------------------------------------|
-| Server (Classic) | v1.0        | Stable. Speaks the Classic 0.30 protocol.                   |
+| Server (Classic) | v1.1        | Stable. Speaks the Classic 0.30 protocol.                  |
 | Client (Classic) | v1.0        | Stable. Full singleplayer and multiplayer, desktop and PSP. |
 | Engine (Aether)  | External dep | Powers rendering, audio, input, packing, platform ports.    |
 
@@ -35,9 +53,8 @@ Classic v1.0 is a feature-complete, clean-room reimplementation of Minecraft Cla
 
 The near-term plan, in order:
 
-1. **Classic Server v1.1** - next up. Iterate on the server first so improvements land for everyone speaking the protocol.
-2. **Classic v1.1** - follow-up client release built on top of the v1.1 server work.
-3. **Survival Test** - the next phase. Shares the engine, common primitives, and most of the game module with Classic.
+1. **Classic v1.1** - next up. Client release built on top of the v1.1 server work.
+2. **Survival Test** - the next phase. Shares the engine, common primitives, and most of the game module with Classic.
 
 No firm dates or feature promises on any of the above yet; specifics land in release notes as each ships.
 
