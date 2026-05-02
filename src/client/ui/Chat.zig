@@ -25,7 +25,7 @@ const ui_input = @import("input.zig");
 
 const Self = @This();
 
-// -- Configuration ----------------------------------------------------------
+// --- Configuration ---
 
 pub const MAX_MESSAGES: u8 = 10;
 const MSG_MAX_LEN: u8 = 64;
@@ -52,7 +52,7 @@ const MSG_TEXT_LAYER: u8 = 242;
 const INPUT_BG_LAYER: u8 = 243;
 const INPUT_TEXT_LAYER: u8 = 244;
 
-// -- Data types -------------------------------------------------------------
+// --- Data types ---
 
 const Entry = struct {
     text: [MSG_MAX_LEN]u8,
@@ -60,7 +60,7 @@ const Entry = struct {
     age: f32,
 };
 
-// -- Fields -----------------------------------------------------------------
+// --- Fields ---
 
 /// Ring buffer of received messages, oldest at head, newest just before head.
 messages: [MAX_MESSAGES]Entry,
@@ -81,7 +81,7 @@ just_opened: bool,
 /// the next update() after the GE is idle.
 psp_osk_pending: bool,
 
-// -- Init -------------------------------------------------------------------
+// --- Init ---
 
 pub fn init() Self {
     return .{
@@ -98,7 +98,7 @@ pub fn init() Self {
     };
 }
 
-// -- Data mutations ---------------------------------------------------------
+// --- Data mutations ---
 
 /// Called by ClientConn.on_message.  Trims the 64-byte space-padded wire
 /// representation and stores the message in the ring buffer.
@@ -122,7 +122,7 @@ pub fn receive(self: *Self, raw: []const u8) void {
     if (self.msg_count < MAX_MESSAGES) self.msg_count += 1;
 }
 
-// -- Overlay control --------------------------------------------------------
+// --- Overlay control ---
 
 /// Open the input field.  If slash_prefix is true, '/' is pre-typed so the
 /// player can immediately continue a command.  On PSP this also arms the
@@ -168,7 +168,7 @@ pub fn close_overlay(self: *Self, player: *Player) void {
     player.look_delta = .{ 0, 0 };
 }
 
-// -- Per-frame tick (call every frame regardless of open state) -------------
+// --- Per-frame tick (call every frame regardless of open state) ---
 
 /// Age all stored messages.  Messages that are closed will fade; messages
 /// while open are frozen at their current age (held fully visible).
@@ -180,7 +180,7 @@ pub fn tick(self: *Self, dt: f32) void {
     }
 }
 
-// -- Update (call every frame while open) -----------------------------------
+// --- Update (call every frame while open) ---
 
 /// Process keyboard input.  `send_edge` is true when the chat_send action
 /// fired this frame (Enter key only, distinct from ui_confirm which also
@@ -202,7 +202,6 @@ pub fn update(
     // Backspace (with autorepeat via ui_repeat).
     if (ui_in.backspace and self.len > 0) self.len -= 1;
 
-    // Append typed characters.
     for (ui_in.char_buf[0..ui_in.char_count]) |ch| {
         if (self.len < INPUT_MAX_LEN) {
             self.buf[self.len] = ch;
@@ -210,18 +209,16 @@ pub fn update(
         }
     }
 
-    // Enter sends the message.
     if (send_edge) {
         send_message(self, player);
         self.close_overlay(player);
         return;
     }
 
-    // Escape cancels.
     if (ui_in.cancel_edge) self.close_overlay(player);
 }
 
-// -- PSP OSK (call from GameState at the top of update, after end_frame) ---
+// --- PSP OSK (call from GameState at the top of update, after end_frame) ---
 
 /// Blocking PSP system OSK.  Shows the keyboard, waits for confirm/cancel,
 /// then sends the result (if confirmed) and closes the overlay.
@@ -251,7 +248,7 @@ pub fn service_psp_osk(self: *Self, player: *Player) void {
     self.close_overlay(player);
 }
 
-// -- Draw -------------------------------------------------------------------
+// --- Draw ---
 
 pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, y_shift: i16) void {
     // y_shift is the number of logical pixels the HUD has been pushed upward
@@ -259,7 +256,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, y_s
     // and the input field ride upward by the same amount so they sit above
     // the strip instead of overlapping it.
     const base: i16 = BOTTOM_PAD + y_shift;
-    // -- Message history --
+    // --- Message history ---
     // Iterate from newest to oldest; newest draws closest to the bottom.
     // When the input field is open, messages are offset one row upward to
     // leave room for it.
@@ -310,7 +307,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, y_s
 
     if (!self.open) return;
 
-    // -- Input field --
+    // --- Input field ---
     // Dark background strip for the input row, flush with the hotbar top.
     batcher.add_sprite(&.{
         .texture = &Rendering.Texture.Default,
@@ -370,7 +367,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, y_s
     });
 }
 
-// -- Helpers ----------------------------------------------------------------
+// --- Helpers ---
 
 fn send_message(self: *Self, player: *Player) void {
     if (self.len == 0) return;

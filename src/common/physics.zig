@@ -88,7 +88,7 @@ const ResolveState = struct {
     hit_z: bool,
 };
 
-// -- Public API --------------------------------------------------------------
+// --- Public API ---
 
 /// Resolve a proposed tick's worth of movement against the voxel world.
 /// `pos` is feet-centred (X/Z = centre, Y = base). `vel` is per-tick
@@ -220,7 +220,7 @@ pub fn is_on_ground(
     return overlaps_any_solid(WorldT, box);
 }
 
-// -- Broadphase --------------------------------------------------------------
+// --- Broadphase ---
 
 fn entity_aabb(px: f32, py: f32, pz: f32, half_w: f32, height: f32) Aabb {
     return .{
@@ -340,7 +340,7 @@ fn full_cube(bx: i32, by: i32, bz: i32) Aabb {
     };
 }
 
-// -- Narrowphase: per-axis slab time -----------------------------------------
+// --- Narrowphase: per-axis slab time ---
 
 fn calc_time(entity: Aabb, block: Aabb, vel: [3]f32) [3]f32 {
     return .{
@@ -359,7 +359,7 @@ fn axis_time(e_min: f32, e_max: f32, b_min: f32, b_max: f32, v: f32) f32 {
     return @abs(d / v);
 }
 
-// -- Sorting -----------------------------------------------------------------
+// --- Sorting ---
 
 fn insertion_sort(buf: []Candidate) void {
     if (buf.len < 2) return;
@@ -374,7 +374,7 @@ fn insertion_sort(buf: []Candidate) void {
     }
 }
 
-// -- Resolution --------------------------------------------------------------
+// --- Resolution ---
 
 fn resolve_candidate(
     comptime WorldT: type,
@@ -427,7 +427,7 @@ fn classify_face(final: Aabb, block: Aabb, ceiling_hit: bool) Face {
     return .none;
 }
 
-// -- Clip primitives ---------------------------------------------------------
+// --- Clip primitives ---
 // Each clip snaps the entity flush to the collided face with a small
 // EPSILON gap, zeroes the velocity component on that axis, and sets the
 // corresponding hit flag. No helper factoring -- the six are small enough
@@ -487,7 +487,7 @@ fn clip_z_min(state: *ResolveState, block: Aabb) void {
     state.hit_z = true;
 }
 
-// -- DidSlide (in-loop step-up) ---------------------------------------------
+// --- DidSlide (in-loop step-up) ---
 
 /// In-loop step-up. Gated on `was_on_ground` and `step_size > 0`; computes
 /// the raise height from the block top, verifies clearance with a
@@ -526,7 +526,7 @@ fn try_step(
     return true;
 }
 
-// -- Overlap / landing helpers ----------------------------------------------
+// --- Overlap / landing helpers ---
 
 fn overlaps_any_solid(comptime WorldT: type, box: Aabb) bool {
     const bx_min: i32 = floor_i32(box.min_x);
@@ -612,7 +612,7 @@ fn floor_i32(v: f32) i32 {
     return @intFromFloat(f);
 }
 
-// -- Tests -------------------------------------------------------------------
+// --- Tests ---
 
 const testing = std.testing;
 

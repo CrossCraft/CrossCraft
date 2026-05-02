@@ -24,7 +24,7 @@ const Camera = @import("Camera.zig");
 const face_mod = @import("../world/chunk/face.zig");
 const Face = face_mod.Face;
 
-// -- Tuning ------------------------------------------------------------------
+// --- Tuning ---
 
 // SNORM16 -> world scale; emit_face stores a unit cube in [0, 2048].
 // Matches ChunkMesh / SelectionOutline model-matrix convention.
@@ -112,7 +112,7 @@ pub fn deinit(self: *Self) void {
     self.mesh.deinit(self.allocator);
 }
 
-// -- Input hooks -------------------------------------------------------------
+// --- Input hooks ---
 
 /// Called from Player.on_break on every click, regardless of hit result.
 /// Restarts the cycle from zero even if a dig swing is already in flight,
@@ -133,7 +133,7 @@ pub fn trigger_place(self: *Self) void {
     self.prev_swing_y = 0;
 }
 
-// -- Per-frame update --------------------------------------------------------
+// --- Per-frame update ---
 
 pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     std.debug.assert(dt >= 0);
@@ -213,7 +213,7 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     }
 }
 
-// -- Mesh build --------------------------------------------------------------
+// --- Mesh build ---
 
 fn rebuild(self: *Self, block: Block, shadowed: bool) void {
     self.mesh.vertices.clearRetainingCapacity();
@@ -260,7 +260,7 @@ fn rebuild(self: *Self, block: Block, shadowed: bool) void {
     self.mesh.update();
 }
 
-// -- Draw --------------------------------------------------------------------
+// --- Draw ---
 
 pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camera) void {
     if (self.cached_block.is_air() or self.mesh.vertices.items.len == 0) return;

@@ -37,7 +37,7 @@ pub var pending_done: bool = false;
 const DIM_LAYER: u8 = 253;
 const LAYER_BASE: u8 = 252;
 
-// -- label storage -----------------------------------------------------------
+// --- label storage ---
 // Each option button displays the current value as text.  We format into
 // these module-level buffers so the Screen can hold stable slices into them.
 
@@ -65,12 +65,12 @@ var lbl_vsync_len: u8 = 0;
 var lbl_rain: [label_max]u8 = undefined;
 var lbl_rain_len: u8 = 0;
 
-// -- component storage -------------------------------------------------------
+// --- component storage ---
 // 1 title label + 11 option buttons + 1 Controls (disabled) + 1 Done = 14.
 const total_components = 14;
 var components_buf: [total_components]Component = undefined;
 
-// -- option step tables -------------------------------------------------------
+// --- option step tables ---
 
 const vol_steps = [_]f32{ 0.0, 0.25, 0.5, 0.75, 1.0 };
 const fov_steps = [_]f32{ 60.0, 70.0, 80.0, 90.0, 100.0, 110.0 };
@@ -124,7 +124,7 @@ fn fmt_label(buf: *[label_max]u8, len: *u8, comptime fmt: []const u8, args: anyt
     len.* = @intCast(s.len);
 }
 
-// -- label / component rebuild -----------------------------------------------
+// --- label / component rebuild ---
 
 fn refresh_labels() void {
     const c = Options.current;
@@ -312,7 +312,7 @@ pub fn refresh() void {
     rebuild_components();
 }
 
-// -- activation callbacks ----------------------------------------------------
+// --- activation callbacks ---
 // No disk I/O here: callers (MenuState / GameState) write options.json once
 // when the screen is dismissed, keeping every click free of blocking writes.
 
@@ -381,7 +381,7 @@ fn on_done(_: *anyopaque) void {
 
 fn on_noop(_: *anyopaque) void {}
 
-// -- draw underlays ----------------------------------------------------------
+// --- draw underlays ---
 
 fn draw_dirt_underlay(ctx: *anyopaque, sprites: *SpriteBatcher, _: *FontBatcher, _: *const Rendering.Texture) void {
     const menu: *const Context = @ptrCast(@alignCast(ctx));
@@ -430,7 +430,7 @@ fn draw_dim_underlay(_: *anyopaque, sprites: *SpriteBatcher, _: *FontBatcher, _:
     });
 }
 
-// -- public API --------------------------------------------------------------
+// --- public API ---
 
 fn build_prompts(_: *anyopaque, buf: []PromptStrip.Prompt) []const PromptStrip.Prompt {
     buf[0] = Prompts.select();

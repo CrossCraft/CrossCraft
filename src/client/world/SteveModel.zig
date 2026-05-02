@@ -134,7 +134,7 @@ pub fn deinit(self: *Self) void {
     for (meshes) |m| m.deinit(self.allocator);
 }
 
-// -- Per-frame update (call from GameState.update) ---------------------------
+// --- Per-frame update (call from GameState.update) ---
 
 pub fn update(self: *Self, dt: f32, player_list: *const PlayerList, fonts: *const FontBatcher) void {
     const tau = std.math.tau;
@@ -211,7 +211,7 @@ fn lerp_angle(current: f32, target: f32, f_factor: f32) f32 {
     return current + diff * f_factor;
 }
 
-// -- Draw (call from GameState.draw) -----------------------------------------
+// --- Draw (call from GameState.draw) ---
 
 pub fn draw(self: *Self, local: *const Player) void {
     const local_x = local.pos_x;
@@ -283,7 +283,7 @@ pub fn draw(self: *Self, local: *const Player) void {
     }
 }
 
-// -- Name tags (call from GameState.draw after draw()) -----------------------
+// --- Name tags (call from GameState.draw after draw()) ---
 
 pub fn draw_nametags(self: *Self, local: *const Player, fonts: *const FontBatcher) void {
     Rendering.Pipeline.bind(self.pipeline);
@@ -310,7 +310,7 @@ pub fn draw_nametags(self: *Self, local: *const Player, fonts: *const FontBatche
     }
 }
 
-// -- Geometry builders -------------------------------------------------------
+// --- Geometry builders ---
 
 const UVRect = struct { tu0: i16, tv0: i16, tu1: i16, tv1: i16 };
 
@@ -462,7 +462,7 @@ fn emit_box(
     }
 }
 
-// -- Body part builders ------------------------------------------------------
+// --- Body part builders ---
 // All limbs are built relative to their rotation pivot so that rotations
 // in the model matrix produce natural joint movement.
 

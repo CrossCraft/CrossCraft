@@ -26,7 +26,7 @@ pub const Context = struct {
     dirt: *const Rendering.Texture,
 };
 
-// -- selection signals ------------------------------------------------------
+// --- selection signals ---
 
 /// Set after a pack row is clicked. Carries both the dir and the path to
 /// hand to `ResourcePack.switch_pack`. MenuState reads and clears.
@@ -40,7 +40,7 @@ pub var pending_select: ?PendingSelect = null;
 /// Set after the "Back" button is clicked. MenuState reads and clears.
 pub var pending_back: bool = false;
 
-// -- backing storage --------------------------------------------------------
+// --- backing storage ---
 
 const max_packs: u8 = 12;
 /// Long enough for "texturepacks/" + a 64-char filename + ".zip".
@@ -122,7 +122,7 @@ fn find_active_index() ?u8 {
     return null;
 }
 
-// -- scan -------------------------------------------------------------------
+// --- scan ---
 
 /// Re-scan the texturepacks folder and rebuild the component layout.
 /// Always seeds entry 0 with the bundled default pack so the player can
@@ -222,7 +222,7 @@ fn rebuild_components() void {
     component_count += 1;
 }
 
-// -- screen rendering -------------------------------------------------------
+// --- screen rendering ---
 
 fn draw_underlay(ctx: *anyopaque, sprites: *SpriteBatcher, _: *FontBatcher, _: *const Rendering.Texture) void {
     const menu: *const Context = @ptrCast(@alignCast(ctx));

@@ -121,7 +121,7 @@ pub fn lookup(button: Button, style: Style) Rect {
     return lookup_controller(button, style);
 }
 
-// -- pc.png (controller styles) ---------------------------------------------
+// --- pc.png (controller styles) ---
 
 const PC_TILE: i16 = 32;
 /// Desktop sheet tiles are 32x32 in source, rendered at half-size so the
@@ -188,7 +188,7 @@ fn lookup_kbm(button: Button) Rect {
     };
 }
 
-// -- psp.png ----------------------------------------------------------------
+// --- psp.png ---
 
 const PSP_FACE: i16 = 8;
 const PSP_WIDE_W: i16 = 16;

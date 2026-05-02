@@ -227,7 +227,7 @@ fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
             if (lx == 15) wr.mark_section_dirty(cx + 1, walk_sy, cz);
             if (lz == 0 and cz > 0) wr.mark_section_dirty(cx, walk_sy, cz - 1);
             if (lz == 15) wr.mark_section_dirty(cx, walk_sy, cz + 1);
-            if (World.blocks_light(World.get_block(event.x, walk_y, event.z))) break;
+            if (World.WorldData.blocks_light(World.data.get_block(event.x, walk_y, event.z))) break;
             if (walk_y == 0) break;
             walk_y -= 1;
         }

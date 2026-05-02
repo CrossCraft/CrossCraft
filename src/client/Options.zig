@@ -116,7 +116,7 @@ pub fn fancy_leaves_supported() bool {
     return cfg.current.lod_near_radius_blocks > 0;
 }
 
-// -- JSON shadow type --------------------------------------------------------
+// --- JSON shadow type ---
 // Field names match the JSON keys.  `active_texturepack` is a `[]const u8`
 // so the JSON parser can allocate it into the per-call arena; the caller
 // copies the value into the fixed buffer before the arena is freed.
@@ -136,7 +136,7 @@ const JsonOptions = struct {
     rain: bool = false,
 };
 
-// -- public API --------------------------------------------------------------
+// --- public API ---
 
 /// Load options from `options.json` in `dir`.  Falls back to defaults when
 /// the file does not exist or cannot be parsed.
@@ -154,7 +154,7 @@ pub fn load(io: Io, dir: Io.Dir) void {
     if (n == 0) return;
 
     // A tiny stack arena for the JSON parser.  The only heap allocation it
-    // makes for JsonOptions is the `active_texturepack` string (≤255 bytes).
+    // makes for JsonOptions is the `active_texturepack` string (<=255 bytes).
     var arena_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&arena_buf);
     const parsed = std.json.parseFromSlice(
@@ -195,11 +195,10 @@ pub fn load(io: Io, dir: Io.Dir) void {
 }
 
 /// Write current options to `options.json` in `dir`.
-/// On non-PSP targets the write goes through an atomic temp-file replace so a
-/// crash mid-write never leaves a truncated file.  On PSP, `dirCreateFileAtomic`
-/// is unimplemented in the pspsdk Io vtable; fall back to a direct `createFile`
-/// write instead.  options.json is ~300 bytes, so load()'s parse-error fallback
-/// to defaults is sufficient protection against the negligible partial-write risk.
+/// Uses a direct `createFile` on every platform.  Atomic temp-file replace
+/// is unimplemented on PSP and the partial-write risk is negligible here:
+/// options.json is ~300 bytes, and `load`'s parse-error fallback to
+/// defaults already covers a torn write.
 pub fn save(io: Io, dir: Io.Dir) void {
     const j = JsonOptions{
         .active_texturepack = current.active_texturepack(),
@@ -224,29 +223,12 @@ pub fn save(io: Io, dir: Io.Dir) void {
     };
     const slice = out.buffered();
 
-    if (comptime @import("aether").platform == .psp) {
-        const file = dir.createFile(io, options_file, .{}) catch |err| {
-            log.err("create options.json failed: {}", .{err});
-            return;
-        };
-        defer file.close(io);
-        file.writeStreamingAll(io, slice) catch |err| {
-            log.err("write options.json failed: {}", .{err});
-        };
-        return;
-    }
-
-    var atomic = dir.createFileAtomic(io, options_file, .{ .replace = true }) catch |err| {
+    const file = dir.createFile(io, options_file, .{}) catch |err| {
         log.err("create options.json failed: {}", .{err});
         return;
     };
-    defer atomic.deinit(io);
-
-    atomic.file.writeStreamingAll(io, slice) catch |err| {
+    defer file.close(io);
+    file.writeStreamingAll(io, slice) catch |err| {
         log.err("write options.json failed: {}", .{err});
-        return;
-    };
-    atomic.replace(io) catch |err| {
-        log.err("finalize options.json failed: {}", .{err});
     };
 }

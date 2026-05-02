@@ -164,6 +164,52 @@ pub const ByteArray = struct {
 
 pub const String = PrefixString;
 
+/// Write a named TAG_Byte_Array whose body is too large to materialise in
+/// memory. Emits the tag byte, name, and i32 length, then defers the body
+/// to `body.write_into(writer)`. The caller is responsible for writing
+/// exactly `len` bytes via the same writer.
+///
+/// Used by the ClassicWorld save format for the ~8 MB `BlockArray` field:
+/// the in-memory block layout is chunk-major and has to be reordered to
+/// YZX on the way out, which means streaming through the gzip writer
+/// rather than allocating a contiguous scratch slice.
+pub fn write_named_byte_array_stream(
+    writer: *std.Io.Writer,
+    name: []const u8,
+    len: u32,
+    body: anytype,
+) WriteError!void {
+    try writer.writeInt(u8, @intFromEnum(Tag.byte_array), .big);
+    try writer.writeInt(u16, @intCast(name.len), .big);
+    try writer.writeAll(name);
+    try writer.writeInt(i32, @intCast(len), .big);
+    try body.write_into(writer);
+}
+
+/// Mirror of `write_named_byte_array_stream` for the load path. Reads the
+/// tag byte (must be TAG_Byte_Array), the name (must equal `expected_name`),
+/// and the i32 length (must equal `expected_len`), then defers the body
+/// bytes to `body.read_from(reader)`.
+pub fn read_named_byte_array_stream(
+    reader: *std.Io.Reader,
+    expected_name: []const u8,
+    expected_len: u32,
+    body: anytype,
+) !void {
+    const tag = try read_tag(reader);
+    if (tag != .byte_array) return error.InvalidTag;
+    const name_len = try reader.takeInt(u16, .big);
+    if (name_len != expected_name.len) return error.UnexpectedName;
+    var name_buf: [256]u8 = undefined;
+    if (name_len > name_buf.len) return error.UnexpectedName;
+    try reader.readSliceAll(name_buf[0..name_len]);
+    if (!std.mem.eql(u8, name_buf[0..name_len], expected_name)) return error.UnexpectedName;
+    const len = try reader.takeInt(i32, .big);
+    if (len < 0) return error.NegativeByteArray;
+    if (@as(u32, @intCast(len)) != expected_len) return error.UnexpectedByteArrayLength;
+    try body.read_from(reader);
+}
+
 pub const List = struct {
     value: []NBT,
 
@@ -503,6 +549,31 @@ test "round-trip list of compounds" {
     try testing.expectEqual(@as(usize, 2), got.value.list.value.len);
     try testing.expectEqual(@as(i16, 1), got.value.list.value[0].value.compound.value[0].value.short.value);
     try testing.expectEqual(@as(i16, 2), got.value.list.value[1].value.compound.value[0].value.short.value);
+}
+
+test "streaming byte array round-trip" {
+    var buf: [128]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+
+    const payload = [_]u8{ 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
+    const Body = struct {
+        bytes: []const u8,
+        fn write_into(self: @This(), writer: *std.Io.Writer) WriteError!void {
+            try writer.writeAll(self.bytes);
+        }
+    };
+    try write_named_byte_array_stream(&w, "BlockArray", payload.len, Body{ .bytes = &payload });
+
+    var r = std.Io.Reader.fixed(w.buffered());
+    var got_buf: [payload.len]u8 = undefined;
+    const ReadBody = struct {
+        out: []u8,
+        fn read_from(self: @This(), reader: *std.Io.Reader) !void {
+            try reader.readSliceAll(self.out);
+        }
+    };
+    try read_named_byte_array_stream(&r, "BlockArray", payload.len, ReadBody{ .out = &got_buf });
+    try testing.expectEqualSlices(u8, &payload, &got_buf);
 }
 
 test "MAX_DEPTH guards runaway nesting" {

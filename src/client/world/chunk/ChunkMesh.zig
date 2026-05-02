@@ -35,7 +35,7 @@ ao_enabled: bool,
 /// first time a section is meshed when the bouncy_chunks option is enabled,
 /// then advances toward 1 over 1 second via update_animation().
 anim_progress: f32,
-/// True until the first successful rebuild() — used by World to distinguish
+/// True until the first successful rebuild() -- used by World to distinguish
 /// newly-meshed sections from dirty rebuilds.
 first_build: bool,
 allocator: std.mem.Allocator,
@@ -81,7 +81,7 @@ pub fn clear(self: *Self) void {
 
 pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void {
     // All-air chunks have no visible faces -- skip pack/count/emit entirely.
-    if (World.is_chunk_all_air(self.cx, self.sy, self.cz)) {
+    if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) {
         self.@"opaque".vertices.clearRetainingCapacity();
         self.trans.vertices.clearRetainingCapacity();
         self.fluid.vertices.clearRetainingCapacity();

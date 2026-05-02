@@ -40,7 +40,7 @@ pub fn enabled() bool {
     return Options.current.controller_tooltips != .off;
 }
 
-// -- Layout constants (logical pixels) --------------------------------------
+// --- Layout constants (logical pixels) ---
 
 /// Canonical bottom-left offset used by every prompt strip site (menu
 /// screens and the in-game HUD) so the strip lands in the same visual

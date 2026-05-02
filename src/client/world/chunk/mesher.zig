@@ -69,7 +69,7 @@ pub const SectionCounts = struct {
     fluid_verts: u32, // water/lava
 };
 
-// -- Prefetch -----------------------------------------------------------------
+// --- Prefetch ---
 
 /// 256 bytes (one chunk Y-slice: 16 z-rows x 16 x-blocks) = 4 cache lines.
 const Y_SLICE_BYTES: u32 = c.ChunkSize * c.ChunkSize;
@@ -84,7 +84,7 @@ inline fn prefetch_y_slice(chunk_ptr: *const [c.ChunkVolume]c.Block, y_local: u3
     prefetch.prefetch_slice(c.Block, slice);
 }
 
-// -- Pack ---------------------------------------------------------------------
+// --- Pack ---
 
 fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
@@ -104,7 +104,7 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     // The 16 inner blocks (bits 1..16) share a chunk and are contiguous in
     // the chunk-aware layout. Read them as a single slice to avoid 16
     // individual block_index computations on the hot path.
-    const chunk_row = World.get_chunk_row(@intCast(cx * 16), wy, wz);
+    const chunk_row = World.data.get_chunk_row(@intCast(cx * 16), wy, wz);
 
     for (0..18) |i| {
         const wx_raw: i32 = @as(i32, @intCast(cx)) * 16 + @as(i32, @intCast(i)) - 1;
@@ -188,12 +188,12 @@ fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
 
 /// Pack the SectionBuf and return the per-mesh vertex counts so the caller
 /// can pre-allocate exact capacity before emit_section runs. emit_section
-/// recomputes face masks rather than reading from a cache because, on PSP,
-/// a 28 KiB FaceMasks cache exceeds the 16 KiB D-cache and the resulting
-/// thrash costs more than re-running compute_face_masks (~3.6 us/cell of
-/// bit ops on top of an already-resident SectionBuf).
+/// recomputes face masks per cell rather than caching them: FaceMasks is a
+/// stack temporary (no shared cache), and re-running the bit ops on an
+/// already-resident SectionBuf is cheaper than the alternative of carrying a
+/// large mask buffer across the count -> emit boundary.
 pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf) SectionCounts {
-    const all_opaque = World.is_chunk_all_opaque(cx, sy, cz);
+    const all_opaque = World.data.is_chunk_all_opaque(cx, sy, cz);
     const base_y: i32 = @as(i32, @intCast(sy)) * 16 - 1;
 
     // Streaming prefetch only for non-opaque chunks: pack_row_opaque reads
@@ -205,7 +205,7 @@ pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf)
     const chunk_ptr: ?*const [c.ChunkVolume]c.Block = if (all_opaque)
         null
     else
-        World.get_chunk_ptr(cx, sy, cz);
+        World.data.get_chunk_ptr(cx, sy, cz);
 
     // Pre-warm the first inner slice (read by by==1) before the loop, then
     // each inner iteration issues the slice that the *next* iteration will
@@ -281,16 +281,23 @@ inline fn classify_block(block: Block, bit_pos: u5, opq: *u32, vis: *u32, flu: *
     if (p.glass) glass_.* |= bit;
 }
 
-// -- Count --------------------------------------------------------------------
+// --- Count ---
 
 fn pop(v: u32) u32 {
     return @as(u32, @popCount(v));
 }
 
 /// Computed face masks for a single row, shared by counting and emission.
+///
+/// Bitmasks here are consumed by emit_section to walk each face's bits. Counts
+/// (the *_count fields) are precomputed inside compute_face_masks because their
+/// only consumer is counts_from_masks, and storing scalars costs less than
+/// keeping six u32 bitmasks alive just to popcount them later. Each directional
+/// mask has at most 16 bits set, so per-row sums fit comfortably in u8.
 const FaceMasks = struct {
     // Faces routed via emit_mask (registry picks opaque vs transparent mesh).
-    // Includes: opaque blocks, outer leaves, glass, and fluids.
+    // Includes opaque blocks, outer leaves, glass, and fluids - the fluid bits
+    // are merged in here so emit_section can iterate one mask per direction.
     x_pos: u32,
     x_neg: u32,
     y_pos: u32,
@@ -307,16 +314,6 @@ const FaceMasks = struct {
     sl_zp: u32,
     sl_zn: u32,
     cross: u32,
-    opq: u32,
-    leaf: u32,
-    slab: u32,
-    // Per-direction fluid masks for separate fluid mesh routing.
-    flu_xp: u32,
-    flu_xn: u32,
-    flu_yp: u32,
-    flu_yn: u32,
-    flu_zp: u32,
-    flu_zn: u32,
     // Transparent blocks with fluid neighbors - emit water overlay on fluid mesh.
     tfl_xp: u32,
     tfl_xn: u32,
@@ -324,14 +321,33 @@ const FaceMasks = struct {
     tfl_yn: u32,
     tfl_zp: u32,
     tfl_zn: u32,
+    // --- Precomputed counts (consumed by counts_from_masks only) ---
+    // Total opaque-routed faces: sum over directions of pop((opq | slab) & dir).
+    // Slab bits aren't in `opq` (slabs route to opaque despite not being a cull
+    // barrier), so they're folded in at compute time rather than carried out.
+    opq_count: u8,
+    // Total fluid faces across all 6 directions. Fluid bits are already merged
+    // into x_pos/y_pos/z_pos for emit; this count exists purely so the counter
+    // pass can subtract it from the all-faces total to get transparent verts.
+    flu_count: u8,
+    // Fluid top-plane faces (y_pos). Used to size the inset-top extra verts.
+    flu_yp_count: u8,
 };
 
 fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const cur = buf[by][bz];
+
+    // Empty-row early-out: with no visible blocks and no cross blocks in this
+    // row, no face can originate here. vis covers fluids and (solid_)leaf, but
+    // cross blocks (saplings, flowers, mushrooms) are flagged visible=false in
+    // BlockRegistry, so they must be checked separately or they vanish from
+    // the mesh in otherwise-empty rows. Common in sections above the surface
+    // where most cells are pure air.
+    if (cur.vis == 0 and cur.cross == 0) return std.mem.zeroes(FaceMasks);
+
     const opq = cur.opq;
     const vis = cur.vis;
     const flu = cur.flu;
-    const leaf = cur.leaf;
     const slab = cur.slab;
     const sleaf = cur.solid_leaf;
 
@@ -347,6 +363,23 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const eff_zn = n_zn.opq | n_zn.solid_leaf;
     const eff_yp = n_yp.opq | n_yp.solid_leaf;
     const eff_yn = n_yn.opq | n_yn.solid_leaf;
+
+    // Buried-row early-out: cur is fully effective-opaque at all 18 bits
+    // (16 inner + 2 X-direction chunk boundaries) and all 4 z/y neighbors are
+    // fully effective-opaque on SECTION_MASK, so every face is culled and
+    // every sl_*/flu_*/tfl_* mask reduces to zero. Slab/cross/fluid blocks
+    // contribute 0 to opq and never to sleaf, so eff_cur == 0x3FFFF implies
+    // they're absent in cur -- no separate slab/cross/fluid check needed.
+    // Wins on dense underground bands where most cells are buried stone.
+    const ALL_18: u32 = (1 << 18) - 1;
+    if (eff_cur == ALL_18 and
+        (eff_zp & SECTION_MASK) == SECTION_MASK and
+        (eff_zn & SECTION_MASK) == SECTION_MASK and
+        (eff_yp & SECTION_MASK) == SECTION_MASK and
+        (eff_yn & SECTION_MASK) == SECTION_MASK)
+    {
+        return std.mem.zeroes(FaceMasks);
+    }
 
     // Standard visible blocks: opaque + outer leaves + glass. Fluids and solid
     // leaves are emitted through their own paths and excluded here.
@@ -382,7 +415,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     // not fluid and not opaque) always emit. Tops with opaque above only
     // emit when adjacent (within 1 block horizontally) to a naked top, to
     // form a one-plane border that hides the inset seam. Deep-covered
-    // interior culls — huge win in water/lava-filled caves.
+    // interior culls -- huge win in water/lava-filled caves.
     const n_yp_zp = &buf[by + 1][bz + 1];
     const n_yp_zn = &buf[by + 1][bz - 1];
     const eff_yp_zp = n_yp_zp.opq | n_yp_zp.solid_leaf;
@@ -418,13 +451,34 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const tfl_yp = (trans & n_yp.flu) & SECTION_MASK;
     const tfl_yn = (trans & n_yn.flu) & SECTION_MASK;
 
+    // Merge fluid bits into the per-direction masks so emit_section walks one
+    // mask per face. The standalone fluid bitmasks aren't carried out -- only
+    // their popcounts (folded into the count fields below) are needed later.
+    const xp_all = x_pos | flu_xp;
+    const xn_all = x_neg | flu_xn;
+    const yp_all = y_pos | flu_yp_bits;
+    const yn_all = y_neg | flu_yn;
+    const zp_all = z_pos | flu_zp;
+    const zn_all = z_neg | flu_zn;
+
+    // Slab routes to the opaque mesh even though slab bits aren't in `opq`
+    // (which is the cull mask). Fold them in for opaque vertex-count routing.
+    const routed_opq = opq | slab;
+    const opq_count: u8 = @intCast(pop(routed_opq & xp_all) + pop(routed_opq & xn_all) +
+        pop(routed_opq & zp_all) + pop(routed_opq & zn_all) +
+        pop(routed_opq & yp_all) + pop(routed_opq & yn_all));
+    const flu_yp_count: u8 = @intCast(pop(flu_yp_bits));
+    const flu_count: u8 = @intCast(pop(flu_xp) + pop(flu_xn) +
+        pop(flu_zp) + pop(flu_zn) +
+        @as(u32, flu_yp_count) + pop(flu_yn));
+
     return .{
-        .x_pos = x_pos | flu_xp,
-        .x_neg = x_neg | flu_xn,
-        .y_pos = y_pos | flu_yp_bits,
-        .y_neg = y_neg | flu_yn,
-        .z_pos = z_pos | flu_zp,
-        .z_neg = z_neg | flu_zn,
+        .x_pos = xp_all,
+        .x_neg = xn_all,
+        .y_pos = yp_all,
+        .y_neg = yn_all,
+        .z_pos = zp_all,
+        .z_neg = zn_all,
         .sl_xp = sl_xp,
         .sl_xn = sl_xn,
         .sl_yp = sl_yp,
@@ -432,21 +486,15 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
         .sl_zp = sl_zp,
         .sl_zn = sl_zn,
         .cross = cur.cross & SECTION_MASK,
-        .opq = opq,
-        .leaf = leaf,
-        .slab = slab,
-        .flu_xp = flu_xp,
-        .flu_xn = flu_xn,
-        .flu_yp = flu_yp_bits,
-        .flu_yn = flu_yn,
-        .flu_zp = flu_zp,
-        .flu_zn = flu_zn,
         .tfl_xp = tfl_xp,
         .tfl_xn = tfl_xn,
         .tfl_yp = tfl_yp,
         .tfl_yn = tfl_yn,
         .tfl_zp = tfl_zp,
         .tfl_zn = tfl_zn,
+        .opq_count = opq_count,
+        .flu_count = flu_count,
+        .flu_yp_count = flu_yp_count,
     };
 }
 
@@ -454,23 +502,16 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
 /// Used by emit_section to size ArrayList capacity per row before appending.
 fn counts_from_masks(f: FaceMasks) SectionCounts {
     const sl_count = pop(f.sl_xp) + pop(f.sl_xn) + pop(f.sl_zp) + pop(f.sl_zn) + pop(f.sl_yp) + pop(f.sl_yn);
-    // Slabs render to the opaque mesh even though they're not in `opq`
-    // (which is the cull mask). Fold them in for vertex-count routing.
-    const routed_opq = f.opq | f.slab;
-    const opq_count = pop(routed_opq & f.x_pos) + pop(routed_opq & f.x_neg) +
-        pop(routed_opq & f.z_pos) + pop(routed_opq & f.z_neg) +
-        pop(routed_opq & f.y_pos) + pop(routed_opq & f.y_neg);
     const all_count = pop(f.x_pos) + pop(f.x_neg) +
         pop(f.z_pos) + pop(f.z_neg) +
         pop(f.y_pos) + pop(f.y_neg);
     const cross_count = pop(f.cross);
-    const flu_count = pop(f.flu_xp) + pop(f.flu_xn) +
-        pop(f.flu_zp) + pop(f.flu_zn) +
-        pop(f.flu_yp) + pop(f.flu_yn);
-    const flu_top_extra = pop(f.flu_yp);
     const tfl_count = pop(f.tfl_xp) + pop(f.tfl_xn) +
         pop(f.tfl_zp) + pop(f.tfl_zn) +
         pop(f.tfl_yp) + pop(f.tfl_yn);
+    const opq_count: u32 = f.opq_count;
+    const flu_count: u32 = f.flu_count;
+    const flu_top_extra: u32 = f.flu_yp_count;
 
     return .{
         .opaque_verts = (opq_count + sl_count) * 6,
@@ -496,13 +537,13 @@ pub fn count_section(buf: *const SectionBuf) SectionCounts {
     return total;
 }
 
-// -- Emit ---------------------------------------------------------------------
+// --- Emit ---
 
 fn assert_has_room(verts: *const std.ArrayList(Vertex), n: u32) void {
     std.debug.assert(verts.items.len + n <= verts.capacity);
 }
 
-// -- Ambient Occlusion --------------------------------------------------------
+// --- Ambient Occlusion ---
 // Per-vertex AO: sample 3 neighbors in the face's neighbor plane (two tangent
 // edges + the diagonal), classify to a 4-level brightness ramp, and modulate
 // the base directional face tint. Opaque-eff = opq | solid_leaf so solid-leaf
@@ -801,7 +842,7 @@ pub fn emit_section(
                 f.tfl_xp | f.tfl_xn | f.tfl_yp | f.tfl_yn | f.tfl_zp | f.tfl_zn;
             if (any == 0) continue;
 
-            const chunk_row = World.get_chunk_row(@intCast(cx * 16), @intCast(world_y), @intCast(cz * 16 + lz));
+            const chunk_row = World.data.get_chunk_row(@intCast(cx * 16), @intCast(world_y), @intCast(cz * 16 + lz));
 
             // Standard faces - emit_mask routes opaque blocks to the opaque
             // mesh and outer leaves / glass / fluids to the transparent mesh.

@@ -123,13 +123,13 @@ pub const Block = struct {
         _,
     };
 
-    // -- Identity ------------------------------------------------------------
+    // --- Identity ---
 
     pub inline fn is_air(self: Block) bool {
         return self.id == .air;
     }
 
-    // -- Coarse property getters (hot-path single-load) ----------------------
+    // --- Coarse property getters (hot-path single-load) ---
 
     pub inline fn mesh_props(self: Block) BlockRegistry.MeshProps {
         return BlockRegistry.global.mesh_props[@intFromEnum(self.id)];
@@ -164,7 +164,7 @@ pub const Block = struct {
         return @as(f32, @floatFromInt(h16)) * (1.0 / 16.0);
     }
 
-    // -- Mesh flags ----------------------------------------------------------
+    // --- Mesh flags ---
 
     pub inline fn is_opaque(self: Block) bool {
         return self.mesh_props().@"opaque";
@@ -191,7 +191,7 @@ pub const Block = struct {
         return self.mesh_props().emits_light;
     }
 
-    // -- Sim flags -----------------------------------------------------------
+    // --- Sim flags ---
 
     pub inline fn is_solid(self: Block) bool {
         return self.sim_props().solid;
@@ -218,7 +218,7 @@ pub const Block = struct {
         return self.sim_props().fast_tick;
     }
 
-    // -- Fluid kind ----------------------------------------------------------
+    // --- Fluid kind ---
 
     pub inline fn is_water(self: Block) bool {
         return self.fluid_kind() == .water;
@@ -254,7 +254,7 @@ test "Block accessors" {
     try std.testing.expectEqual(@as(f32, 1.0), (Block{ .id = .stone }).collision_height());
     try std.testing.expectEqual(@as(f32, 0.0), (Block{ .id = .air }).collision_height());
 
-    // face_tile: stone uses all(1,0) — all faces share the same tile.
+    // face_tile: stone uses all(1,0) -- all faces share the same tile.
     const stone_top = (Block{ .id = .stone }).face_tile(.y_pos);
     try std.testing.expectEqual(@as(u8, 1), stone_top.col);
     try std.testing.expectEqual(@as(u8, 0), stone_top.row);

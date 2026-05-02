@@ -15,7 +15,7 @@ const Rendering = ae.Rendering;
 const Zip = @import("util/Zip.zig");
 const TextureAtlas = @import("graphics/TextureAtlas.zig").TextureAtlas;
 
-// -- texture identifiers -----------------------------------------------------
+// --- texture identifiers ---
 
 pub const Tex = enum(u8) {
     dirt,
@@ -54,7 +54,7 @@ fn tex_path(id: Tex) []const u8 {
     };
 }
 
-// -- storage -----------------------------------------------------------------
+// --- storage ---
 
 var textures: [Tex.count]Rendering.Texture = undefined;
 var tex_loaded: u16 = 0;
@@ -76,7 +76,7 @@ var pack_dir: std.Io.Dir = undefined;
 
 const log = std.log.scoped(.respack);
 
-// -- animation state ---------------------------------------------------------
+// --- animation state ---
 
 const tile_size: u32 = 16;
 const water_tile_col: u32 = 14;
@@ -88,7 +88,7 @@ const anim_period_ticks: u32 = 2;
 var anim_tick: u32 = 0;
 var pack_initialized: bool = false;
 
-// -- lifecycle ---------------------------------------------------------------
+// --- lifecycle ---
 
 /// Open the resource pack at `path` (resolved against `dir`) and prepare
 /// for texture loading. Safe to call multiple times -- subsequent calls
@@ -134,7 +134,7 @@ pub fn deinit() void {
     pack_initialized = false;
 }
 
-// -- pack access -------------------------------------------------------------
+// --- pack access ---
 
 pub fn get_pack() *Zip {
     return pack;
@@ -232,7 +232,7 @@ pub fn switch_pack(dir: std.Io.Dir, path: []const u8) !void {
     log.info("switched to pack '{s}'", .{path});
 }
 
-// -- texture access ----------------------------------------------------------
+// --- texture access ---
 
 pub fn get_tex(id: Tex) *const Rendering.Texture {
     const i = @intFromEnum(id);
@@ -283,7 +283,7 @@ pub fn apply_tex_set(set: []const Tex) !void {
     }
 }
 
-// -- animation ---------------------------------------------------------------
+// --- animation ---
 
 /// Advance fluid tile animations. Called every game tick; actually blits
 /// a new frame once every `anim_period_ticks` ticks.
@@ -334,7 +334,7 @@ fn blit_frame(
     }
 }
 
-// -- helpers -----------------------------------------------------------------
+// --- helpers ---
 
 fn load_from_zip(id: Tex) !Rendering.Texture {
     var buf: [256]u8 = undefined;

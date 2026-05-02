@@ -104,7 +104,7 @@ pub fn draw_clouds(self: *Self, _: *const Camera) void {
     self.cloud_mesh.draw(&m);
 }
 
-// -- Fog --
+// --- Fog ---
 
 fn set_sky_fog(submerged: ?collision.Liquid) void {
     const c = fog_color(submerged);
@@ -133,7 +133,7 @@ fn fog_params(submerged: ?collision.Liquid) [2]f32 {
     };
 }
 
-// -- Mesh building --
+// --- Mesh building ---
 
 /// Map sky grid index [0, PLANE_GRID] to SNORM16 [0, 32767].
 fn encode_plane(i: u32) i16 {

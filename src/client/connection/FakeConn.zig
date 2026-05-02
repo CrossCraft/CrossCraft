@@ -74,7 +74,7 @@ pub const FakeConn = struct {
         };
     }
 
-    // -- Ring helpers --------------------------------------------------------
+    // --- Ring helpers ---
 
     fn ring_write(buf: []u8, head: *const std.atomic.Value(u32), tail: *std.atomic.Value(u32), data: []const u8) u32 {
         const h = head.load(.acquire);
@@ -96,7 +96,7 @@ pub const FakeConn = struct {
         return n;
     }
 
-    // -- S->C writer (server_writer -> s2c ring) ------------------------------
+    // --- S->C writer (server_writer -> s2c ring) ---
 
     const s2c_writer_vtable: std.Io.Writer.VTable = .{ .drain = s2c_drain };
 
@@ -121,7 +121,7 @@ pub const FakeConn = struct {
         return w.consume(buf_end + data_written);
     }
 
-    // -- S->C reader (s2c ring -> client_reader) ------------------------------
+    // --- S->C reader (s2c ring -> client_reader) ---
 
     const s2c_reader_vtable: std.Io.Reader.VTable = .{ .stream = s2c_stream };
 
@@ -134,7 +134,7 @@ pub const FakeConn = struct {
         return 0; // data stored in r.buffer; caller serves it from there
     }
 
-    // -- C->S writer (client_writer -> c2s ring) ------------------------------
+    // --- C->S writer (client_writer -> c2s ring) ---
 
     const c2s_writer_vtable: std.Io.Writer.VTable = .{ .drain = c2s_drain };
 
@@ -156,7 +156,7 @@ pub const FakeConn = struct {
         return w.consume(buf_end + data_written);
     }
 
-    // -- C->S reader (c2s ring -> server_reader) ------------------------------
+    // --- C->S reader (c2s ring -> server_reader) ---
 
     const c2s_reader_vtable: std.Io.Reader.VTable = .{ .stream = c2s_stream };
 

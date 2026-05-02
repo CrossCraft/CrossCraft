@@ -76,25 +76,25 @@ const FP_3_5: FP16 = .{ .value = 229376 }; // 3.5 * 65536 exact
 // RCP means ReCiProcal (1/5, 1/6, 1/8)
 const RCP_5: FP16 = .{ .value = 13107 };
 const RCP_6: FP16 = .{ .value = 10923 };
-const RCP_8: FP16 = .{ .value = 8192 }; // Crazy how that works out huh? /s
+const RCP_8: FP16 = .{ .value = 8192 };
 
-// -- Raising constants (Step 1: heightmap) --------------------------------
+// --- Raising constants (Step 1: heightmap) ---
 const HEIGHT_LOW_OFFSET = FP16.from(4); // heightLow = noise1/6 - 4
 const HEIGHT_HIGH_OFFSET = FP16.from(6); // heightHigh = noise2/5 + 6
 
-// -- Erosion constants (Step 2) -------------------------------------------
+// --- Erosion constants (Step 2) ---
 const EROSION_THRESHOLD: i32 = 2 * 0x10000; // a > 2
 
-// -- Strata constants (Step 3) --------------------------------------------
+// --- Strata constants (Step 3) ---
 const DIRT_NOISE_DIVISOR: i32 = 24; // dirtThickness = noise/24 - 4
 const DIRT_THICKNESS_OFFSET: i32 = 4;
 
-// -- Cave constants (Step 4) ----------------------------------------------
+// --- Cave constants (Step 4) ---
 const CAVE_COUNT_DIVISOR: u32 = 8192; // total caves = volume / 8192
 const WALKER_JITTER_RANGE: u32 = 4; // jitter in [-2, 1] blocks
 const WALKER_JITTER_CENTER: i32 = 2;
 
-// -- Ore constants (Step 5) -----------------------------------------------
+// --- Ore constants (Step 5) ---
 // Vein count = volume * abundance / 16384
 // We multiply abundance*10 and divide by 16384*10=163840 to stay integer
 const ORE_VEIN_DIVISOR: u32 = 163840; // = 16384 * 10
@@ -102,17 +102,17 @@ const COAL_ABUNDANCE_X10: u32 = 9; // abundance 0.9
 const IRON_ABUNDANCE_X10: u32 = 7; // abundance 0.7
 const GOLD_ABUNDANCE_X10: u32 = 5; // abundance 0.5
 
-// -- Flood constants (Steps 7-8) ------------------------------------------
+// --- Flood constants (Steps 7-8) ---
 const WATER_SOURCE_DIVISOR: u32 = 8000; // underground water = area / 8000
 const WATER_SOURCE_DEPTH: u32 = 2; // sources at waterLevel-1 or waterLevel-2
 const LAVA_SOURCE_DIVISOR: u32 = 20000; // lava sources = volume / 20000
 const LAVA_DEPTH_OFFSET: i32 = 3; // y = (waterLevel - 3) * rand * rand
 
-// -- Surface constants (Step 9) -------------------------------------------
+// --- Surface constants (Step 9) ---
 const SAND_NOISE_THRESHOLD: i32 = 8 * 0x10000; // sandChance = noise > 8
 const GRAVEL_NOISE_THRESHOLD: i32 = 12 * 0x10000; // gravelChance = noise > 12
 
-// -- Plant constants (Step 10) --------------------------------------------
+// --- Plant constants (Step 10) ---
 const TREE_PATCH_DIVISOR: u32 = 4000; // tree patches = area / 4000
 const TREE_ATTEMPTS_OUTER: u32 = 20; // placement iterations per patch
 const TREE_ATTEMPTS_INNER: u32 = 20;
@@ -127,7 +127,7 @@ const MUSHROOM_DIVISOR: u32 = 2000; // mushroom patches = volume / 2000
 const MUSHROOM_GROUPS: u32 = 10;
 const MUSHROOM_ATTEMPTS: u32 = 5;
 
-// -- Index / bitmask helpers ---------------------------------------------
+// --- Index / bitmask helpers ---
 
 fn blockIdx(x: u32, y: u32, z: u32) u32 {
     assert(x < W and y < H and z < D);
@@ -158,13 +158,12 @@ fn getOreBits(mask: []const u8, idx: u32) u2 {
     return @intCast((mask[idx >> 2] >> off) & 3);
 }
 
-// -- Oblate spheroid carving ---------------------------------------------
+// --- Oblate spheroid carving ---
 
 const MaskMode = enum { cave, coal, iron, gold };
 
-/// This function is a critical part of Minecraft-esque world generation
-/// The oblate spheroid is either subtracted or added to the world and results in the shape of caves and ore veins
-/// In our use we take a mode parameter which is useful for different types of masks we'd like to be carving in
+/// Carve an oblate spheroid into `mask`. Shared by caves and ore veins:
+/// `mode` selects the bit-encoding written into the mask cells.
 fn carveSpheroid(mask: []u8, cx: i32, cy: i32, cz: i32, raw_r: i32, mode: MaskMode) void {
     if (raw_r <= 0) return;
     const r = @min(raw_r, 20); // Cave radius should never exceed ~16
@@ -196,11 +195,11 @@ fn carveSpheroid(mask: []u8, cx: i32, cy: i32, cz: i32, raw_r: i32, mode: MaskMo
     }
 }
 
-// -- Cave/ore walker -----------------------------------------------------
+// --- Cave/ore walker ---
 
-// Walkers are essentially what may be described as "perlin worms" (which is a bit inaccurate because we don't use perlin noise for this, but rather random noise here which is similarly deterministic but CHEAP)
-// These are used for any generation that needs this shape, which is why mask mode is accepted here.
-// This function manages the initialization and step loop of the walker
+// "Perlin worm" style walker, but driven by xorshift rather than perlin
+// noise -- still deterministic and cheaper. Shared by caves and ore veins
+// (mode selects radius/length distributions and which mask bits are set).
 noinline fn runWalker(mask: []u8, mode: MaskMode, rng: *Xorshift64) void {
     var pos_x = FP16.from(@as(i32, @intCast(rng.next_bounded(W))));
     var pos_y = FP16.from(@as(i32, @intCast(rng.next_bounded(H))));
@@ -326,7 +325,7 @@ fn walkerRadius(cy: FP16, base: FP16, step: u32, length: u32, mode: MaskMode) i3
     return @max(0, r.int());
 }
 
-// -- Step 1: Raising (heightmap) -----------------------------------------
+// --- Step 1: Raising (heightmap) ---
 
 noinline fn stepRaising(heightmap: []i16, rng: *Xorshift64) void {
     assert(heightmap.len == MAP_AREA);
@@ -355,7 +354,7 @@ noinline fn stepRaising(heightmap: []i16, rng: *Xorshift64) void {
     }
 }
 
-// -- Step 2: Erosion -----------------------------------------------------
+// --- Step 2: Erosion ---
 
 noinline fn stepErosion(heightmap: []i16, rng: *Xorshift64) void {
     assert(heightmap.len == MAP_AREA);
@@ -377,7 +376,7 @@ noinline fn stepErosion(heightmap: []i16, rng: *Xorshift64) void {
     }
 }
 
-// -- Step 3: Strata ------------------------------------------------------
+// --- Step 3: Strata ---
 
 noinline fn stepStrata(blocks: []Block, heightmap: []const i16, rng: *Xorshift64) void {
     const soil = OctaveNoise.init(rng, 8);
@@ -404,7 +403,7 @@ noinline fn stepStrata(blocks: []Block, heightmap: []const i16, rng: *Xorshift64
     }
 }
 
-// -- Step 4-5: Caves & Ores ----------------------------------------------
+// --- Step 4-5: Caves & Ores ---
 
 noinline fn stepCaves(cave_mask: []u8, rng: *Xorshift64) void {
     const count: u32 = MAP_VOL / CAVE_COUNT_DIVISOR;
@@ -422,7 +421,7 @@ noinline fn stepOres(ore_mask: []u8, rng: *Xorshift64) void {
     for (0..gold_n) |_| runWalker(ore_mask, .gold, rng);
 }
 
-// -- Step 6: Merge -------------------------------------------------------
+// --- Step 6: Merge ---
 
 noinline fn stepMerge(blocks: []Block, cave_mask: []const u8, ore_mask: []const u8) void {
     for (0..H) |yi| {
@@ -450,7 +449,7 @@ noinline fn stepMerge(blocks: []Block, cave_mask: []const u8, ore_mask: []const 
     }
 }
 
-// -- Step 7-8: Flood fill ------------------------------------------------
+// --- Step 7-8: Flood fill ---
 
 fn packCoord(x: u32, y: u32, z: u32) u32 {
     return (x << 18) | (y << 9) | z;
@@ -563,7 +562,7 @@ noinline fn stepFloodLava(blocks: []Block, rng: *Xorshift64, flood_queue: []u32)
     }
 }
 
-// -- Step 9: Surface -----------------------------------------------------
+// --- Step 9: Surface ---
 
 noinline fn stepSurface(blocks: []Block, heightmap: []const i16, rng: *Xorshift64) void {
     const sand_noise = OctaveNoise.init(rng, 8);
@@ -597,22 +596,19 @@ noinline fn stepSurface(blocks: []Block, heightmap: []const i16, rng: *Xorshift6
     }
 }
 
-// -- Step 10: Plants -----------------------------------------------------
+// --- Step 10: Plants ---
 
 pub fn placeTree(blocks: []Block, tx: u32, base_y: u32, tz: u32, height: u32, rng: *Xorshift64) void {
-    // Check space
     var check_y: u32 = base_y + 1;
     while (check_y <= base_y + height + 2 and check_y < H) : (check_y += 1) {
         if (!blocks[blockIdx(tx, check_y, tz)].is_air()) return;
     }
     if (base_y + height + 2 >= H) return;
 
-    // Trunk
     for (0..height) |i| {
         const y: u32 = base_y + 1 + @as(u32, @intCast(i));
         if (y < H) blocks[blockIdx(tx, y, tz)] = .{ .id = .log };
     }
-    // Leaves: 4 layers
     for (0..4) |layer| {
         const y: u32 = base_y + height - 2 + @as(u32, @intCast(layer));
         if (y >= H) continue;
@@ -639,7 +635,6 @@ pub fn placeTree(blocks: []Block, tx: u32, base_y: u32, tz: u32, height: u32, rn
 }
 
 noinline fn stepPlants(blocks: []Block, heightmap: []const i16, rng: *Xorshift64) void {
-    // Trees
     const tree_patches: u32 = MAP_AREA / TREE_PATCH_DIVISOR;
     for (0..tree_patches) |_| {
         var px: i32 = @intCast(rng.next_bounded(W));
@@ -661,10 +656,8 @@ noinline fn stepPlants(blocks: []Block, heightmap: []const i16, rng: *Xorshift64
             }
         }
     }
-    // Flowers
     placePatches(blocks, heightmap, rng, .{ .id = .flower_1 }, MAP_AREA / FLOWER_PATCH_DIVISOR);
     placePatches(blocks, heightmap, rng, .{ .id = .flower_2 }, MAP_AREA / FLOWER_PATCH_DIVISOR);
-    // Mushrooms (underground)
     placeMushrooms(blocks, heightmap, rng);
 }
 
@@ -716,7 +709,7 @@ fn placeMushrooms(blocks: []Block, heightmap: []const i16, rng: *Xorshift64) voi
     }
 }
 
-// -- Public entry point --------------------------------------------------
+// --- Public entry point ---
 
 pub const GenPhase = enum(u8) {
     raising,

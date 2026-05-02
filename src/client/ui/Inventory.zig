@@ -30,7 +30,7 @@ const BlockRegistry = @import("common").BlockRegistry;
 
 const Self = @This();
 
-// -- Layout constants (logical pixels) --------------------------------------
+// --- Layout constants (logical pixels) ---
 
 pub const COLS: u8 = 9;
 pub const ROWS: u8 = 5;
@@ -60,14 +60,14 @@ const PANEL_LAYER: u8 = 247;
 const HIGHLIGHT_LAYER: u8 = 248;
 const TOOLTIP_LAYER: u8 = 252;
 
-// -- Grid accessor ----------------------------------------------------------
+// --- Grid accessor ---
 
 /// Block shown in slot `idx`. Slots past INVENTORY_FILLED are .air padding.
 fn slot(idx: u8) Block {
     return BlockRegistry.inventory_block(idx);
 }
 
-// -- Fields -----------------------------------------------------------------
+// --- Fields ---
 
 open: bool,
 focus: u8,
@@ -83,7 +83,7 @@ pub fn init() Self {
     };
 }
 
-// -- Lifecycle --------------------------------------------------------------
+// --- Lifecycle ---
 
 pub fn open_overlay(self: *Self, player: *Player) void {
     if (self.open) return;
@@ -105,7 +105,7 @@ pub fn close_overlay(self: *Self, player: *Player) void {
     player.look_delta = .{ 0, 0 };
 }
 
-// -- Per-frame update -------------------------------------------------------
+// --- Per-frame update ---
 
 pub fn update(self: *Self, ui_in: *const ui_input.UiInput, player: *Player) void {
     std.debug.assert(self.open);
@@ -164,7 +164,7 @@ fn try_move(self: *Self, delta: i16) void {
     self.focus = idx;
 }
 
-// -- Layout helpers ---------------------------------------------------------
+// --- Layout helpers ---
 
 const Layout = struct {
     panel_left: i16,
@@ -212,7 +212,7 @@ fn cell_at_cursor(lay: *const Layout, cursor_x: i16, cursor_y: i16) ?u8 {
     return @intCast(row_i * @as(i16, COLS) + col_i);
 }
 
-// -- Draw -------------------------------------------------------------------
+// --- Draw ---
 
 pub fn draw(
     self: *const Self,

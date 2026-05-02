@@ -1,29 +1,25 @@
 const std = @import("std");
 const zb = @import("protocol");
 const Protocol = zb.Protocol;
-const assert = std.debug.assert;
 const common = @import("common");
 const c = common.consts;
 const world = @import("world.zig");
 const proto = common.protocol;
 
 const Server = @import("server.zig");
+const compress_worker = @import("compress_worker.zig");
+const players_db = @import("players_db.zig");
+const commands = @import("commands.zig");
 
-const flate = std.compress.flate;
-
-var backing_allocator: std.mem.Allocator = undefined;
-var compress_buf: *[flate.max_window_len]u8 = undefined;
-var compressor: *flate.Compress = undefined;
-var compress_in_use: bool = false;
-
-/// Compress Writer vtable resolved at comptime to avoid referencing private fns.
-const compress_writer_vtable: *const std.Io.Writer.VTable = blk: {
-    var dummy_buf: [16]u8 = undefined;
-    var dummy = std.Io.Writer.fixed(&dummy_buf);
-    var buf: [flate.max_window_len]u8 = undefined;
-    const comp = flate.Compress.init(&dummy, &buf, .gzip, .fastest) catch unreachable;
-    break :blk comp.writer.vtable;
+/// World-send job submitted by an IO read loop and processed by the shared
+/// compressor worker. One slot per player; the slots outlive any individual
+/// `Client` so a late-arriving worker store after the IO thread bails on
+/// cancel never lands on a freed stack frame.
+const WorldSendJob = struct {
+    base: compress_worker.Job,
+    client: *Self,
 };
+var jobs: [c.MAX_PLAYERS]WorldSendJob = undefined;
 
 const Self = @This();
 
@@ -42,6 +38,8 @@ name: [16:0]u8,
 name_len: u8,
 initialized: bool,
 local: bool,
+is_op: bool,
+ip: [players_db.ip_str_len:0]u8,
 protocol: Protocol,
 
 buffer: [1024]u8,
@@ -157,40 +155,62 @@ fn send_world(self: *Self) !void {
     try proto.send_level_initialize_to_client(self.writer);
     try self.writer.flush();
 
-    if (!self.local) {
-        var chunk_buf: [1024]u8 = @splat(0);
-
-        assert(!compress_in_use);
-        compress_in_use = true;
-        defer compress_in_use = false;
-
-        var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.raw_blocks.len));
-        try reset_compressor(&sender.interface);
-
-        // Feed 4-byte size header, then block data in contiguous YZX wire
-        // order (Java Classic compatible) from chunk-aware memory layout.
-        try compressor.writer.writeAll(world.raw_blocks[0..4]);
-        sender.raw_written = 4;
-        try world.write_blocks_yzx(&compressor.writer);
-        sender.raw_written = @intCast(world.raw_blocks.len);
-        try compressor.finish();
-
-        // Send any remaining partial chunk as the final packet.
-        if (sender.interface.end > 0) {
-            var final_chunk: [1024]u8 = @splat(0);
-            @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
-            try proto.send_level_chunk_to_client(self.writer, @intCast(sender.interface.end), &final_chunk, sender.percent());
-            try self.writer.flush();
-        }
+    if (self.local) {
+        // Local client reads World.blocks directly - no chunks needed.
+        try proto.send_level_finalize_to_client(self.writer, c.WorldLength, c.WorldHeight, c.WorldDepth);
+        try self.writer.flush();
+        return;
     }
-    // Local client reads World.blocks directly - no chunks needed.
+
+    const job = &jobs[@intCast(self.id)];
+    job.* = .{
+        .base = .{ .run = world_send_run },
+        .client = self,
+    };
+    compress_worker.submit(&job.base);
+    while (!job.base.done.load(.acquire)) {
+        try Server.io.sleep(.fromMilliseconds(20), .real);
+    }
+    if (job.base.err) |e| return e;
+}
+
+fn world_send_run(base: *compress_worker.Job) anyerror!void {
+    const job: *WorldSendJob = @fieldParentPtr("base", base);
+    try send_world_impl(job.client);
+}
+
+fn send_world_impl(self: *Self) !void {
+    var chunk_buf: [1024]u8 = @splat(0);
+
+    var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.data.raw_blocks.len));
+    try compress_worker.reset(&sender.interface);
+
+    // Feed 4-byte size header, then block data in contiguous YZX wire
+    // order (Java Classic compatible) from chunk-aware memory layout.
+    try compress_worker.compressor.writer.writeAll(world.data.raw_blocks[0..4]);
+    sender.raw_written = 4;
+    try world.data.write_blocks_yzx(&compress_worker.compressor.writer);
+    sender.raw_written = @intCast(world.data.raw_blocks.len);
+    try compress_worker.compressor.finish();
+
+    // Send any remaining partial chunk as the final packet.
+    if (sender.interface.end > 0) {
+        var final_chunk: [1024]u8 = @splat(0);
+        @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
+        try proto.send_level_chunk_to_client(self.writer, @intCast(sender.interface.end), &final_chunk, sender.percent());
+        try self.writer.flush();
+    }
 
     try proto.send_level_finalize_to_client(self.writer, c.WorldLength, c.WorldHeight, c.WorldDepth);
     try self.writer.flush();
 }
 
+pub fn ip_slice(self: *const Self) []const u8 {
+    return std.mem.sliceTo(self.ip[0..], 0);
+}
+
 pub fn handshake(self: *Self) !void {
-    try proto.send_player_id_to_client(self.writer, &Server.server_name, &Server.server_motd);
+    try proto.send_player_id_to_client(self.writer, &Server.server_name, &Server.server_motd, self.is_op);
 
     try self.send_world();
 
@@ -273,7 +293,6 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
         return;
     }
 
-    // Username copy
     self.name = @splat(' ');
     for (0..self.name.len) |i| {
         if (event.username[i] == ' ') {
@@ -285,7 +304,9 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     }
     // TODO: Verify key for login... maybe
 
-    // Reject duplicate usernames.
+    const ip = self.ip_slice();
+    if (ip.len > 0) players_db.set_username(ip, self.name[0..self.name_len]);
+
     for (0..Server.players.items.len) |i| {
         if (Server.players.items[i]) |p| {
             if (p.id == self.id or !p.initialized)
@@ -312,6 +333,15 @@ fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void 
 
 fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
     const self: *Self = @ptrCast(@alignCast(ctx));
+
+    // Strip the trailing space-padding the wire format mandates so
+    // command parsing sees clean tokens. Done before the dup_buf rewrite
+    // below, which mangles the message into "&fname: <text>".
+    const trimmed = std.mem.trimEnd(u8, &event.message, " \x00");
+    if (trimmed.len > 0 and trimmed[0] == '/') {
+        handle_slash_command(self, trimmed[1..]);
+        return;
+    }
 
     var dup_buf = [_]u8{' '} ** 64;
     dup_buf[0] = '&';
@@ -348,37 +378,64 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
     Server.broadcast_chat_message(self.id, &dup_buf);
 }
 
+fn slash_sink_write(ctx: *anyopaque, line: []const u8) void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    var msg_buf: c.Message = @splat(' ');
+    const n = @min(line.len, msg_buf.len);
+    @memcpy(msg_buf[0..n], line[0..n]);
+    self.send_message(self.id, &msg_buf) catch return;
+    self.writer.flush() catch return;
+}
+
+fn handle_slash_command(self: *Self, body: []const u8) void {
+    const allowed = self.is_op or Server.internal_use;
+    const sink: commands.Sink = .{ .ctx = self, .write_fn = slash_sink_write };
+    commands.dispatch(sink, body, allowed);
+}
+
 fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     if (event.x >= c.WorldLength or event.y >= c.WorldHeight or event.z >= c.WorldDepth)
         return;
 
-    // Prevent breaking bedrock layer.
-    if (event.mode == .Destroy and event.y == 0)
+    // Wire byte to typed mode at the protocol boundary. Bare `@enumFromInt`
+    // would panic in ReleaseSafe on any value outside {0, 1}, so a single
+    // malformed packet from any peer would crash the server.
+    const mode = std.enums.fromInt(zb.ClickMode, event.mode) orelse return;
+
+    if (mode == .destroy and event.y == 0)
         return;
 
     // Convert wire-format u8 to the typed Block at the protocol boundary.
     const block: c.Block = .{ .id = @enumFromInt(event.block) };
 
-    // Prevent placement of fluid blocks.
-    if (event.mode == .Create and block.is_fluid()) {
+    if (mode == .create and block.is_fluid()) {
         return;
     }
 
-    const old_block = world.get_block(event.x, event.y, event.z);
+    const old_block = world.data.get_block(event.x, event.y, event.z);
 
-    if (event.mode == .Destroy) {
+    // Cross-blocks (flowers, saplings, mushrooms) have a narrow subvoxel
+    // selection bound, so a raycast can pass through them and target the
+    // cell they occupy via the surface below. Re-broadcast the existing
+    // block so any optimistic client that drew the new block reverts.
+    if (mode == .create and old_block.mesh_props().cross) {
+        Server.broadcast_block_change(event.x, event.y, event.z, old_block);
+        return;
+    }
+
+    if (mode == .destroy) {
         world.set_block(event.x, event.y, event.z, .{ .id = .air });
         Server.broadcast_block_change(event.x, event.y, event.z, .{ .id = .air });
     } else {
-        // Slab-on-slab → double slab. The originating client (and any other
+        // Slab-on-slab -> double slab. The originating client (and any other
         // client doing optimistic placement, e.g. ClassiCube) already drew a
         // slab into (x, y, z); re-assert whatever block actually lives at
         // that cell so those predictions are reverted, then upgrade the
         // slab below.
         if (block.id == .slab and event.y > 0) {
-            const below = world.get_block(event.x, event.y - 1, event.z);
+            const below = world.data.get_block(event.x, event.y - 1, event.z);
             if (below.id == .slab) {
-                const existing_above = world.get_block(event.x, event.y, event.z);
+                const existing_above = world.data.get_block(event.x, event.y, event.z);
                 Server.broadcast_block_change(event.x, event.y, event.z, existing_above);
                 world.set_block(event.x, event.y - 1, event.z, .{ .id = .double_slab });
                 Server.broadcast_block_change(event.x, event.y - 1, event.z, .{ .id = .double_slab });
@@ -391,55 +448,12 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     }
     world.enqueue_neighbors_of(event.x, event.y, event.z);
 
-    if (event.mode == .Create and block.id == .sponge) {
+    if (mode == .create and block.id == .sponge) {
         world.sponge_absorb(event.x, event.y, event.z);
     }
-    if (event.mode == .Destroy and old_block.id == .sponge) {
+    if (mode == .destroy and old_block.id == .sponge) {
         world.sponge_release(event.x, event.y, event.z);
     }
-}
-
-pub fn init_compressor(alloc: std.mem.Allocator) !void {
-    backing_allocator = alloc;
-    compress_buf = try alloc.create([flate.max_window_len]u8);
-    compressor = try alloc.create(flate.Compress);
-    compressor.* = undefined;
-}
-
-/// Resets the compressor for a new gzip stream directed at `output`.
-fn reset_compressor(output: *std.Io.Writer) !void {
-    try output.writeAll(flate.Container.gzip.header());
-    compressor.writer = .{
-        .vtable = compress_writer_vtable,
-        .buffer = compress_buf,
-    };
-    compressor.history_len = 0;
-    compressor.history_end_unhashed = false;
-    compressor.bit_writer = .{
-        .output = output,
-        .buffered = 0,
-        .buffered_n = 0,
-    };
-    compressor.buffered_tokens = .{
-        .list = undefined,
-        .pos = 0,
-        .n = 0,
-        .lit_freqs = @splat(0),
-        .dist_freqs = @splat(0),
-    };
-    compressor.lookup = .{
-        .head = @splat(.{ .value = std.math.maxInt(u15), .is_null = true }),
-        .chain = undefined,
-        .chain_pos = std.math.maxInt(u15),
-    };
-    compressor.container = .gzip;
-    compressor.hasher = .init(.gzip);
-    compressor.opts = .fastest;
-}
-
-pub fn deinit_compressor() void {
-    backing_allocator.destroy(compressor);
-    backing_allocator.destroy(compress_buf);
 }
 
 pub fn init(self: *Self) void {
