@@ -10,6 +10,8 @@ const State = ae.Core.State;
 
 const Server = game.Server;
 const CompressWorker = game.CompressWorker;
+const PlayersDb = game.PlayersDb;
+const Commands = game.Commands;
 const Consts = common.consts;
 
 const log = std.log.scoped(.server);
@@ -29,6 +31,16 @@ const ConnectionData = struct {
 // `init` populates them; `deinit` clears them.
 var global_engine: ?*Engine = null;
 var global_listener: ?*std.Io.net.Server = null;
+
+// --- Admin console ---
+//
+// Stdout carries chat broadcasts and command replies; server logging
+// stays on stderr/aether.log so the two streams remain separate. PSPLink
+// surfaces both streams on the developer host, so no platform gates are
+// needed here.
+var stdout_buf: [512]u8 = undefined;
+var stdout_writer: std.Io.File.Writer = undefined;
+var stdout_iface: ?*std.Io.Writer = null;
 
 const Self = @This();
 
@@ -91,6 +103,62 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     global_listener = &self.listener;
 
     self.tasks.concurrent(engine.io, accept_loop, .{ self, engine }) catch unreachable;
+
+    const stdout_file = platform_stdout();
+    stdout_writer = stdout_file.writer(engine.io, &stdout_buf);
+    stdout_iface = &stdout_writer.interface;
+    Server.on_broadcast_chat = stdout_chat_hook;
+    self.tasks.concurrent(engine.io, console_loop, .{ self, engine }) catch unreachable;
+}
+
+// Standard library exposes std.Io.File.stdin/stdout via posix.STD*_FILENO,
+// which the PSP target doesn't define. The pspsdk routes those through
+// SceUID handles instead, and the engine's io vtable already speaks that
+// dialect, so wrapping them in a File here works on both targets.
+fn platform_stdin() std.Io.File {
+    if (comptime ae.platform == .psp) {
+        return .{ .handle = sdk.io.stdin(), .flags = .{ .nonblocking = false } };
+    }
+    return std.Io.File.stdin();
+}
+
+fn platform_stdout() std.Io.File {
+    if (comptime ae.platform == .psp) {
+        return .{ .handle = sdk.io.stdout(), .flags = .{ .nonblocking = false } };
+    }
+    return std.Io.File.stdout();
+}
+
+fn stdout_chat_hook(line: []const u8) void {
+    write_stripped_line(line);
+}
+
+fn stdout_console_write(_: *anyopaque, line: []const u8) void {
+    write_stripped_line(line);
+}
+
+/// Strip Minecraft color codes ('&' + [0-9a-fk-or]) before writing to a
+/// terminal. The codes are meaningful in-game but just show up as literal
+/// "&e" noise in the operator's console.
+fn write_stripped_line(line: []const u8) void {
+    const w = stdout_iface orelse return;
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == '&' and i + 1 < line.len and is_color_code(line[i + 1])) {
+            i += 2;
+            continue;
+        }
+        const next_amp = std.mem.indexOfScalarPos(u8, line, i, '&') orelse line.len;
+        w.writeAll(line[i..next_amp]) catch return;
+        i = next_amp;
+    }
+    w.writeAll("\n") catch return;
+    w.flush() catch return;
+}
+
+fn is_color_code(c: u8) bool {
+    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or
+        (c >= 'k' and c <= 'o') or c == 'r';
 }
 
 fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
@@ -140,6 +208,14 @@ fn client_read_loop(client: *Server.Client) std.Io.Cancelable!void {
     client.read_loop();
 }
 
+fn reject_connection(conn: std.Io.net.Stream, engine: *Engine, reason: []const u8) void {
+    var write_buf: [128]u8 = undefined;
+    var writer = std.Io.net.Stream.Writer.init(conn, engine.io, &write_buf);
+    common.protocol.send_disconnect_to_client(&writer.interface, reason) catch {};
+    var c = conn;
+    c.close(engine.io);
+}
+
 fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
     while (engine.running) {
         var conn = self.listener.accept(engine.io) catch |err| {
@@ -158,6 +234,29 @@ fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
                 log.warn("TCP_NODELAY failed: {}", .{err});
         }
 
+        // Canonicalise the peer IP and look up the persistent record.
+        // Done before any slot assignment so banned IPs cannot consume
+        // a slot and whitelist mode rejects strangers cheaply.
+        var ip_buf: [PlayersDb.ip_str_len]u8 = undefined;
+        const ip = PlayersDb.format_ip(conn.socket.address, &ip_buf) orelse "";
+        const rec = PlayersDb.lookup_by_ip(ip);
+
+        if (Server.whitelist_enabled and (rec == null or !rec.?.whitelisted)) {
+            log.info("Rejecting {s}: not whitelisted", .{ip});
+            reject_connection(conn, engine, "Not whitelisted");
+            continue;
+        }
+        if (rec) |r| {
+            if (r.banned) {
+                const reason = if (r.ban_reason_slice().len > 0) r.ban_reason_slice() else "Banned";
+                log.info("Rejecting {s}: banned ({s})", .{ ip, reason });
+                reject_connection(conn, engine, reason);
+                continue;
+            }
+        }
+        const is_op = if (rec) |r| r.op else false;
+        PlayersDb.touch_seen(ip);
+
         var assigned = false;
         for (0..Consts.MAX_PLAYERS) |i| {
             if (self.conn_handles[i] != null) continue;
@@ -175,7 +274,7 @@ fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
             self.conn_handles[i].?.reader = std.Io.net.Stream.Reader.init(conn, engine.io, &self.conn_handles[i].?.read_buffer);
             self.conn_handles[i].?.writer = std.Io.net.Stream.Writer.init(conn, engine.io, &self.conn_handles[i].?.write_buffer);
 
-            if (Server.client_join(&self.conn_handles[i].?.reader.interface, &self.conn_handles[i].?.writer.interface, &self.conn_handles[i].?.connected)) |client| {
+            if (Server.client_join(&self.conn_handles[i].?.reader.interface, &self.conn_handles[i].?.writer.interface, &self.conn_handles[i].?.connected, ip, is_op)) |client| {
                 self.tasks.concurrent(engine.io, client_read_loop, .{client}) catch {
                     log.err("Failed to spawn read task for slot {d}", .{i});
                     self.conn_handles[i].?.connected = false;
@@ -187,10 +286,47 @@ fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
 
         if (!assigned) {
             log.info("&4Server full, rejecting connection", .{});
-            var write_buf: [128]u8 = undefined;
-            var writer = std.Io.net.Stream.Writer.init(conn, engine.io, &write_buf);
-            common.protocol.send_disconnect_to_client(&writer.interface, "Server is full!") catch {};
-            conn.close(engine.io);
+            reject_connection(conn, engine, "Server is full!");
+        }
+    }
+}
+
+fn console_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
+    const stdin_file = platform_stdin();
+    var reader_scratch: [512]u8 = undefined;
+    var file_reader = stdin_file.reader(engine.io, &reader_scratch);
+    const r = &file_reader.interface;
+
+    while (engine.running) {
+        const raw = r.takeDelimiterExclusive('\n') catch |err| switch (err) {
+            error.EndOfStream => return,
+            error.ReadFailed => return,
+            error.StreamTooLong => {
+                // Discard the over-long line and keep going.
+                r.toss(r.bufferedLen());
+                continue;
+            },
+        };
+        // Skip past the newline so the next take() starts on fresh input.
+        r.toss(1);
+
+        const line = std.mem.trimEnd(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+
+        if (line[0] == '/') {
+            const sink: Commands.Sink = .{ .ctx = self, .write_fn = stdout_console_write };
+            Commands.dispatch(sink, line[1..], true);
+        } else {
+            // Server chat: prefix and broadcast. The broadcast hook will
+            // also echo to stdout, so no need to print locally first.
+            var msg_buf: Consts.Message = @splat(' ');
+            const prefix = "&4[Server]: ";
+            const n_pre = @min(prefix.len, msg_buf.len);
+            @memcpy(msg_buf[0..n_pre], prefix[0..n_pre]);
+            const space = msg_buf.len - n_pre;
+            const n_msg = @min(line.len, space);
+            @memcpy(msg_buf[n_pre .. n_pre + n_msg], line[0..n_msg]);
+            Server.broadcast_chat_message(-1, &msg_buf);
         }
     }
 }

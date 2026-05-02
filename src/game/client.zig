@@ -8,6 +8,8 @@ const proto = common.protocol;
 
 const Server = @import("server.zig");
 const compress_worker = @import("compress_worker.zig");
+const players_db = @import("players_db.zig");
+const commands = @import("commands.zig");
 
 /// World-send job submitted by an IO read loop and processed by the shared
 /// compressor worker. One slot per player; the slots outlive any individual
@@ -36,6 +38,8 @@ name: [16:0]u8,
 name_len: u8,
 initialized: bool,
 local: bool,
+is_op: bool,
+ip: [players_db.ip_str_len:0]u8,
 protocol: Protocol,
 
 buffer: [1024]u8,
@@ -201,8 +205,12 @@ fn send_world_impl(self: *Self) !void {
     try self.writer.flush();
 }
 
+pub fn ip_slice(self: *const Self) []const u8 {
+    return std.mem.sliceTo(self.ip[0..], 0);
+}
+
 pub fn handshake(self: *Self) !void {
-    try proto.send_player_id_to_client(self.writer, &Server.server_name, &Server.server_motd);
+    try proto.send_player_id_to_client(self.writer, &Server.server_name, &Server.server_motd, self.is_op);
 
     try self.send_world();
 
@@ -296,6 +304,9 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     }
     // TODO: Verify key for login... maybe
 
+    const ip = self.ip_slice();
+    if (ip.len > 0) players_db.set_username(ip, self.name[0..self.name_len]);
+
     for (0..Server.players.items.len) |i| {
         if (Server.players.items[i]) |p| {
             if (p.id == self.id or !p.initialized)
@@ -322,6 +333,15 @@ fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void 
 
 fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
     const self: *Self = @ptrCast(@alignCast(ctx));
+
+    // Strip the trailing space-padding the wire format mandates so
+    // command parsing sees clean tokens. Done before the dup_buf rewrite
+    // below, which mangles the message into "&fname: <text>".
+    const trimmed = std.mem.trimEnd(u8, &event.message, " \x00");
+    if (trimmed.len > 0 and trimmed[0] == '/') {
+        handle_slash_command(self, trimmed[1..]);
+        return;
+    }
 
     var dup_buf = [_]u8{' '} ** 64;
     dup_buf[0] = '&';
@@ -356,6 +376,21 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
     }
 
     Server.broadcast_chat_message(self.id, &dup_buf);
+}
+
+fn slash_sink_write(ctx: *anyopaque, line: []const u8) void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    var msg_buf: c.Message = @splat(' ');
+    const n = @min(line.len, msg_buf.len);
+    @memcpy(msg_buf[0..n], line[0..n]);
+    self.send_message(self.id, &msg_buf) catch return;
+    self.writer.flush() catch return;
+}
+
+fn handle_slash_command(self: *Self, body: []const u8) void {
+    const allowed = self.is_op or Server.internal_use;
+    const sink: commands.Sink = .{ .ctx = self, .write_fn = slash_sink_write };
+    commands.dispatch(sink, body, allowed);
 }
 
 fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
