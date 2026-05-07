@@ -216,15 +216,15 @@ pub fn begin_session_now(self: *Self, player: *Player) void {
 
 fn begin_session(self: *Self) void {
     const target: input.TextInputTarget = .{ .id = "chat" };
-    const opts: input.TextInputOptions = .{ .max_bytes = INPUT_MAX_LEN };
+    const prefix_buf = [_]u8{self.prefix};
+    const opts: input.TextInputOptions = .{
+        .max_bytes = INPUT_MAX_LEN,
+        // Seed PSP's modal OSK (and the desktop session buffer) with the
+        // slash so command-style chat opens with the prefix already typed.
+        .initial = if (self.prefix != 0) prefix_buf[0..1] else null,
+    };
     _ = input.begin_text_input(target, opts) catch return;
     self.session_active = true;
-    if (self.prefix != 0) {
-        // Prefill the engine session so PSP's modal OSK can see the slash
-        // as the starting text. Status stays .active.
-        const buf = [_]u8{self.prefix};
-        input.write_text_session_buffer(&buf, .active);
-    }
 }
 
 fn handle_terminal_if_done(self: *Self, player: *Player) void {
@@ -298,8 +298,17 @@ pub fn update(self: *Self, player: *Player) void {
         if (self.session_active) {
             input.submit_text() catch {};
             send_session(self, player);
+            self.close_overlay(player);
+        } else if (ae.platform == .psp) {
+            // PSP social mode: the panel is open without an active session
+            // (waiting for the player to summon the OSK). X arms it; the
+            // backend runs the modal OSK synchronously and returns with a
+            // terminal session for `handle_terminal_if_done` to service.
+            self.begin_session();
+            handle_terminal_if_done(self, player);
+        } else {
+            self.close_overlay(player);
         }
-        self.close_overlay(player);
         return;
     }
 

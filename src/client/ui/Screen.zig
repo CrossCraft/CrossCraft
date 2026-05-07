@@ -108,11 +108,14 @@ pub fn update(self: *Self, in: *const UiInput) void {
     }
 
     // Nav keys still advance focus while a text input is active; typing
-    // is delivered through the session, not these bindings.
+    // is delivered through the session, not these bindings. On PSP we
+    // intentionally skip `sync_active_to_focus` so navigating across a
+    // text input does not arm the modal OSK -- the OSK is only fired
+    // when the user explicitly presses confirm (X / Cross).
     if (in.nav != .none) {
         self.focus_source = .pad;
         self.nav_advance(in.nav);
-        self.sync_active_to_focus();
+        if (ae.platform != .psp) self.sync_active_to_focus();
     }
 
     // Click: select the component under the cursor. For text inputs this
@@ -136,11 +139,18 @@ pub fn update(self: *Self, in: *const UiInput) void {
     if (in.confirm_edge) {
         if (self.activation_target()) |idx| {
             if (self.components[idx] == .text_input) {
-                // Enter advances focus; on PSP the OSK is invoked on
-                // focus via begin_text_input, not on confirm.
                 self.focus_source = .pad;
-                self.nav_advance(.down);
-                self.sync_active_to_focus();
+                if (ae.platform == .psp) {
+                    // Fire the modal OSK for the focused field. The PSP
+                    // backend runs synchronously and writes the result
+                    // back via `write_text_session_buffer`.
+                    self.fire_psp_osk(idx);
+                } else {
+                    // Desktop: Enter advances focus; the active session
+                    // is moved by `sync_active_to_focus`.
+                    self.nav_advance(.down);
+                    self.sync_active_to_focus();
+                }
             } else {
                 self.cancel_active_session();
                 self.activate(idx);
@@ -172,7 +182,8 @@ fn sync_active_to_focus(self: *Self) void {
 }
 
 /// Idempotent for the same idx; cancels any prior session and begins a
-/// fresh one for the new field.
+/// fresh one for the new field. Desktop only -- on PSP, focusing a text
+/// input does not arm the OSK; that is deferred to `fire_psp_osk`.
 fn set_active_input(self: *Self, idx: u8) void {
     if (self.active_input != null and self.active_input.? == idx and self.session_started) return;
 
@@ -182,18 +193,58 @@ fn set_active_input(self: *Self, idx: u8) void {
     self.active_input = idx;
     self.session_started = false;
 
+    if (ae.platform == .psp) return;
+
     const ti = switch (self.components[idx]) {
         .text_input => |t| t,
         else => return,
     };
     const target: ae.Core.input.TextInputTarget = .{ .id = ti.id };
-    const opts: ae.Core.input.TextInputOptions = .{ .max_bytes = ti.max_len };
+    // Seed with existing field text so it survives the focus change.
+    const opts: ae.Core.input.TextInputOptions = .{
+        .max_bytes = ti.max_len,
+        .initial = if (ti.len.* > 0) ti.buf[0..ti.len.*] else null,
+    };
     _ = ae.Core.input.begin_text_input(target, opts) catch return;
     self.session_started = true;
-    // Seed with the field's existing text so it survives the focus change.
-    if (ti.len.* > 0) {
-        ae.Core.input.write_text_session_buffer(ti.buf[0..ti.len.*], .active);
+}
+
+/// PSP confirm path: fire the modal OSK for the focused text input. The
+/// platform backend runs synchronously, so by the time `begin_text_input`
+/// returns the session is already terminal. We mirror submitted output
+/// into the field; on cancel the field is left untouched.
+fn fire_psp_osk(self: *Self, idx: u8) void {
+    const ti = switch (self.components[idx]) {
+        .text_input => |t| t,
+        else => return,
+    };
+
+    // Drop any leftover terminal session from a prior OSK invocation so
+    // `begin_text_input` does not return TextSessionInFlight.
+    if (ae.Core.input.current_text_session()) |s| {
+        if (!s.is_terminal()) ae.Core.input.cancel_text() catch {};
     }
+
+    const target: ae.Core.input.TextInputTarget = .{ .id = ti.id };
+    // Seed the OSK with whatever's already in the field so re-edits begin
+    // mid-text rather than blank.
+    const opts: ae.Core.input.TextInputOptions = .{
+        .max_bytes = ti.max_len,
+        .initial = if (ti.len.* > 0) ti.buf[0..ti.len.*] else null,
+    };
+    _ = ae.Core.input.begin_text_input(target, opts) catch return;
+
+    const session = ae.Core.input.current_text_session() orelse return;
+    if (session.status == .submitted) {
+        const take = @min(session.buffer.items.len, @as(usize, ti.max_len));
+        if (take > 0) std.mem.copyForwards(u8, ti.buf[0..take], session.buffer.items[0..take]);
+        ti.len.* = @intCast(take);
+    }
+
+    // The session is terminal; do not flag it as live so the per-frame
+    // `sync_session_to_field` mirror does not overwrite the field.
+    self.active_input = idx;
+    self.session_started = false;
 }
 
 /// Mirror the active TextInputSession's buffer into the field's display
