@@ -53,6 +53,7 @@ const components = [_]Component{
         .origin = .top_center,
     } },
     .{ .text_input = .{
+        .id = "direct_connect.ip",
         .placeholder = "ip:port",
         .buf = &ip_buf,
         .len = &ip_len,
@@ -72,6 +73,7 @@ const components = [_]Component{
         .origin = .top_center,
     } },
     .{ .text_input = .{
+        .id = "direct_connect.name",
         .placeholder = "Player",
         .buf = &name_buf,
         .len = &name_len,

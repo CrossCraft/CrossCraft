@@ -42,16 +42,8 @@ const ui_input = @import("../ui/input.zig");
 const PauseMenuScreen = @import("../ui/PauseMenuScreen.zig");
 const OptionsMenuScreen = @import("../ui/OptionsMenuScreen.zig");
 const Screen = @import("../ui/Screen.zig");
+const bindings = @import("../player/bindings.zig");
 const ae_input = ae.Core.input;
-
-/// Set by the Aether lost-focus callback (which can fire from the GLFW
-/// poll thread). Module-static so it survives across GameState transitions
-/// and never points at freed memory.
-var pause_focus_request: bool = false;
-/// Stable singleton sink for the lost-focus callback; pointer is required
-/// non-null but the value is unused. Avoids handing Aether a pointer to the
-/// GameState struct (which gets deinit'd on transition).
-var lost_focus_sink: u8 = 0;
 
 const log = std.log.scoped(.game);
 
@@ -100,7 +92,6 @@ pause_ctx: PauseMenuScreen.Context,
 in_options: bool,
 options_ctx: OptionsMenuScreen.Context,
 pause_ui_repeat: ui_input.Repeat,
-pause_saved_mouse_captured: bool,
 pause_batcher: SpriteBatcher,
 pause_font_batcher: FontBatcher,
 /// True once `init` has run to completion. Guards `deinit` so a partially
@@ -114,14 +105,16 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.mp_read_future = null;
     self.sp_compressor_thread = null;
 
-    // Wipe any leftover input actions from the previous state (MenuState
-    // registered ui_*; a previous GameState may have registered movement /
-    // hotbar / etc.). Aether's input state is module-static and persists
-    // across transitions; without this, `Player.init`'s `bindings.init`
-    // would hit ActionAlreadyExists on a second session and abort init
-    // mid-way.
-    ae_input.clear();
-    ui_input.invalidate_registration();
+    // Action sets persist for the life of the process; bindings.init is
+    // idempotent across re-entries. Push the gameplay context now so any
+    // failure during the rest of init is matched by the deinit pop below.
+    const gameplay_set = try bindings.init();
+    try ae_input.push_context(.{
+        .name = "gameplay",
+        .cursor_mode = .captured,
+        .actions = gameplay_set,
+        .consumes_text = false,
+    });
 
     // SP uses FakeConn + in-process server; MP wraps ClientConn around the
     // live TCP stream that LoadState opened.
@@ -218,9 +211,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     } else {
         try self.player.init(128.0, 44.0, 128.0, player_writer);
     }
-    // Apply persisted look settings; Player.init sets hardcoded defaults so
-    // we override immediately after to pick up the options values.
-    ae_input.mouse_sensitivity = Options.current.sensitivity;
+    // Sensitivity is applied at read time inside Player.poll_inputs from
+    // Options.current.sensitivity, so no engine-side scalar to set here.
     self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
 
     const render_alloc = engine.allocator(.render);
@@ -294,15 +286,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.in_options = false;
     self.options_ctx = .{ .dirt = null };
     self.pause_ui_repeat = .{};
-    self.pause_saved_mouse_captured = true;
     self.pause_screen = PauseMenuScreen.build(&self.pause_ctx, Session.mode == .singleplayer);
     PauseMenuScreen.pending_resume = false;
     PauseMenuScreen.pending_quit = false;
     PauseMenuScreen.pending_save = false;
     PauseMenuScreen.pending_options = false;
     OptionsMenuScreen.pending_done = false;
-    pause_focus_request = false;
-    ae_input.set_lost_focus_callback(&lost_focus_sink, on_lost_focus);
 
     // Block selection outline (line mesh, drawn after the world pass).
     self.selection = try SelectionOutline.init(render_alloc, self.pipeline);
@@ -321,9 +310,26 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
-    // Drop the lost-focus callback so it cannot fire into the next state.
-    ae_input.set_lost_focus_callback(&lost_focus_sink, noop_lost_focus);
-    pause_focus_request = false;
+
+    // Cancel any in-flight TextInputSession so the next state can begin
+    // its own. Aether allows only one non-terminal session at a time, and
+    // an unsynchronised disconnect / quit may leave one open.
+    if (ae_input.current_text_session()) |s| {
+        if (s.status == .active or s.status == .suspended) ae_input.cancel_text() catch {};
+    }
+
+    // Pop the gameplay context (and any overlay still on top of it). The
+    // chat / inventory / pause overlays should already have closed
+    // themselves; this loop is belt-and-braces for unwinding.
+    while (ae_input.stack_top()) |top| {
+        if (std.mem.eql(u8, top.name, "gameplay")) {
+            _ = ae_input.pop_context() catch {};
+            break;
+        }
+        if (std.mem.eql(u8, top.name, "menu") or std.mem.eql(u8, top.name, "loading")) break;
+        _ = ae_input.pop_context() catch break;
+    }
+
     // Stop the read-loop task before freeing any resources it may still
     // be accessing (world_renderer, conn.buffer, etc.).
     switch (Session.mode) {
@@ -431,21 +437,22 @@ fn fp_coord(v: f32) u16 {
     return @intFromFloat(scaled);
 }
 
-fn on_lost_focus(_: *anyopaque) void {
-    // Runs on the platform poll thread (or callback context); defer the
-    // actual menu open to the next update tick on the game thread.
-    pause_focus_request = true;
+/// Detect a `.focus_lost` raw event in the current frame. Used by `update`
+/// to auto-open the pause menu when the window loses focus during gameplay.
+fn focus_lost_this_frame() bool {
+    for (ae_input.frame_events()) |ev| {
+        switch (ev.kind) {
+            .focus_lost => return true,
+            else => {},
+        }
+    }
+    return false;
 }
-
-fn noop_lost_focus(_: *anyopaque) void {}
 
 fn open_pause(self: *@This()) void {
     if (self.paused) return;
     self.paused = true;
     self.in_options = false;
-    self.pause_saved_mouse_captured = self.player.mouse_captured;
-    self.player.mouse_captured = false;
-    ae_input.set_mouse_relative_mode(false);
     self.pause_ui_repeat = .{};
     PauseMenuScreen.pending_resume = false;
     PauseMenuScreen.pending_quit = false;
@@ -454,15 +461,23 @@ fn open_pause(self: *@This()) void {
     OptionsMenuScreen.pending_done = false;
     self.pause_screen = PauseMenuScreen.build(&self.pause_ctx, Session.mode == .singleplayer);
     self.pause_screen.open(!ui_input.profile_uses_pointer());
+    // Push the pause input context. Reuses menu_set so the pause screen has
+    // the same nav vocabulary as the title menu. consumes_text = false so
+    // the player cannot accidentally start typing into a stale session.
+    ae_input.push_context(.{
+        .name = "pause",
+        .cursor_mode = .visible,
+        .actions = ui_input.menu_set(),
+        .consumes_text = false,
+    }) catch {};
 }
 
 fn close_pause(self: *@This()) void {
     if (!self.paused) return;
     self.paused = false;
     self.in_options = false;
-    self.player.mouse_captured = self.pause_saved_mouse_captured;
-    ae_input.set_mouse_relative_mode(self.pause_saved_mouse_captured);
-    // Discard the spurious cursor delta produced by the relative-mode swap.
+    _ = ae_input.pop_context() catch {};
+    // Discard the spurious cursor delta produced by the cursor-mode swap.
     self.player.look_delta = .{ 0, 0 };
     PauseMenuScreen.pending_resume = false;
     PauseMenuScreen.pending_quit = false;
@@ -474,25 +489,16 @@ fn close_pause(self: *@This()) void {
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
 
-    // PSP: service a deferred chat OSK request now that the previous frame's
-    // end_frame has completed and the GE is idle.
-    if (ae.platform == .psp and self.chat.psp_osk_pending) {
-        self.chat.psp_osk_pending = false;
-        self.chat.service_psp_osk(&self.player);
-        // OSK either sent or cancelled -- exit social mode either way.
-        self.psp_social_mode = false;
-    }
-
     // PSP: Select (playerlist_edge) toggles the social overlay -- player list
-    // visible simultaneously with the chat input cursor.  Pressing Select a
-    // second time exits without sending.  Cross (X / psp_osk_edge) arms the
-    // OSK so it fires at the top of the next frame.
+    // visible simultaneously with the chat input cursor. Cross (X /
+    // psp_osk_edge) arms the OSK via Aether's begin_text_input platform
+    // hook, which blocks until the modal closes and writes the result into
+    // the active TextInputSession.
     if (ae.platform == .psp) {
         if (self.player.playerlist_edge) {
             self.player.playerlist_edge = false;
             if (self.psp_social_mode) {
                 self.psp_social_mode = false;
-                self.chat.psp_osk_pending = false;
                 self.chat.close_overlay(&self.player);
             } else if (Session.mode == .multiplayer and !self.inventory.open) {
                 self.psp_social_mode = true;
@@ -501,16 +507,18 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         }
         if (self.player.psp_osk_edge) {
             self.player.psp_osk_edge = false;
-            if (self.psp_social_mode) self.chat.psp_osk_pending = true;
+            if (self.psp_social_mode) {
+                self.chat.begin_session_now(&self.player);
+                self.psp_social_mode = false;
+            }
         }
     }
 
-    // Drain ui_input edges each frame. Use the active overlay's repeat state
-    // so backspace autorepeat is owned by whichever overlay is open.
+    // Drain ui_input edges each frame. Use the active overlay's repeat
+    // state for nav autorepeat. Chat owns no nav repeat in the new model
+    // (text input is via TextInputSession, not per-key polled chars).
     const active_repeat = if (self.paused)
         &self.pause_ui_repeat
-    else if (self.chat.open)
-        &self.chat.ui_repeat
     else
         &self.inventory.ui_repeat;
     const ui_in = ui_input.build_frame(dt, active_repeat);
@@ -520,12 +528,9 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
     // sit awkwardly behind the pause panel.
     const can_open_pause = !self.paused and !self.chat.open and !self.inventory.open;
     var just_opened_pause = false;
-    if (pause_focus_request) {
-        pause_focus_request = false;
-        if (can_open_pause) {
-            open_pause(self);
-            just_opened_pause = true;
-        }
+    if (focus_lost_this_frame() and can_open_pause) {
+        open_pause(self);
+        just_opened_pause = true;
     }
     if (ui_in.pause_edge and can_open_pause) {
         open_pause(self);
@@ -542,8 +547,10 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             if (OptionsMenuScreen.pending_done or self.pause_screen.cancel_pressed) {
                 OptionsMenuScreen.pending_done = false;
                 Options.save(engine.io, engine.dirs.data);
-                // Re-apply settings that are cached at init time.
-                ae_input.mouse_sensitivity = Options.current.sensitivity;
+                // Sensitivity is read from Options each frame in
+                // Player.poll_inputs, so no engine-side scalar to push
+                // here. FOV / vsync are still cached values that need a
+                // re-apply when the user closes the options screen.
                 self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
                 engine.set_vsync(Options.current.vsync);
                 self.in_options = false;
@@ -569,14 +576,11 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             if (PauseMenuScreen.pending_quit) {
                 // SP saves automatically inside Server.deinit -> World.deinit;
                 // do not duplicate the ~4 MB write here. MP's "Disconnect" path
-                // never saves (owned_locally is false).
-                // Quitting straight to the main menu: release the cursor instead
-                // of restoring the saved gameplay capture, otherwise MenuState
-                // inherits a captured-but-invisible cursor.
+                // never saves (owned_locally is false). The state-machine
+                // transition triggers GameState.deinit which pops the pause
+                // and gameplay contexts -- MenuState then pushes its own.
                 self.paused = false;
                 self.in_options = false;
-                self.player.mouse_captured = false;
-                ae_input.set_mouse_relative_mode(false);
                 self.player.look_delta = .{ 0, 0 };
                 PauseMenuScreen.pending_resume = false;
                 PauseMenuScreen.pending_quit = false;
@@ -590,15 +594,14 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
                 close_pause(self);
             }
         }
-        // While paused, drop other pending input edges so they do not fire on
-        // resume. Remote-player smoothing, world meshing, sound, and the
-        // periodic report keep ticking in the shared tail below.
+        // While paused the gameplay action set is masked, so poll_inputs
+        // produces no fresh edges for the gameplay-pending flags. Clear
+        // any one-frame leftovers so they cannot fire on resume.
         self.player.inventory_toggle_pending = false;
         self.player.hud_toggle_pending = false;
         self.player.rain_toggle_pending = false;
         self.player.chat_open_pending = false;
         self.player.chat_cmd_pending = false;
-        self.player.chat_send_pending = false;
     } else {
         if (self.player.hud_toggle_pending) {
             self.player.hud_toggle_pending = false;
@@ -637,23 +640,15 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
 
         if (self.inventory.open) self.inventory.update(&ui_in, &self.player);
 
-        // Chat update: pass the chat_send flag separately so Enter sends
-        // without Space accidentally triggering a send (Space fires
-        // ui_confirm AND types a space char; chat ignores confirm_edge and
-        // uses chat_send_pending).
-        if (self.chat.open) {
-            const send = self.player.chat_send_pending;
-            self.player.chat_send_pending = false;
-            self.chat.update(&ui_in, send, &self.player);
-        } else {
-            self.player.chat_send_pending = false;
-        }
+        // Chat polls its own ActionSet for chat_send / chat_cancel; no
+        // edge needs to be threaded through Player.
+        if (self.chat.open) self.chat.update(&self.player);
 
         self.chat.tick(dt);
 
-        // Player physics keep ticking with the inventory open (matching
-        // Classic). mouse_captured is false while open, so apply_look
-        // ignores deltas and on_break/on_place early-return.
+        // Player physics keep ticking with overlays open (matching
+        // Classic). The gameplay ActionSet is masked while overlays are
+        // on top, so polled gameplay actions return zero/.released.
         self.player.update(dt);
     }
 

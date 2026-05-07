@@ -128,6 +128,15 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     try ui_input.ensure_registered();
     ui_input.set_profile(ui_input.default_profile());
+
+    // Push the menu input context so the menu ActionSet is queryable
+    // and the cursor is visible. Popped on deinit.
+    try ae.Core.input.push_context(.{
+        .name = "menu",
+        .cursor_mode = .visible,
+        .actions = ui_input.menu_set(),
+        .consumes_text = false,
+    });
     self.main_menu_ctx = .{
         .dirt = ResourcePack.get_tex(.dirt),
         .logo = ResourcePack.get_tex(.logo),
@@ -161,6 +170,10 @@ fn deinit(ctx: *anyopaque, _: *Engine) void {
     self.font_batcher.deinit();
     self.batcher.deinit();
 
+    // Drop the menu input context. Action sets persist for the lifetime
+    // of the process, so the next entry into MenuState reuses them.
+    _ = ae.Core.input.pop_context() catch {};
+
     Rendering.Pipeline.deinit(pipeline);
     self.inited = false;
 }
@@ -173,15 +186,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
     SoundManager.update(dt, 0, 0, 0, 0, 0);
-
-    // PSP: service deferred OSK at the top of update - the previous
-    // frame's end_frame has completed so the GE is idle.
-    if (ae.platform == .psp) {
-        if (self.screen.osk_request) |idx| {
-            self.screen.osk_request = null;
-            self.screen.open_psp_osk(idx);
-        }
-    }
 
     const in = ui_input.build_frame(dt, &self.ui_repeat);
     self.screen.update(&in);

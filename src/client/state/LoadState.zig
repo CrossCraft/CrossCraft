@@ -29,6 +29,19 @@ var session_error: ?anyerror = null;
 var mp_server_name: [64]u8 = @splat(' ');
 var mp_server_motd: [64]u8 = @splat(' ');
 
+/// One-shot lazy-init handle for the loading ActionSet. Empty bindings;
+/// the only purpose is to satisfy push_context with a valid installed set
+/// so the cursor returns to .visible during the loading screen.
+var loading_set: ?ae.Core.input.ActionSetHandle = null;
+
+fn ensure_loading_set() !ae.Core.input.ActionSetHandle {
+    if (loading_set) |h| return h;
+    const set = try ae.Core.input.register_action_set("loading");
+    try ae.Core.input.install_action_set(set);
+    loading_set = set;
+    return set;
+}
+
 fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) void {
     // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
     const config: Server.GameConfig = .{
@@ -177,6 +190,17 @@ pub fn transition_here(engine: *Engine) !void {
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
+
+    // Push the loading input context. Cursor is .visible while the
+    // background server / connect task runs; popped on deinit.
+    const set = try ensure_loading_set();
+    try ae.Core.input.push_context(.{
+        .name = "loading",
+        .cursor_mode = .visible,
+        .actions = set,
+        .consumes_text = false,
+    });
+
     const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
     const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
     pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
@@ -210,6 +234,9 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.server_future.await(engine.io);
     self.font_batcher.deinit();
     self.batcher.deinit();
+
+    // Drop the loading input context.
+    _ = ae.Core.input.pop_context() catch {};
 
     Rendering.Pipeline.deinit(pipeline);
     self.inited = false;

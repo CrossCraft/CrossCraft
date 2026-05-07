@@ -71,37 +71,42 @@ fn slot(idx: u8) Block {
 
 open: bool,
 focus: u8,
-saved_mouse_captured: bool,
 ui_repeat: ui_input.Repeat,
 
 pub fn init() Self {
     return .{
         .open = false,
         .focus = 0,
-        .saved_mouse_captured = true,
         .ui_repeat = .{},
     };
 }
 
 // --- Lifecycle ---
 
+/// Push the inventory input context. The inventory shares the menu
+/// ActionSet so ui_confirm / ui_cancel / nav / cursor work without a
+/// dedicated set; the context's distinct name keeps the spec's overlay
+/// identity. Cursor mode is .visible (gameplay layer beneath stays
+/// captured but is masked by the overlay above).
 pub fn open_overlay(self: *Self, player: *Player) void {
     if (self.open) return;
     self.open = true;
     self.focus = if (player.selected_slot < FILLED) player.selected_slot else 0;
-    self.saved_mouse_captured = player.mouse_captured;
-    player.mouse_captured = false;
-    input.set_mouse_relative_mode(false);
     self.ui_repeat = .{};
+    input.push_context(.{
+        .name = "inventory",
+        .cursor_mode = .visible,
+        .actions = ui_input.menu_set(),
+        .consumes_text = false,
+    }) catch {};
 }
 
 pub fn close_overlay(self: *Self, player: *Player) void {
     if (!self.open) return;
     self.open = false;
-    player.mouse_captured = self.saved_mouse_captured;
-    input.set_mouse_relative_mode(self.saved_mouse_captured);
-    // Discard the spurious delta the input system generates when
-    // snapping the cursor back to center on mode switch.
+    _ = input.pop_context() catch {};
+    // Discard the spurious delta the input system generates between
+    // the last visible-cursor frame and the first captured frame.
     player.look_delta = .{ 0, 0 };
 }
 

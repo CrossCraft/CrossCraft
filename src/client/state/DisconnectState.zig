@@ -88,6 +88,16 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.ui_repeat = .{};
     pending_menu = false;
 
+    // Push a context that exposes the menu ActionSet so the "Back to menu"
+    // button is reachable from this screen. ensure_registered is idempotent.
+    try ui_input.ensure_registered();
+    try ae.Core.input.push_context(.{
+        .name = "disconnect",
+        .cursor_mode = .visible,
+        .actions = ui_input.menu_set(),
+        .consumes_text = false,
+    });
+
     self.ctx = .{ .dirt = ResourcePack.get_tex(.dirt) };
     self.screen = .{
         .components = components[0..],
@@ -104,6 +114,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 fn deinit(ctx: *anyopaque, _: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
+    _ = ae.Core.input.pop_context() catch {};
     self.font_batcher.deinit();
     self.batcher.deinit();
     Rendering.Pipeline.deinit(pipeline);

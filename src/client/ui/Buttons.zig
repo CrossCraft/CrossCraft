@@ -100,9 +100,9 @@ pub fn resolve_style() Style {
     return switch (Options.current.controller_tooltips) {
         // Auto follows whatever device produced input most recently; the
         // Xbox sheet stands in for any gamepad since we don't probe vendor.
-        .auto => switch (ae.Core.input.get_last_input_mode()) {
-            .keyboard => .kbm,
-            .controller => .xbox,
+        .auto => switch (ae.Core.input.last_input_mode()) {
+            .keyboard_mouse => .kbm,
+            .gamepad => .xbox,
         },
         .nintendo => .nintendo,
         .xbox => .xbox,

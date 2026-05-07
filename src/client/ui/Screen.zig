@@ -45,13 +45,14 @@ hovered: ?u8 = null,
 focused: ?u8 = null,
 /// Text input that is actively receiving keystrokes. Only changes on click
 /// or keyboard navigation, NOT on mouse hover - so moving the mouse over
-/// another component highlights it without stealing typing focus.
+/// another component highlights it without stealing typing focus. When
+/// non-null, the screen owns an Aether TextInputSession whose buffer is
+/// mirrored into this component's display buffer each frame.
 active_input: ?u8 = null,
-/// Set when the PSP OSK should be shown for a text input. The owning
-/// state must read this after draw/flush (when the GE is idle) and call
-/// showOSK, then clear the field. Deferring avoids calling showOSK from
-/// update where the GE command buffer is in an unsafe state.
-osk_request: ?u8 = null,
+/// Tracks whether `update` has already started a TextInputSession for the
+/// current `active_input`, so the second-frame click on the same field is
+/// idempotent. Cleared whenever active_input changes.
+session_started: bool = false,
 focus_source: FocusSource = .mouse,
 /// Set by `update` when ui_cancel was pressed; the owning state reads it
 /// after `update` returns to drive back/pop transitions.
@@ -68,10 +69,20 @@ prompts_buf: [MAX_PROMPTS]PromptStrip.Prompt = undefined,
 pub fn open(self: *Self, seed_focus: bool) void {
     self.hovered = null;
     self.focused = if (seed_focus) self.first_focusable() else null;
-    self.active_input = null;
-    self.osk_request = null;
+    self.cancel_active_session();
     self.focus_source = if (seed_focus) .pad else .mouse;
     self.cancel_pressed = false;
+}
+
+/// Cancel any active TextInputSession owned by this Screen. Safe to call
+/// when no session is in flight. Used both on screen open / close and on
+/// focus moves between text inputs.
+fn cancel_active_session(self: *Self) void {
+    if (self.active_input != null and self.session_started) {
+        ae.Core.input.cancel_text() catch {};
+    }
+    self.active_input = null;
+    self.session_started = false;
 }
 
 pub fn update(self: *Self, in: *const UiInput) void {
@@ -100,21 +111,15 @@ pub fn update(self: *Self, in: *const UiInput) void {
         }
     }
 
-    // Route typed characters to the active text input. WASD navigation
-    // is suppressed while an input is active (those keys type instead).
-    if (has_active_input) {
-        const typed = self.apply_text_input(in);
-        if (!typed and in.nav != .none) {
-            self.focus_source = .pad;
-            self.nav_advance(in.nav);
-            self.sync_active_to_focus();
-        }
-    } else {
-        if (in.nav != .none) {
-            self.focus_source = .pad;
-            self.nav_advance(in.nav);
-            self.sync_active_to_focus();
-        }
+    // While a text input is active the navigation keys (WASD / arrows /
+    // dpad) are still consumed by the menu set's ui_up/down/left/right
+    // bindings -- but typing into the field happens via the text session,
+    // not via those keys. We let nav advance focus and the new field's
+    // session begin on the focus change.
+    if (in.nav != .none) {
+        self.focus_source = .pad;
+        self.nav_advance(in.nav);
+        self.sync_active_to_focus();
     }
 
     // Click: select the component under the cursor. For text inputs this
@@ -125,31 +130,37 @@ pub fn update(self: *Self, in: *const UiInput) void {
             self.focused = idx;
             self.focus_source = .mouse;
             if (self.components[idx] == .text_input) {
-                self.active_input = idx;
+                self.set_active_input(idx);
             } else {
-                self.active_input = null;
+                self.cancel_active_session();
                 self.activate(idx);
             }
             return;
         }
         // Clicked on empty space - deselect active input.
-        self.active_input = null;
+        self.cancel_active_session();
     }
     if (in.confirm_edge) {
         if (self.activation_target()) |idx| {
             if (self.components[idx] == .text_input) {
-                if (ae.platform == .psp) {
-                    self.osk_request = idx;
-                } else {
-                    // Enter on a text input advances focus to the next field.
-                    self.focus_source = .pad;
-                    self.nav_advance(.down);
-                    self.sync_active_to_focus();
-                }
+                // Enter on a text input advances focus to the next field
+                // on every platform; the OSK (PSP) is invoked on focus by
+                // begin_text_input via the platform hook.
+                self.focus_source = .pad;
+                self.nav_advance(.down);
+                self.sync_active_to_focus();
             } else {
-                self.active_input = null;
+                self.cancel_active_session();
                 self.activate(idx);
             }
+        }
+    }
+
+    // Mirror the active TextInputSession's buffer into the focused field.
+    if (self.active_input) |idx| {
+        switch (self.components[idx]) {
+            .text_input => |ti| sync_session_to_field(ti),
+            else => {},
         }
     }
 }
@@ -159,75 +170,50 @@ pub fn update(self: *Self, in: *const UiInput) void {
 fn sync_active_to_focus(self: *Self) void {
     if (self.focused) |f| {
         if (self.components[f] == .text_input) {
-            self.active_input = f;
+            self.set_active_input(f);
         } else {
-            self.active_input = null;
+            self.cancel_active_session();
         }
     } else {
-        self.active_input = null;
+        self.cancel_active_session();
     }
 }
 
-/// Writes typed characters into the active TextInput buffer. Returns true
-/// if any characters were consumed (used to suppress overlapping nav).
-fn apply_text_input(self: *Self, in: *const UiInput) bool {
-    const idx = self.active_input orelse return false;
-    const ti = switch (self.components[idx]) {
-        .text_input => |t| t,
-        else => return false,
-    };
+/// Make `idx` the active text input. If a different field is currently
+/// active, cancel its session first; otherwise begin a fresh session.
+/// Idempotent for the same idx.
+fn set_active_input(self: *Self, idx: u8) void {
+    if (self.active_input != null and self.active_input.? == idx and self.session_started) return;
 
-    var consumed = false;
-
-    if (in.backspace and ti.len.* > 0) {
-        ti.len.* -= 1;
-        consumed = true;
+    if (self.active_input != null and self.session_started) {
+        ae.Core.input.cancel_text() catch {};
     }
+    self.active_input = idx;
+    self.session_started = false;
 
-    for (in.char_buf[0..in.char_count]) |ch| {
-        if (ti.len.* < ti.max_len) {
-            ti.buf[ti.len.*] = ch;
-            ti.len.* += 1;
-            consumed = true;
-        }
-    }
-    return consumed;
-}
-
-/// PSP: opens the system on-screen keyboard for the given TextInput,
-/// blocking until the user confirms or cancels. On confirm, copies the
-/// result back into the component's ASCII buffer. Must be called when the
-/// GE is idle (after draw/flush), not from update.
-pub fn open_psp_osk(self: *Self, idx: u8) void {
     const ti = switch (self.components[idx]) {
         .text_input => |t| t,
         else => return,
     };
-
-    // Build a UTF-16 description from the placeholder.
-    var desc_buf: [64:0]u16 = .{0} ** 64;
-    for (ti.placeholder, 0..) |ch, i| {
-        if (i >= 63) break;
-        desc_buf[i] = ch;
+    const target: ae.Core.input.TextInputTarget = .{ .id = ti.id };
+    const opts: ae.Core.input.TextInputOptions = .{ .max_bytes = ti.max_len };
+    _ = ae.Core.input.begin_text_input(target, opts) catch return;
+    self.session_started = true;
+    // Seed the engine session with whatever the field currently holds so
+    // the user sees their existing text remain after focus.
+    if (ti.len.* > 0) {
+        ae.Core.input.write_text_session_buffer(ti.buf[0..ti.len.*], .active);
     }
+}
 
-    var out_buf: [64]u16 = .{0} ** 64;
-    const limit: c_int = @intCast(ti.max_len);
-    const result = ae.Psp.showOSK(&desc_buf, &out_buf, limit);
-    if (result != 0) return;
-
-    // Copy UTF-16 output back to the ASCII buffer, truncating to max_len.
-    var len: u8 = 0;
-    for (out_buf) |wc| {
-        if (wc == 0) break;
-        if (len >= ti.max_len) break;
-        // Only keep ASCII-range characters.
-        if (wc <= 127) {
-            ti.buf[len] = @intCast(wc);
-            len += 1;
-        }
-    }
-    ti.len.* = len;
+/// Mirror the active TextInputSession's buffer into the field's display
+/// buffer, truncating to max_len. Called once per frame from `update`.
+fn sync_session_to_field(ti: component.TextInput) void {
+    const session = ae.Core.input.current_text_session() orelse return;
+    const items = session.buffer.items;
+    const take = @min(items.len, @as(usize, ti.max_len));
+    if (take > 0) std.mem.copyForwards(u8, ti.buf[0..take], items[0..take]);
+    ti.len.* = @intCast(take);
 }
 
 fn activate(self: *Self, idx: u8) void {
