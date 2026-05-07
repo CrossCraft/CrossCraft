@@ -129,8 +129,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try ui_input.ensure_registered();
     ui_input.set_profile(ui_input.default_profile());
 
-    // Push the menu input context so the menu ActionSet is queryable
-    // and the cursor is visible. Popped on deinit.
     try ae.Core.input.push_context(.{
         .name = "menu",
         .cursor_mode = .visible,
@@ -170,8 +168,6 @@ fn deinit(ctx: *anyopaque, _: *Engine) void {
     self.font_batcher.deinit();
     self.batcher.deinit();
 
-    // Drop the menu input context. Action sets persist for the lifetime
-    // of the process, so the next entry into MenuState reuses them.
     _ = ae.Core.input.pop_context() catch {};
 
     Rendering.Pipeline.deinit(pipeline);

@@ -36,11 +36,7 @@ const SoundManager = @import("../SoundManager.zig");
 const Face = @import("../world/chunk/face.zig").Face;
 const Options = @import("../Options.zig");
 
-/// Edge-detection mirror for every gameplay action that fires on rising edge.
-/// Polled in `poll_inputs` once per frame; the previous and current button
-/// state are compared, then the edge bits are forwarded into the per-frame
-/// pending flags consumed by GameState (or directly into local actions like
-/// the chord handlers).
+/// Previous-frame button state for rising-edge detection in `poll_inputs`.
 const PrevInputs = struct {
     inventory_toggle: input.ButtonState = .released,
     noclip: input.ButtonState = .released,
@@ -117,11 +113,7 @@ const SELECTOR_LAYER: u8 = 251;
 // values from analog sources never trigger a wrap.
 const HOTBAR_SCROLL_DEADBAND: f32 = 0.5;
 
-// Base radians-per-pixel for the look action's mouse_delta source. Multiplied
-// by Options.current.sensitivity in poll_inputs. Tuned so that a sensitivity
-// of 3.0 matches the legacy mouse_sensitivity = 3.0 feel; legacy code applied
-// the global scalar against a normalised mouse-delta source whose units
-// approximated this constant.
+// Radians-per-pixel base rate scaled by Options.current.sensitivity.
 const LOOK_PIXEL_TO_RAD: f32 = 0.002;
 
 const Self = @This();
@@ -290,20 +282,16 @@ hud_toggle_pending: bool,
 /// each frame to flip `Options.current.rain` and persist the change.
 rain_toggle_pending: bool,
 
-/// Edge flags set by the chat action triggers (gameplay-set); GameState
-/// polls and clears them each frame.  chat_open: blank field; chat_cmd:
-/// '/' prefix field. (chat_send moved to the chat ActionSet -- the chat
-/// overlay polls it directly while it owns the top context.)
+/// Edge flags set by the chat triggers; GameState polls and clears them
+/// each frame.  chat_open: blank field; chat_cmd: '/' prefix field.
 chat_open_pending: bool,
 chat_cmd_pending: bool,
 
-/// Per-frame edge-detection mirror, written by `poll_inputs`.
 prev_inputs: PrevInputs,
-/// True iff the gameplay ActionSet was the top context's set last frame.
-/// Used to suppress ghost rising edges on the frame gameplay first
-/// becomes active again (overlay closes) with bindings still held -- e.g.
-/// keyboard B held through the inventory close would otherwise re-fire
-/// inventory_toggle and reopen the overlay.
+/// True iff the gameplay ActionSet owned the top context last frame. Used
+/// to suppress a ghost rising edge on the frame gameplay reactivates with
+/// a binding still held (e.g. B held through an inventory close would
+/// otherwise re-fire inventory_toggle).
 gameplay_was_active: bool,
 
 /// Virtual block for client-side collision prediction.  Placed by
@@ -338,9 +326,7 @@ bob_amount_prev: f32,
 /// Initialise player state. `self` must have a stable address (module-level
 /// or arena-backed). `x`, `y`, `z` are world coordinates; `y` is eye-level
 /// from server. `writer` is the connection's outbound stream (used for
-/// SetBlockToServer). The caller owns gameplay action-set registration --
-/// see `bindings.init` -- and must push the gameplay InputContext before
-/// the first `update`.
+/// SetBlockToServer). The caller owns the gameplay InputContext.
 pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     const feet_y = y - collision.EYE_HEIGHT;
     self.* = .{
@@ -399,22 +385,14 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .bob_amount = 0,
         .bob_amount_prev = 0,
     };
-
-    // Action set + bindings are owned by the caller (see bindings.init);
-    // cursor mode follows the gameplay InputContext, so there is no engine
-    // mouse-relative-mode toggle here. Sensitivity is read from
-    // Options.current.sensitivity in `poll_inputs` each frame.
 }
 
 /// Apply one frame of player movement.
 pub fn update(self: *Self, dt: f32) void {
     std.debug.assert(dt >= 0);
 
-    // Mirror the engine's effective cursor mode so legacy gates (do_break,
-    // do_place, etc.) keep working. When an overlay is on top, the gameplay
-    // ActionSet is masked so polled values would already be zero -- this
-    // additional gate covers held shadow state and one-frame deferred
-    // pending actions.
+    // Mirror engine cursor mode so do_break / do_place gates fire only
+    // while gameplay owns input.
     self.mouse_captured = input.effective_cursor_mode() == .captured;
 
     self.poll_inputs();
@@ -462,9 +440,6 @@ pub fn update(self: *Self, dt: f32) void {
 
     self.apply_look(dt);
 
-    // No save/restore needed: when an overlay is on top the gameplay
-    // ActionSet is masked so poll_inputs already wrote zero-state values
-    // for move/jump/sneak. Held inputs resume cleanly on overlay close.
     if (self.noclip) {
         self.update_noclip(dt);
     } else {
@@ -1236,32 +1211,22 @@ fn draw_hotbar_blocks(self: *const Self, iso: *IsoBlockDrawer, hud_y_shift: i16)
 
 // --- Per-frame poll ---
 
-/// Read every gameplay action once per frame and translate it into the
-/// fields gameplay code (and GameState) consumes. Edge-only actions are
-/// dispatched via `prev_inputs`; held actions land directly. The gameplay
-/// ActionSet is masked when an overlay is on top, so polled values are
-/// naturally zero/.released during overlays -- no separate gating needed.
+/// Read every gameplay action and translate it into the fields gameplay
+/// code consumes. Edge actions are dispatched via `prev_inputs`; held
+/// actions land directly. While an overlay owns the top context the
+/// gameplay set is masked, so polled values are naturally zero/.released.
 ///
-/// On the frame the gameplay set transitions from masked to active (an
-/// overlay just closed), every prev_inputs slot is .released while the
-/// fresh polled value reflects whatever physical buttons are still held.
-/// That would fire a single ghost rising edge per held source on the
-/// activation frame -- e.g. holding B through the inventory close would
-/// re-fire inventory_toggle and reopen the overlay. Suppress edge
-/// dispatch on the activation frame; held actions still update normally.
+/// On the activation frame (overlay just closed) prev_inputs holds masked
+/// .released values while the fresh poll reflects physical state, which
+/// would fire one ghost rising edge per still-held binding. Suppress edge
+/// dispatch on that frame; held actions update normally.
 fn poll_inputs(self: *Self) void {
     const active_now = is_gameplay_active();
     const fresh_activation = active_now and !self.gameplay_was_active;
     self.gameplay_was_active = active_now;
 
-    // Held vector / scalar reads.
     self.move_dir = input.get_action_vector2("move");
 
-    // Sensitivity is applied at read time. mouse_delta is raw pixels per
-    // frame; multiply by a small platform factor so a sensitivity of ~3.0
-    // yields camera movement comparable to the legacy global mouse_sensitivity.
-    // The factor is the radians-per-pixel base rate that Options.sensitivity
-    // scales -- per the spec, sensitivity affects look bindings only.
     const look_raw = input.get_action_vector2("look");
     const sens = Options.current.sensitivity * LOOK_PIXEL_TO_RAD;
     self.look_delta = .{ look_raw[0] * sens, look_raw[1] * sens };
@@ -1270,12 +1235,6 @@ fn poll_inputs(self: *Self) void {
     self.jumping = input.get_action_button("jump") == .pressed;
     self.sneaking = input.get_action_button("sneak") == .pressed;
 
-    // Held-flag mirrors used by hold-to-repeat / chord detection. These
-    // are unconditional so a button still held across an overlay close
-    // resumes its held effect immediately (no save/restore needed) -- but
-    // edge-firing branches below are gated on `!fresh_activation` so the
-    // physical-button-still-held case does NOT re-trigger one-shot
-    // actions like inventory_toggle / chord-pending / hotbar select.
     self.break_held = input.get_action_button("break") == .pressed;
     self.place_held = input.get_action_button("place") == .pressed;
     self.shoulder_r_held = input.get_action_button("shoulder_r") == .pressed;
@@ -1283,9 +1242,8 @@ fn poll_inputs(self: *Self) void {
     self.playerlist_held = input.get_action_button("playerlist") == .pressed;
 
     if (fresh_activation) {
-        // Snap every prev slot to the current poll so the next frame sees
-        // edges relative to today's state, not the masked .released values
-        // that were tracked while the overlay owned input.
+        // Snap prev to current so next frame's edges are relative to
+        // today's state, not the masked .released values from the overlay.
         self.prev_inputs.inventory_toggle = input.get_action_button("inventory_toggle");
         if (comptime builtin.mode == .Debug and ae.platform != .psp) {
             self.prev_inputs.noclip = input.get_action_button("noclip");
@@ -1310,7 +1268,6 @@ fn poll_inputs(self: *Self) void {
         return;
     }
 
-    // Edge actions. Each one mirrors prev_state for next-frame comparison.
     const inv = input.get_action_button("inventory_toggle");
     if (rising_edge(self.prev_inputs.inventory_toggle, inv)) {
         self.inventory_toggle_pending = true;
@@ -1332,8 +1289,6 @@ fn poll_inputs(self: *Self) void {
         self.prev_inputs.noclip = nc;
     }
 
-    // Break / place: held flags drive hold-to-repeat in update(); rising
-    // edges fire the action immediately and reset the repeat timer.
     const br = input.get_action_button("break");
     self.break_held = br == .pressed;
     if (rising_edge(self.prev_inputs.break_, br)) {
@@ -1350,9 +1305,8 @@ fn poll_inputs(self: *Self) void {
     }
     self.prev_inputs.place = pl;
 
-    // Gamepad shoulder buttons: chord detection lives in the rising-edge
-    // branch (L+R = inventory toggle); held flags gate the deferred
-    // pending_shoulder_break/place during update().
+    // L+R chord = inventory toggle; otherwise rising edge defers a
+    // break/place that update() can cancel if the chord completes.
     const sr = input.get_action_button("shoulder_r");
     self.shoulder_r_held = sr == .pressed;
     if (rising_edge(self.prev_inputs.shoulder_r, sr)) {
@@ -1408,7 +1362,6 @@ fn poll_inputs(self: *Self) void {
     if (rising_edge(self.prev_inputs.chat_cmd, cc)) self.chat_cmd_pending = true;
     self.prev_inputs.chat_cmd = cc;
 
-    // Hotbar cycle (D-pad / bumpers).
     const hl = input.get_action_button("hotbar_left");
     if (rising_edge(self.prev_inputs.hotbar_left, hl)) {
         self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
@@ -1421,7 +1374,6 @@ fn poll_inputs(self: *Self) void {
     }
     self.prev_inputs.hotbar_right = hr;
 
-    // Keyboard 1-9 direct-select.
     inline for (0..9) |i| {
         const name = comptime hotbar_slot_name(i);
         const cur = input.get_action_button(name);
@@ -1431,8 +1383,6 @@ fn poll_inputs(self: *Self) void {
         self.prev_inputs.hotbar_slot[i] = cur;
     }
 
-    // Mouse-wheel scroll: per-frame axis value with a deadband so a single
-    // notch advances exactly one slot.
     const scroll = input.get_action_axis("hotbar_scroll");
     if (scroll > HOTBAR_SCROLL_DEADBAND) {
         self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;

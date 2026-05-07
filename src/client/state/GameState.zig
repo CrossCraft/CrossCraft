@@ -105,9 +105,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.mp_read_future = null;
     self.sp_compressor_thread = null;
 
-    // Action sets persist for the life of the process; bindings.init is
-    // idempotent across re-entries. Push the gameplay context now so any
-    // failure during the rest of init is matched by the deinit pop below.
+    // Push the gameplay context up front so any later init failure is
+    // matched by the deinit pop below.
     const gameplay_set = try bindings.init();
     try ae_input.push_context(.{
         .name = "gameplay",
@@ -211,8 +210,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     } else {
         try self.player.init(128.0, 44.0, 128.0, player_writer);
     }
-    // Sensitivity is applied at read time inside Player.poll_inputs from
-    // Options.current.sensitivity, so no engine-side scalar to set here.
     self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
 
     const render_alloc = engine.allocator(.render);
@@ -253,10 +250,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         ResourcePack.atlas,
     );
 
-    // Inventory overlay (Classic block-picker). MenuState already calls
-    // ensure_registered, but state init order is not load-bearing here, so
-    // call it again -- it is idempotent and guarantees the ui_cursor /
-    // ui_click / ui_confirm / ui_cancel actions exist for the overlay.
+    // ensure_registered is idempotent; call it so the inventory overlay
+    // has the menu actions even if MenuState was skipped.
     try ui_input.ensure_registered();
     ui_input.set_profile(ui_input.default_profile());
     self.inventory = Inventory.init();
@@ -311,16 +306,13 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
 
-    // Cancel any in-flight TextInputSession so the next state can begin
-    // its own. Aether allows only one non-terminal session at a time, and
-    // an unsynchronised disconnect / quit may leave one open.
+    // Aether allows only one non-terminal text session at a time; cancel
+    // any leftover so the next state can begin its own.
     if (ae_input.current_text_session()) |s| {
         if (s.status == .active or s.status == .suspended) ae_input.cancel_text() catch {};
     }
 
-    // Pop the gameplay context (and any overlay still on top of it). The
-    // chat / inventory / pause overlays should already have closed
-    // themselves; this loop is belt-and-braces for unwinding.
+    // Pop gameplay and any overlays still stacked on top of it.
     while (ae_input.stack_top()) |top| {
         if (std.mem.eql(u8, top.name, "gameplay")) {
             _ = ae_input.pop_context() catch {};
@@ -437,8 +429,6 @@ fn fp_coord(v: f32) u16 {
     return @intFromFloat(scaled);
 }
 
-/// Detect a `.focus_lost` raw event in the current frame. Used by `update`
-/// to auto-open the pause menu when the window loses focus during gameplay.
 fn focus_lost_this_frame() bool {
     for (ae_input.frame_events()) |ev| {
         switch (ev.kind) {
@@ -461,9 +451,6 @@ fn open_pause(self: *@This()) void {
     OptionsMenuScreen.pending_done = false;
     self.pause_screen = PauseMenuScreen.build(&self.pause_ctx, Session.mode == .singleplayer);
     self.pause_screen.open(!ui_input.profile_uses_pointer());
-    // Push the pause input context. Reuses menu_set so the pause screen has
-    // the same nav vocabulary as the title menu. consumes_text = false so
-    // the player cannot accidentally start typing into a stale session.
     ae_input.push_context(.{
         .name = "pause",
         .cursor_mode = .visible,
@@ -489,11 +476,8 @@ fn close_pause(self: *@This()) void {
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
 
-    // PSP: Select (playerlist_edge) toggles the social overlay -- player list
-    // visible simultaneously with the chat input cursor. Cross (X /
-    // psp_osk_edge) arms the OSK via Aether's begin_text_input platform
-    // hook, which blocks until the modal closes and writes the result into
-    // the active TextInputSession.
+    // PSP: Select toggles the social overlay (playerlist + chat cursor);
+    // Cross arms the OSK via begin_text_input.
     if (ae.platform == .psp) {
         if (self.player.playerlist_edge) {
             self.player.playerlist_edge = false;
@@ -514,9 +498,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         }
     }
 
-    // Drain ui_input edges each frame. Use the active overlay's repeat
-    // state for nav autorepeat. Chat owns no nav repeat in the new model
-    // (text input is via TextInputSession, not per-key polled chars).
+    // Pick the repeat state owned by whichever overlay is on top.
     const active_repeat = if (self.paused)
         &self.pause_ui_repeat
     else
@@ -547,10 +529,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             if (OptionsMenuScreen.pending_done or self.pause_screen.cancel_pressed) {
                 OptionsMenuScreen.pending_done = false;
                 Options.save(engine.io, engine.dirs.data);
-                // Sensitivity is read from Options each frame in
-                // Player.poll_inputs, so no engine-side scalar to push
-                // here. FOV / vsync are still cached values that need a
-                // re-apply when the user closes the options screen.
+                // Re-apply cached values; sensitivity is read live each frame.
                 self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
                 engine.set_vsync(Options.current.vsync);
                 self.in_options = false;
@@ -576,9 +555,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             if (PauseMenuScreen.pending_quit) {
                 // SP saves automatically inside Server.deinit -> World.deinit;
                 // do not duplicate the ~4 MB write here. MP's "Disconnect" path
-                // never saves (owned_locally is false). The state-machine
-                // transition triggers GameState.deinit which pops the pause
-                // and gameplay contexts -- MenuState then pushes its own.
+                // never saves (owned_locally is false).
                 self.paused = false;
                 self.in_options = false;
                 self.player.look_delta = .{ 0, 0 };
@@ -594,9 +571,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
                 close_pause(self);
             }
         }
-        // While paused the gameplay action set is masked, so poll_inputs
-        // produces no fresh edges for the gameplay-pending flags. Clear
-        // any one-frame leftovers so they cannot fire on resume.
+        // Clear leftover one-frame edges so they cannot fire on resume.
         self.player.inventory_toggle_pending = false;
         self.player.hud_toggle_pending = false;
         self.player.rain_toggle_pending = false;
@@ -640,15 +615,12 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
 
         if (self.inventory.open) self.inventory.update(&ui_in, &self.player);
 
-        // Chat polls its own ActionSet for chat_send / chat_cancel; no
-        // edge needs to be threaded through Player.
         if (self.chat.open) self.chat.update(&self.player);
 
         self.chat.tick(dt);
 
         // Player physics keep ticking with overlays open (matching
-        // Classic). The gameplay ActionSet is masked while overlays are
-        // on top, so polled gameplay actions return zero/.released.
+        // Classic); the masked ActionSet zeroes input.
         self.player.update(dt);
     }
 

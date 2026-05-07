@@ -83,11 +83,6 @@ pub fn init() Self {
 
 // --- Lifecycle ---
 
-/// Push the inventory input context. The inventory shares the menu
-/// ActionSet so ui_confirm / ui_cancel / nav / cursor work without a
-/// dedicated set; the context's distinct name keeps the spec's overlay
-/// identity. Cursor mode is .visible (gameplay layer beneath stays
-/// captured but is masked by the overlay above).
 pub fn open_overlay(self: *Self, player: *Player) void {
     if (self.open) return;
     self.open = true;

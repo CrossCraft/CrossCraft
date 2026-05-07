@@ -51,8 +51,7 @@ pub const Rect = struct {
 };
 
 pub const TextInput = struct {
-    /// Stable identifier used as the TextInputSession target id when this
-    /// field receives focus. Caller-owned, must outlive the screen.
+    /// Stable id used as the TextInputSession target on focus.
     id: []const u8,
     placeholder: []const u8,
     buf: [*]u8,
@@ -285,7 +284,5 @@ fn draw_label(fonts: *FontBatcher, l: *const Label, layer_base: u8) void {
 
 comptime {
     // Catch accidental growth of the component union -- keeps PSP-friendly.
-    // 80 covers TextInput's id + placeholder slices + buf/len pointers
-    // + the i16 layout fields with the union tag.
     std.debug.assert(@sizeOf(Component) <= 80);
 }

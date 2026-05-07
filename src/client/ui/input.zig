@@ -1,13 +1,7 @@
-/// Per-frame UI input snapshot, fed by polling Aether's menu ActionSet.
-///
-/// Owns the menu ActionSet (registered once at first call, installed
-/// for the process lifetime). Pause, inventory, and the title-menu
-/// hierarchy all push contexts that reference this set.
-///
-/// Text-character routing is owned by Aether's TextInputSession --
-/// `Screen.zig` and `Chat.zig` start sessions when they need text and
-/// read the populated buffer back. There is no per-key char binding
-/// here.
+/// Per-frame UI input snapshot polled from the menu ActionSet. Pause,
+/// inventory, and the title-menu hierarchy all push contexts referencing
+/// this set. Text input is routed through TextInputSession instead of
+/// per-key char bindings.
 const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
@@ -48,8 +42,7 @@ pub const UiInput = struct {
     pause_edge: bool,
 };
 
-/// Module-static prev-state used for rising-edge detection on the menu
-/// action set. Held flags are read directly each frame via get_action_*.
+/// Previous-frame button state for rising-edge detection.
 const Prev = struct {
     click: input.ButtonState = .released,
     confirm: input.ButtonState = .released,
@@ -59,11 +52,9 @@ const Prev = struct {
 
 const Runtime = struct {
     prev: Prev = .{},
-    /// True iff menu_set was the top context's action set at the end of
-    /// the previous build_frame call. Used to suppress ghost rising
-    /// edges on the frame the menu set first becomes active with a
-    /// binding (e.g. keyboard B for ui_cancel) already held from the
-    /// gameplay-set press that triggered the context push.
+    /// True iff menu_set owned the top context last frame. Suppresses a
+    /// ghost rising edge on the frame menu_set activates with a binding
+    /// already held (e.g. B from the gameplay press that pushed us here).
     was_active: bool = false,
     set: ?input.ActionSetHandle = null,
     profile: InputProfile = .pointer_and_pad,
@@ -89,9 +80,8 @@ pub fn profile_uses_pointer() bool {
     return runtime.profile == .pointer_and_pad;
 }
 
-/// Idempotent: registers the menu ActionSet on first call and returns the
-/// handle. The set persists for the lifetime of the process; subsequent
-/// state transitions push a context referencing it.
+/// Idempotent: registers and installs the menu ActionSet on first call.
+/// The set persists for the lifetime of the process.
 pub fn ensure_registered() !void {
     if (runtime.set != null) return;
     const set = try input.register_action_set("menu");
@@ -153,13 +143,8 @@ pub fn menu_set() input.ActionSetHandle {
 
 /// Builds the per-frame UI snapshot. `dt` is in seconds. `repeat` is
 /// caller-owned state that survives across frames; one instance per active
-/// screen owner.
-///
-/// Reads the menu ActionSet via Aether's polling API. When the active
-/// context's ActionSet is not menu_set (e.g. gameplay or chat is on top),
-/// every read returns the released / zero default and the snapshot is
-/// effectively empty -- exactly what we want for a UI poll fired from a
-/// state that does not currently own input.
+/// screen owner. When menu_set is not the top context all reads return
+/// released/zero, yielding an effectively empty snapshot.
 pub fn build_frame(dt: f32, repeat: *Repeat) UiInput {
     std.debug.assert(dt >= 0);
 
@@ -175,11 +160,8 @@ pub fn build_frame(dt: f32, repeat: *Repeat) UiInput {
 
     const active_now = is_menu_set_active();
 
-    // On the activation frame, seed prev := current so a binding that was
-    // already held when the context switched in does not fire a spurious
-    // rising edge. Also do this when menu_set was inactive last frame
-    // even if it still isn't active now -- the masked .released values
-    // would have written into prev otherwise, leaking next-frame edges.
+    // Seed prev := current on activation so already-held bindings do not
+    // fire a spurious rising edge.
     const fresh_activation = active_now and !runtime.was_active;
     runtime.was_active = active_now;
 
@@ -226,9 +208,6 @@ fn is_menu_set_active() bool {
 
 const Cursor = struct { x: i16, y: i16 };
 
-/// Pointer position from Aether's frame pointer (absolute screen pixels,
-/// top-origin), scaled to logical UI coordinates. Returns sentinel (-1,-1)
-/// for controller-only profiles so hover/hit tests are skipped.
 fn read_cursor() Cursor {
     if (!profile_uses_pointer()) return .{ .x = -1, .y = -1 };
 

@@ -1,34 +1,20 @@
-/// Input action registration and default bindings.
-/// Keyboard + mouse on desktop, gamepad/analog + D-pad on PSP.
-///
-/// Owns the gameplay ActionSet -- registered once by `init`, returned to the
-/// caller as an `ActionSetHandle`. The caller pushes a context referencing
-/// this set when the player has agency (GameState) and pops it on transition
-/// out. Look sensitivity is applied at read time in Player.update against
-/// the current Options value, so changing the option takes effect on the
-/// next frame without re-binding.
+/// Gameplay ActionSet registration. Caller pushes a context referencing
+/// the returned handle while the player has agency.
 const builtin = @import("builtin");
 const ae = @import("aether");
 const input = ae.Core.input;
 
 pub const ActionSetHandle = input.ActionSetHandle;
 
-/// One-shot lazy-init handle for the gameplay ActionSet. Registered on
-/// first call; subsequent calls return the same handle so a second entry
-/// into GameState does not hit ActionAlreadyExists.
 var gameplay_set: ?ActionSetHandle = null;
 
-/// Returns the gameplay action set handle if registered, null otherwise.
-/// Used by Player.poll_inputs to detect whether gameplay is the active
-/// top-of-stack set (and so suppress ghost edges on context activation).
+/// Gameplay action set handle if registered, null otherwise.
 pub fn handle() ?ActionSetHandle {
     return gameplay_set;
 }
 
-/// Registers the gameplay action set on first call, binds every gameplay
-/// action to the platform-appropriate sources, installs the set, and
-/// returns the handle. Idempotent across GameState entries.
-/// The caller is responsible for pushing the gameplay context.
+/// Idempotent: registers, binds, and installs the gameplay action set on
+/// first call. Caller pushes the matching context.
 pub fn init() !ActionSetHandle {
     if (gameplay_set) |h| return h;
     const set = try input.register_action_set("gameplay");
@@ -93,19 +79,15 @@ pub fn init() !ActionSetHandle {
         try input.bind_action(set, "inventory_toggle", .{ .source = .{ .gamepad_button = .Y } });
     }
 
-    // --- pause trigger ---
-    // Same name and bindings as menu_set's ui_pause so ui_input.build_frame
-    // polls the right value regardless of which context is on top: while
-    // gameplay is the active set, this fires; once pause pushes the menu
-    // context, the menu set's ui_pause takes over.
+    // ui_pause is mirrored from menu_set so build_frame can poll it from
+    // either context.
     try input.add_action(set, "ui_pause", .button);
     try input.bind_action(set, "ui_pause", .{ .source = .{ .key = .Escape } });
     try input.bind_action(set, "ui_pause", .{ .source = .{ .gamepad_button = .Start } });
 
     // --- mouse look (delta-based) ---
-    // Multiplier left at 1.0; sensitivity is applied against Options.current
-    // at read time in Player.update so an Options change takes effect on the
-    // next frame without re-binding.
+    // Multiplier stays 1.0; Player applies Options.current.sensitivity at
+    // read time.
     try input.add_action(set, "look", .vector2);
     try input.bind_action(set, "look", .{ .source = .{ .mouse_delta = .x }, .component = .x });
     try input.bind_action(set, "look", .{ .source = .{ .mouse_delta = .y }, .component = .y });
@@ -143,12 +125,9 @@ pub fn init() !ActionSetHandle {
     try input.bind_action(set, "playerlist", .{ .source = .{ .key = .Tab } });
     try input.bind_action(set, "playerlist", .{ .source = .{ .gamepad_button = .Back } });
 
-    // --- chat triggers ---
-    // chat_open (T): opens a blank input field.
-    // chat_cmd (/): opens with '/' pre-typed for commands.
-    // chat_send is owned by the chat ActionSet (registered separately by
-    // ui/Chat.zig), not gameplay, so Enter does not fire chat_send while
-    // gameplay is on top.
+    // chat_open (T) and chat_cmd (/) open the chat overlay; chat_send /
+    // chat_cancel live on the chat ActionSet so Enter only sends when
+    // chat owns the top context.
     try input.add_action(set, "chat_open", .button);
     try input.bind_action(set, "chat_open", .{ .source = .{ .key = .T } });
     try input.add_action(set, "chat_cmd", .button);

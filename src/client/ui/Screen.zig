@@ -46,12 +46,11 @@ focused: ?u8 = null,
 /// Text input that is actively receiving keystrokes. Only changes on click
 /// or keyboard navigation, NOT on mouse hover - so moving the mouse over
 /// another component highlights it without stealing typing focus. When
-/// non-null, the screen owns an Aether TextInputSession whose buffer is
-/// mirrored into this component's display buffer each frame.
+/// non-null, the screen owns a TextInputSession mirrored into the field
+/// each frame.
 active_input: ?u8 = null,
-/// Tracks whether `update` has already started a TextInputSession for the
-/// current `active_input`, so the second-frame click on the same field is
-/// idempotent. Cleared whenever active_input changes.
+/// True once a TextInputSession has been started for `active_input`, so
+/// re-clicking the same field is idempotent.
 session_started: bool = false,
 focus_source: FocusSource = .mouse,
 /// Set by `update` when ui_cancel was pressed; the owning state reads it
@@ -74,9 +73,6 @@ pub fn open(self: *Self, seed_focus: bool) void {
     self.cancel_pressed = false;
 }
 
-/// Cancel any active TextInputSession owned by this Screen. Safe to call
-/// when no session is in flight. Used both on screen open / close and on
-/// focus moves between text inputs.
 fn cancel_active_session(self: *Self) void {
     if (self.active_input != null and self.session_started) {
         ae.Core.input.cancel_text() catch {};
@@ -111,11 +107,8 @@ pub fn update(self: *Self, in: *const UiInput) void {
         }
     }
 
-    // While a text input is active the navigation keys (WASD / arrows /
-    // dpad) are still consumed by the menu set's ui_up/down/left/right
-    // bindings -- but typing into the field happens via the text session,
-    // not via those keys. We let nav advance focus and the new field's
-    // session begin on the focus change.
+    // Nav keys still advance focus while a text input is active; typing
+    // is delivered through the session, not these bindings.
     if (in.nav != .none) {
         self.focus_source = .pad;
         self.nav_advance(in.nav);
@@ -143,9 +136,8 @@ pub fn update(self: *Self, in: *const UiInput) void {
     if (in.confirm_edge) {
         if (self.activation_target()) |idx| {
             if (self.components[idx] == .text_input) {
-                // Enter on a text input advances focus to the next field
-                // on every platform; the OSK (PSP) is invoked on focus by
-                // begin_text_input via the platform hook.
+                // Enter advances focus; on PSP the OSK is invoked on
+                // focus via begin_text_input, not on confirm.
                 self.focus_source = .pad;
                 self.nav_advance(.down);
                 self.sync_active_to_focus();
@@ -179,9 +171,8 @@ fn sync_active_to_focus(self: *Self) void {
     }
 }
 
-/// Make `idx` the active text input. If a different field is currently
-/// active, cancel its session first; otherwise begin a fresh session.
-/// Idempotent for the same idx.
+/// Idempotent for the same idx; cancels any prior session and begins a
+/// fresh one for the new field.
 fn set_active_input(self: *Self, idx: u8) void {
     if (self.active_input != null and self.active_input.? == idx and self.session_started) return;
 
@@ -199,8 +190,7 @@ fn set_active_input(self: *Self, idx: u8) void {
     const opts: ae.Core.input.TextInputOptions = .{ .max_bytes = ti.max_len };
     _ = ae.Core.input.begin_text_input(target, opts) catch return;
     self.session_started = true;
-    // Seed the engine session with whatever the field currently holds so
-    // the user sees their existing text remain after focus.
+    // Seed with the field's existing text so it survives the focus change.
     if (ti.len.* > 0) {
         ae.Core.input.write_text_session_buffer(ti.buf[0..ti.len.*], .active);
     }

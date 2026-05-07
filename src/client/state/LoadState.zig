@@ -29,9 +29,8 @@ var session_error: ?anyerror = null;
 var mp_server_name: [64]u8 = @splat(' ');
 var mp_server_motd: [64]u8 = @splat(' ');
 
-/// One-shot lazy-init handle for the loading ActionSet. Empty bindings;
-/// the only purpose is to satisfy push_context with a valid installed set
-/// so the cursor returns to .visible during the loading screen.
+/// Empty action set; exists only so push_context has a valid installed
+/// set during the loading screen.
 var loading_set: ?ae.Core.input.ActionSetHandle = null;
 
 fn ensure_loading_set() !ae.Core.input.ActionSetHandle {
@@ -191,8 +190,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
 
-    // Push the loading input context. Cursor is .visible while the
-    // background server / connect task runs; popped on deinit.
     const set = try ensure_loading_set();
     try ae.Core.input.push_context(.{
         .name = "loading",
@@ -235,7 +232,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.font_batcher.deinit();
     self.batcher.deinit();
 
-    // Drop the loading input context.
     _ = ae.Core.input.pop_context() catch {};
 
     Rendering.Pipeline.deinit(pipeline);

@@ -88,8 +88,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.ui_repeat = .{};
     pending_menu = false;
 
-    // Push a context that exposes the menu ActionSet so the "Back to menu"
-    // button is reachable from this screen. ensure_registered is idempotent.
     try ui_input.ensure_registered();
     try ae.Core.input.push_context(.{
         .name = "disconnect",

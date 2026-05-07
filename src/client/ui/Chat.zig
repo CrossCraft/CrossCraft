@@ -50,9 +50,6 @@ const INPUT_TEXT_LAYER: u8 = 244;
 
 // --- Action set ---
 
-/// One-shot lazy-init handle for the chat ActionSet. Registered the first
-/// time the chat overlay opens; reused on every subsequent open across
-/// GameState entries.
 var chat_set: ?input.ActionSetHandle = null;
 
 fn ensure_chat_set() !input.ActionSetHandle {
@@ -101,13 +98,10 @@ session_active: bool,
 /// Optional command prefix prepended to outgoing messages, displayed
 /// ahead of the typed text. Zero = no prefix.
 prefix: u8,
-/// Edge-detection mirror for chat_send / chat_cancel.
 prev_send: input.ButtonState,
 prev_cancel: input.ButtonState,
-/// True iff chat_set was the top context's action set last frame. Used
-/// to suppress ghost rising edges on the frame chat first becomes active
-/// with chat_send / chat_cancel sources already held from the gameplay
-/// press that opened the overlay.
+/// Suppresses a ghost rising edge on the frame chat activates with
+/// chat_send / chat_cancel still held from the press that opened it.
 chat_was_active: bool,
 
 // --- Init ---
@@ -273,10 +267,8 @@ pub fn update(self: *Self, player: *Player) void {
     // Walk frame events for Backspace; trim the session buffer in place.
     if (self.session_active) {
         const session_const = input.current_text_session() orelse return;
-        // The session pointer is into Aether's module-static storage and
-        // is stable for the session's lifetime; we can safely cast away
-        // const for the buffer-trim mutation (no allocator needed for
-        // shrink). Aether exposes no public "pop byte" helper.
+        // Cast away const for the in-place shrink; the session pointer is
+        // stable storage and Aether exposes no pop-byte helper.
         const session: *input.TextInputSession = @constCast(session_const);
         for (input.frame_events()) |ev| {
             switch (ev.kind) {
