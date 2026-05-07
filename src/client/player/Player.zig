@@ -25,8 +25,7 @@ const proto = @import("common").protocol;
 const Camera = @import("Camera.zig");
 const bindings = @import("bindings.zig");
 const collision = @import("collision.zig");
-const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
-const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
+const UiDrawList = @import("../ui/UiDrawList.zig");
 const Scaling = @import("../ui/Scaling.zig");
 const layout = @import("../ui/layout.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
@@ -113,7 +112,6 @@ const SELECTOR_LAYER: u8 = 251;
 // values from analog sources never trigger a wrap.
 const HOTBAR_SCROLL_DEADBAND: f32 = 0.5;
 
-// Radians-per-pixel base rate scaled by Options.current.sensitivity.
 const LOOK_PIXEL_TO_RAD: f32 = 0.002;
 
 const Self = @This();
@@ -391,8 +389,6 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
 pub fn update(self: *Self, dt: f32) void {
     std.debug.assert(dt >= 0);
 
-    // Mirror engine cursor mode so do_break / do_place gates fire only
-    // while gameplay owns input.
     self.mouse_captured = input.effective_cursor_mode() == .captured;
 
     self.poll_inputs();
@@ -1116,15 +1112,13 @@ fn face_normal(face: Face) [3]i32 {
 
 // --- UI / HUD ---
 
-/// HUD pass: queues every 2D sprite (crosshair, hotbar background, selector
-/// frame) into `batcher`, and queues hotbar block icons into `iso`. Caller
-/// flushes the sprite batcher first, then the iso drawer, so the 3D block
-/// icons land on top of the 2D selector frame in a single sprite pass - no
-/// second batcher and no extra depth clear needed.
-pub fn draw_ui(
+/// HUD pass: emits the crosshair, hotbar background, selector frame, and
+/// hotbar block icons as commands into `list`. Sprites and iso blocks are
+/// routed to the SpriteBatcher / IsoBlockDrawer at flush time; the caller
+/// is responsible for the eventual `flush_into` and pass ordering.
+pub fn draw_ui_into(
     self: *Self,
-    batcher: *SpriteBatcher,
-    iso: *IsoBlockDrawer,
+    list: *UiDrawList,
     gui: *const Rendering.Texture,
     hide_crosshair: bool,
     hud_y_shift: i16,
@@ -1132,7 +1126,7 @@ pub fn draw_ui(
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
 
     if (!hide_crosshair) {
-        batcher.add_sprite(&.{
+        list.add_sprite(&.{
             .texture = gui,
             .pos_offset = .{ .x = 0, .y = 0 },
             .pos_extent = .{ .x = 16, .y = 16 },
@@ -1149,7 +1143,7 @@ pub fn draw_ui(
     // row (selector is 24 tall vs the hotbar's 22) from clipping off the
     // bottom of the screen.  `hud_y_shift` lifts the whole hotbar to make
     // room for the controller-tooltip strip.
-    batcher.add_sprite(&.{
+    list.add_sprite(&.{
         .texture = gui,
         .pos_offset = .{ .x = 0, .y = -1 - hud_y_shift },
         .pos_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
@@ -1165,7 +1159,7 @@ pub fn draw_ui(
     // 20*i - 80 from the hotbar's horizontal center.
     const slot_i: i16 = @intCast(self.selected_slot);
     const sel_x: i16 = HOTBAR_SLOT_STRIDE * slot_i - 80;
-    batcher.add_sprite(&.{
+    list.add_sprite(&.{
         .texture = gui,
         .pos_offset = .{ .x = sel_x, .y = -hud_y_shift },
         .pos_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
@@ -1177,7 +1171,7 @@ pub fn draw_ui(
         .origin = .bottom_center,
     });
 
-    self.draw_hotbar_blocks(iso, hud_y_shift);
+    self.draw_hotbar_blocks(list, hud_y_shift);
 }
 
 // Logical-pixel half-extent of each rendered iso block. The iso projection
@@ -1186,7 +1180,7 @@ pub fn draw_ui(
 // 16 px slot interior clear of the surrounding selector frame.
 const HOTBAR_BLOCK_HALF_EXTENT: f32 = 3.5;
 
-fn draw_hotbar_blocks(self: *const Self, iso: *IsoBlockDrawer, hud_y_shift: i16) void {
+fn draw_hotbar_blocks(self: *const Self, list: *UiDrawList, hud_y_shift: i16) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const ui_scale = Scaling.compute(screen_w, screen_h);
@@ -1205,21 +1199,17 @@ fn draw_hotbar_blocks(self: *const Self, iso: *IsoBlockDrawer, hud_y_shift: i16)
     var i: u8 = 0;
     while (i < HOTBAR_SLOTS) : (i += 1) {
         const slot_offset_x: f32 = @floatFromInt(@as(i32, HOTBAR_SLOT_STRIDE) * @as(i32, i) - 80);
-        iso.add_block(self.hotbar[i], center_x + slot_offset_x, slot_cy, HOTBAR_BLOCK_HALF_EXTENT);
+        list.add_iso_block(&.{
+            .block = self.hotbar[i],
+            .cx = center_x + slot_offset_x,
+            .cy = slot_cy,
+            .half_extent_px = HOTBAR_BLOCK_HALF_EXTENT,
+        });
     }
 }
 
 // --- Per-frame poll ---
 
-/// Read every gameplay action and translate it into the fields gameplay
-/// code consumes. Edge actions are dispatched via `prev_inputs`; held
-/// actions land directly. While an overlay owns the top context the
-/// gameplay set is masked, so polled values are naturally zero/.released.
-///
-/// On the activation frame (overlay just closed) prev_inputs holds masked
-/// .released values while the fresh poll reflects physical state, which
-/// would fire one ghost rising edge per still-held binding. Suppress edge
-/// dispatch on that frame; held actions update normally.
 fn poll_inputs(self: *Self) void {
     const active_now = is_gameplay_active();
     const fresh_activation = active_now and !self.gameplay_was_active;

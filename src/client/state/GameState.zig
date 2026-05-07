@@ -31,17 +31,20 @@ const BlockHand = @import("../player/BlockHand.zig");
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
 const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
-const Inventory = @import("../ui/Inventory.zig");
+const BlockRegistry = @import("common").BlockRegistry;
 const PlayerList = @import("../ui/PlayerList.zig");
 const Chat = @import("../ui/Chat.zig");
 const Buttons = @import("../ui/Buttons.zig");
 const PromptStrip = @import("../ui/PromptStrip.zig");
 const Prompts = @import("../ui/Prompts.zig");
+const Ui = @import("../ui/Ui.zig");
+const UiState = @import("../ui/UiState.zig");
+const UiDrawList = @import("../ui/UiDrawList.zig");
 const Color = @import("../graphics/Color.zig").Color;
 const ui_input = @import("../ui/input.zig");
-const PauseMenuScreen = @import("../ui/PauseMenuScreen.zig");
-const OptionsMenuScreen = @import("../ui/OptionsMenuScreen.zig");
-const Screen = @import("../ui/Screen.zig");
+const InventoryUi = @import("../ui/screens/Inventory.zig");
+const PauseMenu = @import("../ui/screens/PauseMenu.zig");
+const OptionsScreen = @import("../ui/screens/Options.zig");
 const bindings = @import("../player/bindings.zig");
 const ae_input = ae.Core.input;
 
@@ -66,7 +69,11 @@ player: Player,
 ui_batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 iso_blocks: IsoBlockDrawer,
-inventory: Inventory,
+inventory_open: bool,
+inventory_slot: u8,
+inventory_ui_state: UiState,
+inventory_repeat: ui_input.Repeat,
+inventory_blocks: [BlockRegistry.INVENTORY_SLOTS]c.Block,
 player_list: PlayerList,
 chat: Chat,
 /// PSP only: true while the Select-toggled social overlay (player list +
@@ -85,12 +92,11 @@ report_timer: f32,
 /// are all suppressed. Pause, inventory, and chat overlays stay visible.
 hud_hidden: bool,
 paused: bool,
-pause_screen: Screen,
-pause_ctx: PauseMenuScreen.Context,
-/// True while the options screen (opened from pause) is visible.  When set,
-/// pause_screen holds the OptionsMenuScreen instead of PauseMenuScreen.
+/// True while the pause-options sub-screen is showing instead of the pause menu.
 in_options: bool,
-options_ctx: OptionsMenuScreen.Context,
+pause_ui_state: UiState,
+pause_options_ui_state: UiState,
+pause_options_rd_view: f32,
 pause_ui_repeat: ui_input.Repeat,
 pause_batcher: SpriteBatcher,
 pause_font_batcher: FontBatcher,
@@ -254,7 +260,14 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // has the menu actions even if MenuState was skipped.
     try ui_input.ensure_registered();
     ui_input.set_profile(ui_input.default_profile());
-    self.inventory = Inventory.init();
+    self.inventory_open = false;
+    self.inventory_slot = 0;
+    self.inventory_ui_state = .{};
+    self.inventory_repeat = .{};
+    var inv_i: u8 = 0;
+    while (inv_i < BlockRegistry.INVENTORY_SLOTS) : (inv_i += 1) {
+        self.inventory_blocks[inv_i] = BlockRegistry.inventory_block(inv_i);
+    }
     // Multiplayer already initialised player_list and chat before the
     // read-loop thread was spawned (to avoid losing initial spawn packets).
     if (Session.mode == .singleplayer) {
@@ -277,16 +290,11 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.pause_batcher = try SpriteBatcher.init(render_alloc, self.pipeline);
     self.pause_font_batcher = try FontBatcher.init(render_alloc, self.pipeline, ResourcePack.get_tex(.font));
     self.paused = false;
-    self.pause_ctx = .{};
     self.in_options = false;
-    self.options_ctx = .{ .dirt = null };
     self.pause_ui_repeat = .{};
-    self.pause_screen = PauseMenuScreen.build(&self.pause_ctx, Session.mode == .singleplayer);
-    PauseMenuScreen.pending_resume = false;
-    PauseMenuScreen.pending_quit = false;
-    PauseMenuScreen.pending_save = false;
-    PauseMenuScreen.pending_options = false;
-    OptionsMenuScreen.pending_done = false;
+    self.pause_ui_state = .{};
+    self.pause_options_ui_state = .{};
+    self.pause_options_rd_view = @floatFromInt(Options.capped_render_distance());
 
     // Block selection outline (line mesh, drawn after the world pass).
     self.selection = try SelectionOutline.init(render_alloc, self.pipeline);
@@ -439,18 +447,58 @@ fn focus_lost_this_frame() bool {
     return false;
 }
 
+fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
+    var list: UiDrawList = .{};
+    var ui = begin_pause_ui(self, &list, &self.pause_ui_state, in, PauseMenu.LAYER_BASE);
+    const action = PauseMenu.run(&ui, Session.mode == .singleplayer);
+    ui.end();
+
+    switch (action) {
+        .none => {},
+        .back => close_pause(self),
+        .options => enter_pause_options(self),
+        .save => World.save(),
+        .quit => {
+            self.paused = false;
+            self.in_options = false;
+            self.player.look_delta = .{ 0, 0 };
+            self.pause_ui_state.cancel_active_text();
+            self.pause_options_ui_state.cancel_active_text();
+            try MenuState.transition_here(engine);
+        },
+    }
+}
+
+fn update_pause_options(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
+    var list: UiDrawList = .{};
+    var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, in, OptionsScreen.LAYER_BASE);
+    const leave = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
+    ui.end();
+    self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
+    if (leave) {
+        Options.save(engine.io, engine.dirs.data);
+        engine.set_vsync(Options.current.vsync);
+        leave_pause_options(self);
+    }
+}
+
+fn enter_pause_options(self: *@This()) void {
+    self.in_options = true;
+    self.pause_options_rd_view = @floatFromInt(Options.capped_render_distance());
+    self.pause_options_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
+fn leave_pause_options(self: *@This()) void {
+    self.in_options = false;
+    self.pause_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
 fn open_pause(self: *@This()) void {
     if (self.paused) return;
     self.paused = true;
     self.in_options = false;
     self.pause_ui_repeat = .{};
-    PauseMenuScreen.pending_resume = false;
-    PauseMenuScreen.pending_quit = false;
-    PauseMenuScreen.pending_save = false;
-    PauseMenuScreen.pending_options = false;
-    OptionsMenuScreen.pending_done = false;
-    self.pause_screen = PauseMenuScreen.build(&self.pause_ctx, Session.mode == .singleplayer);
-    self.pause_screen.open(!ui_input.profile_uses_pointer());
+    self.pause_ui_state.open(!ui_input.profile_uses_pointer());
     ae_input.push_context(.{
         .name = "pause",
         .cursor_mode = .visible,
@@ -464,13 +512,109 @@ fn close_pause(self: *@This()) void {
     self.paused = false;
     self.in_options = false;
     _ = ae_input.pop_context() catch {};
-    // Discard the spurious cursor delta produced by the cursor-mode swap.
     self.player.look_delta = .{ 0, 0 };
-    PauseMenuScreen.pending_resume = false;
-    PauseMenuScreen.pending_quit = false;
-    PauseMenuScreen.pending_save = false;
-    PauseMenuScreen.pending_options = false;
-    OptionsMenuScreen.pending_done = false;
+    self.pause_ui_state.cancel_active_text();
+    self.pause_options_ui_state.cancel_active_text();
+}
+
+fn open_inventory(self: *@This()) void {
+    if (self.inventory_open) return;
+    self.inventory_open = true;
+    // Seed the cursor from the player's current hotbar pick when it
+    // refers to a filled slot; otherwise drop to the first cell so the
+    // overlay always opens with a selectable highlight.
+    self.inventory_slot = if (self.player.selected_slot < BlockRegistry.INVENTORY_FILLED)
+        self.player.selected_slot
+    else
+        0;
+    self.inventory_repeat = .{};
+    self.inventory_ui_state.open(!ui_input.profile_uses_pointer());
+    self.inventory_ui_state.focused = InventoryUi.wid(.grid);
+    ae_input.push_context(.{
+        .name = "inventory",
+        .cursor_mode = .visible,
+        .actions = ui_input.menu_set(),
+        .consumes_text = false,
+    }) catch {};
+}
+
+fn close_inventory(self: *@This()) void {
+    if (!self.inventory_open) return;
+    self.inventory_open = false;
+    _ = ae_input.pop_context() catch {};
+    // Discard the spurious look delta produced by the cursor-mode swap.
+    self.player.look_delta = .{ 0, 0 };
+    self.inventory_ui_state.cancel_active_text();
+}
+
+fn update_inventory_tree(self: *@This(), in: *const ui_input.UiInput) void {
+    var list: UiDrawList = .{};
+    var ui = begin_game_ui(self, &list, &self.inventory_ui_state, in, InventoryUi.LAYER_BASE);
+    const action = InventoryUi.run(&ui, self.inventory_blocks[0..], &self.inventory_slot);
+    ui.end();
+    switch (action) {
+        .none => {},
+        .select => {
+            std.debug.assert(self.player.selected_slot < Player.HOTBAR_SLOTS);
+            self.player.hotbar[self.player.selected_slot] = BlockRegistry.inventory_block(self.inventory_slot);
+            close_inventory(self);
+        },
+        .back => close_inventory(self),
+    }
+}
+
+fn begin_game_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *const ui_input.UiInput, layer_base: u8) Ui {
+    return Ui.begin(.{
+        .draw = list,
+        .state = ui_state,
+        .input = in,
+        .fonts = &self.font_batcher,
+        .gui_tex = ResourcePack.get_tex(.gui),
+        .glyphs_tex = ResourcePack.get_tex(.glyphs),
+        .screen = current_screen_rect(),
+        .layer_base = layer_base,
+    });
+}
+
+fn begin_pause_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *const ui_input.UiInput, layer_base: u8) Ui {
+    return Ui.begin(.{
+        .draw = list,
+        .state = ui_state,
+        .input = in,
+        .fonts = &self.pause_font_batcher,
+        .gui_tex = ResourcePack.get_tex(.gui),
+        .glyphs_tex = ResourcePack.get_tex(.glyphs),
+        .screen = current_screen_rect(),
+        .layer_base = layer_base,
+    });
+}
+
+fn current_screen_rect() Ui.LogicalRect {
+    const screen_w = Rendering.gfx.surface.get_width();
+    const screen_h = Rendering.gfx.surface.get_height();
+    const scale = @import("../ui/Scaling.zig").compute(screen_w, screen_h);
+    return .{
+        .x0 = 0,
+        .y0 = 0,
+        .x1 = @intCast((screen_w + scale - 1) / scale),
+        .y1 = @intCast((screen_h + scale - 1) / scale),
+    };
+}
+
+fn empty_input() ui_input.UiInput {
+    return .{
+        .cursor_x = 0,
+        .cursor_y = 0,
+        .cursor_available = false,
+        .cursor_moved = false,
+        .click_edge = false,
+        .click_held = false,
+        .nav = .none,
+        .confirm_edge = false,
+        .cancel_edge = false,
+        .pause_edge = false,
+        .wheel_dy = 0,
+    };
 }
 
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
@@ -484,7 +628,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             if (self.psp_social_mode) {
                 self.psp_social_mode = false;
                 self.chat.close_overlay(&self.player);
-            } else if (Session.mode == .multiplayer and !self.inventory.open) {
+            } else if (Session.mode == .multiplayer and !self.inventory_open) {
                 self.psp_social_mode = true;
                 self.chat.open_overlay_social(&self.player);
             }
@@ -502,13 +646,13 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
     const active_repeat = if (self.paused)
         &self.pause_ui_repeat
     else
-        &self.inventory.ui_repeat;
+        &self.inventory_repeat;
     const ui_in = ui_input.build_frame(dt, active_repeat);
 
     // Pause menu open/close. Focus loss only auto-pauses when nothing else is
     // already grabbing input -- otherwise the chat or inventory overlay would
     // sit awkwardly behind the pause panel.
-    const can_open_pause = !self.paused and !self.chat.open and !self.inventory.open;
+    const can_open_pause = !self.paused and !self.chat.open and !self.inventory_open;
     var just_opened_pause = false;
     if (focus_lost_this_frame() and can_open_pause) {
         open_pause(self);
@@ -519,57 +663,13 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         just_opened_pause = true;
     }
     if (self.paused) {
-        // Skip screen.update on the open frame so the same Escape press that
-        // opened the menu (which also raises cancel_edge) does not immediately
-        // close it.
-        if (!just_opened_pause) self.pause_screen.update(&ui_in);
-
         if (self.in_options) {
-            // Options screen is active: Done or Escape returns to pause menu.
-            if (OptionsMenuScreen.pending_done or self.pause_screen.cancel_pressed) {
-                OptionsMenuScreen.pending_done = false;
-                Options.save(engine.io, engine.dirs.data);
-                // Re-apply cached values; sensitivity is read live each frame.
-                self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
-                engine.set_vsync(Options.current.vsync);
-                self.in_options = false;
-                self.pause_screen = PauseMenuScreen.build(&self.pause_ctx, Session.mode == .singleplayer);
-                self.pause_screen.open(!ui_input.profile_uses_pointer());
-            }
-        } else {
-            // Pause menu is active: dispatch its pending signals.
-            if (PauseMenuScreen.pending_options) {
-                PauseMenuScreen.pending_options = false;
-                self.in_options = true;
-                self.pause_screen = OptionsMenuScreen.build(&self.options_ctx);
-                self.pause_screen.open(!ui_input.profile_uses_pointer());
-            }
-            if (PauseMenuScreen.pending_save) {
-                PauseMenuScreen.pending_save = false;
-                // World.save no-ops in MP (owned_locally is false there); the
-                // pause menu also disables the button in MP, so this is a
-                // belt-and-braces guard. Dispatch is fire-and-forget; the
-                // worker logs its own errors.
-                World.save();
-            }
-            if (PauseMenuScreen.pending_quit) {
-                // SP saves automatically inside Server.deinit -> World.deinit;
-                // do not duplicate the ~4 MB write here. MP's "Disconnect" path
-                // never saves (owned_locally is false).
-                self.paused = false;
-                self.in_options = false;
-                self.player.look_delta = .{ 0, 0 };
-                PauseMenuScreen.pending_resume = false;
-                PauseMenuScreen.pending_quit = false;
-                PauseMenuScreen.pending_save = false;
-                PauseMenuScreen.pending_options = false;
-                OptionsMenuScreen.pending_done = false;
-                try MenuState.transition_here(engine);
-                return;
-            }
-            if (!just_opened_pause and (PauseMenuScreen.pending_resume or self.pause_screen.cancel_pressed)) {
-                close_pause(self);
-            }
+            try update_pause_options(self, engine, &ui_in);
+        } else if (!just_opened_pause) {
+            // Skip tree.update on the open frame so the same Escape press
+            // that opened the menu (which also raises cancel_edge) does
+            // not immediately close it.
+            try update_pause_menu(self, engine, &ui_in);
         }
         // Clear leftover one-frame edges so they cannot fire on resume.
         self.player.inventory_toggle_pending = false;
@@ -591,10 +691,10 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
 
         if (self.player.inventory_toggle_pending) {
             self.player.inventory_toggle_pending = false;
-            if (self.inventory.open) {
-                self.inventory.close_overlay(&self.player);
+            if (self.inventory_open) {
+                close_inventory(self);
             } else if (!self.chat.open) {
-                self.inventory.open_overlay(&self.player);
+                open_inventory(self);
             }
         }
 
@@ -602,18 +702,18 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         // opens while the other is active.
         if (self.player.chat_open_pending) {
             self.player.chat_open_pending = false;
-            if (!self.chat.open and !self.inventory.open) {
+            if (!self.chat.open and !self.inventory_open) {
                 self.chat.open_overlay(&self.player, false);
             }
         }
         if (self.player.chat_cmd_pending) {
             self.player.chat_cmd_pending = false;
-            if (!self.chat.open and !self.inventory.open) {
+            if (!self.chat.open and !self.inventory_open) {
                 self.chat.open_overlay(&self.player, true);
             }
         }
 
-        if (self.inventory.open) self.inventory.update(&ui_in, &self.player);
+        if (self.inventory_open) update_inventory_tree(self, &ui_in);
 
         if (self.chat.open) self.chat.update(&self.player);
 
@@ -765,8 +865,10 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.font_batcher.clear();
     self.iso_blocks.begin();
 
+    var hud_list: UiDrawList = .{};
+
     if (!self.hud_hidden) {
-        self.font_batcher.add_text(&.{
+        hud_list.add_text(&.{
             .str = "0.30",
             .pos_x = 2,
             .pos_y = 2,
@@ -788,29 +890,36 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // hud_y_shift keys off tooltip enablement alone so the hotbar does
     // not snap down when the pause overlay replaces the in-world strip.
     const tooltips_on = PromptStrip.enabled() and !self.hud_hidden;
-    const show_glyphs = tooltips_on and !self.paused;
+    // Inventory overlay owns its own PromptStrip, so
+    // suppress the in-world strip while it is open.
+    const show_glyphs = tooltips_on and !self.paused and !self.inventory_open;
     const hud_y_shift: i16 = if (tooltips_on) Buttons.strip_height() else 0;
 
     if (!self.hud_hidden) {
-        self.player.draw_ui(&self.ui_batcher, &self.iso_blocks, ResourcePack.get_tex(.gui), self.inventory.open, hud_y_shift);
+        self.player.draw_ui_into(&hud_list, ResourcePack.get_tex(.gui), self.inventory_open, hud_y_shift);
     }
-    if (self.inventory.open) {
-        self.inventory.draw(&self.ui_batcher, &self.iso_blocks, &self.font_batcher);
+    if (self.inventory_open) {
+        var inv_list: UiDrawList = .{};
+        var none = empty_input();
+        var inv_ui = begin_game_ui(self, &inv_list, &self.inventory_ui_state, &none, InventoryUi.LAYER_BASE);
+        _ = InventoryUi.run(&inv_ui, self.inventory_blocks[0..], &self.inventory_slot);
+        inv_ui.end();
+        inv_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
     }
     // Desktop: hold Tab to show player list (hidden while inventory or chat open).
     // PSP: show during social mode, which coexists with the chat input field.
     const show_playerlist = if (ae.platform == .psp)
         self.psp_social_mode
     else
-        self.player.playerlist_held and Session.mode == .multiplayer and !self.inventory.open and !self.chat.open;
+        self.player.playerlist_held and Session.mode == .multiplayer and !self.inventory_open and !self.chat.open;
     if (show_playerlist) {
-        self.player_list.draw(&self.ui_batcher, &self.font_batcher, Session.username());
+        self.player_list.draw_into(&hud_list, Session.username());
     }
-    self.chat.draw(&self.ui_batcher, &self.font_batcher, hud_y_shift);
+    self.chat.draw_into(&hud_list, &self.font_batcher, hud_y_shift);
 
     // Hotbar tooltip: block name above the hotbar, fades out over the last 0.5s.
     // Rides the hotbar up when the controller-tooltip strip is visible.
-    if (self.hotbar_tooltip_timer > 0 and !self.inventory.open and !self.hud_hidden) {
+    if (self.hotbar_tooltip_timer > 0 and !self.inventory_open and !self.hud_hidden) {
         const block = self.player.hotbar[self.player.selected_slot];
         const name = block.display_name();
         if (name.len > 0) {
@@ -822,7 +931,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
                 255
             else
                 @intFromFloat(self.hotbar_tooltip_timer / 0.5 * 255.0);
-            self.font_batcher.add_text(&.{
+            hud_list.add_text(&.{
                 .str = name,
                 .pos_x = 0,
                 .pos_y = -26 - hud_y_shift,
@@ -837,8 +946,10 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     }
 
     if (show_glyphs) {
-        self.draw_hud_prompts();
+        self.draw_hud_prompts(&hud_list);
     }
+
+    hud_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
 
     try self.ui_batcher.flush();
 
@@ -853,18 +964,20 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (self.paused) {
         self.pause_batcher.clear();
         self.pause_font_batcher.clear();
-        self.pause_screen.draw(
-            &self.pause_batcher,
-            &self.pause_font_batcher,
-            ResourcePack.get_tex(.gui),
-            ResourcePack.get_tex(.glyphs),
-        );
-
-        // Options labels are mutable buffers updated in-place: the FontBatcher
-        // diff sees no change across frames.  Force a rebuild while the options
-        // screen is open so button text updates are visible immediately.
+        draw_pause_dim(self);
+        var none = empty_input();
         if (self.in_options) {
-            self.pause_font_batcher.mark_dirty();
+            var list: UiDrawList = .{};
+            var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, &none, OptionsScreen.LAYER_BASE);
+            _ = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
+            ui.end();
+            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+        } else {
+            var list: UiDrawList = .{};
+            var ui = begin_pause_ui(self, &list, &self.pause_ui_state, &none, PauseMenu.LAYER_BASE);
+            _ = PauseMenu.run(&ui, Session.mode == .singleplayer);
+            ui.end();
+            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
         }
 
         Rendering.gfx.api.clear_depth();
@@ -875,18 +988,42 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     }
 }
 
+/// Translucent black quad covering the entire screen, drawn behind
+/// the pause widgets so the live game scene fades out. Layer puts it
+/// one above the HUD's deepest tooltip layer.
+fn draw_pause_dim(self: *@This()) void {
+    const screen_w = Rendering.gfx.surface.get_width();
+    const screen_h = Rendering.gfx.surface.get_height();
+    const scale = @import("../ui/Scaling.zig").compute(screen_w, screen_h);
+    const extent_x: i16 = @intCast((screen_w + scale - 1) / scale);
+    const extent_y: i16 = @intCast((screen_h + scale - 1) / scale);
+
+    self.pause_batcher.add_sprite(&.{
+        .texture = &Rendering.Texture.Default,
+        .pos_offset = .{ .x = 0, .y = 0 },
+        .pos_extent = .{ .x = extent_x, .y = extent_y },
+        .tex_offset = .{ .x = 0, .y = 0 },
+        .tex_extent = .{ .x = 1, .y = 1 },
+        .color = Color.rgba(0, 0, 0, 160),
+        .layer = PauseMenu.DIM_LAYER,
+        .reference = .top_left,
+        .origin = .top_left,
+    });
+}
+
 /// Compose the bottom-left HUD prompt list and delegate to PromptStrip.
 ///
 /// Content switches by context so the strip always describes the
 /// currently-available actions:
-///   * Inventory open: [Select, Back] -- matches menu convention; the
-///     same Inventory button that opened the panel also closes it, but
-///     "Back" is clearer when the user is mid-selection.
 ///   * PSP social mode: [Exit, Chat].
 ///   * Desktop chat open: [Send, Cancel].
 ///   * Normal play: [Inventory, Place?, Break?] -- Place requires an
 ///     aimed-at placement slot, Break any non-Air target.
-fn draw_hud_prompts(self: *@This()) void {
+///
+/// The inventory overlay owns its own PromptStrip inside the
+/// Inventory overlay; this routine is short-circuited by the
+/// caller when the inventory is open.
+fn draw_hud_prompts(self: *@This(), list: *UiDrawList) void {
     const sprite_layer: u8 = 252;
     const text_layer: u8 = 252;
     const glyphs_tex = ResourcePack.get_tex(.glyphs);
@@ -894,12 +1031,7 @@ fn draw_hud_prompts(self: *@This()) void {
     var buf: [3]PromptStrip.Prompt = undefined;
     var n: u8 = 0;
 
-    if (self.inventory.open) {
-        buf[n] = Prompts.select();
-        n += 1;
-        buf[n] = Prompts.back();
-        n += 1;
-    } else if (ae.platform == .psp and self.psp_social_mode) {
+    if (ae.platform == .psp and self.psp_social_mode) {
         buf[n] = Prompts.exit_list();
         n += 1;
         buf[n] = Prompts.chat();
@@ -925,11 +1057,11 @@ fn draw_hud_prompts(self: *@This()) void {
         }
     }
 
-    PromptStrip.draw(
-        buf[0..n],
-        &self.ui_batcher,
-        &self.font_batcher,
+    PromptStrip.draw_into(
+        list,
         glyphs_tex,
+        &self.font_batcher,
+        buf[0..n],
         .bottom_left,
         PromptStrip.DEFAULT_POS_X,
         PromptStrip.DEFAULT_POS_Y,

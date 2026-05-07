@@ -15,13 +15,12 @@
 
 const std = @import("std");
 const ae = @import("aether");
-const Rendering = ae.Rendering;
 const input = ae.Core.input;
 const proto = @import("common").protocol;
 
 const Player = @import("../player/Player.zig");
-const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
+const UiDrawList = @import("UiDrawList.zig");
 const Scaling = @import("Scaling.zig");
 const Color = @import("../graphics/Color.zig").Color;
 const ui_input = @import("input.zig");
@@ -346,7 +345,7 @@ fn send_session(self: *Self, player: *Player) void {
 
 // --- Draw ---
 
-pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, y_shift: i16) void {
+pub fn draw_into(self: *const Self, list: *UiDrawList, fonts: *const FontBatcher, y_shift: i16) void {
     const base: i16 = BOTTOM_PAD + y_shift;
     var drawn: u8 = 0;
     var i: u8 = 0;
@@ -361,18 +360,15 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, y_s
         const row_y: i16 = -(base + input_offset + @as(i16, drawn) * ROW_H);
 
         const bg_a: u8 = @intFromFloat(160.0 * (@as(f32, @floatFromInt(alpha)) / 255.0));
-        batcher.add_sprite(&.{
-            .texture = &Rendering.Texture.Default,
+        list.add_rect(&.{
             .pos_offset = .{ .x = LEFT_PAD, .y = row_y },
             .pos_extent = .{ .x = MSG_W, .y = ROW_H },
-            .tex_offset = .{ .x = 0, .y = 0 },
-            .tex_extent = .{ .x = 1, .y = 1 },
             .color = Color.rgba(0, 0, 0, bg_a),
             .layer = MSG_BG_LAYER,
             .reference = .bottom_left,
             .origin = .bottom_left,
         });
-        fonts.add_text(&.{
+        list.add_text(&.{
             .str = entry.text[0..entry.text_len],
             .pos_x = LEFT_PAD + 2,
             .pos_y = row_y,
@@ -391,12 +387,9 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, y_s
     if (!self.open) return;
 
     // Input field background.
-    batcher.add_sprite(&.{
-        .texture = &Rendering.Texture.Default,
+    list.add_rect(&.{
         .pos_offset = .{ .x = LEFT_PAD, .y = -base },
         .pos_extent = .{ .x = MSG_W, .y = ROW_H },
-        .tex_offset = .{ .x = 0, .y = 0 },
-        .tex_extent = .{ .x = 1, .y = 1 },
         .color = Color.rgba(0, 0, 0, 192),
         .layer = INPUT_BG_LAYER,
         .reference = .bottom_left,
@@ -405,7 +398,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, y_s
 
     const text_x: i16 = LEFT_PAD + 2;
     const visual_prompt = "> ";
-    fonts.add_text(&.{
+    list.add_text(&.{
         .str = visual_prompt,
         .pos_x = text_x,
         .pos_y = -base,
@@ -422,7 +415,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, y_s
     // may not yet be active (social mode's pre-OSK panel) -- show empty.
     const body: []const u8 = if (input.current_text_session()) |s| s.buffer.items else &.{};
     if (body.len > 0) {
-        fonts.add_text(&.{
+        list.add_text(&.{
             .str = body,
             .pos_x = text_x + prompt_w,
             .pos_y = -base,
@@ -436,7 +429,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, y_s
     }
 
     const typed_w: i16 = if (body.len > 0) fonts.string_width(body, 0, 1) else 0;
-    fonts.add_text(&.{
+    list.add_text(&.{
         .str = "_",
         .pos_x = text_x + prompt_w + typed_w + 1,
         .pos_y = -base,

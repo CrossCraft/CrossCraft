@@ -32,14 +32,19 @@ pub const UiInput = struct {
     cursor_available: bool,
     cursor_moved: bool,
     click_edge: bool,
+    /// True while ui_click is held; distinct from the rising edge so sliders
+    /// and scrollbars can read ongoing pointer state.
+    click_held: bool,
     nav: NavDir,
     confirm_edge: bool,
-    /// In-menu "go back" - bound to keyboard Escape, B, and gamepad B/Start.
+    /// In-menu "back" - Escape, B, gamepad B/Start.
     cancel_edge: bool,
-    /// In-game "open pause menu" - keyboard Escape and gamepad Start only.
-    /// Distinct from cancel so the gamepad B / keyboard B (which doubles as
-    /// the inventory-open key) does not toggle pause from gameplay.
+    /// In-game pause - Escape and gamepad Start only; excludes B so the
+    /// inventory key cannot pause mid-gameplay.
     pause_edge: bool,
+    /// Vertical wheel notches this frame. Positive scrolls content upward
+    /// (GLFW convention). Zero when `cursor_available` is false.
+    wheel_dy: i8,
 };
 
 /// Previous-frame button state for rising-edge detection.
@@ -189,11 +194,28 @@ pub fn build_frame(dt: f32, repeat: *Repeat) UiInput {
         .cursor_available = profile_uses_pointer(),
         .cursor_moved = moved,
         .click_edge = click_edge,
+        .click_held = !fresh_activation and click == .pressed,
         .nav = nav,
         .confirm_edge = confirm_edge,
         .cancel_edge = cancel_edge,
         .pause_edge = pause_edge,
+        .wheel_dy = if (profile_uses_pointer() and !fresh_activation) read_wheel_dy() else 0,
     };
+}
+
+/// Accumulate fractional trackpad deltas and floor toward zero so a slow
+/// scroll still registers a notch eventually.
+fn read_wheel_dy() i8 {
+    var acc: f32 = 0;
+    for (input.frame_events()) |ev| {
+        switch (ev.kind) {
+            .mouse_wheel => |w| acc += w.delta.y,
+            else => {},
+        }
+    }
+    if (acc == 0) return 0;
+    const rounded: i32 = @intFromFloat(if (acc > 0) @floor(acc) else @ceil(acc));
+    return @intCast(std.math.clamp(rounded, -127, 127));
 }
 
 fn rising_edge(prev: input.ButtonState, cur: input.ButtonState) bool {

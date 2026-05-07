@@ -5,6 +5,7 @@ const Rendering = ae.Rendering;
 
 const Scaling = @import("Scaling.zig");
 const layout = @import("layout.zig");
+const texture_region = @import("texture_region.zig");
 
 pub const Color = @import("../graphics/Color.zig").Color;
 pub const Vertex = @import("../graphics/Vertex.zig").Vertex;
@@ -13,6 +14,8 @@ pub const BatchMesh = Rendering.Mesh(Vertex);
 const Self = @This();
 
 pub const Anchor = layout.Anchor;
+pub const TextureRegion = texture_region.TextureRegion;
+pub const CenterElide = texture_region.CenterElide;
 
 pub const Sprite = extern struct {
     pub const Range = extern struct { x: i16, y: i16 };
@@ -77,6 +80,56 @@ pub fn add_sprite(self: *Self, sprite: *const Sprite) void {
     std.debug.assert(self.count < MAX_SPRITES);
     self.sprites[self.current][self.count] = sprite.*;
     self.count += 1;
+}
+
+pub const ElidedSprite = struct {
+    texture: *const Rendering.Texture,
+    region: TextureRegion,
+    pos_offset: layout.Point,
+    dst_w: i16,
+    dst_h: i16,
+    color: Color,
+    layer: u8,
+    reference: Anchor = .top_left,
+    origin: Anchor = .top_left,
+    sizing: CenterElide = .{},
+};
+
+pub fn add_sprite_elided(self: *Self, sprite: *const ElidedSprite) void {
+    std.debug.assert(sprite.dst_w > 0);
+    std.debug.assert(sprite.dst_h > 0);
+
+    const spans = texture_region.elide_center(sprite.region, sprite.dst_w, sprite.sizing);
+
+    // The two halves use top_left origin and pre-apply the combined-box
+    // origin offset to pos_offset, so the seam between them lands exactly
+    // where it would on the equivalent single-sprite draw.
+    const orig = layout.anchor_point(sprite.origin, sprite.dst_w, sprite.dst_h);
+    const base_x: i16 = sprite.pos_offset.x - orig.x;
+    const base_y: i16 = sprite.pos_offset.y - orig.y;
+
+    self.add_sprite(&.{
+        .texture = sprite.texture,
+        .pos_offset = .{ .x = base_x, .y = base_y },
+        .pos_extent = .{ .x = spans.left.w, .y = sprite.dst_h },
+        .tex_offset = .{ .x = spans.left.x, .y = spans.left.y },
+        .tex_extent = .{ .x = spans.left.w, .y = spans.left.h },
+        .color = sprite.color,
+        .layer = sprite.layer,
+        .reference = sprite.reference,
+        .origin = .top_left,
+    });
+    self.add_sprite(&.{
+        .texture = sprite.texture,
+        .pos_offset = .{ .x = base_x + spans.left.w, .y = base_y },
+        .pos_extent = .{ .x = spans.right.w, .y = sprite.dst_h },
+        .tex_offset = .{ .x = spans.right.x, .y = spans.right.y },
+        .tex_extent = .{ .x = spans.right.w, .y = spans.right.h },
+        .color = sprite.color,
+        .layer = sprite.layer,
+        .reference = sprite.reference,
+        .origin = .top_left,
+    });
 }
 
 pub fn clear(self: *Self) void {

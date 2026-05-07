@@ -11,8 +11,7 @@ const Rendering = ae.Rendering;
 
 const c = @import("common").consts;
 
-const SpriteBatcher = @import("SpriteBatcher.zig");
-const FontBatcher = @import("FontBatcher.zig");
+const UiDrawList = @import("UiDrawList.zig");
 const Scaling = @import("Scaling.zig");
 const Color = @import("../graphics/Color.zig").Color;
 
@@ -107,7 +106,7 @@ pub fn update_position(self: *Self, pid: i8, x: u16, y: u16, z: u16, yaw: u8, pi
 
 // --- Draw ---
 
-pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, local_name: []const u8) void {
+pub fn draw_into(self: *const Self, list: *UiDrawList, local_name: []const u8) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const scale = Scaling.compute(screen_w, screen_h);
@@ -134,12 +133,9 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, loc
     const panel_left: i16 = @divTrunc(max_lx - PANEL_W, 2);
 
     // Translucent black background panel.
-    batcher.add_sprite(&.{
-        .texture = &Rendering.Texture.Default,
+    list.add_rect(&.{
         .pos_offset = .{ .x = panel_left, .y = PANEL_TOP },
         .pos_extent = .{ .x = PANEL_W, .y = panel_h },
-        .tex_offset = .{ .x = 0, .y = 0 },
-        .tex_extent = .{ .x = 1, .y = 1 },
         .color = Color.rgba(0, 0, 0, 160),
         .layer = PANEL_LAYER,
         .reference = .top_left,
@@ -147,7 +143,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, loc
     });
 
     // "Players" header, horizontally centred.
-    fonts.add_text(&.{
+    list.add_text(&.{
         .str = "Players",
         .pos_x = 0,
         .pos_y = PANEL_TOP + PAD,
@@ -161,7 +157,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, loc
 
     // Local player first (yellow to distinguish from remote players).
     if (local_name.len > 0) {
-        fonts.add_text(&.{
+        list.add_text(&.{
             .str = local_name,
             .pos_x = 0,
             .pos_y = PANEL_TOP + HEADER_H + PAD,
@@ -180,7 +176,7 @@ pub fn draw(self: *const Self, batcher: *SpriteBatcher, fonts: *FontBatcher, loc
         if (!e.active or e.name_len == 0) continue;
         if (1 + drawn >= rows_cap) break;
         const row_y: i16 = PANEL_TOP + HEADER_H + PAD + @as(i16, 1 + drawn) * ROW_H;
-        fonts.add_text(&.{
+        list.add_text(&.{
             .str = e.name[0..e.name_len],
             .pos_x = 0,
             .pos_y = row_y,

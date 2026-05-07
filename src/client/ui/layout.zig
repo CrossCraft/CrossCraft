@@ -15,6 +15,23 @@ pub const Anchor = enum(u8) {
 
 pub const Point = struct { x: i16, y: i16 };
 
+pub const LogicalRect = struct {
+    x0: i16,
+    y0: i16,
+    x1: i16,
+    y1: i16,
+
+    pub fn width(self: LogicalRect) i16 {
+        return self.x1 - self.x0;
+    }
+    pub fn height(self: LogicalRect) i16 {
+        return self.y1 - self.y0;
+    }
+    pub fn contains(self: LogicalRect, x: i16, y: i16) bool {
+        return x >= self.x0 and x < self.x1 and y >= self.y0 and y < self.y1;
+    }
+};
+
 pub fn anchor_point(anchor: Anchor, ex: i16, ey: i16) Point {
     return switch (anchor) {
         .top_left => .{ .x = 0, .y = 0 },
@@ -26,6 +43,17 @@ pub fn anchor_point(anchor: Anchor, ex: i16, ey: i16) Point {
         .bottom_left => .{ .x = 0, .y = ey },
         .bottom_center => .{ .x = @divTrunc(ex, 2), .y = ey },
         .bottom_right => .{ .x = ex, .y = ey },
+    };
+}
+
+/// Return the top-left origin for a child of `child_size` placed inside
+/// `parent` with matching parent/child anchor points.
+pub fn place_in_parent(parent: LogicalRect, child_size: Point, anchor: Anchor) Point {
+    const ref = anchor_point(anchor, parent.width(), parent.height());
+    const orig = anchor_point(anchor, child_size.x, child_size.y);
+    return .{
+        .x = parent.x0 + ref.x - orig.x,
+        .y = parent.y0 + ref.y - orig.y,
     };
 }
 
