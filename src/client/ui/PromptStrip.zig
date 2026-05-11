@@ -10,8 +10,8 @@ const ae = @import("aether");
 const Rendering = ae.Rendering;
 
 const Buttons = @import("Buttons.zig");
-const SpriteBatcher = @import("SpriteBatcher.zig");
 const FontBatcher = @import("FontBatcher.zig");
+const UiDrawList = @import("UiDrawList.zig");
 const layout = @import("layout.zig");
 const Options = @import("../Options.zig");
 
@@ -59,19 +59,21 @@ const CHORD_PAD: i16 = 2; // glyph -> next glyph inside a chord
 /// relative to `anchor`.  `y_base` behaves like a bottom offset: the
 /// glyph sits `y_base` above the reference edge when `anchor` is one of
 /// the `bottom_*` variants.  Sprite / text layers are passed explicitly
-/// so callers can slot the strip into the appropriate Z band.
-pub fn draw(
-    prompts: []const Prompt,
-    sprites: *SpriteBatcher,
-    fonts: *FontBatcher,
+/// so callers can slot the strip into the appropriate Z band. `fonts`
+/// is borrowed read-only for `string_width`. Returns silently if
+/// `enabled()` is false or `prompts.len == 0`.
+pub fn draw_into(
+    list: *UiDrawList,
     glyphs_tex: *const Rendering.Texture,
+    fonts: *const FontBatcher,
+    prompts: []const Prompt,
     anchor: Anchor,
     pos_x: i16,
     y_base: i16,
     sprite_layer: u8,
     text_layer: u8,
 ) void {
-    if (prompts.len == 0) return;
+    if (!enabled() or prompts.len == 0) return;
 
     const style = Buttons.resolve_style();
     const y_offset = Buttons.glyph_y_offset();
@@ -79,13 +81,13 @@ pub fn draw(
     var cursor_x: i16 = pos_x;
     for (prompts, 0..) |p, i| {
         if (i > 0) cursor_x += ENTRY_PAD;
-        draw_one(
+        draw_one_into(
+            list,
             &p,
             style,
             y_offset,
-            sprites,
-            fonts,
             glyphs_tex,
+            fonts,
             anchor,
             &cursor_x,
             y_base,
@@ -95,13 +97,13 @@ pub fn draw(
     }
 }
 
-fn draw_one(
+fn draw_one_into(
+    list: *UiDrawList,
     prompt: *const Prompt,
     style: Buttons.Style,
     y_offset: i16,
-    sprites: *SpriteBatcher,
-    fonts: *FontBatcher,
     glyphs_tex: *const Rendering.Texture,
+    fonts: *const FontBatcher,
     anchor: Anchor,
     cursor_x: *i16,
     y_base: i16,
@@ -116,7 +118,7 @@ fn draw_one(
         if (idx > 0) cursor_x.* += CHORD_PAD;
         const rect = Buttons.lookup(btn, style);
         last_rect = rect;
-        sprites.add_sprite(&.{
+        list.add_sprite(&.{
             .texture = glyphs_tex,
             .pos_offset = .{ .x = cursor_x.*, .y = -glyph_y },
             .pos_extent = .{ .x = rect.render_w, .y = rect.render_h },
@@ -128,10 +130,7 @@ fn draw_one(
             .origin = .bottom_left,
         });
         if (prompt.letter_overlay) |overlay| {
-            // Glyph center from bottom-left: (x + w/2, glyph_y + h/2).  The
-            // font's cap line sits above its bbox center, so dropping one
-            // pixel visually centers the letter on the key face.
-            fonts.add_text(&.{
+            list.add_text(&.{
                 .str = overlay,
                 .pos_x = cursor_x.* + @divTrunc(rect.render_w, 2),
                 .pos_y = -(glyph_y + @divTrunc(rect.render_h, 2) - 1),
@@ -146,13 +145,10 @@ fn draw_one(
         cursor_x.* += rect.render_w;
     }
 
-    // KB+M key art has built-in padding that reads as the label
-    // floating above the glyph center; dropping one extra pixel there
-    // brings the text in line.  Controller and PSP art sit flush.
     const kbm_label_nudge: i16 = if (style == .kbm) 1 else 0;
     const label_y_center: i16 = y_base + @divTrunc(last_rect.render_h, 2) - 1 - kbm_label_nudge;
     cursor_x.* += GLYPH_PAD;
-    fonts.add_text(&.{
+    list.add_text(&.{
         .str = prompt.label,
         .pos_x = cursor_x.*,
         .pos_y = -label_y_center,

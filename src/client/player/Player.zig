@@ -25,8 +25,7 @@ const proto = @import("common").protocol;
 const Camera = @import("Camera.zig");
 const bindings = @import("bindings.zig");
 const collision = @import("collision.zig");
-const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
-const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
+const UiDrawList = @import("../ui/UiDrawList.zig");
 const Scaling = @import("../ui/Scaling.zig");
 const layout = @import("../ui/layout.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
@@ -34,6 +33,30 @@ const BlockHand = @import("BlockHand.zig");
 const BlockRegistry = @import("common").BlockRegistry;
 const SoundManager = @import("../SoundManager.zig");
 const Face = @import("../world/chunk/face.zig").Face;
+const Options = @import("../Options.zig");
+
+/// Previous-frame button state for rising-edge detection in `poll_inputs`.
+const PrevInputs = struct {
+    inventory_toggle: input.ButtonState = .released,
+    noclip: input.ButtonState = .released,
+    break_: input.ButtonState = .released,
+    place: input.ButtonState = .released,
+    shoulder_r: input.ButtonState = .released,
+    shoulder_l: input.ButtonState = .released,
+    playerlist: input.ButtonState = .released,
+    psp_osk: input.ButtonState = .released,
+    hud_toggle: input.ButtonState = .released,
+    rain_toggle: input.ButtonState = .released,
+    chat_open: input.ButtonState = .released,
+    chat_cmd: input.ButtonState = .released,
+    hotbar_left: input.ButtonState = .released,
+    hotbar_right: input.ButtonState = .released,
+    hotbar_slot: [9]input.ButtonState = @splat(.released),
+};
+
+fn rising_edge(prev: input.ButtonState, cur: input.ButtonState) bool {
+    return prev == .released and cur == .pressed;
+}
 
 pub const RaycastHit = struct {
     /// Block coordinates of the solid voxel under the crosshair.
@@ -88,6 +111,8 @@ const SELECTOR_LAYER: u8 = 251;
 // so a single notch always advances exactly one slot and stray sub-tick
 // values from analog sources never trigger a wrap.
 const HOTBAR_SCROLL_DEADBAND: f32 = 0.5;
+
+const LOOK_PIXEL_TO_RAD: f32 = 0.002;
 
 const Self = @This();
 
@@ -255,12 +280,17 @@ hud_toggle_pending: bool,
 /// each frame to flip `Options.current.rain` and persist the change.
 rain_toggle_pending: bool,
 
-/// Edge flags set by the chat action callbacks; GameState polls and clears
-/// them each frame.  chat_open: blank field; chat_cmd: '/' prefix field;
-/// chat_send: Enter key (send pending message).
+/// Edge flags set by the chat triggers; GameState polls and clears them
+/// each frame.  chat_open: blank field; chat_cmd: '/' prefix field.
 chat_open_pending: bool,
 chat_cmd_pending: bool,
-chat_send_pending: bool,
+
+prev_inputs: PrevInputs,
+/// True iff the gameplay ActionSet owned the top context last frame. Used
+/// to suppress a ghost rising edge on the frame gameplay reactivates with
+/// a binding still held (e.g. B held through an inventory close would
+/// otherwise re-fire inventory_toggle).
+gameplay_was_active: bool,
 
 /// Virtual block for client-side collision prediction.  Placed by
 /// do_place so the player collides with the block before the server
@@ -291,10 +321,10 @@ walk_swing_prev: f32,
 bob_amount: f32, // smoothed 0..1, the spec's BobStrength
 bob_amount_prev: f32,
 
-/// Initialise player state and wire up input callbacks.
-/// `self` must have a stable address (module-level or arena-backed).
-/// `x`, `y`, `z` are world coordinates; `y` is eye-level from server.
-/// `writer` is the connection's outbound stream (used for SetBlockToServer).
+/// Initialise player state. `self` must have a stable address (module-level
+/// or arena-backed). `x`, `y`, `z` are world coordinates; `y` is eye-level
+/// from server. `writer` is the connection's outbound stream (used for
+/// SetBlockToServer). The caller owns the gameplay InputContext.
 pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     const feet_y = y - collision.EYE_HEIGHT;
     self.* = .{
@@ -340,7 +370,8 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .rain_toggle_pending = false,
         .chat_open_pending = false,
         .chat_cmd_pending = false,
-        .chat_send_pending = false,
+        .prev_inputs = .{},
+        .gameplay_was_active = false,
         .pending_block = null,
         .writer = writer,
         .particle_sink = null,
@@ -352,53 +383,15 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .bob_amount = 0,
         .bob_amount_prev = 0,
     };
-
-    try bindings.init();
-
-    try input.add_vector2_callback("move", @ptrCast(self), on_move);
-    try input.add_button_callback("jump", @ptrCast(self), on_jump);
-    try input.add_button_callback("sneak", @ptrCast(self), on_sneak);
-    try input.add_vector2_callback("look", @ptrCast(self), on_look);
-    try input.add_vector2_callback("look_stick", @ptrCast(self), on_look_stick);
-    if (comptime builtin.mode == .Debug and ae.platform != .psp) {
-        try input.add_button_callback("noclip", @ptrCast(self), on_noclip);
-    }
-    try input.add_button_callback("inventory_toggle", @ptrCast(self), on_inventory_toggle);
-    try input.add_button_callback("break", @ptrCast(self), on_break);
-    try input.add_button_callback("place", @ptrCast(self), on_place);
-    try input.add_button_callback("shoulder_r", @ptrCast(self), on_shoulder_r);
-    try input.add_button_callback("shoulder_l", @ptrCast(self), on_shoulder_l);
-    try input.add_button_callback("playerlist", @ptrCast(self), on_playerlist);
-    if (ae.platform != .psp) {
-        try input.add_button_callback("hud_toggle", @ptrCast(self), on_hud_toggle);
-        try input.add_button_callback("rain_toggle", @ptrCast(self), on_rain_toggle);
-    }
-    try input.add_button_callback("chat_open", @ptrCast(self), on_chat_open);
-    try input.add_button_callback("chat_cmd", @ptrCast(self), on_chat_cmd);
-    try input.add_button_callback("chat_send", @ptrCast(self), on_chat_send);
-    if (ae.platform == .psp) {
-        try input.add_button_callback("psp_osk", @ptrCast(self), on_psp_osk);
-    }
-    try input.add_button_callback("hotbar_left", @ptrCast(self), on_hotbar_left);
-    try input.add_button_callback("hotbar_right", @ptrCast(self), on_hotbar_right);
-    try input.add_axis_callback("hotbar_scroll", @ptrCast(self), on_hotbar_scroll);
-    try input.add_button_callback("hotbar_slot_1", @ptrCast(self), on_hotbar_slot_1);
-    try input.add_button_callback("hotbar_slot_2", @ptrCast(self), on_hotbar_slot_2);
-    try input.add_button_callback("hotbar_slot_3", @ptrCast(self), on_hotbar_slot_3);
-    try input.add_button_callback("hotbar_slot_4", @ptrCast(self), on_hotbar_slot_4);
-    try input.add_button_callback("hotbar_slot_5", @ptrCast(self), on_hotbar_slot_5);
-    try input.add_button_callback("hotbar_slot_6", @ptrCast(self), on_hotbar_slot_6);
-    try input.add_button_callback("hotbar_slot_7", @ptrCast(self), on_hotbar_slot_7);
-    try input.add_button_callback("hotbar_slot_8", @ptrCast(self), on_hotbar_slot_8);
-    try input.add_button_callback("hotbar_slot_9", @ptrCast(self), on_hotbar_slot_9);
-
-    input.mouse_sensitivity = 3.0;
-    input.set_mouse_relative_mode(true);
 }
 
 /// Apply one frame of player movement.
 pub fn update(self: *Self, dt: f32) void {
     std.debug.assert(dt >= 0);
+
+    self.mouse_captured = input.effective_cursor_mode() == .captured;
+
+    self.poll_inputs();
 
     // Process deferred gamepad shoulder actions. The one-frame delay lets
     // a same-frame L+R chord cancel the pending break/place before it fires.
@@ -419,7 +412,7 @@ pub fn update(self: *Self, dt: f32) void {
 
     // Hold-to-repeat: tick timers while either the mouse/keyboard button
     // or the corresponding gamepad shoulder button is held. The initial
-    // press already fired via the callback; the timer handles repeats.
+    // press already fired via the rising-edge poll; the timer handles repeats.
     const break_any_held = self.break_held or (self.shoulder_r_held and !self.shoulder_l_held);
     const place_any_held = self.place_held or (self.shoulder_l_held and !self.shoulder_r_held);
     if (break_any_held) {
@@ -443,32 +436,10 @@ pub fn update(self: *Self, dt: f32) void {
 
     self.apply_look(dt);
 
-    // mouse_captured doubles as the gameplay-input gate. While the inventory
-    // overlay (or escape) has uncaptured the mouse, suppress movement, jump,
-    // and sneak so PSP D-pad / face buttons cannot drive the player through
-    // the world while the picker is up. Save/restore around the physics call
-    // so the held shadow state survives the gated frames -- closing the
-    // overlay while still holding W (or DpadUp) resumes movement immediately
-    // without waiting for a fresh edge.
-    const saved_move = self.move_dir;
-    const saved_jump = self.jumping;
-    const saved_sneak = self.sneaking;
-    if (!self.mouse_captured) {
-        self.move_dir = .{ 0, 0 };
-        self.jumping = false;
-        self.sneaking = false;
-    }
-
     if (self.noclip) {
         self.update_noclip(dt);
     } else {
         self.run_ticks(dt);
-    }
-
-    if (!self.mouse_captured) {
-        self.move_dir = saved_move;
-        self.jumping = saved_jump;
-        self.sneaking = saved_sneak;
     }
 
     self.sync_camera();
@@ -1141,15 +1112,13 @@ fn face_normal(face: Face) [3]i32 {
 
 // --- UI / HUD ---
 
-/// HUD pass: queues every 2D sprite (crosshair, hotbar background, selector
-/// frame) into `batcher`, and queues hotbar block icons into `iso`. Caller
-/// flushes the sprite batcher first, then the iso drawer, so the 3D block
-/// icons land on top of the 2D selector frame in a single sprite pass - no
-/// second batcher and no extra depth clear needed.
-pub fn draw_ui(
+/// HUD pass: emits the crosshair, hotbar background, selector frame, and
+/// hotbar block icons as commands into `list`. Sprites and iso blocks are
+/// routed to the SpriteBatcher / IsoBlockDrawer at flush time; the caller
+/// is responsible for the eventual `flush_into` and pass ordering.
+pub fn draw_ui_into(
     self: *Self,
-    batcher: *SpriteBatcher,
-    iso: *IsoBlockDrawer,
+    list: *UiDrawList,
     gui: *const Rendering.Texture,
     hide_crosshair: bool,
     hud_y_shift: i16,
@@ -1157,7 +1126,7 @@ pub fn draw_ui(
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
 
     if (!hide_crosshair) {
-        batcher.add_sprite(&.{
+        list.add_sprite(&.{
             .texture = gui,
             .pos_offset = .{ .x = 0, .y = 0 },
             .pos_extent = .{ .x = 16, .y = 16 },
@@ -1174,7 +1143,7 @@ pub fn draw_ui(
     // row (selector is 24 tall vs the hotbar's 22) from clipping off the
     // bottom of the screen.  `hud_y_shift` lifts the whole hotbar to make
     // room for the controller-tooltip strip.
-    batcher.add_sprite(&.{
+    list.add_sprite(&.{
         .texture = gui,
         .pos_offset = .{ .x = 0, .y = -1 - hud_y_shift },
         .pos_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
@@ -1190,7 +1159,7 @@ pub fn draw_ui(
     // 20*i - 80 from the hotbar's horizontal center.
     const slot_i: i16 = @intCast(self.selected_slot);
     const sel_x: i16 = HOTBAR_SLOT_STRIDE * slot_i - 80;
-    batcher.add_sprite(&.{
+    list.add_sprite(&.{
         .texture = gui,
         .pos_offset = .{ .x = sel_x, .y = -hud_y_shift },
         .pos_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
@@ -1202,7 +1171,7 @@ pub fn draw_ui(
         .origin = .bottom_center,
     });
 
-    self.draw_hotbar_blocks(iso, hud_y_shift);
+    self.draw_hotbar_blocks(list, hud_y_shift);
 }
 
 // Logical-pixel half-extent of each rendered iso block. The iso projection
@@ -1211,7 +1180,7 @@ pub fn draw_ui(
 // 16 px slot interior clear of the surrounding selector frame.
 const HOTBAR_BLOCK_HALF_EXTENT: f32 = 3.5;
 
-fn draw_hotbar_blocks(self: *const Self, iso: *IsoBlockDrawer, hud_y_shift: i16) void {
+fn draw_hotbar_blocks(self: *const Self, list: *UiDrawList, hud_y_shift: i16) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const ui_scale = Scaling.compute(screen_w, screen_h);
@@ -1230,66 +1199,207 @@ fn draw_hotbar_blocks(self: *const Self, iso: *IsoBlockDrawer, hud_y_shift: i16)
     var i: u8 = 0;
     while (i < HOTBAR_SLOTS) : (i += 1) {
         const slot_offset_x: f32 = @floatFromInt(@as(i32, HOTBAR_SLOT_STRIDE) * @as(i32, i) - 80);
-        iso.add_block(self.hotbar[i], center_x + slot_offset_x, slot_cy, HOTBAR_BLOCK_HALF_EXTENT);
+        list.add_iso_block(&.{
+            .block = self.hotbar[i],
+            .cx = center_x + slot_offset_x,
+            .cy = slot_cy,
+            .half_extent_px = HOTBAR_BLOCK_HALF_EXTENT,
+        });
     }
 }
 
-// --- Input callbacks ---
+// --- Per-frame poll ---
 
-fn on_move(ctx: *anyopaque, value: [2]f32) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.move_dir = value;
-}
+fn poll_inputs(self: *Self) void {
+    const active_now = is_gameplay_active();
+    const fresh_activation = active_now and !self.gameplay_was_active;
+    self.gameplay_was_active = active_now;
 
-fn on_jump(ctx: *anyopaque, event: input.ButtonEvent) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.jumping = event == .pressed;
-}
+    self.move_dir = input.get_action_vector2("move");
 
-fn on_sneak(ctx: *anyopaque, event: input.ButtonEvent) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.sneaking = event == .pressed;
-}
+    const look_raw = input.get_action_vector2("look");
+    const sens = Options.current.sensitivity * LOOK_PIXEL_TO_RAD;
+    self.look_delta = .{ look_raw[0] * sens, look_raw[1] * sens };
 
-fn on_look(ctx: *anyopaque, value: [2]f32) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.look_delta = value;
-}
+    self.look_rate = input.get_action_vector2("look_stick");
+    self.jumping = input.get_action_button("jump") == .pressed;
+    self.sneaking = input.get_action_button("sneak") == .pressed;
 
-fn on_look_stick(ctx: *anyopaque, value: [2]f32) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.look_rate = value;
-}
+    self.break_held = input.get_action_button("break") == .pressed;
+    self.place_held = input.get_action_button("place") == .pressed;
+    self.shoulder_r_held = input.get_action_button("shoulder_r") == .pressed;
+    self.shoulder_l_held = input.get_action_button("shoulder_l") == .pressed;
+    self.playerlist_held = input.get_action_button("playerlist") == .pressed;
 
-/// Edge-only signal: GameState polls and clears `inventory_toggle_pending`
-/// each frame and owns the open/close + mouse-capture handoff for the
-/// inventory overlay. Toggling capture here would race the overlay's own
-/// open/close path.
-fn on_inventory_toggle(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.inventory_toggle_pending = true;
-}
+    if (fresh_activation) {
+        // Snap prev to current so next frame's edges are relative to
+        // today's state, not the masked .released values from the overlay.
+        self.prev_inputs.inventory_toggle = input.get_action_button("inventory_toggle");
+        if (comptime builtin.mode == .Debug and ae.platform != .psp) {
+            self.prev_inputs.noclip = input.get_action_button("noclip");
+        }
+        self.prev_inputs.break_ = input.get_action_button("break");
+        self.prev_inputs.place = input.get_action_button("place");
+        self.prev_inputs.shoulder_r = input.get_action_button("shoulder_r");
+        self.prev_inputs.shoulder_l = input.get_action_button("shoulder_l");
+        self.prev_inputs.playerlist = input.get_action_button("playerlist");
+        if (ae.platform == .psp) self.prev_inputs.psp_osk = input.get_action_button("psp_osk");
+        if (ae.platform != .psp) {
+            self.prev_inputs.hud_toggle = input.get_action_button("hud_toggle");
+            self.prev_inputs.rain_toggle = input.get_action_button("rain_toggle");
+        }
+        self.prev_inputs.chat_open = input.get_action_button("chat_open");
+        self.prev_inputs.chat_cmd = input.get_action_button("chat_cmd");
+        self.prev_inputs.hotbar_left = input.get_action_button("hotbar_left");
+        self.prev_inputs.hotbar_right = input.get_action_button("hotbar_right");
+        inline for (0..9) |i| {
+            self.prev_inputs.hotbar_slot[i] = input.get_action_button(comptime hotbar_slot_name(i));
+        }
+        return;
+    }
 
-fn on_noclip(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.noclip = !self.noclip;
-    if (self.noclip) {
-        self.vel_x = 0;
-        self.vel_y = 0;
-        self.vel_z = 0;
-    } else {
-        self.on_ground = collision.on_ground(self.pos_x, self.pos_y, self.pos_z);
+    const inv = input.get_action_button("inventory_toggle");
+    if (rising_edge(self.prev_inputs.inventory_toggle, inv)) {
+        self.inventory_toggle_pending = true;
+    }
+    self.prev_inputs.inventory_toggle = inv;
+
+    if (comptime builtin.mode == .Debug and ae.platform != .psp) {
+        const nc = input.get_action_button("noclip");
+        if (rising_edge(self.prev_inputs.noclip, nc)) {
+            self.noclip = !self.noclip;
+            if (self.noclip) {
+                self.vel_x = 0;
+                self.vel_y = 0;
+                self.vel_z = 0;
+            } else {
+                self.on_ground = collision.on_ground(self.pos_x, self.pos_y, self.pos_z);
+            }
+        }
+        self.prev_inputs.noclip = nc;
+    }
+
+    const br = input.get_action_button("break");
+    self.break_held = br == .pressed;
+    if (rising_edge(self.prev_inputs.break_, br)) {
+        self.break_repeat_timer = 0;
+        self.do_break();
+    }
+    self.prev_inputs.break_ = br;
+
+    const pl = input.get_action_button("place");
+    self.place_held = pl == .pressed;
+    if (rising_edge(self.prev_inputs.place, pl)) {
+        self.place_repeat_timer = 0;
+        self.do_place();
+    }
+    self.prev_inputs.place = pl;
+
+    // L+R chord = inventory toggle; otherwise rising edge defers a
+    // break/place that update() can cancel if the chord completes.
+    const sr = input.get_action_button("shoulder_r");
+    self.shoulder_r_held = sr == .pressed;
+    if (rising_edge(self.prev_inputs.shoulder_r, sr)) {
+        if (self.shoulder_l_held) {
+            self.inventory_toggle_pending = true;
+            self.pending_shoulder_break = false;
+            self.pending_shoulder_place = false;
+        } else {
+            self.pending_shoulder_break = true;
+        }
+    }
+    self.prev_inputs.shoulder_r = sr;
+
+    const sl = input.get_action_button("shoulder_l");
+    self.shoulder_l_held = sl == .pressed;
+    if (rising_edge(self.prev_inputs.shoulder_l, sl)) {
+        if (self.shoulder_r_held) {
+            self.inventory_toggle_pending = true;
+            self.pending_shoulder_break = false;
+            self.pending_shoulder_place = false;
+        } else {
+            self.pending_shoulder_place = true;
+        }
+    }
+    self.prev_inputs.shoulder_l = sl;
+
+    const pll = input.get_action_button("playerlist");
+    self.playerlist_held = pll == .pressed;
+    if (rising_edge(self.prev_inputs.playerlist, pll)) self.playerlist_edge = true;
+    self.prev_inputs.playerlist = pll;
+
+    if (ae.platform == .psp) {
+        const osk = input.get_action_button("psp_osk");
+        if (rising_edge(self.prev_inputs.psp_osk, osk)) self.psp_osk_edge = true;
+        self.prev_inputs.psp_osk = osk;
+    }
+
+    if (ae.platform != .psp) {
+        const hud = input.get_action_button("hud_toggle");
+        if (rising_edge(self.prev_inputs.hud_toggle, hud)) self.hud_toggle_pending = true;
+        self.prev_inputs.hud_toggle = hud;
+
+        const rain = input.get_action_button("rain_toggle");
+        if (rising_edge(self.prev_inputs.rain_toggle, rain)) self.rain_toggle_pending = true;
+        self.prev_inputs.rain_toggle = rain;
+    }
+
+    const co = input.get_action_button("chat_open");
+    if (rising_edge(self.prev_inputs.chat_open, co)) self.chat_open_pending = true;
+    self.prev_inputs.chat_open = co;
+
+    const cc = input.get_action_button("chat_cmd");
+    if (rising_edge(self.prev_inputs.chat_cmd, cc)) self.chat_cmd_pending = true;
+    self.prev_inputs.chat_cmd = cc;
+
+    const hl = input.get_action_button("hotbar_left");
+    if (rising_edge(self.prev_inputs.hotbar_left, hl)) {
+        self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
+    }
+    self.prev_inputs.hotbar_left = hl;
+
+    const hr = input.get_action_button("hotbar_right");
+    if (rising_edge(self.prev_inputs.hotbar_right, hr)) {
+        self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
+    }
+    self.prev_inputs.hotbar_right = hr;
+
+    inline for (0..9) |i| {
+        const name = comptime hotbar_slot_name(i);
+        const cur = input.get_action_button(name);
+        if (rising_edge(self.prev_inputs.hotbar_slot[i], cur)) {
+            self.selected_slot = @intCast(i);
+        }
+        self.prev_inputs.hotbar_slot[i] = cur;
+    }
+
+    const scroll = input.get_action_axis("hotbar_scroll");
+    if (scroll > HOTBAR_SCROLL_DEADBAND) {
+        self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
+    } else if (scroll < -HOTBAR_SCROLL_DEADBAND) {
+        self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
     }
 }
 
-fn on_break(ctx: *anyopaque, event: input.ButtonEvent) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.break_held = (event == .pressed);
-    if (event != .pressed) return;
-    self.break_repeat_timer = 0;
-    self.do_break();
+fn is_gameplay_active() bool {
+    const top = input.stack_top() orelse return false;
+    const set = bindings.handle() orelse return false;
+    return @intFromEnum(top.actions) == @intFromEnum(set);
+}
+
+fn hotbar_slot_name(comptime i: usize) []const u8 {
+    return switch (i) {
+        0 => "hotbar_slot_1",
+        1 => "hotbar_slot_2",
+        2 => "hotbar_slot_3",
+        3 => "hotbar_slot_4",
+        4 => "hotbar_slot_5",
+        5 => "hotbar_slot_6",
+        6 => "hotbar_slot_7",
+        7 => "hotbar_slot_8",
+        8 => "hotbar_slot_9",
+        else => @compileError("hotbar slot out of range"),
+    };
 }
 
 fn do_break(self: *Self) void {
@@ -1327,14 +1437,6 @@ fn derive_break_face(hit: RaycastHit) Face {
     if (dx < 0) return .x_neg;
     if (dz > 0) return .z_pos;
     return .z_neg;
-}
-
-fn on_place(ctx: *anyopaque, event: input.ButtonEvent) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.place_held = (event == .pressed);
-    if (event != .pressed) return;
-    self.place_repeat_timer = 0;
-    self.do_place();
 }
 
 fn do_place(self: *Self) void {
@@ -1381,148 +1483,6 @@ fn do_place(self: *Self) void {
             .z = hit.place_z,
             .block = block,
         };
-    }
-}
-
-// --- Gamepad shoulder chord (L+R = inventory) ---
-
-fn on_shoulder_r(ctx: *anyopaque, event: input.ButtonEvent) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.shoulder_r_held = (event == .pressed);
-    if (event != .pressed) return;
-    if (self.shoulder_l_held) {
-        self.inventory_toggle_pending = true;
-        self.pending_shoulder_break = false;
-        self.pending_shoulder_place = false;
-        return;
-    }
-    self.pending_shoulder_break = true;
-}
-
-fn on_shoulder_l(ctx: *anyopaque, event: input.ButtonEvent) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.shoulder_l_held = (event == .pressed);
-    if (event != .pressed) return;
-    if (self.shoulder_r_held) {
-        self.inventory_toggle_pending = true;
-        self.pending_shoulder_break = false;
-        self.pending_shoulder_place = false;
-        return;
-    }
-    self.pending_shoulder_place = true;
-}
-
-fn on_playerlist(ctx: *anyopaque, event: input.ButtonEvent) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.playerlist_held = (event == .pressed);
-    if (event == .pressed) self.playerlist_edge = true;
-}
-
-fn on_psp_osk(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.psp_osk_edge = true;
-}
-
-fn on_hud_toggle(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.hud_toggle_pending = true;
-}
-
-fn on_rain_toggle(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.rain_toggle_pending = true;
-}
-
-fn on_chat_open(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    if (!self.mouse_captured) return;
-    self.chat_open_pending = true;
-}
-
-fn on_chat_cmd(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    if (!self.mouse_captured) return;
-    self.chat_cmd_pending = true;
-}
-
-fn on_chat_send(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    self.chat_send_pending = true;
-}
-
-fn on_hotbar_left(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    if (!self.mouse_captured) return;
-    self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
-}
-
-fn on_hotbar_right(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    if (!self.mouse_captured) return;
-    self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
-}
-
-fn select_slot(self: *Self, slot: u8) void {
-    std.debug.assert(slot < HOTBAR_SLOTS);
-    if (!self.mouse_captured) return;
-    self.selected_slot = slot;
-}
-
-fn on_hotbar_slot_1(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    select_slot(@ptrCast(@alignCast(ctx)), 0);
-}
-fn on_hotbar_slot_2(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    select_slot(@ptrCast(@alignCast(ctx)), 1);
-}
-fn on_hotbar_slot_3(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    select_slot(@ptrCast(@alignCast(ctx)), 2);
-}
-fn on_hotbar_slot_4(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    select_slot(@ptrCast(@alignCast(ctx)), 3);
-}
-fn on_hotbar_slot_5(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    select_slot(@ptrCast(@alignCast(ctx)), 4);
-}
-fn on_hotbar_slot_6(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    select_slot(@ptrCast(@alignCast(ctx)), 5);
-}
-fn on_hotbar_slot_7(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    select_slot(@ptrCast(@alignCast(ctx)), 6);
-}
-fn on_hotbar_slot_8(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    select_slot(@ptrCast(@alignCast(ctx)), 7);
-}
-fn on_hotbar_slot_9(ctx: *anyopaque, event: input.ButtonEvent) void {
-    if (event != .pressed) return;
-    select_slot(@ptrCast(@alignCast(ctx)), 8);
-}
-
-/// Mouse scroll wheel: positive value = scroll up = previous slot, negative
-/// = scroll down = next slot. Uses an axis callback because the underlying
-/// mouse_scroll source is a per-frame delta consumed on read.
-fn on_hotbar_scroll(ctx: *anyopaque, value: f32) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
-    if (!self.mouse_captured) return;
-    if (value > HOTBAR_SCROLL_DEADBAND) {
-        self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
-    } else if (value < -HOTBAR_SCROLL_DEADBAND) {
-        self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
     }
 }
 

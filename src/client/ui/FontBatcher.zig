@@ -24,6 +24,7 @@ const SPACE_WIDTH: u8 = 4;
 const DEFAULT_SPACING: i8 = 1;
 const VERTS_PER_CHAR: u32 = 6;
 const MAX_ENTRIES: u16 = 1024;
+const MAX_TEXT_BYTES: u16 = 8192;
 const COLOR_PREFIX: u8 = '&';
 
 // --- Color codes ---
@@ -80,6 +81,8 @@ glyph_widths: [GLYPH_COUNT]u8,
 atlas: TextureAtlas,
 texture: *const Rendering.Texture,
 entries: [2][MAX_ENTRIES]TextEntry,
+text_bufs: [2][MAX_TEXT_BYTES]u8,
+text_used: [2]u16,
 count: u16,
 prev_count: u16,
 current: u1,
@@ -99,6 +102,8 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, t
         .atlas = TextureAtlas.init(128, 128, GLYPH_ROWS, GLYPH_COLS),
         .texture = texture,
         .entries = undefined,
+        .text_bufs = undefined,
+        .text_used = .{ 0, 0 },
         .count = 0,
         .prev_count = 0,
         .current = 0,
@@ -130,11 +135,10 @@ pub fn clear(self: *Self) void {
     self.prev_count = self.count;
     self.current ^= 1;
     self.count = 0;
+    self.text_used[self.current] = 0;
 }
 
 /// Force the next flush to rebuild the mesh regardless of entry equality.
-/// Use when mutable string content at stable pointer addresses may have
-/// changed between frames (e.g. in-place label buffers in the options menu).
 pub fn mark_dirty(self: *Self) void {
     self.prev_count = 0;
 }
@@ -142,8 +146,22 @@ pub fn mark_dirty(self: *Self) void {
 pub fn add_text(self: *Self, entry: *const TextEntry) void {
     std.debug.assert(self.count < MAX_ENTRIES);
     std.debug.assert(entry.str.len > 0);
+    std.debug.assert(entry.str.len <= MAX_TEXT_BYTES - self.text_used[self.current]);
+
+    if (self.count >= MAX_ENTRIES) return;
+    if (entry.str.len > MAX_TEXT_BYTES) return;
+    const len: u16 = @intCast(entry.str.len);
+    if (len > MAX_TEXT_BYTES - self.text_used[self.current]) return;
+
+    const start = self.text_used[self.current];
+    const end = start + len;
+    const dst = self.text_bufs[self.current][start..end];
+    @memcpy(dst, entry.str);
+
     self.entries[self.current][self.count] = entry.*;
+    self.entries[self.current][self.count].str = dst;
     self.count += 1;
+    self.text_used[self.current] = end;
 }
 
 pub fn flush(self: *Self) !void {
@@ -192,6 +210,37 @@ pub fn string_width(self: *const Self, str: []const u8, spacing: i8, text_scale:
     const gaps: i32 = @intCast(visible - 1);
     total += gaps * (@as(i32, DEFAULT_SPACING) + @as(i32, spacing)) * s;
     return @intCast(@min(total, std.math.maxInt(i16)));
+}
+
+/// Returns the byte length of the longest prefix of `str` whose rendered
+/// width fits within `max_w`. Walks per-glyph so a `&x` color escape is
+/// never split across the truncation point. No allocation.
+pub fn fit_width(self: *const Self, str: []const u8, max_w: i16, spacing: i8, text_scale: u8) usize {
+    if (max_w <= 0 or str.len == 0) return 0;
+    std.debug.assert(text_scale > 0);
+    const s: i32 = text_scale;
+    const advance: i32 = (@as(i32, DEFAULT_SPACING) + @as(i32, spacing)) * s;
+    var total: i32 = 0;
+    var visible: u32 = 0;
+    var i: usize = 0;
+    var last_fit: usize = 0;
+    while (i < str.len) {
+        if (str[i] == COLOR_PREFIX and i + 1 < str.len and is_color_hex(str[i + 1])) {
+            // Color escapes do not advance the cursor; commit them
+            // together so a fit boundary never lands between & and code.
+            i += 2;
+            last_fit = i;
+            continue;
+        }
+        const gw: i32 = @as(i32, self.glyph_widths[str[i]]) * s;
+        const gap: i32 = if (visible > 0) advance else 0;
+        if (total + gap + gw > @as(i32, max_w)) break;
+        total += gap + gw;
+        visible += 1;
+        i += 1;
+        last_fit = i;
+    }
+    return last_fit;
 }
 
 /// Creates a standalone mesh for a rendered string in normalized [-1,1] space.
@@ -295,7 +344,18 @@ pub fn mesh_matrix(
 fn entries_equal(a: []const TextEntry, b: []const TextEntry) bool {
     if (a.len != b.len) return false;
     for (a, b) |*x, *y| {
-        if (!std.meta.eql(x.*, y.*)) return false;
+        // Compare `str` by bytes; same-length in-place edits (PSP OSK,
+        // per-frame label arenas) leave the slice header unchanged.
+        if (!std.mem.eql(u8, x.str, y.str)) return false;
+        if (!std.meta.eql(x.color, y.color)) return false;
+        if (!std.meta.eql(x.shadow_color, y.shadow_color)) return false;
+        if (x.pos_x != y.pos_x) return false;
+        if (x.pos_y != y.pos_y) return false;
+        if (x.spacing != y.spacing) return false;
+        if (x.layer != y.layer) return false;
+        if (x.scale != y.scale) return false;
+        if (x.reference != y.reference) return false;
+        if (x.origin != y.origin) return false;
     }
     return true;
 }
