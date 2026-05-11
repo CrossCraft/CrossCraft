@@ -144,7 +144,9 @@ fn empty_input() ui_input.UiInput {
         .confirm_edge = false,
         .cancel_edge = false,
         .pause_edge = false,
+        .inventory_edge = false,
         .wheel_dy = 0,
+        .text_events = false,
     };
 }
 

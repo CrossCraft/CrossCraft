@@ -42,9 +42,16 @@ pub const UiInput = struct {
     /// In-game pause - Escape and gamepad Start only; excludes B so the
     /// inventory key cannot pause mid-gameplay.
     pause_edge: bool,
+    /// Inventory toggle while a UI overlay owns input. This lets the same
+    /// keyboard/gamepad binding close inventory without making B a global
+    /// text-screen cancel key.
+    inventory_edge: bool,
     /// Vertical wheel notches this frame. Positive scrolls content upward
     /// (GLFW convention). Zero when `cursor_available` is false.
     wheel_dy: i8,
+    /// True on the update-side frame. Draw-only UI replays set this false so
+    /// text sessions do not process the same raw key events twice.
+    text_events: bool,
 };
 
 /// Previous-frame button state for rising-edge detection.
@@ -53,6 +60,7 @@ const Prev = struct {
     confirm: input.ButtonState = .released,
     cancel: input.ButtonState = .released,
     pause: input.ButtonState = .released,
+    inventory: input.ButtonState = .released,
 };
 
 const Runtime = struct {
@@ -65,6 +73,7 @@ const Runtime = struct {
     profile: InputProfile = .pointer_and_pad,
     prev_cursor_x: i16 = std.math.minInt(i16),
     prev_cursor_y: i16 = std.math.minInt(i16),
+    wheel_acc: f32 = 0,
 };
 var runtime: Runtime = .{};
 
@@ -79,6 +88,7 @@ pub fn set_profile(profile: InputProfile) void {
     runtime.profile = profile;
     runtime.prev_cursor_x = std.math.minInt(i16);
     runtime.prev_cursor_y = std.math.minInt(i16);
+    runtime.wheel_acc = 0;
 }
 
 pub fn profile_uses_pointer() bool {
@@ -99,11 +109,10 @@ pub fn ensure_registered() !void {
     try input.bind_action(set, "ui_confirm", .{ .source = .{ .key = .Space } });
     try input.bind_action(set, "ui_confirm", .{ .source = .{ .gamepad_button = .A } });
 
-    // Cancel = back. Keyboard B is included so the same key that opens the
-    // inventory overlay also closes it from the inventory's own update path.
+    // Cancel = back. Keyboard B is intentionally not included: text fields
+    // need to accept the letter 'b' without backing out of their screen.
     try input.add_action(set, "ui_cancel", .button);
     try input.bind_action(set, "ui_cancel", .{ .source = .{ .key = .Escape } });
-    try input.bind_action(set, "ui_cancel", .{ .source = .{ .key = .B } });
     try input.bind_action(set, "ui_cancel", .{ .source = .{ .gamepad_button = .B } });
     try input.bind_action(set, "ui_cancel", .{ .source = .{ .gamepad_button = .Start } });
 
@@ -112,6 +121,12 @@ pub fn ensure_registered() !void {
     try input.add_action(set, "ui_pause", .button);
     try input.bind_action(set, "ui_pause", .{ .source = .{ .key = .Escape } });
     try input.bind_action(set, "ui_pause", .{ .source = .{ .gamepad_button = .Start } });
+
+    try input.add_action(set, "ui_inventory", .button);
+    try input.bind_action(set, "ui_inventory", .{ .source = .{ .key = .B } });
+    if (ae.platform != .psp) {
+        try input.bind_action(set, "ui_inventory", .{ .source = .{ .gamepad_button = .Y } });
+    }
 
     try input.add_action(set, "ui_up", .button);
     try input.bind_action(set, "ui_up", .{ .source = .{ .key = .Up } });
@@ -162,6 +177,7 @@ pub fn build_frame(dt: f32, repeat: *Repeat) UiInput {
     const confirm = input.get_action_button("ui_confirm");
     const cancel = input.get_action_button("ui_cancel");
     const pause = input.get_action_button("ui_pause");
+    const inventory = input.get_action_button("ui_inventory");
 
     const active_now = is_menu_set_active();
 
@@ -174,11 +190,13 @@ pub fn build_frame(dt: f32, repeat: *Repeat) UiInput {
     const confirm_edge = !fresh_activation and rising_edge(runtime.prev.confirm, confirm);
     const cancel_edge = !fresh_activation and rising_edge(runtime.prev.cancel, cancel);
     const pause_edge = !fresh_activation and rising_edge(runtime.prev.pause, pause);
+    const inventory_edge = !fresh_activation and rising_edge(runtime.prev.inventory, inventory);
 
     runtime.prev.click = click;
     runtime.prev.confirm = confirm;
     runtime.prev.cancel = cancel;
     runtime.prev.pause = pause;
+    runtime.prev.inventory = inventory;
 
     const held = [4]bool{
         input.get_action_button("ui_up") == .pressed,
@@ -199,23 +217,27 @@ pub fn build_frame(dt: f32, repeat: *Repeat) UiInput {
         .confirm_edge = confirm_edge,
         .cancel_edge = cancel_edge,
         .pause_edge = pause_edge,
+        .inventory_edge = inventory_edge,
         .wheel_dy = if (profile_uses_pointer() and !fresh_activation) read_wheel_dy() else 0,
+        .text_events = true,
     };
 }
 
 /// Accumulate fractional trackpad deltas and floor toward zero so a slow
 /// scroll still registers a notch eventually.
 fn read_wheel_dy() i8 {
-    var acc: f32 = 0;
     for (input.frame_events()) |ev| {
         switch (ev.kind) {
-            .mouse_wheel => |w| acc += w.delta.y,
+            .mouse_wheel => |w| runtime.wheel_acc += w.delta.y,
             else => {},
         }
     }
-    if (acc == 0) return 0;
-    const rounded: i32 = @intFromFloat(if (acc > 0) @floor(acc) else @ceil(acc));
-    return @intCast(std.math.clamp(rounded, -127, 127));
+    if (runtime.wheel_acc == 0) return 0;
+    const whole: i32 = @intFromFloat(if (runtime.wheel_acc > 0) @floor(runtime.wheel_acc) else @ceil(runtime.wheel_acc));
+    if (whole == 0) return 0;
+    const emitted = std.math.clamp(whole, -127, 127);
+    runtime.wheel_acc -= @floatFromInt(emitted);
+    return @intCast(emitted);
 }
 
 fn rising_edge(prev: input.ButtonState, cur: input.ButtonState) bool {
@@ -264,8 +286,7 @@ fn resolve_nav(held: [4]bool, dt: f32, repeat: *Repeat) NavDir {
             continue;
         }
         repeat.timers[i] += dt;
-        const threshold: f32 = REPEAT_DELAY + REPEAT_RATE;
-        if (repeat.timers[i] >= threshold) {
+        if (repeat.timers[i] >= REPEAT_DELAY) {
             repeat.timers[i] -= REPEAT_RATE;
             if (fired == .none) fired = dirs[i];
         }

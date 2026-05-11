@@ -503,7 +503,7 @@ fn open_pause(self: *@This()) void {
         .name = "pause",
         .cursor_mode = .visible,
         .actions = ui_input.menu_set(),
-        .consumes_text = false,
+        .consumes_text = true,
     }) catch {};
 }
 
@@ -613,7 +613,9 @@ fn empty_input() ui_input.UiInput {
         .confirm_edge = false,
         .cancel_edge = false,
         .pause_edge = false,
+        .inventory_edge = false,
         .wheel_dy = 0,
+        .text_events = false,
     };
 }
 

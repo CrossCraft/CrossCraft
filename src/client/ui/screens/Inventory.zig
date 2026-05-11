@@ -27,6 +27,6 @@ pub fn run(ui: *Ui, blocks: []const common.consts.Block, slot: *u8) Action {
     }) != null) action = .select;
     col.end();
     ui.prompts(&.{ Prompts.select(), Prompts.back() });
-    if (action == .none and ui.cancel_pressed()) action = .back;
+    if (action == .none and (ui.cancel_pressed() or ui.inventory_pressed())) action = .back;
     return action;
 }

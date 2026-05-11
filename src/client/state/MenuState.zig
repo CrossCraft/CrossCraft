@@ -134,7 +134,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         .name = "menu",
         .cursor_mode = .visible,
         .actions = ui_input.menu_set(),
-        .consumes_text = false,
+        .consumes_text = true,
     });
 
     self.dirt = ResourcePack.get_tex(.dirt);
@@ -378,7 +378,9 @@ fn empty_input() ui_input.UiInput {
         .confirm_edge = false,
         .cancel_edge = false,
         .pause_edge = false,
+        .inventory_edge = false,
         .wheel_dy = 0,
+        .text_events = false,
     };
 }
 

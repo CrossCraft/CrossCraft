@@ -442,7 +442,10 @@ pub fn text_field(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) Text
         self.state.captured_via_click = false;
         self.set_active_text(id, buf, opts);
     }
-    if (self.input.confirm_edge and self.state_focused_eq(id) and !self.claimed_confirm) {
+    if (self.state_active_text_eq(id) and self.state.text_session_started and self.text_submit_edge() and !self.claimed_confirm) {
+        self.claimed_confirm = true;
+        input_api.submit_text() catch {};
+    } else if (self.input.confirm_edge and self.state_focused_eq(id) and !self.claimed_confirm and !self.state_active_text_eq(id)) {
         self.claimed_confirm = true;
         self.state.focus_source = .pad;
         if (ae.platform == .psp) {
@@ -527,7 +530,6 @@ pub fn scroll_list(self: *Self, id: WidgetId, opts: ScrollListOpts) ScopeHandle 
         .x1 = opts.width,
         .y1 = scroll_y + opts.height,
     };
-    self.draw.push_clip(clip);
     self.push_scope(.{
         .axis = .vertical,
         .anchor = .top_left,
@@ -543,6 +545,7 @@ pub fn scroll_list(self: *Self, id: WidgetId, opts: ScrollListOpts) ScopeHandle 
         .scroll_id = id,
         .scroll_wheel_step = opts.wheel_step,
     });
+    self.draw.push_clip(clip);
     return .{ .ui = self };
 }
 
@@ -562,6 +565,10 @@ pub fn prompts(self: *Self, list: []const Prompt) void {
 
 pub fn cancel_pressed(self: *const Self) bool {
     return self.input.cancel_edge and !self.cancel_consumed and !self.claimed_confirm;
+}
+
+pub fn inventory_pressed(self: *const Self) bool {
+    return self.input.inventory_edge and !self.cancel_consumed and !self.claimed_confirm;
 }
 
 pub fn close_request(self: *Self) void {
@@ -832,7 +839,12 @@ fn offset_scroll_range(self: *Self, start: u8, finish: u8, dx: i16, dy: i16) voi
 }
 
 fn route_pre_frame(self: *Self) void {
-    if (self.input.cancel_edge and self.state.captured != null) {
+    if (self.input.cancel_edge and self.state.active_text != null) {
+        self.state.cancel_active_text();
+        self.cancel_consumed = true;
+    }
+
+    if (self.input.cancel_edge and self.state.captured != null and !self.cancel_consumed) {
         self.state.captured = null;
         self.state.captured_via_click = false;
         self.cancel_consumed = true;
@@ -862,7 +874,7 @@ fn route_pre_frame(self: *Self) void {
         self.state.captured_via_click = false;
     }
 
-    if (self.state.captured == null and self.input.nav != .none) {
+    if (!has_active_text and self.state.captured == null and self.input.nav != .none) {
         self.state.focus_source = .pad;
         if (self.focused_previous_idx()) |idx| {
             if (self.state.focusables[idx].kind != .slot_grid) self.spatial_advance(idx, self.input.nav);
@@ -1002,6 +1014,11 @@ fn state_hovered_eq(self: *const Self, id: WidgetId) bool {
     return h == id;
 }
 
+fn state_active_text_eq(self: *const Self, id: WidgetId) bool {
+    const a = self.state.active_text orelse return false;
+    return a == id;
+}
+
 fn persist(self: *Self, text: []const u8) []const u8 {
     if (self.label_used + text.len > self.label_buf.len) return text;
     const dst = self.label_buf[self.label_used .. self.label_used + text.len];
@@ -1077,7 +1094,10 @@ fn set_active_text(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) voi
         .max_bytes = buf.max,
         .initial = if (buf.len.* > 0) buf.bytes[0..buf.len.*] else null,
     };
-    _ = input_api.begin_text_input(target, input_opts) catch return;
+    _ = input_api.begin_text_input(target, input_opts) catch {
+        self.finish_active_text();
+        return;
+    };
     self.state.text_session_started = true;
 }
 
@@ -1094,23 +1114,73 @@ fn fire_psp_osk(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {
     self.state.active_text = id;
     self.state.text_session_started = false;
     const session = input_api.current_text_session() orelse return false;
-    if (session.status != .submitted) return false;
-    return copy_session_to_buf(session.buffer.items, buf);
+    if (session.status != .submitted) {
+        if (!session.is_terminal()) input_api.cancel_text() catch {};
+        self.finish_active_text();
+        return false;
+    }
+    const changed = copy_session_to_buf(session.buffer.items, buf);
+    self.finish_active_text();
+    return changed;
 }
 
 fn sync_session_to_field(self: *Self, id: WidgetId, buf: *TextBuf) TextEvent {
     if (self.state.active_text == null or self.state.active_text.? != id or !self.state.text_session_started) return .none;
     const session = input_api.current_text_session() orelse return .none;
+    self.apply_text_session_events(session);
     if (session.status == .submitted) {
         _ = copy_session_to_buf(session.buffer.items, buf);
-        self.state.text_session_started = false;
+        self.finish_active_text();
         return .submit;
     }
     if (session.status == .cancelled) {
-        self.state.text_session_started = false;
+        self.finish_active_text();
         return .none;
     }
     return if (copy_session_to_buf(session.buffer.items, buf)) .changed else .none;
+}
+
+fn apply_text_session_events(self: *Self, session_const: *const input_api.TextInputSession) void {
+    if (!self.input.text_events or session_const.status != .active) return;
+    const session: *input_api.TextInputSession = @constCast(session_const);
+    for (input_api.frame_events()) |ev| {
+        switch (ev.kind) {
+            .key_down => |k| {
+                if (k.key == .Backspace) pop_text_codepoint(session);
+            },
+            else => {},
+        }
+    }
+}
+
+fn text_submit_edge(self: *const Self) bool {
+    if (!self.input.text_events) return false;
+    for (input_api.frame_events()) |ev| {
+        switch (ev.kind) {
+            .key_down => |k| {
+                if (k.key == .Enter) return true;
+            },
+            .gamepad_button_down => |b| {
+                if (b.button == .A) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn pop_text_codepoint(session: *input_api.TextInputSession) void {
+    if (session.buffer.items.len == 0) return;
+    var start = session.buffer.items.len - 1;
+    while (start > 0 and (session.buffer.items[start] & 0b1100_0000) == 0b1000_0000) {
+        start -= 1;
+    }
+    session.buffer.items.len = start;
+}
+
+fn finish_active_text(self: *Self) void {
+    self.state.active_text = null;
+    self.state.text_session_started = false;
 }
 
 fn copy_session_to_buf(items: []const u8, buf: *TextBuf) bool {
