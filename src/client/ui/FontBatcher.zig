@@ -24,6 +24,7 @@ const SPACE_WIDTH: u8 = 4;
 const DEFAULT_SPACING: i8 = 1;
 const VERTS_PER_CHAR: u32 = 6;
 const MAX_ENTRIES: u16 = 1024;
+const MAX_TEXT_BYTES: u16 = 8192;
 const COLOR_PREFIX: u8 = '&';
 
 // --- Color codes ---
@@ -80,6 +81,8 @@ glyph_widths: [GLYPH_COUNT]u8,
 atlas: TextureAtlas,
 texture: *const Rendering.Texture,
 entries: [2][MAX_ENTRIES]TextEntry,
+text_bufs: [2][MAX_TEXT_BYTES]u8,
+text_used: [2]u16,
 count: u16,
 prev_count: u16,
 current: u1,
@@ -99,6 +102,8 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, t
         .atlas = TextureAtlas.init(128, 128, GLYPH_ROWS, GLYPH_COLS),
         .texture = texture,
         .entries = undefined,
+        .text_bufs = undefined,
+        .text_used = .{ 0, 0 },
         .count = 0,
         .prev_count = 0,
         .current = 0,
@@ -130,11 +135,10 @@ pub fn clear(self: *Self) void {
     self.prev_count = self.count;
     self.current ^= 1;
     self.count = 0;
+    self.text_used[self.current] = 0;
 }
 
 /// Force the next flush to rebuild the mesh regardless of entry equality.
-/// Use when mutable string content at stable pointer addresses may have
-/// changed between frames (e.g. in-place label buffers in the options menu).
 pub fn mark_dirty(self: *Self) void {
     self.prev_count = 0;
 }
@@ -142,8 +146,22 @@ pub fn mark_dirty(self: *Self) void {
 pub fn add_text(self: *Self, entry: *const TextEntry) void {
     std.debug.assert(self.count < MAX_ENTRIES);
     std.debug.assert(entry.str.len > 0);
+    std.debug.assert(entry.str.len <= MAX_TEXT_BYTES - self.text_used[self.current]);
+
+    if (self.count >= MAX_ENTRIES) return;
+    if (entry.str.len > MAX_TEXT_BYTES) return;
+    const len: u16 = @intCast(entry.str.len);
+    if (len > MAX_TEXT_BYTES - self.text_used[self.current]) return;
+
+    const start = self.text_used[self.current];
+    const end = start + len;
+    const dst = self.text_bufs[self.current][start..end];
+    @memcpy(dst, entry.str);
+
     self.entries[self.current][self.count] = entry.*;
+    self.entries[self.current][self.count].str = dst;
     self.count += 1;
+    self.text_used[self.current] = end;
 }
 
 pub fn flush(self: *Self) !void {

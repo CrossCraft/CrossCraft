@@ -394,11 +394,13 @@ pub fn slider(self: *Self, id: WidgetId, value: *f32, opts: SliderOpts) bool {
         changed = self.set_slider_from_cursor(id, value, opts);
     } else if (self.state.captured != null and self.state.captured.? == id) {
         if (self.state.captured_via_click) {
-            if (self.input.click_held and self.input.cursor_available) {
-                changed = self.set_slider_from_cursor(id, value, opts);
-            } else {
-                self.state.captured = null;
-                self.state.captured_via_click = false;
+            if (self.input.cursor_available) {
+                if (self.input.click_held) {
+                    changed = self.set_slider_from_cursor(id, value, opts);
+                } else {
+                    self.state.captured = null;
+                    self.state.captured_via_click = false;
+                }
             }
         } else if (self.input.nav == .left or self.input.nav == .right) {
             changed = nudge_slider_value(value, opts, self.input.nav);
@@ -855,8 +857,11 @@ fn route_pre_frame(self: *Self) void {
     }
 
     const has_active_text = self.state.active_text != null;
-    if (self.input.cursor_available and self.input.cursor_moved) {
+    const refresh_pointer_pick = self.input.cursor_available and (self.input.cursor_moved or self.input.click_edge);
+    var pointer_pick: ?u8 = null;
+    if (refresh_pointer_pick) {
         const idx = self.pick_previous(self.input.cursor_x, self.input.cursor_y);
+        pointer_pick = idx;
         self.state.hovered = if (idx) |i| self.state.focusables[i].id else null;
         if (!has_active_text) {
             if (idx) |i| {
@@ -868,7 +873,9 @@ fn route_pre_frame(self: *Self) void {
         }
     }
 
-    if (self.input.cursor_available and self.input.click_edge and self.pick_previous(self.input.cursor_x, self.input.cursor_y) == null) {
+    if (self.input.cursor_available and self.input.click_edge) {
+        const idx = if (refresh_pointer_pick) pointer_pick else self.pick_previous(self.input.cursor_x, self.input.cursor_y);
+        if (idx != null) return;
         self.state.cancel_active_text();
         self.state.captured = null;
         self.state.captured_via_click = false;
