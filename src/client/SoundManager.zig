@@ -325,6 +325,8 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
                 music_state = .delay;
                 music_delay_timer = min_music_delay +
                     rand_f32() * (max_music_delay - min_music_delay);
+            } else {
+                Audio.set_volume(voices[music_slot].handle, music_volume());
             }
         },
         .delay => {
@@ -355,7 +357,7 @@ fn advance_and_play_music() void {
         return;
     }
     start_voice(&voices[music_slot], entry, null, .{
-        .volume = 0.5 * Options.current.music_volume,
+        .volume = music_volume(),
         .priority = .critical,
     }) catch {
         music_state = .delay;
@@ -366,6 +368,10 @@ fn advance_and_play_music() void {
 }
 
 // --- play API ---
+
+fn music_volume() f32 {
+    return 0.5 * Options.current.music_volume;
+}
 
 pub fn play_dig(block: Block, bx: u16, by: u16, bz: u16) void {
     play_material_sound(&dig_entries, &dig_counts, block, bx, by, bz, 1.0);
