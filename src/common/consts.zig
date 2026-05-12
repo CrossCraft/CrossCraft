@@ -129,6 +129,10 @@ pub const Block = struct {
         return self.id == .air;
     }
 
+    pub inline fn is_place_replaceable(self: Block) bool {
+        return self.is_air() or self.is_fluid();
+    }
+
     // --- Coarse property getters (hot-path single-load) ---
 
     pub inline fn mesh_props(self: Block) BlockRegistry.MeshProps {
@@ -243,6 +247,11 @@ test "Block accessors" {
     try std.testing.expect((Block{ .id = .flowing_lava }).is_lava());
     try std.testing.expect((Block{ .id = .still_water }).is_fluid());
     try std.testing.expect(!(Block{ .id = .air }).is_fluid());
+    try std.testing.expect((Block{ .id = .air }).is_place_replaceable());
+    try std.testing.expect((Block{ .id = .still_water }).is_place_replaceable());
+    try std.testing.expect(!(Block{ .id = .flower_1 }).is_place_replaceable());
+    try std.testing.expect(!(Block{ .id = .mushroom_1 }).is_place_replaceable());
+    try std.testing.expect(!(Block{ .id = .slab }).is_place_replaceable());
 
     try std.testing.expectEqual(@as(u5, 8), (Block{ .id = .slab }).bounds().max_y);
     try std.testing.expect((Block{ .id = .stone }).bounds().is_full());

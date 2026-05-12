@@ -414,19 +414,23 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
 
     const old_block = world.data.get_block(event.x, event.y, event.z);
 
-    // Cross-blocks (flowers, saplings, mushrooms) have a narrow subvoxel
-    // selection bound, so a raycast can pass through them and target the
-    // cell they occupy via the surface below. Re-broadcast the existing
-    // block so any optimistic client that drew the new block reverts.
-    if (mode == .create and old_block.mesh_props().cross) {
-        Server.broadcast_block_change(event.x, event.y, event.z, old_block);
-        return;
-    }
-
     if (mode == .destroy) {
         world.set_block(event.x, event.y, event.z, .{ .id = .air });
         Server.broadcast_block_change(event.x, event.y, event.z, .{ .id = .air });
     } else {
+        // Partial blocks can be targeted through their empty subvolume. Only
+        // air and fluids are replaceable, except slab + slab promotes in-place.
+        if (old_block.id == .slab and block.id == .slab) {
+            world.set_block(event.x, event.y, event.z, .{ .id = .double_slab });
+            Server.broadcast_block_change(event.x, event.y, event.z, .{ .id = .double_slab });
+            world.enqueue_neighbors_of(event.x, event.y, event.z);
+            return;
+        }
+        if (!old_block.is_place_replaceable()) {
+            Server.broadcast_block_change(event.x, event.y, event.z, old_block);
+            return;
+        }
+
         // Slab-on-slab -> double slab. The originating client (and any other
         // client doing optimistic placement, e.g. ClassiCube) already drew a
         // slab into (x, y, z); re-assert whatever block actually lives at
@@ -435,8 +439,7 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
         if (block.id == .slab and event.y > 0) {
             const below = world.data.get_block(event.x, event.y - 1, event.z);
             if (below.id == .slab) {
-                const existing_above = world.data.get_block(event.x, event.y, event.z);
-                Server.broadcast_block_change(event.x, event.y, event.z, existing_above);
+                Server.broadcast_block_change(event.x, event.y, event.z, old_block);
                 world.set_block(event.x, event.y - 1, event.z, .{ .id = .double_slab });
                 Server.broadcast_block_change(event.x, event.y - 1, event.z, .{ .id = .double_slab });
                 world.enqueue_neighbors_of(event.x, event.y - 1, event.z);

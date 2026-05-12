@@ -1446,10 +1446,16 @@ fn do_place(self: *Self) void {
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
     const block = self.hotbar[self.selected_slot];
     if (block.is_air()) return;
+    const target = World.data.get_block(hit.place_x, hit.place_y, hit.place_z);
+    const target_replaceable = target.is_place_replaceable();
+    const promotes_to_double_slab = block.id == .slab and
+        (target.id == .slab or (target_replaceable and hit.place_y > 0 and
+            World.data.get_block(hit.place_x, hit.place_y - 1, hit.place_z).id == .slab));
+    if (!target_replaceable and !promotes_to_double_slab) return;
     const bx0: f32 = @floatFromInt(hit.place_x);
     const by0: f32 = @floatFromInt(hit.place_y);
     const bz0: f32 = @floatFromInt(hit.place_z);
-    const bh: f32 = collision.block_height(block);
+    const bh: f32 = if (target.id == .slab and promotes_to_double_slab) 1.0 else collision.block_height(block);
     const overlaps = bh > 0 and
         self.pos_x + collision.HALF_W > bx0 and
         self.pos_x - collision.HALF_W < bx0 + 1.0 and
@@ -1458,24 +1464,16 @@ fn do_place(self: *Self) void {
         self.pos_z + collision.HALF_W > bz0 and
         self.pos_z - collision.HALF_W < bz0 + 1.0;
     if (overlaps) return;
-    const target = World.data.get_block(hit.place_x, hit.place_y, hit.place_z);
-    if (target.mesh_props().cross) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
     // Register a "virtual block" for collision so the player cannot
     // fall through before the server commits the placement to the
     // world on its next tick.
     //
-    // Exception: slab-on-slab. The server promotes the slab below the
-    // place cell to a double_slab and reverts the place cell to whatever
-    // was there before (usually air). A pending_block at the place cell
-    // would therefore never clear -- the "cell became non-air" condition
-    // in collide_and_move is never met -- leaving a permanent ghost
-    // half-slab. The `overlaps` check already guarantees the player
-    // cannot intersect the place cell, so no virtual surface is needed
-    // for this case.
-    const promotes_to_double_slab = block.id == .slab and hit.place_y > 0 and
-        World.data.get_block(hit.place_x, hit.place_y - 1, hit.place_z).id == .slab;
+    // Exception: slab-on-slab. Depending on the ray path, the server promotes
+    // either the target slab or the slab below a replaceable target cell. The
+    // same-cell form already has real collision; the below-slab form leaves the
+    // place cell unchanged, so a pending half-slab there would become a ghost.
     if (collision.block_height(block) > 0 and !promotes_to_double_slab) {
         self.pending_block = .{
             .x = hit.place_x,
