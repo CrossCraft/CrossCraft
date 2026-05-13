@@ -684,7 +684,7 @@ fn set_terrain_fog(submerged: ?collision.Liquid) void {
     };
     const fog_start: f32 = if (submerged != null) 0.0 else fog_end * 0.4;
     Rendering.gfx.api.set_fog(
-        Options.current.fog,
+        Options.current.fog or submerged != null,
         fog_start,
         fog_end,
         @as(f32, @floatFromInt(c.r)) / 255.0,
