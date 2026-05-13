@@ -77,7 +77,7 @@ pub fn init(io: std.Io, save_dir: std.Io.Dir, save_file_name: []const u8, format
         .save_in_flight = .init(false),
         .needs_format_upgrade = false,
         .data_for_worker = undefined,
-        .cw_job = .{ .run = cw_save_run },
+        .cw_job = .{ .done = .init(true), .run = cw_save_run },
     };
 }
 
@@ -118,10 +118,15 @@ pub fn save(self: *WorldSaver, data: *const WorldData) void {
 /// `data.raw_blocks` is freed -- the worker reads it directly.
 pub fn wait_for_save(self: *WorldSaver) void {
     self.save_group.await(self.io) catch {};
-    // Spin on the cw_job done flag; the compressor thread finishes one
-    // job at a time and there's only one save in flight.
-    while (self.save_in_flight.load(.acquire)) {
-        std.Io.sleep(self.io, .fromMilliseconds(20), .real) catch break;
+    switch (self.format) {
+        .classic_dat => {},
+        .classic_cw => {
+            // Keep the embedded job storage alive until the compressor worker
+            // has returned from `run` and published `done`.
+            while (!self.cw_job.done.load(.acquire)) {
+                std.Io.sleep(self.io, .fromMilliseconds(20), .real) catch break;
+            }
+        },
     }
 }
 

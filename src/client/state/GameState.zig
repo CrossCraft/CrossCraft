@@ -447,7 +447,7 @@ fn focus_lost_this_frame() bool {
     return false;
 }
 
-fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
+fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !bool {
     var list: UiDrawList = .{};
     var ui = begin_pause_ui(self, &list, &self.pause_ui_state, in, PauseMenu.LAYER_BASE);
     const action = PauseMenu.run(&ui, Session.mode == .singleplayer);
@@ -465,8 +465,10 @@ fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInpu
             self.pause_ui_state.cancel_active_text();
             self.pause_options_ui_state.cancel_active_text();
             try MenuState.transition_here(engine);
+            return true;
         },
     }
+    return false;
 }
 
 fn update_pause_options(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
@@ -671,7 +673,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             // Skip tree.update on the open frame so the same Escape press
             // that opened the menu (which also raises cancel_edge) does
             // not immediately close it.
-            try update_pause_menu(self, engine, &ui_in);
+            if (try update_pause_menu(self, engine, &ui_in)) return;
         }
         // Clear leftover one-frame edges so they cannot fire on resume.
         self.player.inventory_toggle_pending = false;

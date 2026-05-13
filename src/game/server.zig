@@ -337,8 +337,10 @@ fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
 pub fn deinit() void {
     allocator.transition_from_static_to_deinit();
 
-    compress_worker.deinit();
+    // world.deinit submits and waits for the final .cw save; keep the
+    // compressor storage alive until that job has retired.
     world.deinit();
+    compress_worker.deinit();
     if (!internal_use) players_db.deinit();
 
     allocator.deinit();
