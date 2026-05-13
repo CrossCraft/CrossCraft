@@ -321,7 +321,7 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     // occludes them) but before transparent/fluid (so leaves, glass, and
     // water alpha-blend against the cloud layer behind them).
     self.clouds.bind();
-    self.sky.draw_clouds(camera);
+    self.sky.draw_clouds(camera, submerged);
 
     // Transparent pass (back-to-front): non-fluid (leaves, glass, cross-plants).
     // Depth writes stay on so leaves properly occlude geometry behind them.
@@ -684,7 +684,7 @@ fn set_terrain_fog(submerged: ?collision.Liquid) void {
     };
     const fog_start: f32 = if (submerged != null) 0.0 else fog_end * 0.4;
     Rendering.gfx.api.set_fog(
-        true,
+        Options.current.fog,
         fog_start,
         fog_end,
         @as(f32, @floatFromInt(c.r)) / 255.0,

@@ -87,6 +87,10 @@ pub const Options = struct {
     /// Weather: rain on/off.  Defaults off on every platform.
     rain: bool = false,
 
+    /// Distance fog for world geometry.  The sky renderer keeps its own fog
+    /// enabled so the horizon retains the intended look when this is off.
+    fog: bool = true,
+
     /// Returns the active texture pack path as a slice (may be empty).
     pub fn active_texturepack(self: *const Options) []const u8 {
         return self.active_texturepack_buf[0..self.active_texturepack_len];
@@ -134,6 +138,7 @@ const JsonOptions = struct {
     vsync: bool = @import("aether").platform != .psp,
     controller_tooltips: u8 = 0,
     rain: bool = false,
+    fog: bool = true,
 };
 
 // --- public API ---
@@ -192,6 +197,7 @@ pub fn load(io: Io, dir: Io.Dir) void {
         break :blk mode;
     };
     current.rain = j.rain;
+    current.fog = j.fog;
 }
 
 /// Write current options to `options.json` in `dir`.
@@ -213,6 +219,7 @@ pub fn save(io: Io, dir: Io.Dir) void {
         .vsync = current.vsync,
         .controller_tooltips = @intFromEnum(current.controller_tooltips),
         .rain = current.rain,
+        .fog = current.fog,
     };
 
     var json_buf: [max_json_size]u8 = undefined;

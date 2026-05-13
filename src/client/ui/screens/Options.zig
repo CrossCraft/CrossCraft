@@ -21,6 +21,7 @@ pub const Widget = enum(u16) {
     rain = 11,
     done = 12,
     controls_placeholder = 13,
+    fog = 14,
     _,
 };
 
@@ -99,7 +100,9 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) bool {
             opt.render_distance = rounded;
             rd_view.* = @floatFromInt(rounded);
         }
-        _ = ui.button(wid(.controls_placeholder), "Controls...", .{ .width = WIDGET_W, .enabled = false });
+        if (ui.button(wid(.fog), ui.fmt("Fog: {s}", .{bool_str(opt.fog)}), .{ .width = WIDGET_W })) {
+            opt.fog = !opt.fog;
+        }
     }
 
     cycle_row(
@@ -125,6 +128,8 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) bool {
         .{ .id = .rain, .label = "Rain", .field = .rain },
     );
 
+    _ = ui.button(wid(.controls_placeholder), "Controls...", .{ .width = WIDGET_W, .enabled = false });
+
     if (ui.button(wid(.done), "Done", .{ .width = WIDGET_W })) {
         ui.close_request();
         close = true;
@@ -137,7 +142,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) bool {
 const Toggle = struct {
     id: Widget,
     label: []const u8,
-    field: enum { fancy_leaves, ambient_occlusion, vsync, rain },
+    field: enum { fancy_leaves, ambient_occlusion, vsync, rain, fog },
     enabled: bool = true,
 };
 
@@ -150,6 +155,7 @@ fn cycle_row(ui: *Ui, opt: *Options.Options, a: Toggle, b: Toggle) void {
             .ambient_occlusion => &opt.ambient_occlusion,
             .vsync => &opt.vsync,
             .rain => &opt.rain,
+            .fog => &opt.fog,
         };
         if (ui.button(wid(t.id), ui.fmt("{s}: {s}", .{ t.label, bool_str(ptr.*) }), .{ .width = WIDGET_W, .enabled = t.enabled })) {
             ptr.* = !ptr.*;

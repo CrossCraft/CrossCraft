@@ -93,7 +93,8 @@ pub fn draw_plane(self: *Self, camera: *const Camera, submerged: ?collision.Liqu
 
 /// Draw cloud layer at fixed Y=72 anchored to the world center.
 /// The scroll offset slides clouds along +X over time.
-pub fn draw_clouds(self: *Self, _: *const Camera) void {
+pub fn draw_clouds(self: *Self, _: *const Camera, submerged: ?collision.Liquid) void {
+    set_sky_fog(submerged);
     Rendering.gfx.api.set_alpha_blend(true);
     const m = Math.Mat4.scaling(PLANE_SIZE, 1.0, PLANE_SIZE)
         .mul(Math.Mat4.translation(
