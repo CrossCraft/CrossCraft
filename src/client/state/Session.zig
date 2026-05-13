@@ -43,10 +43,18 @@ pub var mp_connected: std.atomic.Value(bool) = .init(false);
 pub var disconnect_reason_buf: [64]u8 = undefined;
 pub var disconnect_reason_len: u8 = 0;
 
+pub fn clear_disconnect_reason() void {
+    disconnect_reason_len = 0;
+}
+
 pub fn set_disconnect_reason(reason: []const u8) void {
     const len: u8 = @intCast(@min(reason.len, disconnect_reason_buf.len));
     @memcpy(disconnect_reason_buf[0..len], reason[0..len]);
     disconnect_reason_len = len;
+}
+
+pub fn set_disconnect_reason_if_empty(reason: []const u8) void {
+    if (disconnect_reason_len == 0) set_disconnect_reason(reason);
 }
 
 pub fn disconnect_reason() []const u8 {

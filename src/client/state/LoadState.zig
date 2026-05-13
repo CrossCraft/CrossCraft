@@ -84,6 +84,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     Session.mp_stream = stream;
     Session.mp_reader = std.Io.net.Stream.Reader.init(stream, io, &Session.mp_read_buf);
     Session.mp_writer = std.Io.net.Stream.Writer.init(stream, io, &Session.mp_write_buf);
+    const reader = &Session.mp_reader.interface;
 
     // PSP: disable Nagle so per-tick packets hit the wire immediately.
     if (ae.platform == .psp) {
@@ -91,12 +92,18 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
             log.warn("TCP_NODELAY failed: {}", .{err});
     }
 
+    proto.send_player_id_to_server(&Session.mp_writer.interface, Session.username()) catch |err| {
+        capture_disconnect_after_write_failed(reader);
+        return err;
+    };
+    Session.mp_writer.interface.flush() catch |err| {
+        capture_disconnect_after_write_failed(reader);
+        return err;
+    };
+
     // Multiplayer never persists (owned_locally stays false), so the
     // save filename is unused; pass the convention for symmetry.
     try World.init_empty(alloc, io, data_dir, "world.dat", seed, World.default_format);
-
-    try proto.send_player_id_to_server(&Session.mp_writer.interface, Session.username());
-    try Session.mp_writer.interface.flush();
 
     // Accumulate the gzipped LevelDataChunk payloads into a scratch buffer,
     // then decompress once on LevelFinalize. A 2 MiB bound is comfortable
@@ -106,8 +113,6 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     const compressed = try alloc.alloc(u8, compressed_cap);
     defer alloc.free(compressed);
     var compressed_end: usize = 0;
-
-    const reader = &Session.mp_reader.interface;
 
     done: while (true) {
         const packet_id = try reader.peekByte();
@@ -136,6 +141,10 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
                 reader.toss(len);
                 break :done;
             },
+            0x0E => {
+                capture_disconnect_reason(buf);
+                return error.ServerDisconnected;
+            },
             else => log.warn("unexpected packet 0x{x:0>2} during handshake", .{packet_id}),
         }
         reader.toss(len);
@@ -158,6 +167,29 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     };
 
     World.finalize_loaded();
+}
+
+fn capture_disconnect_after_write_failed(reader: *std.Io.Reader) void {
+    const err = Session.mp_writer.err orelse return;
+    switch (err) {
+        error.ConnectionResetByPeer, error.SocketUnconnected => capture_disconnect_packet(reader) catch {},
+        else => {},
+    }
+}
+
+fn capture_disconnect_packet(reader: *std.Io.Reader) !void {
+    const packet_id = try reader.peekByte();
+    if (packet_id != 0x0E) return error.NotDisconnectPacket;
+    const len = try proto.packet_length_to_client(packet_id);
+    const buf = try reader.peek(len);
+    capture_disconnect_reason(buf);
+    reader.toss(len);
+}
+
+fn capture_disconnect_reason(packet: []const u8) void {
+    const reason = std.mem.trimEnd(u8, packet[1..65], " ");
+    log.info("server disconnected during handshake: {s}", .{reason});
+    Session.set_disconnect_reason(reason);
 }
 
 batcher: SpriteBatcher,
@@ -215,6 +247,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
     server_ready.store(false, .monotonic);
     session_error = null;
+    Session.clear_disconnect_reason();
     // TODO: allocator pool budget may need tuning for server + client coexistence
     self.server_future = switch (Session.mode) {
         .singleplayer => io.async(serverTask, .{ engine.allocator(.user), engine.allocator(.user), seed, io, engine.dirs.data }),
@@ -248,7 +281,7 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
                 .singleplayer => "Failed to start server",
                 .multiplayer => "Failed to connect to server",
             };
-            Session.set_disconnect_reason(reason);
+            Session.set_disconnect_reason_if_empty(reason);
             try DisconnectState.transition_here(engine);
             return;
         }

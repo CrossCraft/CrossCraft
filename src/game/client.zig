@@ -130,7 +130,7 @@ pub fn send_message(self: *Self, id: i8, message: []u8) !void {
 }
 
 pub fn send_disconnect(self: *Self, reason: []const u8) !void {
-    self.connected.* = false;
+    defer self.connected.* = false;
     try proto.send_disconnect_to_client(self.writer, reason);
 }
 

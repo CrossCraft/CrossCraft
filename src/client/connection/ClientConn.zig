@@ -110,25 +110,19 @@ pub fn read_loop(self: *Self, connected: *std.atomic.Value(bool)) void {
         const packet_id = self.reader.peekByte() catch |err| {
             log.info("read_loop: {} - closing", .{err});
             // Only set generic reason if on_disconnect didn't already set one.
-            if (Session.disconnect_reason_len == 0) {
-                Session.set_disconnect_reason("Connection lost");
-            }
+            Session.set_disconnect_reason_if_empty("Connection lost");
             connected.store(false, .release);
             return;
         };
         const len = proto.packet_length_to_client(packet_id) catch |err| {
             log.err("read_loop: unknown packet 0x{x:0>2}: {}", .{ packet_id, err });
-            if (Session.disconnect_reason_len == 0) {
-                Session.set_disconnect_reason("Connection lost");
-            }
+            Session.set_disconnect_reason_if_empty("Connection lost");
             connected.store(false, .release);
             return;
         };
         const buf = self.reader.peek(len) catch |err| {
             log.info("read_loop peek: {} - closing", .{err});
-            if (Session.disconnect_reason_len == 0) {
-                Session.set_disconnect_reason("Connection lost");
-            }
+            Session.set_disconnect_reason_if_empty("Connection lost");
             connected.store(false, .release);
             return;
         };
@@ -136,9 +130,7 @@ pub fn read_loop(self: *Self, connected: *std.atomic.Value(bool)) void {
         self.reader.toss(len);
         self.protocol.handle_packet(self.buffer[1..len], self.buffer[0]) catch |err| {
             log.err("read_loop handle 0x{x:0>2}: {}", .{ self.buffer[0], err });
-            if (Session.disconnect_reason_len == 0) {
-                Session.set_disconnect_reason("Connection lost");
-            }
+            Session.set_disconnect_reason_if_empty("Connection lost");
             connected.store(false, .release);
             return;
         };
