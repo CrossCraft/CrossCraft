@@ -52,9 +52,12 @@ dirty_overflow: bool,
 lod_check_x: f32,
 lod_check_y: f32,
 lod_check_z: f32,
-/// Last Options.current.ambient_occlusion value applied to loaded sections.
-/// When it diverges from the option we walk every loaded section and mark
-/// any mismatched ones dirty so they re-mesh with the new AO state.
+/// Last render-affecting option values applied to loaded sections. When one
+/// diverges from Options.current, update() kicks the same paths that normally
+/// run on camera movement so changes made from the options menu show up
+/// immediately.
+applied_render_distance: u8,
+applied_fancy_leaves: bool,
 applied_ao: bool,
 
 build_queue: [MAX_ACTIVE]GridRef,
@@ -110,6 +113,8 @@ pub fn init(
         .lod_check_x = camera.x,
         .lod_check_y = camera.y,
         .lod_check_z = camera.z,
+        .applied_render_distance = Options.capped_render_distance(),
+        .applied_fancy_leaves = Options.current.fancy_leaves,
         .applied_ao = Options.current.ambient_occlusion,
         .build_queue = undefined,
         .build_cursor = 0,
@@ -181,7 +186,7 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
 
     const new_cx = camera_chunk(camera.x);
     const new_cz = camera_chunk(camera.z);
-    if (new_cx != self.cam_cx or new_cz != self.cam_cz) {
+    if (new_cx != self.cam_cx or new_cz != self.cam_cz or Options.capped_render_distance() != self.applied_render_distance) {
         self.recollect(camera);
     }
 
@@ -189,6 +194,12 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
     // section needs a rebuild since AO is global.
     if (Options.current.ambient_occlusion != self.applied_ao) {
         self.apply_ao_toggle();
+    }
+
+    // Fancy/fast leaves changes alter the near_lod target globally. Treat this
+    // like an LOD transition now instead of waiting for camera movement.
+    if (Options.current.fancy_leaves != self.applied_fancy_leaves) {
+        self.apply_fancy_leaves_toggle(camera);
     }
 
     // Catch LOD transitions mid-chunk only when the camera has moved at
@@ -382,9 +393,10 @@ pub fn draw_fluid_pass(self: *Self) void {
 fn recollect(self: *Self, camera: *const Camera) void {
     self.cam_cx = camera_chunk(camera.x);
     self.cam_cz = camera_chunk(camera.z);
+    self.applied_render_distance = Options.capped_render_distance();
 
     // Phase 1: compute needed columns
-    const rd: u32 = Options.capped_render_distance();
+    const rd: u32 = self.applied_render_distance;
     const r: i32 = @intCast(rd);
     const radius_blocks: f32 = @as(f32, @floatFromInt(rd)) * 16.0 + 11.5;
     const radius_blocks_sq = radius_blocks * radius_blocks;
@@ -595,6 +607,16 @@ fn apply_ao_toggle(self: *Self) void {
         }
     }
     self.applied_ao = target;
+}
+
+/// Recompute leaf LOD state after the Fancy Leaves option changes, and mark
+/// only sections whose effective leaf mesh needs to change.
+fn apply_fancy_leaves_toggle(self: *Self, cam: *const Camera) void {
+    self.refresh_lod_states(cam);
+    self.applied_fancy_leaves = Options.current.fancy_leaves;
+    self.lod_check_x = cam.x;
+    self.lod_check_y = cam.y;
+    self.lod_check_z = cam.z;
 }
 
 /// Walk loaded sections and update their LOD state. Sections that cross
