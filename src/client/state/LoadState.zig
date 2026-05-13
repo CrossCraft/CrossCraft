@@ -61,13 +61,27 @@ fn connectTask(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io
     connect_inner(alloc, seed, io, data_dir) catch |err| {
         log.err("multiplayer connect failed: {}", .{err});
         session_error = err;
-        // Close any partially-opened socket so GameState never tries to use it.
-        if (Session.mp_stream) |*s| {
-            s.close(io);
-            Session.mp_stream = null;
-        }
+        cleanup_failed_multiplayer_connect(io);
     };
     server_ready.store(true, .release);
+}
+
+fn cleanup_failed_multiplayer_connect(io: std.Io) void {
+    Session.mp_connected.store(false, .release);
+
+    // Close any partially-opened socket so GameState never tries to use it.
+    if (Session.mp_stream) |*s| {
+        s.close(io);
+        Session.mp_stream = null;
+    }
+
+    // On PSP, MenuState's net dialog initialises sceNet before LoadState runs.
+    // Normal disconnects unwind it in GameState.deinit; early load-screen
+    // failures never reach GameState, so release it here.
+    if (ae.platform == .psp) {
+        pspsdk.extra.net.disconnect();
+        pspsdk.extra.net.deinit();
+    }
 }
 
 fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) !void {
@@ -104,6 +118,8 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     // Multiplayer never persists (owned_locally stays false), so the
     // save filename is unused; pass the convention for symmetry.
     try World.init_empty(alloc, io, data_dir, "world.dat", seed, World.default_format);
+    var world_owned_by_load = true;
+    errdefer if (world_owned_by_load) World.deinit();
 
     // Accumulate the gzipped LevelDataChunk payloads into a scratch buffer,
     // then decompress once on LevelFinalize. A 2 MiB bound is comfortable
@@ -167,6 +183,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     };
 
     World.finalize_loaded();
+    world_owned_by_load = false;
 }
 
 fn capture_disconnect_after_write_failed(reader: *std.Io.Reader) void {

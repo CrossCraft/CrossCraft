@@ -74,6 +74,7 @@ tick_count: u64,
 pub fn init(allocator: std.mem.Allocator, seed: u64) !WorldSimulation {
     var self: WorldSimulation = undefined;
     self.node_pool = try allocator.alloc(WheelNode, POOL_CAPACITY);
+    errdefer allocator.free(self.node_pool);
     for (0..POOL_CAPACITY) |i| {
         self.node_pool[i] = .{
             .loc = .{ .x = 0, .z = 0, .y = 0 },

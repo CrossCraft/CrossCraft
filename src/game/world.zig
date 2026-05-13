@@ -63,7 +63,9 @@ pub fn init_empty(
 ) !void {
     common.BlockRegistry.init();
     data = try WorldData.init(allocator, seed);
+    errdefer data.deinit();
     sim = try WorldSimulation.init(allocator, seed);
+    errdefer sim.deinit(allocator);
     saver = WorldSaver.init(io, save_dir, save_file_name, format);
     load_status = .loading;
 }
