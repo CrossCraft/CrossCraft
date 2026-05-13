@@ -140,7 +140,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             // server's pattern in ServerState.init.
             self.sp_compressor_thread = try Util.Thread.spawn(.{
                 .name = "world_compress",
-                .stack_size = 384 * 1024,
+                .stack_size = 512 * 1024,
                 .priority = .normal,
                 .allocator = engine.allocator(.user),
             }, CompressWorker.worker_main, .{});

@@ -12,7 +12,6 @@ pub fn build(b: *std.Build) void {
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
     };
 
-    const slim = b.option(bool, "slim", "Slim mode: reduced memory, smaller render distance (for PSP-1000)") orelse false;
     const skip_pack = b.option(bool, "skip-pack", "Skip zipping resources into pack.zip (for CI builds without LFS assets)") orelse false;
 
     const config = Aether.Config.resolve(target, overrides);
@@ -144,7 +143,6 @@ pub fn build(b: *std.Build) void {
     }
 
     const build_options = b.addOptions();
-    build_options.addOption(bool, "slim", slim);
     build_options.addOption(bool, "embed_pack", should_embed);
     client_exe.root_module.addImport("build_options", build_options.createModule());
 

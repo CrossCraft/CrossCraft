@@ -7,7 +7,7 @@ const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Color = @import("../graphics/Color.zig").Color;
 const Camera = @import("../player/Camera.zig");
 const collision = @import("../player/collision.zig");
-const config = @import("../config.zig").current;
+const config = @import("../config.zig");
 const Options = @import("../Options.zig");
 
 const ChunkMesh = @import("chunk/ChunkMesh.zig");
@@ -19,14 +19,6 @@ const SECTIONS_Y: u32 = 4;
 const WORLD_CX: u32 = 16;
 const WORLD_CZ: u32 = 16;
 const MAX_ACTIVE: u32 = @import("../config.zig").max_sections();
-
-/// Sections whose center is within this distance of the camera are
-/// considered "near LOD" and meshed at full detail; beyond it the mesher
-/// downgrades them (currently: leaves become fully opaque). Crossing the
-/// boundary in either direction triggers a rebuild via refresh_lod_states.
-/// Per-platform value lives in config.zig.
-const LOD_NEAR_RADIUS_BLOCKS: f32 = @floatFromInt(config.lod_near_radius_blocks);
-const LOD_NEAR_RADIUS_SQ: f32 = LOD_NEAR_RADIUS_BLOCKS * LOD_NEAR_RADIUS_BLOCKS;
 
 /// Maximum sections tracked incrementally in dirty_buf before falling back to
 /// a full queue rescan. Sized for 4 simultaneous block changes * 7 neighbors.
@@ -620,7 +612,7 @@ fn apply_fancy_leaves_toggle(self: *Self, cam: *const Camera) void {
 }
 
 /// Walk loaded sections and update their LOD state. Sections that cross
-/// the LOD_NEAR_RADIUS_BLOCKS boundary in either direction get marked
+/// the configured near-LOD boundary in either direction get marked
 /// dirty so they re-mesh with the new detail level.
 fn refresh_lod_states(self: *Self, cam: *const Camera) void {
     for (0..WORLD_CX) |cx| {
@@ -649,15 +641,17 @@ fn grid_ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
     return cam.distance_sq(wx, wy, wz);
 }
 
-/// True when a section's center is within LOD_NEAR_RADIUS_BLOCKS of the camera.
+/// True when a section's center is within the runtime near-LOD radius.
 /// Returns false immediately when fancy leaves are disabled so all sections
 /// get the fast/opaque-leaves mesh regardless of distance.
 fn target_near_lod(cx: u8, sy: u8, cz: u8, cam: *const Camera) bool {
     if (!Options.current.fancy_leaves) return false;
+    const lod_near_radius: f32 = @floatFromInt(config.current().lod_near_radius_blocks);
+    const lod_near_radius_sq = lod_near_radius * lod_near_radius;
     const wx: f32 = @as(f32, @floatFromInt(@as(u32, cx) * 16)) + 8.0;
     const wy: f32 = @as(f32, @floatFromInt(@as(u32, sy) * 16)) + 8.0;
     const wz: f32 = @as(f32, @floatFromInt(@as(u32, cz) * 16)) + 8.0;
-    return cam.distance_sq(wx, wy, wz) <= LOD_NEAR_RADIUS_SQ;
+    return cam.distance_sq(wx, wy, wz) <= lod_near_radius_sq;
 }
 
 fn grid_ref_less_than(cam: *const Camera, a: GridRef, b: GridRef) bool {

@@ -87,7 +87,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) bool {
     {
         var row = ui.stack(.{ .axis = .horizontal, .gap = 4 });
         defer row.end();
-        const rd_max_u8: u8 = @intCast(@min(@as(u32, 255), config.current.chunk_radius));
+        const rd_max_u8: u8 = @intCast(@min(@as(u32, 255), config.current().chunk_radius));
         const rd_max: f32 = @floatFromInt(rd_max_u8);
         if (ui.slider(wid(.render_distance), rd_view, .{
             .label = ui.fmt("Render Distance: {d}", .{Options.capped_render_distance()}),

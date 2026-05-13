@@ -72,7 +72,7 @@ The full style rules live in `STYLE.MD`. They are inspired by NASA's Power of Te
 ## Performance Notes
 
 - Desktop: high frame rates at full view distance.
-- PSP: 60-70 FPS in normal terrain, dipping into the mid-50s only in the densest forest. Achieved through aggressive section LODs, fixed-point worldgen and rendering, and careful meshing. Two memory profiles are available: the default PSP build and `-Dslim=true` for the PSP-2000+ to take advantage of higher memory.
+- PSP: 60-70 FPS in normal terrain, dipping into the mid-50s only in the densest forest. Achieved through aggressive section LODs, fixed-point worldgen and rendering, and careful meshing. The PSP build detects PSP-1000 vs PSP-2000+ at startup and selects the matching memory profile automatically.
 - Server: zero allocations after init. Builds for desktop and PSP.
 
 ## Building
@@ -90,12 +90,11 @@ zig build test                                                        # unit tes
 ### PSP
 
 ```
-zig build game   -Dtarget=mipsel-psp                # default PSP profile
-zig build game   -Dtarget=mipsel-psp -Dslim=true    # PSP-2000+ slim profile
-zig build server -Dtarget=mipsel-psp                # server build for PSP
+zig build game   -Dtarget=mipsel-psp                # PSP client
+zig build server -Dtarget=mipsel-psp                # PSP server
 ```
 
-PSP builds produce a full `EBOOT.PBP`. The Aether engine handles the ELF -> PRX -> EBOOT pipeline.
+PSP builds produce a full `EBOOT.PBP`. The client adapts its memory budgets at startup for PSP-1000 or PSP-2000+ hardware. The Aether engine handles the ELF -> PRX -> EBOOT pipeline.
 
 ### Build options
 
@@ -104,7 +103,6 @@ PSP builds produce a full `EBOOT.PBP`. The Aether engine handles the ELF -> PRX 
 | `-Dgfx=...`              | Override the graphics backend (default: auto from target).   |
 | `-Dpsp-display=rgba8888` | PSP 32-bit display (default).                                |
 | `-Dpsp-display=rgb565`   | PSP 16-bit display.                                          |
-| `-Dslim=true`            | Slim memory profile for PSP-1000.                            |
 
 CI builds Linux, macOS, Windows, and PSP on every change.
 

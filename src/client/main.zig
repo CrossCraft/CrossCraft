@@ -12,8 +12,8 @@ comptime {
 }
 
 pub const psp_stack_size: u32 = 512 * 1024;
-pub const psp_async_stack_size: u32 = 512 * 1024;
-pub const psp_heap_reserve_kb_size: u32 = 2048;
+pub const psp_async_stack_size: u32 = 64 * 1024;
+pub const psp_heap_reserve_kb_size: u32 = 2048 + 512;
 
 // PSP: override panic/IO handlers that would otherwise pull in posix symbols.
 pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
@@ -28,10 +28,12 @@ pub const build_options = @import("build_options");
 
 const MenuState = @import("state/MenuState.zig");
 const ResourcePack = @import("ResourcePack.zig");
+const game_config = @import("config.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const game_config = @import("config.zig");
-    const memory = try init.gpa.alloc(u8, game_config.current.total_memory_mb * 1024 * 1024);
+    game_config.init();
+    const profile = game_config.current();
+    const memory = try init.gpa.alloc(u8, profile.total_memory_mb * 1024 * 1024);
     defer init.gpa.free(memory);
 
     var menu_state: MenuState = undefined;

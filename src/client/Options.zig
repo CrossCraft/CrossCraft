@@ -43,12 +43,12 @@ pub const Options = struct {
     active_texturepack_buf: [max_pack_path]u8 = [_]u8{0} ** max_pack_path,
     active_texturepack_len: u8 = 0,
 
-    /// Chunk render radius.  PSP defaults to 4; desktop defaults to 8.
-    /// Capped to the platform's compiled-in max via `capped_render_distance`.
+    /// Chunk render radius. PSP defaults to 4; desktop defaults to 8.
+    /// Capped to the active runtime profile via `capped_render_distance`.
     render_distance: u8 = if (@import("aether").platform == .psp)
-        @intCast(@min(@as(u32, 4), cfg.current.chunk_radius))
+        4
     else
-        @intCast(@min(@as(u32, 8), cfg.current.chunk_radius)),
+        8,
 
     /// SFX volume multiplier (0.0 = silent, 1.0 = full).
     sound_volume: f32 = 1.0,
@@ -60,7 +60,7 @@ pub const Options = struct {
     fov: f32 = 70.0,
 
     /// True = full leaf transparency (fancy); false = opaque leaves (fast).
-    /// Defaults off on PSP to keep meshing within budget.  Builds with
+    /// Defaults off on PSP to keep meshing within budget.  Profiles with
     /// `lod_near_radius_blocks == 0` cannot render fancy leaves at all.
     fancy_leaves: bool = @import("aether").platform != .psp,
 
@@ -104,20 +104,19 @@ pub const Options = struct {
     }
 };
 
-/// Effective render distance, capped to the platform's compiled-in maximum.
-/// Desktop = 8 chunks; PSP slim = 4; PSP phat = 3.
+/// Effective render distance, capped to the active runtime profile.
 /// Always use this instead of `current.render_distance` directly so we
 /// never ask the renderer to load more sections than its arrays can hold.
 pub fn capped_render_distance() u8 {
-    const max: u8 = @intCast(@min(@as(u32, 255), cfg.current.chunk_radius));
+    const max: u8 = @intCast(@min(@as(u32, 255), cfg.current().chunk_radius));
     return @min(current.render_distance, max);
 }
 
 /// True when the build can render fancy (transparent) leaves at all.
-/// PSP phat forces opaque leaves via `lod_near_radius_blocks = 0`; this
+/// PSP-1000 forces opaque leaves via `lod_near_radius_blocks = 0`; this
 /// helper centralises the detection so the UI and load path agree.
 pub fn fancy_leaves_supported() bool {
-    return cfg.current.lod_near_radius_blocks > 0;
+    return cfg.current().lod_near_radius_blocks > 0;
 }
 
 // --- JSON shadow type ---
