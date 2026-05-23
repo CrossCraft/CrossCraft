@@ -23,6 +23,7 @@ const FontBatcher = @import("FontBatcher.zig");
 const UiDrawList = @import("UiDrawList.zig");
 const Scaling = @import("Scaling.zig");
 const Color = @import("../graphics/Color.zig").Color;
+const TextWrap = @import("TextWrap.zig");
 const ui_input = @import("input.zig");
 
 const Self = @This();
@@ -41,6 +42,18 @@ const ROW_H: i16 = 10;
 const MSG_W: i16 = 200;
 const LEFT_PAD: i16 = 2;
 const BOTTOM_PAD: i16 = 26;
+const TEXT_PAD_X: i16 = 2;
+const TEXT_W: i16 = MSG_W - 2 * TEXT_PAD_X;
+
+const HISTORY_LINE_LIMIT: usize = MAX_MESSAGES;
+// Glyph tiles are 8 px wide with a 1 px gap, so the 64-byte Classic text
+// limit plus the prompt cannot exceed four 196 px visual rows.
+const MSG_WRAP_MAX_LINES: usize = 4;
+const INPUT_WRAP_MAX_LINES: usize = 4;
+const INPUT_PROMPT = "> ";
+const INPUT_TEXT_MAX_BYTES: usize = @as(usize, INPUT_MAX_LEN) + INPUT_PROMPT.len;
+const WRAP_LINE_MAX_BYTES: usize = INPUT_TEXT_MAX_BYTES + 2;
+const RENDER_LINE_MAX: usize = HISTORY_LINE_LIMIT + INPUT_WRAP_MAX_LINES;
 
 const MSG_BG_LAYER: u8 = 241;
 const MSG_TEXT_LAYER: u8 = 242;
@@ -102,6 +115,8 @@ prev_cancel: input.ButtonState,
 /// Suppresses a ghost rising edge on the frame chat activates with
 /// chat_send / chat_cancel still held from the press that opened it.
 chat_was_active: bool,
+render_lines: [RENDER_LINE_MAX][WRAP_LINE_MAX_BYTES]u8,
+render_line_count: u8,
 
 // --- Init ---
 
@@ -116,6 +131,8 @@ pub fn init() Self {
         .prev_send = .released,
         .prev_cancel = .released,
         .chat_was_active = false,
+        .render_lines = undefined,
+        .render_line_count = 0,
     };
 }
 
@@ -345,9 +362,44 @@ fn send_session(self: *Self, player: *Player) void {
 
 // --- Draw ---
 
-pub fn draw_into(self: *const Self, list: *UiDrawList, fonts: *const FontBatcher, y_shift: i16) void {
+pub fn draw_into(self: *Self, list: *UiDrawList, fonts: *const FontBatcher, y_shift: i16) void {
+    self.render_line_count = 0;
+
     const base: i16 = BOTTOM_PAD + y_shift;
-    var drawn: u8 = 0;
+
+    var input_text: [INPUT_TEXT_MAX_BYTES]u8 = undefined;
+    var input_lines: [INPUT_WRAP_MAX_LINES][WRAP_LINE_MAX_BYTES]u8 = undefined;
+    var input_lens: [INPUT_WRAP_MAX_LINES]u8 = undefined;
+    var input_line_count: u8 = 0;
+
+    // Read the live session buffer; on PSP between OSK opens the session
+    // may not yet be active (social mode's pre-OSK panel) -- show only the
+    // prompt in that state.
+    const body: []const u8 = if (self.open)
+        if (input.current_text_session()) |s| s.buffer.items else &.{}
+    else
+        &.{};
+
+    if (self.open) {
+        @memcpy(input_text[0..INPUT_PROMPT.len], INPUT_PROMPT);
+        const take = @min(body.len, @as(usize, INPUT_MAX_LEN));
+        if (take > 0) {
+            @memcpy(input_text[INPUT_PROMPT.len .. INPUT_PROMPT.len + take], body[0..take]);
+        }
+        input_line_count = TextWrap.wrap(
+            INPUT_WRAP_MAX_LINES,
+            WRAP_LINE_MAX_BYTES,
+            fonts,
+            input_text[0 .. INPUT_PROMPT.len + take],
+            TEXT_W,
+            &input_lines,
+            &input_lens,
+        );
+    }
+
+    const input_h: i16 = if (self.open) @as(i16, @intCast(@max(input_line_count, 1))) * ROW_H else 0;
+
+    var drawn_lines: usize = 0;
     var i: u8 = 0;
     while (i < self.msg_count) : (i += 1) {
         const idx = (self.msg_head + MAX_MESSAGES - 1 - i) % MAX_MESSAGES;
@@ -355,33 +407,55 @@ pub fn draw_into(self: *const Self, list: *UiDrawList, fonts: *const FontBatcher
 
         const alpha = compute_alpha(entry.age, self.open);
         if (alpha == 0) continue;
+        if (drawn_lines >= HISTORY_LINE_LIMIT) break;
 
-        const input_offset: i16 = if (self.open) ROW_H else 0;
-        const row_y: i16 = -(base + input_offset + @as(i16, drawn) * ROW_H);
+        var msg_lines: [MSG_WRAP_MAX_LINES][WRAP_LINE_MAX_BYTES]u8 = undefined;
+        var msg_lens: [MSG_WRAP_MAX_LINES]u8 = undefined;
+        const msg_line_count = TextWrap.wrap(
+            MSG_WRAP_MAX_LINES,
+            WRAP_LINE_MAX_BYTES,
+            fonts,
+            entry.text[0..entry.text_len],
+            TEXT_W,
+            &msg_lines,
+            &msg_lens,
+        );
+        if (msg_line_count == 0) continue;
+
+        const remaining = HISTORY_LINE_LIMIT - drawn_lines;
+        const visible_lines = @min(@as(usize, msg_line_count), remaining);
+        const first_line = @as(usize, msg_line_count) - visible_lines;
 
         const bg_a: u8 = @intFromFloat(160.0 * (@as(f32, @floatFromInt(alpha)) / 255.0));
-        list.add_rect(&.{
-            .pos_offset = .{ .x = LEFT_PAD, .y = row_y },
-            .pos_extent = .{ .x = MSG_W, .y = ROW_H },
-            .color = Color.rgba(0, 0, 0, bg_a),
-            .layer = MSG_BG_LAYER,
-            .reference = .bottom_left,
-            .origin = .bottom_left,
-        });
-        list.add_text(&.{
-            .str = entry.text[0..entry.text_len],
-            .pos_x = LEFT_PAD + 2,
-            .pos_y = row_y,
-            .color = Color.rgba(255, 255, 255, alpha),
-            .shadow_color = Color.rgba(50, 50, 50, alpha),
-            .spacing = 0,
-            .layer = MSG_TEXT_LAYER,
-            .reference = .bottom_left,
-            .origin = .bottom_left,
-        });
+        var line_i = first_line;
+        while (line_i < @as(usize, msg_line_count)) : (line_i += 1) {
+            const row_offset = drawn_lines + (@as(usize, msg_line_count) - 1 - line_i);
+            const row_y: i16 = -(base + input_h + @as(i16, @intCast(row_offset)) * ROW_H);
 
-        drawn += 1;
-        if (drawn >= MAX_MESSAGES) break;
+            list.add_rect(&.{
+                .pos_offset = .{ .x = LEFT_PAD, .y = row_y },
+                .pos_extent = .{ .x = MSG_W, .y = ROW_H },
+                .color = Color.rgba(0, 0, 0, bg_a),
+                .layer = MSG_BG_LAYER,
+                .reference = .bottom_left,
+                .origin = .bottom_left,
+            });
+            if (self.store_render_line(msg_lines[line_i][0..msg_lens[line_i]])) |line| {
+                list.add_text(&.{
+                    .str = line,
+                    .pos_x = LEFT_PAD + TEXT_PAD_X,
+                    .pos_y = row_y,
+                    .color = Color.rgba(255, 255, 255, alpha),
+                    .shadow_color = Color.rgba(50, 50, 50, alpha),
+                    .spacing = 0,
+                    .layer = MSG_TEXT_LAYER,
+                    .reference = .bottom_left,
+                    .origin = .bottom_left,
+                });
+            }
+        }
+
+        drawn_lines += visible_lines;
     }
 
     if (!self.open) return;
@@ -389,35 +463,37 @@ pub fn draw_into(self: *const Self, list: *UiDrawList, fonts: *const FontBatcher
     // Input field background.
     list.add_rect(&.{
         .pos_offset = .{ .x = LEFT_PAD, .y = -base },
-        .pos_extent = .{ .x = MSG_W, .y = ROW_H },
+        .pos_extent = .{ .x = MSG_W, .y = input_h },
         .color = Color.rgba(0, 0, 0, 192),
         .layer = INPUT_BG_LAYER,
         .reference = .bottom_left,
         .origin = .bottom_left,
     });
 
-    const text_x: i16 = LEFT_PAD + 2;
-    const visual_prompt = "> ";
-    list.add_text(&.{
-        .str = visual_prompt,
-        .pos_x = text_x,
-        .pos_y = -base,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
-        .spacing = 0,
-        .layer = INPUT_TEXT_LAYER,
-        .reference = .bottom_left,
-        .origin = .bottom_left,
-    });
-    const prompt_w: i16 = fonts.string_width(visual_prompt, 0, 1);
-
-    // Read the live session buffer; on PSP between OSK opens the session
-    // may not yet be active (social mode's pre-OSK panel) -- show empty.
-    const body: []const u8 = if (input.current_text_session()) |s| s.buffer.items else &.{};
-    if (body.len > 0) {
+    const text_x: i16 = LEFT_PAD + TEXT_PAD_X;
+    var last_line: []const u8 = INPUT_PROMPT;
+    var input_i: usize = 0;
+    while (input_i < @as(usize, input_line_count)) : (input_i += 1) {
+        const row_y: i16 = -(base + @as(i16, @intCast(@as(usize, input_line_count) - 1 - input_i)) * ROW_H);
+        if (self.store_render_line(input_lines[input_i][0..input_lens[input_i]])) |line| {
+            last_line = line;
+            list.add_text(&.{
+                .str = line,
+                .pos_x = text_x,
+                .pos_y = row_y,
+                .color = .white_fg,
+                .shadow_color = .menu_gray,
+                .spacing = 0,
+                .layer = INPUT_TEXT_LAYER,
+                .reference = .bottom_left,
+                .origin = .bottom_left,
+            });
+        }
+    }
+    if (input_line_count == 0) {
         list.add_text(&.{
-            .str = body,
-            .pos_x = text_x + prompt_w,
+            .str = INPUT_PROMPT,
+            .pos_x = text_x,
             .pos_y = -base,
             .color = .white_fg,
             .shadow_color = .menu_gray,
@@ -428,10 +504,10 @@ pub fn draw_into(self: *const Self, list: *UiDrawList, fonts: *const FontBatcher
         });
     }
 
-    const typed_w: i16 = if (body.len > 0) fonts.string_width(body, 0, 1) else 0;
+    const typed_w = fonts.string_width(last_line, 0, 1);
     list.add_text(&.{
         .str = "_",
-        .pos_x = text_x + prompt_w + typed_w + 1,
+        .pos_x = text_x + typed_w + 1,
         .pos_y = -base,
         .color = .white_fg,
         .shadow_color = .menu_gray,
@@ -443,6 +519,16 @@ pub fn draw_into(self: *const Self, list: *UiDrawList, fonts: *const FontBatcher
 }
 
 // --- Helpers ---
+
+fn store_render_line(self: *Self, line: []const u8) ?[]const u8 {
+    if (line.len == 0 or line.len > WRAP_LINE_MAX_BYTES) return null;
+    if (@as(usize, self.render_line_count) >= RENDER_LINE_MAX) return null;
+
+    const idx = @as(usize, self.render_line_count);
+    @memcpy(self.render_lines[idx][0..line.len], line);
+    self.render_line_count += 1;
+    return self.render_lines[idx][0..line.len];
+}
 
 fn compute_alpha(age: f32, chat_open: bool) u8 {
     if (chat_open) return 255;
