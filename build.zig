@@ -275,6 +275,15 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(physics_tests).step);
 
+    const dump_name_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/game/world/DumpName.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(dump_name_tests).step);
+
     // Standalone build step for the pack_zip host tool.
     // Usage: zig build pack-tool
     // Produces zig-out/bin/pack_zip (host-native binary).

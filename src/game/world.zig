@@ -19,6 +19,7 @@ const c = common.consts;
 pub const WorldData = @import("world/WorldData.zig");
 pub const WorldSimulation = @import("world/WorldSimulation.zig");
 pub const WorldSaver = @import("world/WorldSaver.zig");
+pub const DumpName = @import("world/DumpName.zig");
 const fmt_mod = @import("world/SaveFormat.zig");
 pub const SaveFormat = fmt_mod.SaveFormat;
 pub const LoadOutcome = fmt_mod.LoadOutcome;
@@ -158,8 +159,22 @@ pub fn save() void {
     saver.save(&data);
 }
 
+pub fn dump_named(save_file_name: []const u8, world_name: []const u8) !void {
+    try ensure_dump_dir();
+    try saver.dump(&data, save_file_name, world_name, default_format);
+}
+
 pub fn wait_for_save() void {
     saver.wait_for_save();
+}
+
+fn ensure_dump_dir() !void {
+    saver.save_dir.access(saver.io, "saves", .{}) catch {
+        saver.save_dir.createDir(saver.io, "saves", .default_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+    };
 }
 
 // --- Read-through helpers (shorthand for the most common drills) ---

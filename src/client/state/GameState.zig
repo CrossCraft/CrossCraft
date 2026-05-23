@@ -45,24 +45,26 @@ const ui_input = @import("../ui/input.zig");
 const InventoryUi = @import("../ui/screens/Inventory.zig");
 const PauseMenu = @import("../ui/screens/PauseMenu.zig");
 const OptionsScreen = @import("../ui/screens/Options.zig");
+const DumpWorldScreen = @import("../ui/screens/DumpWorld.zig");
 const bindings = @import("../player/bindings.zig");
 const ae_input = ae.Core.input;
 
 const log = std.log.scoped(.game);
 
 const selection_depth_nudge: f32 = 1.0 / 320.0;
+const PauseScreen = enum { main, options, dump_world };
 
 fake_conn: FakeConn,
 conn: ClientConn,
 // MP read-loop task: owns the TCP read side, drives ClientConn
 // callbacks, clears `Session.mp_connected` on exit.
 mp_read_future: ?std.Io.Future(void),
-/// Singleplayer-only: the shared compressor worker thread that drains
-/// classic_cw save jobs (and any future world-stream jobs queued for
-/// local clients). Standalone servers spawn an equivalent thread in
-/// `ServerState.init`; multiplayer clients leave this null since they
-/// never run the in-process server.
+/// Singleplayer compressor worker thread that drains classic_cw save jobs
+/// owned by the embedded server. Standalone servers spawn an equivalent
+/// thread in `ServerState.init`.
 sp_compressor_thread: ?Util.Thread,
+/// Multiplayer-only compressor worker used by explicit world dumps.
+mp_compressor_thread: ?Util.Thread,
 pipeline: Rendering.Pipeline.Handle,
 world: WorldRenderer,
 player: Player,
@@ -92,11 +94,13 @@ report_timer: f32,
 /// are all suppressed. Pause, inventory, and chat overlays stay visible.
 hud_hidden: bool,
 paused: bool,
-/// True while the pause-options sub-screen is showing instead of the pause menu.
-in_options: bool,
+pause_screen: PauseScreen,
 pause_ui_state: UiState,
 pause_options_ui_state: UiState,
+pause_dump_ui_state: UiState,
 pause_options_rd_view: f32,
+dump_world_name: [DumpWorldScreen.NAME_MAX]u8,
+dump_world_name_len: u8,
 pause_ui_repeat: ui_input.Repeat,
 pause_batcher: SpriteBatcher,
 pause_font_batcher: FontBatcher,
@@ -110,6 +114,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.inited = false;
     self.mp_read_future = null;
     self.sp_compressor_thread = null;
+    self.mp_compressor_thread = null;
 
     // Push the gameplay context up front so any later init failure is
     // matched by the deinit pop below.
@@ -290,11 +295,14 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.pause_batcher = try SpriteBatcher.init(render_alloc, self.pipeline);
     self.pause_font_batcher = try FontBatcher.init(render_alloc, self.pipeline, ResourcePack.get_tex(.font));
     self.paused = false;
-    self.in_options = false;
+    self.pause_screen = .main;
     self.pause_ui_repeat = .{};
     self.pause_ui_state = .{};
     self.pause_options_ui_state = .{};
+    self.pause_dump_ui_state = .{};
     self.pause_options_rd_view = @floatFromInt(Options.capped_render_distance());
+    self.dump_world_name = @splat(0);
+    self.dump_world_name_len = 0;
 
     // Block selection outline (line mesh, drawn after the world pass).
     self.selection = try SelectionOutline.init(render_alloc, self.pipeline);
@@ -305,6 +313,17 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // Held-block viewmodel. Uses the same terrain atlas as the world.
     self.held = try BlockHand.init(render_alloc, self.pipeline, ResourcePack.atlas);
     self.player.held_renderer = &self.held;
+
+    if (Session.mode == .multiplayer) {
+        try CompressWorker.init(engine.allocator(.user), engine.io);
+        errdefer CompressWorker.deinit();
+        self.mp_compressor_thread = try Util.Thread.spawn(.{
+            .name = "world_compress",
+            .stack_size = 512 * 1024,
+            .priority = .normal,
+            .allocator = engine.allocator(.user),
+        }, CompressWorker.worker_main, .{});
+    }
 
     self.inited = true;
     engine.report();
@@ -370,8 +389,7 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     // Tear down the game-side world/server allocations. SP went through
     // Server.init (which sets up the static allocator + compressor and owns
     // World), so Server.deinit unwinds the whole stack. MP only ran
-    // World.init_empty, so only World.deinit is needed (Server.deinit would
-    // try to free a compressor that was never initialised).
+    // World.init_empty, plus a small compressor worker for explicit dumps.
     switch (Session.mode) {
         .singleplayer => {
             // Server.deinit triggers the final classic_cw save; the
@@ -384,7 +402,15 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
                 self.sp_compressor_thread = null;
             }
         },
-        .multiplayer => World.deinit(),
+        .multiplayer => {
+            World.deinit();
+            if (self.mp_compressor_thread) |*t| {
+                CompressWorker.deinit();
+                CompressWorker.signal_exit();
+                t.join();
+                self.mp_compressor_thread = null;
+            }
+        },
     }
     self.inited = false;
 }
@@ -458,12 +484,14 @@ fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInpu
         .back => close_pause(self),
         .options => enter_pause_options(self),
         .save => World.save(),
+        .dump_world => enter_pause_dump_world(self),
         .quit => {
             self.paused = false;
-            self.in_options = false;
+            self.pause_screen = .main;
             self.player.look_delta = .{ 0, 0 };
             self.pause_ui_state.cancel_active_text();
             self.pause_options_ui_state.cancel_active_text();
+            self.pause_dump_ui_state.cancel_active_text();
             try MenuState.transition_here(engine);
             return true;
         },
@@ -485,20 +513,91 @@ fn update_pause_options(self: *@This(), engine: *Engine, in: *const ui_input.UiI
 }
 
 fn enter_pause_options(self: *@This()) void {
-    self.in_options = true;
+    self.pause_screen = .options;
     self.pause_options_rd_view = @floatFromInt(Options.capped_render_distance());
     self.pause_options_ui_state.open(!ui_input.profile_uses_pointer());
 }
 
 fn leave_pause_options(self: *@This()) void {
-    self.in_options = false;
+    self.pause_screen = .main;
     self.pause_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
+fn update_pause_dump_world(self: *@This(), in: *const ui_input.UiInput) !void {
+    var path_buf: [World.DumpName.PATH_MAX]u8 = undefined;
+    var name_buf: [World.DumpName.NAME_MAX]u8 = undefined;
+    const can_save = blk: {
+        _ = World.DumpName.build_path(self.dump_world_name_slice(), &path_buf, &name_buf) catch break :blk false;
+        break :blk true;
+    };
+
+    var list: UiDrawList = .{};
+    var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, in, DumpWorldScreen.LAYER_BASE);
+    var dump_ctx: DumpWorldScreen.Ctx = .{
+        .name = &self.dump_world_name,
+        .name_len = &self.dump_world_name_len,
+        .save_enabled = can_save,
+    };
+    const action = DumpWorldScreen.run(&ui, &dump_ctx);
+    ui.end();
+
+    switch (action) {
+        .none => {},
+        .back => leave_pause_dump_world(self),
+        .save => {
+            if (try_dump_world(self)) leave_pause_dump_world(self);
+        },
+    }
+}
+
+fn enter_pause_dump_world(self: *@This()) void {
+    seed_dump_world_name(self);
+    self.pause_screen = .dump_world;
+    self.pause_dump_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
+fn leave_pause_dump_world(self: *@This()) void {
+    self.pause_screen = .main;
+    self.pause_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
+fn dump_world_name_slice(self: *const @This()) []const u8 {
+    return self.dump_world_name[0..self.dump_world_name_len];
+}
+
+fn seed_dump_world_name(self: *@This()) void {
+    const source = if (Session.server().len > 0) Session.server() else "world";
+    if (World.DumpName.sanitize_name(source, self.dump_world_name[0..])) |name| {
+        self.dump_world_name_len = @intCast(name.len);
+        return;
+    } else |_| {}
+
+    const fallback = "world";
+    @memset(&self.dump_world_name, 0);
+    @memcpy(self.dump_world_name[0..fallback.len], fallback);
+    self.dump_world_name_len = @intCast(fallback.len);
+}
+
+fn try_dump_world(self: *@This()) bool {
+    var path_buf: [World.DumpName.PATH_MAX]u8 = undefined;
+    var name_buf: [World.DumpName.NAME_MAX]u8 = undefined;
+    const result = World.DumpName.build_path(self.dump_world_name_slice(), &path_buf, &name_buf) catch |err| {
+        log.warn("invalid world dump name: {}", .{err});
+        return false;
+    };
+    const metadata_name = std.mem.trim(u8, self.dump_world_name_slice(), " ");
+    World.dump_named(result.path, metadata_name) catch |err| {
+        log.err("failed to dump world: {}", .{err});
+        return false;
+    };
+    log.info("world dump queued: {s}", .{result.path});
+    return true;
 }
 
 fn open_pause(self: *@This()) void {
     if (self.paused) return;
     self.paused = true;
-    self.in_options = false;
+    self.pause_screen = .main;
     self.pause_ui_repeat = .{};
     self.pause_ui_state.open(!ui_input.profile_uses_pointer());
     ae_input.push_context(.{
@@ -512,11 +611,12 @@ fn open_pause(self: *@This()) void {
 fn close_pause(self: *@This()) void {
     if (!self.paused) return;
     self.paused = false;
-    self.in_options = false;
+    self.pause_screen = .main;
     _ = ae_input.pop_context() catch {};
     self.player.look_delta = .{ 0, 0 };
     self.pause_ui_state.cancel_active_text();
     self.pause_options_ui_state.cancel_active_text();
+    self.pause_dump_ui_state.cancel_active_text();
 }
 
 fn open_inventory(self: *@This()) void {
@@ -667,13 +767,17 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         just_opened_pause = true;
     }
     if (self.paused) {
-        if (self.in_options) {
-            try update_pause_options(self, engine, &ui_in);
-        } else if (!just_opened_pause) {
-            // Skip tree.update on the open frame so the same Escape press
-            // that opened the menu (which also raises cancel_edge) does
-            // not immediately close it.
-            if (try update_pause_menu(self, engine, &ui_in)) return;
+        if (!just_opened_pause) {
+            switch (self.pause_screen) {
+                .main => {
+                    // Skip tree.update on the open frame so the same Escape
+                    // press that opened the menu (which also raises
+                    // cancel_edge) does not immediately close it.
+                    if (try update_pause_menu(self, engine, &ui_in)) return;
+                },
+                .options => try update_pause_options(self, engine, &ui_in),
+                .dump_world => try update_pause_dump_world(self, &ui_in),
+            }
         }
         // Clear leftover one-frame edges so they cannot fire on resume.
         self.player.inventory_toggle_pending = false;
@@ -970,18 +1074,39 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         self.pause_font_batcher.clear();
         draw_pause_dim(self);
         var none = empty_input();
-        if (self.in_options) {
-            var list: UiDrawList = .{};
-            var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, &none, OptionsScreen.LAYER_BASE);
-            _ = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
-            ui.end();
-            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
-        } else {
-            var list: UiDrawList = .{};
-            var ui = begin_pause_ui(self, &list, &self.pause_ui_state, &none, PauseMenu.LAYER_BASE);
-            _ = PauseMenu.run(&ui, Session.mode == .singleplayer);
-            ui.end();
-            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+        switch (self.pause_screen) {
+            .main => {
+                var list: UiDrawList = .{};
+                var ui = begin_pause_ui(self, &list, &self.pause_ui_state, &none, PauseMenu.LAYER_BASE);
+                _ = PauseMenu.run(&ui, Session.mode == .singleplayer);
+                ui.end();
+                list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            },
+            .options => {
+                var list: UiDrawList = .{};
+                var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, &none, OptionsScreen.LAYER_BASE);
+                _ = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
+                ui.end();
+                list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            },
+            .dump_world => {
+                var path_buf: [World.DumpName.PATH_MAX]u8 = undefined;
+                var name_buf: [World.DumpName.NAME_MAX]u8 = undefined;
+                const can_save = blk: {
+                    _ = World.DumpName.build_path(self.dump_world_name_slice(), &path_buf, &name_buf) catch break :blk false;
+                    break :blk true;
+                };
+                var list: UiDrawList = .{};
+                var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, &none, DumpWorldScreen.LAYER_BASE);
+                var dump_ctx: DumpWorldScreen.Ctx = .{
+                    .name = &self.dump_world_name,
+                    .name_len = &self.dump_world_name_len,
+                    .save_enabled = can_save,
+                };
+                _ = DumpWorldScreen.run(&ui, &dump_ctx);
+                ui.end();
+                list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            },
         }
 
         Rendering.gfx.api.clear_depth();
