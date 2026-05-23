@@ -19,6 +19,7 @@ pub const Result = union(enum) {
     none,
     cancel,
     toggle_delete,
+    create,
     select: u8,
 };
 
@@ -81,14 +82,14 @@ pub fn run(ui: *Ui, entries: []const Entry, delete_mode: bool) Result {
 
         var empty_row: u8 = @intCast(@min(entries.len, visible_rows));
         while (empty_row < visible_rows) : (empty_row += 1) {
-            _ = ui.button(wid_for_row(empty_row), "- empty -", .{});
+            if (ui.button(wid_for_row(empty_row), "- empty -", .{}) and result == .none) result = .create;
         }
     }
 
     ui.spacer(0, 8);
     const delete_label = if (delete_mode) "Cancel delete" else "Delete world...";
     if (ui.button(wid(.delete_world), delete_label, .{}) and result == .none) result = .toggle_delete;
-    _ = ui.button(wid(.create_world), "Create world", .{ .enabled = false });
+    if (ui.button(wid(.create_world), "Create world", .{}) and result == .none) result = .create;
     if (ui.button(wid(.cancel), "Cancel", .{}) and result == .none) result = .cancel;
     col.end();
 

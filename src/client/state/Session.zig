@@ -23,6 +23,7 @@ pub var server_len: u8 = 0;
 
 pub var singleplayer_save_buf: [SAVE_PATH_MAX]u8 = undefined;
 pub var singleplayer_save_len: u16 = 0;
+pub var singleplayer_seed_override: ?u64 = null;
 
 // Live TCP stream carried from LoadState into GameState. Null in SP, or
 // before a successful connect(), or after a disconnect. GameState spawns
@@ -95,6 +96,33 @@ pub fn singleplayer_save() []const u8 {
     return singleplayer_save_buf[0..singleplayer_save_len];
 }
 
+pub fn set_singleplayer_seed_override(seed: ?u64) void {
+    singleplayer_seed_override = seed;
+}
+
+pub fn clear_singleplayer_seed_override() void {
+    singleplayer_seed_override = null;
+}
+
+pub fn singleplayer_seed(random_seed: u64) u64 {
+    return singleplayer_seed_override orelse random_seed;
+}
+
+pub fn seed_from_text(input: []const u8) ?u64 {
+    const trimmed = std.mem.trim(u8, input, " ");
+    if (trimmed.len == 0) return null;
+    return fnv1a64(trimmed);
+}
+
+fn fnv1a64(input: []const u8) u64 {
+    var hash: u64 = 0xcbf29ce484222325;
+    for (input) |ch| {
+        hash ^= ch;
+        hash *%= 0x100000001b3;
+    }
+    return hash;
+}
+
 /// Either an already-resolved IP literal or a hostname that needs DNS
 /// resolution at connect time. The hostname slice borrows from `server_buf`,
 /// so the endpoint is only valid while `server_buf` is unchanged.
@@ -143,4 +171,25 @@ pub fn connect_endpoint(ep: ServerEndpoint, io: std.Io) !std.Io.net.Stream {
             break :blk hostname.connect(io, h.port, .{ .mode = .stream });
         },
     };
+}
+
+test "seed_from_text hashes nonblank text deterministically" {
+    const a = seed_from_text("hello world") orelse return error.ExpectedSeed;
+    const b = seed_from_text("hello world") orelse return error.ExpectedSeed;
+    const c = seed_from_text("other world") orelse return error.ExpectedSeed;
+    try std.testing.expectEqual(a, b);
+    try std.testing.expect(a != c);
+}
+
+test "seed_from_text treats blank as no override" {
+    try std.testing.expect(seed_from_text("") == null);
+    try std.testing.expect(seed_from_text("   ") == null);
+}
+
+test "singleplayer_seed uses override when present" {
+    clear_singleplayer_seed_override();
+    try std.testing.expectEqual(@as(u64, 123), singleplayer_seed(123));
+    set_singleplayer_seed_override(456);
+    try std.testing.expectEqual(@as(u64, 456), singleplayer_seed(123));
+    clear_singleplayer_seed_override();
 }

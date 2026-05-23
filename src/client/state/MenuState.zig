@@ -21,6 +21,7 @@ const MainMenu = @import("../ui/screens/MainMenu.zig");
 const DirectConnect = @import("../ui/screens/DirectConnect.zig");
 const TexturePacks = @import("../ui/screens/TexturePacks.zig");
 const SelectWorld = @import("../ui/screens/SelectWorld.zig");
+const CreateWorld = @import("../ui/screens/CreateWorld.zig");
 const OptionsScreen = @import("../ui/screens/Options.zig");
 const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
@@ -45,7 +46,7 @@ pub fn transition_here(engine: *Engine) !void {
     try ae.Core.state_machine.transition(engine, &menu_state_inst);
 }
 
-pub const ScreenId = enum { main, direct_connect, texture_packs, select_world, options };
+pub const ScreenId = enum { main, direct_connect, texture_packs, select_world, create_world, options };
 
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
@@ -58,6 +59,7 @@ dc_ui_state: UiState,
 options_ui_state: UiState,
 tp_ui_state: UiState,
 sw_ui_state: UiState,
+cw_ui_state: UiState,
 ui_repeat: ui_input.Repeat,
 
 dc_ip: [DirectConnect.IP_MAX]u8,
@@ -74,6 +76,11 @@ tp_selected_index: ?u8,
 sw_entries: [SelectWorld.max_worlds]SelectWorld.Entry,
 sw_entry_count: u8,
 sw_delete_mode: bool,
+
+cw_name: [CreateWorld.NAME_MAX]u8,
+cw_name_len: u8,
+cw_seed: [CreateWorld.SEED_MAX]u8,
+cw_seed_len: u8,
 
 dirt: *const Rendering.Texture,
 logo: *const Rendering.Texture,
@@ -135,6 +142,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.options_ui_state = .{};
     self.tp_ui_state = .{};
     self.sw_ui_state = .{};
+    self.cw_ui_state = .{};
     self.dc_ip_len = 0;
     self.dc_name_len = 0;
     self.options_rd_view = @floatFromInt(Options.capped_render_distance());
@@ -142,6 +150,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.tp_selected_index = null;
     self.sw_entry_count = 0;
     self.sw_delete_mode = false;
+    self.cw_name_len = 0;
+    self.cw_seed_len = 0;
 
     try ui_input.ensure_registered();
     ui_input.set_profile(ui_input.default_profile());
@@ -335,6 +345,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
         .direct_connect => try update_direct_connect(self, engine, &in),
         .texture_packs => try update_texture_packs(self, engine, &in),
         .select_world => try update_select_world(self, engine, &in),
+        .create_world => try update_create_world(self, engine, &in),
         .options => try update_options(self, engine, &in),
     }
 }
@@ -405,7 +416,27 @@ fn update_select_world(self: *@This(), engine: *Engine, in: *const ui_input.UiIn
         .none => {},
         .cancel => enter_main(self),
         .toggle_delete => self.sw_delete_mode = !self.sw_delete_mode,
+        .create => enter_create_world(self),
         .select => |row| sw_select_row(self, engine, row),
+    }
+}
+
+fn update_create_world(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
+    var list: UiDrawList = .{};
+    var ui = self.begin_ui(&list, &self.cw_ui_state, in, 0);
+    var cw: CreateWorld.Ctx = .{
+        .name = &self.cw_name,
+        .name_len = &self.cw_name_len,
+        .seed = &self.cw_seed,
+        .seed_len = &self.cw_seed_len,
+        .create_enabled = self.create_world_available(engine),
+    };
+    const action = CreateWorld.run(&ui, &cw);
+    ui.end();
+    switch (action) {
+        .none => {},
+        .create => create_world(self, engine),
+        .back => enter_select_world(self, engine),
     }
 }
 
@@ -423,7 +454,42 @@ fn sw_select_row(self: *@This(), engine: *Engine, row: u8) void {
     Session.mode = .singleplayer;
     Session.set_username("Player");
     Session.set_singleplayer_save(entry.path());
+    Session.clear_singleplayer_seed_override();
     LoadState.transition_here(engine) catch |err| log.err("transition to LoadState failed: {}", .{err});
+}
+
+fn create_world_available(self: *const @This(), engine: *Engine) bool {
+    var path_buf: [World.CreateName.PATH_MAX]u8 = undefined;
+    var name_buf: [World.CreateName.NAME_MAX]u8 = undefined;
+    const result = World.CreateName.build_path(self.create_world_name_slice(), &path_buf, &name_buf) catch return false;
+    return !file_exists(engine.io, engine.dirs.data, result.path);
+}
+
+fn create_world(self: *@This(), engine: *Engine) void {
+    var path_buf: [World.CreateName.PATH_MAX]u8 = undefined;
+    var name_buf: [World.CreateName.NAME_MAX]u8 = undefined;
+    const result = World.CreateName.build_path(self.create_world_name_slice(), &path_buf, &name_buf) catch |err| {
+        log.warn("invalid create-world name: {}", .{err});
+        return;
+    };
+    if (file_exists(engine.io, engine.dirs.data, result.path)) {
+        log.warn("create-world save already exists: {s}", .{result.path});
+        return;
+    }
+
+    Session.mode = .singleplayer;
+    Session.set_username("Player");
+    Session.set_singleplayer_save(result.path);
+    Session.set_singleplayer_seed_override(Session.seed_from_text(self.create_world_seed_slice()));
+    LoadState.transition_here(engine) catch |err| log.err("transition to LoadState failed: {}", .{err});
+}
+
+fn create_world_name_slice(self: *const @This()) []const u8 {
+    return self.cw_name[0..self.cw_name_len];
+}
+
+fn create_world_seed_slice(self: *const @This()) []const u8 {
+    return self.cw_seed[0..self.cw_seed_len];
 }
 
 fn tp_select_row(self: *@This(), engine: *Engine, row: u8) void {
@@ -469,8 +535,17 @@ fn enter_texture_packs(self: *@This(), engine: *Engine) void {
 fn enter_select_world(self: *@This(), engine: *Engine) void {
     self.sw_entry_count = SelectWorld.scan(engine.io, engine.dirs.data, &self.sw_entries);
     self.sw_delete_mode = false;
+    Session.clear_singleplayer_seed_override();
     self.active_screen = .select_world;
     self.sw_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
+fn enter_create_world(self: *@This()) void {
+    self.cw_name_len = 0;
+    self.cw_seed_len = 0;
+    self.sw_delete_mode = false;
+    self.active_screen = .create_world;
+    self.cw_ui_state.open(!ui_input.profile_uses_pointer());
 }
 
 fn enter_options(self: *@This()) void {
@@ -479,7 +554,7 @@ fn enter_options(self: *@This()) void {
     self.options_ui_state.open(!ui_input.profile_uses_pointer());
 }
 
-fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
+fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.batcher.clear();
     self.font_batcher.clear();
@@ -520,6 +595,18 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
         .select_world => {
             var ui = self.begin_ui(&list, &self.sw_ui_state, &none, 0);
             _ = SelectWorld.run(&ui, self.sw_entries[0..self.sw_entry_count], self.sw_delete_mode);
+            ui.end();
+        },
+        .create_world => {
+            var ui = self.begin_ui(&list, &self.cw_ui_state, &none, 0);
+            var cw: CreateWorld.Ctx = .{
+                .name = &self.cw_name,
+                .name_len = &self.cw_name_len,
+                .seed = &self.cw_seed,
+                .seed_len = &self.cw_seed_len,
+                .create_enabled = self.create_world_available(engine),
+            };
+            _ = CreateWorld.run(&ui, &cw);
             ui.end();
         },
         .options => {

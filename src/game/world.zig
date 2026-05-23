@@ -20,6 +20,7 @@ pub const WorldData = @import("world/WorldData.zig");
 pub const WorldSimulation = @import("world/WorldSimulation.zig");
 pub const WorldSaver = @import("world/WorldSaver.zig");
 pub const DumpName = @import("world/DumpName.zig");
+pub const CreateName = @import("world/CreateName.zig");
 const fmt_mod = @import("world/SaveFormat.zig");
 pub const SaveFormat = fmt_mod.SaveFormat;
 pub const LoadOutcome = fmt_mod.LoadOutcome;

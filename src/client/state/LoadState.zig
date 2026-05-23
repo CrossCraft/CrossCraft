@@ -269,7 +269,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.server_notified = false;
 
     const io = engine.io;
-    const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
+    const random_seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
+    const singleplayer_seed = Session.singleplayer_seed(random_seed);
     server_ready.store(false, .monotonic);
     session_error = null;
     Session.clear_disconnect_reason();
@@ -278,12 +279,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         .singleplayer => io.async(serverTask, .{
             engine.allocator(.user),
             engine.allocator(.user),
-            seed,
+            singleplayer_seed,
             io,
             engine.dirs.data,
             Session.singleplayer_save(),
         }),
-        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), seed, io, engine.dirs.data }),
+        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), random_seed, io, engine.dirs.data }),
     };
 
     self.inited = true;
