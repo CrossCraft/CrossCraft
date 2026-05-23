@@ -563,6 +563,7 @@ fn try_evict_farthest(self: *Self, cam: *const Camera) bool {
 /// Mark a section for rebuild (e.g. after a block change).
 pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
     if (cx >= WORLD_CX or cz >= WORLD_CZ or sy >= SECTIONS_Y) return;
+    self.rain.mark_dirty();
     if (!self.loaded[cx][cz]) return;
     self.built[cx][cz][sy] = false;
     // Section already in the build queue; it will be rebuilt when the queue
