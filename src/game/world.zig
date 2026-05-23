@@ -111,6 +111,7 @@ pub fn init(
 }
 
 pub fn deinit() void {
+    saver.wait_for_save();
     saver.save(&data);
     saver.wait_for_save();
 

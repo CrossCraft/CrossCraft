@@ -41,11 +41,19 @@ fn ensure_loading_set() !ae.Core.input.ActionSetHandle {
     return set;
 }
 
-fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) void {
+fn serverTask(
+    alloc: std.mem.Allocator,
+    scratch: std.mem.Allocator,
+    seed: u64,
+    io: std.Io,
+    data_dir: std.Io.Dir,
+    save_location: []const u8,
+) void {
     // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
+    const selected_save = if (save_location.len > 0) save_location else Server.default_save_location;
     const config: Server.GameConfig = .{
         .embedded = .{
-            .world = .{ .seed = seed, .save_location = Server.default_save_location },
+            .world = .{ .seed = seed, .save_location = selected_save },
         },
     };
     Server.init(alloc, scratch, io, data_dir, config) catch |err| {
@@ -267,7 +275,14 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     Session.clear_disconnect_reason();
     // TODO: allocator pool budget may need tuning for server + client coexistence
     self.server_future = switch (Session.mode) {
-        .singleplayer => io.async(serverTask, .{ engine.allocator(.user), engine.allocator(.user), seed, io, engine.dirs.data }),
+        .singleplayer => io.async(serverTask, .{
+            engine.allocator(.user),
+            engine.allocator(.user),
+            seed,
+            io,
+            engine.dirs.data,
+            Session.singleplayer_save(),
+        }),
         .multiplayer => io.async(connectTask, .{ engine.allocator(.user), seed, io, engine.dirs.data }),
     };
 

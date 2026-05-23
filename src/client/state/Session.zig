@@ -11,6 +11,7 @@ pub const Mode = enum { singleplayer, multiplayer };
 pub const USERNAME_MAX: u8 = 16;
 pub const SERVER_MAX: u8 = 64;
 pub const DEFAULT_PORT: u16 = 25565;
+pub const SAVE_PATH_MAX: usize = 256;
 
 pub var mode: Mode = .singleplayer;
 
@@ -19,6 +20,9 @@ pub var username_len: u8 = 0;
 
 pub var server_buf: [SERVER_MAX]u8 = undefined;
 pub var server_len: u8 = 0;
+
+pub var singleplayer_save_buf: [SAVE_PATH_MAX]u8 = undefined;
+pub var singleplayer_save_len: u16 = 0;
 
 // Live TCP stream carried from LoadState into GameState. Null in SP, or
 // before a successful connect(), or after a disconnect. GameState spawns
@@ -79,6 +83,16 @@ pub fn set_server(addr: []const u8) void {
 
 pub fn server() []const u8 {
     return server_buf[0..server_len];
+}
+
+pub fn set_singleplayer_save(path: []const u8) void {
+    const len: u16 = @intCast(@min(path.len, SAVE_PATH_MAX));
+    @memcpy(singleplayer_save_buf[0..len], path[0..len]);
+    singleplayer_save_len = len;
+}
+
+pub fn singleplayer_save() []const u8 {
+    return singleplayer_save_buf[0..singleplayer_save_len];
 }
 
 /// Either an already-resolved IP literal or a hostname that needs DNS

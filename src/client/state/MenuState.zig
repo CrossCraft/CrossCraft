@@ -20,9 +20,15 @@ const ui_input = @import("../ui/input.zig");
 const MainMenu = @import("../ui/screens/MainMenu.zig");
 const DirectConnect = @import("../ui/screens/DirectConnect.zig");
 const TexturePacks = @import("../ui/screens/TexturePacks.zig");
+const SelectWorld = @import("../ui/screens/SelectWorld.zig");
 const OptionsScreen = @import("../ui/screens/Options.zig");
 const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
+const common = @import("common");
+const c = common.consts;
+const game = @import("game");
+const World = game.World;
+const CompressWorker = game.CompressWorker;
 
 const build_options = @import("build_options");
 
@@ -39,7 +45,7 @@ pub fn transition_here(engine: *Engine) !void {
     try ae.Core.state_machine.transition(engine, &menu_state_inst);
 }
 
-pub const ScreenId = enum { main, direct_connect, texture_packs, options };
+pub const ScreenId = enum { main, direct_connect, texture_packs, select_world, options };
 
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
@@ -51,6 +57,7 @@ main_ui_state: UiState,
 dc_ui_state: UiState,
 options_ui_state: UiState,
 tp_ui_state: UiState,
+sw_ui_state: UiState,
 ui_repeat: ui_input.Repeat,
 
 dc_ip: [DirectConnect.IP_MAX]u8,
@@ -63,6 +70,10 @@ options_rd_view: f32,
 tp_entries: [TexturePacks.max_packs + 1]TexturePacks.Entry,
 tp_entry_count: u8,
 tp_selected_index: ?u8,
+
+sw_entries: [SelectWorld.max_worlds]SelectWorld.Entry,
+sw_entry_count: u8,
+sw_delete_mode: bool,
 
 dirt: *const Rendering.Texture,
 logo: *const Rendering.Texture,
@@ -93,6 +104,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             log.warn("failed to create saves/: {}", .{err});
         };
     };
+    migrate_legacy_world_dat(engine.allocator(.user), engine.io, engine.dirs.data);
     if (build_options.embed_pack) {
         engine.dirs.data.access(engine.io, "pack.zip", .{}) catch {
             const file = try engine.dirs.data.createFile(engine.io, "pack.zip", .{});
@@ -122,11 +134,14 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.dc_ui_state = .{};
     self.options_ui_state = .{};
     self.tp_ui_state = .{};
+    self.sw_ui_state = .{};
     self.dc_ip_len = 0;
     self.dc_name_len = 0;
     self.options_rd_view = @floatFromInt(Options.capped_render_distance());
     self.tp_entry_count = 0;
     self.tp_selected_index = null;
+    self.sw_entry_count = 0;
+    self.sw_delete_mode = false;
 
     try ui_input.ensure_registered();
     ui_input.set_profile(ui_input.default_profile());
@@ -147,6 +162,153 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     self.inited = true;
     engine.report();
+}
+
+fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.Io.Dir) void {
+    if (!file_exists(io, data_dir, "world.dat")) return;
+
+    var dest_name_buf: [SelectWorld.max_file_name_len]u8 = undefined;
+    var backup_name_buf: [32]u8 = undefined;
+
+    var saves_dir = data_dir.createDirPathOpen(io, "saves", .{}) catch |err| {
+        log.warn("legacy save migration: failed to open saves/: {}", .{err});
+        return;
+    };
+    defer saves_dir.close(io);
+
+    const dest_name = choose_legacy_dest_name(io, saves_dir, &dest_name_buf) orelse {
+        log.warn("legacy save migration: no available saves/world_N.cw name", .{});
+        return;
+    };
+    const backup_name = choose_legacy_backup_name(io, data_dir, &backup_name_buf) orelse {
+        log.warn("legacy save migration: no available world.dat backup name", .{});
+        return;
+    };
+
+    common.BlockRegistry.init();
+    var data = World.WorldData.init(alloc, 0) catch |err| {
+        log.warn("legacy save migration: failed to allocate world data: {}", .{err});
+        return;
+    };
+    defer data.deinit();
+
+    if (!load_legacy_world_dat(io, data_dir, &data)) return;
+    if (!write_converted_legacy_save(alloc, io, saves_dir, dest_name, &data)) return;
+
+    data_dir.rename("world.dat", data_dir, backup_name, io) catch |err| {
+        log.warn("legacy save migration: failed to rename world.dat to {s}: {}", .{ backup_name, err });
+        return;
+    };
+    log.info("Migrated legacy save world.dat -> saves/{s}; backup {s}", .{ dest_name, backup_name });
+}
+
+fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldData) bool {
+    const file = data_dir.openFile(io, "world.dat", .{}) catch return false;
+    defer file.close(io);
+
+    var read_buf: [32768]u8 = undefined;
+    var reader = file.reader(io, &read_buf);
+    const load_format: World.SaveFormat = .{ .classic_dat = .{} };
+    const outcome = load_format.load_world(data.raw_blocks, data.blocks, &reader.interface) catch |err| {
+        log.warn("legacy save migration: failed to load world.dat: {}", .{err});
+        return false;
+    };
+
+    if (outcome.dimensions[0] != c.WorldLength or
+        outcome.dimensions[1] != c.WorldHeight or
+        outcome.dimensions[2] != c.WorldDepth)
+    {
+        log.warn("legacy save migration: world.dat dimensions mismatch: {}x{}x{}", .{
+            outcome.dimensions[0],
+            outcome.dimensions[1],
+            outcome.dimensions[2],
+        });
+        return false;
+    }
+
+    data.world_size = outcome.dimensions;
+    data.seed = outcome.seed;
+    data.tick_count = outcome.tick_count;
+    if (outcome.name_len > 0) {
+        data.name = outcome.name;
+        data.name_len = outcome.name_len;
+    }
+    data.uuid = outcome.uuid;
+    data.time_created = outcome.time_created;
+    return true;
+}
+
+fn write_converted_legacy_save(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    saves_dir: std.Io.Dir,
+    dest_name: []const u8,
+    data: *World.WorldData,
+) bool {
+    CompressWorker.init(alloc, io) catch |err| {
+        log.warn("legacy save migration: failed to init compressor: {}", .{err});
+        return false;
+    };
+    var thread = Util.Thread.spawn(.{
+        .name = "legacy_save_convert",
+        .stack_size = 512 * 1024,
+        .priority = .normal,
+        .allocator = alloc,
+    }, CompressWorker.worker_main, .{}) catch |err| {
+        CompressWorker.deinit();
+        log.warn("legacy save migration: failed to start compressor: {}", .{err});
+        return false;
+    };
+    defer {
+        CompressWorker.signal_exit();
+        thread.join();
+        CompressWorker.deinit();
+    }
+
+    var saver = World.WorldSaver.init(io, saves_dir, dest_name, World.default_format);
+    defer saver.deinit();
+    saver.owned_locally = true;
+    saver.save(data);
+    saver.wait_for_save();
+
+    const file = saves_dir.openFile(io, dest_name, .{}) catch |err| {
+        log.warn("legacy save migration: converted save missing: {}", .{err});
+        return false;
+    };
+    defer file.close(io);
+    const st = file.stat(io) catch |err| {
+        log.warn("legacy save migration: converted save stat failed: {}", .{err});
+        return false;
+    };
+    return st.size > 0;
+}
+
+fn choose_legacy_dest_name(io: std.Io, saves_dir: std.Io.Dir, out: *[SelectWorld.max_file_name_len]u8) ?[]const u8 {
+    if (!file_exists(io, saves_dir, "world.cw")) return "world.cw";
+
+    var i: u16 = 2;
+    while (i < 1000) : (i += 1) {
+        const name = std.fmt.bufPrint(out, "world_{d}.cw", .{i}) catch return null;
+        if (!file_exists(io, saves_dir, name)) return name;
+    }
+    return null;
+}
+
+fn choose_legacy_backup_name(io: std.Io, data_dir: std.Io.Dir, out: *[32]u8) ?[]const u8 {
+    if (!file_exists(io, data_dir, "world.dat.bak")) return "world.dat.bak";
+
+    var i: u16 = 2;
+    while (i < 1000) : (i += 1) {
+        const name = std.fmt.bufPrint(out, "world.dat.{d}.bak", .{i}) catch return null;
+        if (!file_exists(io, data_dir, name)) return name;
+    }
+    return null;
+}
+
+fn file_exists(io: std.Io, dir: std.Io.Dir, path: []const u8) bool {
+    const file = dir.openFile(io, path, .{}) catch return false;
+    file.close(io);
+    return true;
 }
 
 fn deinit(ctx: *anyopaque, _: *Engine) void {
@@ -172,6 +334,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
         .main => try update_main(self, engine, &in),
         .direct_connect => try update_direct_connect(self, engine, &in),
         .texture_packs => try update_texture_packs(self, engine, &in),
+        .select_world => try update_select_world(self, engine, &in),
         .options => try update_options(self, engine, &in),
     }
 }
@@ -183,11 +346,7 @@ fn update_main(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !vo
     ui.end();
     switch (action) {
         .none => {},
-        .singleplayer => {
-            Session.mode = .singleplayer;
-            Session.set_username("Player");
-            LoadState.transition_here(engine) catch |err| log.err("transition to LoadState failed: {}", .{err});
-        },
+        .singleplayer => enter_select_world(self, engine),
         .multiplayer => enter_direct_connect(self),
         .texture_packs => enter_texture_packs(self, engine),
         .options => enter_options(self),
@@ -237,6 +396,36 @@ fn update_texture_packs(self: *@This(), engine: *Engine, in: *const ui_input.UiI
     }
 }
 
+fn update_select_world(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
+    var list: UiDrawList = .{};
+    var ui = self.begin_ui(&list, &self.sw_ui_state, in, 0);
+    const result = SelectWorld.run(&ui, self.sw_entries[0..self.sw_entry_count], self.sw_delete_mode);
+    ui.end();
+    switch (result) {
+        .none => {},
+        .cancel => enter_main(self),
+        .toggle_delete => self.sw_delete_mode = !self.sw_delete_mode,
+        .select => |row| sw_select_row(self, engine, row),
+    }
+}
+
+fn sw_select_row(self: *@This(), engine: *Engine, row: u8) void {
+    if (row >= self.sw_entry_count) return;
+    const entry = &self.sw_entries[row];
+    if (self.sw_delete_mode) {
+        if (SelectWorld.delete_entry(engine.io, engine.dirs.data, entry)) {
+            self.sw_entry_count = SelectWorld.scan(engine.io, engine.dirs.data, &self.sw_entries);
+            self.sw_delete_mode = false;
+        }
+        return;
+    }
+
+    Session.mode = .singleplayer;
+    Session.set_username("Player");
+    Session.set_singleplayer_save(entry.path());
+    LoadState.transition_here(engine) catch |err| log.err("transition to LoadState failed: {}", .{err});
+}
+
 fn tp_select_row(self: *@This(), engine: *Engine, row: u8) void {
     if (row >= self.tp_entry_count) return;
     if (self.tp_selected_index) |si| if (si == row) return;
@@ -275,6 +464,13 @@ fn enter_texture_packs(self: *@This(), engine: *Engine) void {
     self.tp_selected_index = TexturePacks.find_active_index(self.tp_entries[0..self.tp_entry_count]);
     self.active_screen = .texture_packs;
     self.tp_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
+fn enter_select_world(self: *@This(), engine: *Engine) void {
+    self.sw_entry_count = SelectWorld.scan(engine.io, engine.dirs.data, &self.sw_entries);
+    self.sw_delete_mode = false;
+    self.active_screen = .select_world;
+    self.sw_ui_state.open(!ui_input.profile_uses_pointer());
 }
 
 fn enter_options(self: *@This()) void {
@@ -319,6 +515,11 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
         .texture_packs => {
             var ui = self.begin_ui(&list, &self.tp_ui_state, &none, 0);
             _ = TexturePacks.run(&ui, self.tp_entries[0..self.tp_entry_count], self.tp_selected_index);
+            ui.end();
+        },
+        .select_world => {
+            var ui = self.begin_ui(&list, &self.sw_ui_state, &none, 0);
+            _ = SelectWorld.run(&ui, self.sw_entries[0..self.sw_entry_count], self.sw_delete_mode);
             ui.end();
         },
         .options => {

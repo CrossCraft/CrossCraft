@@ -105,6 +105,8 @@ fn pad(comptime s: []const u8) [64]u8 {
 /// Buffer holding a save_location override read from server.properties.
 /// Sized for the longest path we expect to see in a config file.
 var save_location_buf: [256]u8 = undefined;
+var save_file_name_buf: [256]u8 = undefined;
+var save_file_name_len: u16 = 0;
 
 pub fn init(
     alloc: std.mem.Allocator,
@@ -138,6 +140,11 @@ pub fn init(
     const split = split_save_location(wcfg.save_location);
     save_dir = try resolve_save_dir(data_dir, split.parent);
     save_dir_owned = split.parent.len > 0;
+    const save_file_name = copy_save_file_name(split.file_name) catch |err| {
+        log.err("WorldConfig.save_location file name is invalid: {}", .{err});
+        return err;
+    };
+    log.info("Using save location '{s}'", .{wcfg.save_location});
 
     var scratch = std.heap.ArenaAllocator.init(scratch_alloc);
     defer scratch.deinit();
@@ -157,7 +164,7 @@ pub fn init(
         scratch.allocator(),
         io,
         save_dir,
-        split.file_name,
+        save_file_name,
         wcfg.seed,
         wcfg.save_format,
     );
@@ -195,6 +202,13 @@ fn resolve_save_dir(data_dir: std.Io.Dir, sub_path: []const u8) !std.Io.Dir {
         log.err("Failed to open/create save dir '{s}': {}", .{ sub_path, err });
         return err;
     };
+}
+
+fn copy_save_file_name(file_name: []const u8) ![]const u8 {
+    if (file_name.len == 0 or file_name.len > save_file_name_buf.len) return error.InvalidSaveLocation;
+    @memcpy(save_file_name_buf[0..file_name.len], file_name);
+    save_file_name_len = @intCast(file_name.len);
+    return save_file_name_buf[0..save_file_name_len];
 }
 
 /// Move a v1.0-shaped `world.dat` from the data dir root into the v1.1
