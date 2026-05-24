@@ -30,6 +30,7 @@ const Session = @import("Session.zig");
 const common = @import("common");
 const c = common.consts;
 const game = @import("game");
+const Server = game.Server;
 const World = game.World;
 const CompressWorker = game.CompressWorker;
 const CompressorThread = @import("CompressorThread.zig");
@@ -117,7 +118,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             log.warn("failed to create saves/: {}", .{err});
         };
     };
-    migrate_legacy_world_dat(engine.allocator(.user), engine.io, engine.dirs.data);
+    migrate_default_saves(engine.allocator(.user), engine.io, engine.dirs.data);
     if (build_options.embed_pack) {
         engine.dirs.data.access(engine.io, "pack.zip", .{}) catch {
             const file = try engine.dirs.data.createFile(engine.io, "pack.zip", .{});
@@ -183,24 +184,53 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     engine.report();
 }
 
-fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.Io.Dir) void {
-    if (!file_exists(io, data_dir, "world.dat")) return;
-
-    var dest_name_buf: [SelectWorld.max_file_name_len]u8 = undefined;
-    var backup_name_buf: [32]u8 = undefined;
-
+fn migrate_default_saves(alloc: std.mem.Allocator, io: std.Io, data_dir: std.Io.Dir) void {
     var saves_dir = data_dir.createDirPathOpen(io, "saves", .{}) catch |err| {
         log.warn("legacy save migration: failed to open saves/: {}", .{err});
         return;
     };
     defer saves_dir.close(io);
 
+    migrate_root_default_save(io, data_dir, saves_dir);
+    migrate_legacy_world_dat(alloc, io, data_dir, saves_dir);
+}
+
+fn migrate_root_default_save(io: std.Io, data_dir: std.Io.Dir, saves_dir: std.Io.Dir) void {
+    if (!file_exists(io, data_dir, Server.root_default_save_file_name)) return;
+
+    var dest_name_buf: [SelectWorld.max_file_name_len]u8 = undefined;
+    const dest_name = choose_legacy_dest_name(io, saves_dir, &dest_name_buf) orelse {
+        log.warn("default save migration: no available saves/world_N.cw name", .{});
+        return;
+    };
+
+    var dest_path_buf: [SelectWorld.max_path_len]u8 = undefined;
+    const dest_path = std.fmt.bufPrint(&dest_path_buf, "saves/{s}", .{dest_name}) catch {
+        log.warn("default save migration: destination path too long", .{});
+        return;
+    };
+
+    data_dir.rename(Server.root_default_save_file_name, data_dir, dest_path, io) catch |err| {
+        log.warn("default save migration: failed to rename {s} to {s}: {}", .{
+            Server.root_default_save_file_name, dest_path, err,
+        });
+        return;
+    };
+    log.info("Migrated default save {s} -> {s}", .{ Server.root_default_save_file_name, dest_path });
+}
+
+fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.Io.Dir, saves_dir: std.Io.Dir) void {
+    if (!file_exists(io, data_dir, Server.legacy_save_file_name)) return;
+
+    var dest_name_buf: [SelectWorld.max_file_name_len]u8 = undefined;
+    var backup_name_buf: [32]u8 = undefined;
+
     const dest_name = choose_legacy_dest_name(io, saves_dir, &dest_name_buf) orelse {
         log.warn("legacy save migration: no available saves/world_N.cw name", .{});
         return;
     };
     const backup_name = choose_legacy_backup_name(io, data_dir, &backup_name_buf) orelse {
-        log.warn("legacy save migration: no available world.dat backup name", .{});
+        log.warn("legacy save migration: no available world.bak name", .{});
         return;
     };
 
@@ -220,22 +250,26 @@ fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.
     if (!load_legacy_world_dat(io, data_dir, data)) return;
     if (!write_converted_legacy_save(alloc, io, saves_dir, dest_name, data)) return;
 
-    data_dir.rename("world.dat", data_dir, backup_name, io) catch |err| {
-        log.warn("legacy save migration: failed to rename world.dat to {s}: {}", .{ backup_name, err });
+    data_dir.rename(Server.legacy_save_file_name, data_dir, backup_name, io) catch |err| {
+        log.warn("legacy save migration: failed to rename {s} to {s}: {}", .{
+            Server.legacy_save_file_name, backup_name, err,
+        });
         return;
     };
-    log.info("Migrated legacy save world.dat -> saves/{s}; backup {s}", .{ dest_name, backup_name });
+    log.info("Migrated legacy save {s} -> saves/{s}; backup {s}", .{
+        Server.legacy_save_file_name, dest_name, backup_name,
+    });
 }
 
 fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldData) bool {
-    const file = data_dir.openFile(io, "world.dat", .{}) catch return false;
+    const file = data_dir.openFile(io, Server.legacy_save_file_name, .{}) catch return false;
     defer file.close(io);
 
     var read_buf: [32768]u8 = undefined;
     var reader = file.reader(io, &read_buf);
     const load_format: World.SaveFormat = .{ .classic_dat = .{} };
     const outcome = load_format.load_world(data.backing_allocator, data.raw_blocks, data.blocks, &reader.interface) catch |err| {
-        log.warn("legacy save migration: failed to load world.dat: {}", .{err});
+        log.warn("legacy save migration: failed to load {s}: {}", .{ Server.legacy_save_file_name, err });
         return false;
     };
 
@@ -243,7 +277,8 @@ fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldDat
         outcome.dimensions[1] != c.WorldHeight or
         outcome.dimensions[2] != c.WorldDepth)
     {
-        log.warn("legacy save migration: world.dat dimensions mismatch: {}x{}x{}", .{
+        log.warn("legacy save migration: {s} dimensions mismatch: {}x{}x{}", .{
+            Server.legacy_save_file_name,
             outcome.dimensions[0],
             outcome.dimensions[1],
             outcome.dimensions[2],
@@ -315,11 +350,11 @@ fn choose_legacy_dest_name(io: std.Io, saves_dir: std.Io.Dir, out: *[SelectWorld
 }
 
 fn choose_legacy_backup_name(io: std.Io, data_dir: std.Io.Dir, out: *[32]u8) ?[]const u8 {
-    if (!file_exists(io, data_dir, "world.dat.bak")) return "world.dat.bak";
+    if (!file_exists(io, data_dir, "world.bak")) return "world.bak";
 
     var i: u16 = 2;
     while (i < 1000) : (i += 1) {
-        const name = std.fmt.bufPrint(out, "world.dat.{d}.bak", .{i}) catch return null;
+        const name = std.fmt.bufPrint(out, "world.{d}.bak", .{i}) catch return null;
         if (!file_exists(io, data_dir, name)) return name;
     }
     return null;

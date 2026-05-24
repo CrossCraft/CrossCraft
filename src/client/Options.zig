@@ -5,6 +5,7 @@
 //! application data directory (`engine.dirs.data`).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ae = @import("aether");
 const Io = std.Io;
 const File = std.Io.File;
@@ -190,7 +191,37 @@ pub fn fancy_leaves_supported() bool {
 }
 
 pub fn pc_key_assignable(key: input.Key) bool {
-    return key != .Escape;
+    switch (key) {
+        .Escape,
+        .T,
+        .Slash,
+        .Space,
+        .LeftShift,
+        .Tab,
+        .Num1,
+        .Num2,
+        .Num3,
+        .Num4,
+        .Num5,
+        .Num6,
+        .Num7,
+        .Num8,
+        .Num9,
+        => return false,
+        else => {},
+    }
+
+    if (ae.platform != .psp) {
+        switch (key) {
+            .F1,
+            .F5,
+            => return false,
+            else => {},
+        }
+        if (builtin.mode == .Debug and key == .X) return false;
+    }
+
+    return true;
 }
 
 pub fn pc_key_label(key: input.Key) []const u8 {

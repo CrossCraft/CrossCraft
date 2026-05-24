@@ -14,10 +14,8 @@ const log = std.log.scoped(.server);
 
 /// Inputs the world needs to materialise. `save_location` is a relative
 /// path (under the engine data dir) to the world save *file*, including
-/// its filename -- e.g. "world.cw" or "saves/foo.dat". The world spec
-/// saves the file at exactly this path, and in standalone mode
-/// server.properties is rooted in the same directory so a save dir is
-/// self-contained. An empty string is rejected at init.
+/// its filename -- e.g. "saves/world.cw" or "saves/foo.dat". The world spec
+/// saves the file at exactly this path. An empty string is rejected at init.
 ///
 /// `save_format` picks which on-disk format to use. classic_cw is the
 /// gzip-NBT ClassicWorld format and the default; classic_dat is the
@@ -29,15 +27,16 @@ pub const WorldConfig = struct {
     save_format: world.SaveFormat = world.default_format,
 };
 
-/// The v1.1 default save path. Used by both standalone and embedded
+/// The default save path. Used by both standalone and embedded
 /// hosts when no override is supplied; also the gate condition for the
-/// legacy v1.0 `world.dat` migration in `Server.init` -- a custom
+/// root-save migrations in `Server.init` -- a custom
 /// `save-location` in server.properties skips the migration entirely.
-pub const default_save_location: []const u8 = "world.cw";
+pub const default_save_location: []const u8 = "saves/world.cw";
+
+/// Previous default layout: a ClassicWorld save file at the data dir root.
+pub const root_default_save_file_name: []const u8 = "world.cw";
 
 /// v1.0 layout: a single classic_dat save file at the data dir root.
-/// `Server.init` promotes this to `default_save_location` on first boot
-/// when the new path doesn't already exist.
 pub const legacy_save_file_name: []const u8 = "world.dat";
 
 pub const StandaloneBoot = struct {
@@ -63,10 +62,9 @@ pub const GameConfig = union(enum) {
 
 var allocator: StaticAllocator = undefined;
 pub var io: std.Io = undefined;
-/// Directory containing the active save. The world save file and
-/// (standalone only) server.properties live here. Resolved at `init`
-/// from the parent of `WorldConfig.save_location`; the directory is
-/// created if it does not already exist.
+/// Directory containing the active save. Resolved at `init` from the parent of
+/// `WorldConfig.save_location`; the directory is created if it does not
+/// already exist. Standalone `server.properties` stays at the data-dir root.
 pub var save_dir: std.Io.Dir = undefined;
 var save_dir_owned: bool = false;
 
@@ -130,11 +128,11 @@ pub fn init(
     // seed and save-location before the world has ever been generated.
     // Embedded mode never touches server.properties (NoServerPropertiesIO).
     if (!internal_use) load_config(data_dir, &wcfg);
+    normalize_default_save_location(&wcfg);
 
-    // Promote a v1.0-shaped legacy save (world.dat at the data dir root)
-    // into the v1.1 default location before the saver opens it. Format
-    // sniffing on load handles the still-classic_dat content; the
-    // post-load upgrade save (world.zig) rewrites it as classic_cw.
+    // Promote old root saves into the default location before the saver opens
+    // it. Format sniffing handles classic_dat content copied from world.dat;
+    // the post-load upgrade save (world.zig) rewrites it as classic_cw.
     migrate_legacy_save(data_dir, wcfg);
 
     const split = split_save_location(wcfg.save_location);
@@ -213,25 +211,22 @@ fn copy_save_file_name(file_name: []const u8) ![]const u8 {
     return save_file_name_buf[0..save_file_name_len];
 }
 
-/// Move a v1.0-shaped `world.dat` from the data dir root into the v1.1
-/// default location. Gated on the configured save_location matching the
-/// default, so an operator who set a custom `save-location:` in
-/// server.properties is left alone. No-op when the new file already
-/// exists or the legacy file is missing. Logs and skips on rename
-/// failure -- the saver then falls through to worldgen, which is the
-/// same outcome as having no save at all.
+fn normalize_default_save_location(wcfg: *WorldConfig) void {
+    if (std.mem.eql(u8, wcfg.save_location, root_default_save_file_name)) {
+        wcfg.save_location = default_save_location;
+    }
+}
+
+/// Move old root saves into the default `saves/` layout. Gated on the
+/// configured save_location matching the default, so an operator who set a
+/// custom `save-location:` in server.properties is left alone. No-op when the
+/// new file already exists. Logs and skips on failures -- the saver then falls
+/// through to worldgen, which is the same outcome as having no save at all.
 fn migrate_legacy_save(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
     if (!std.mem.eql(u8, wcfg.save_location, default_save_location)) return;
 
     // Skip if the new-path file already exists -- never clobber.
-    if (data_dir.openFile(io, wcfg.save_location, .{})) |f| {
-        f.close(io);
-        return;
-    } else |_| {}
-    // Skip if the legacy file is missing.
-    if (data_dir.openFile(io, legacy_save_file_name, .{})) |f| {
-        f.close(io);
-    } else |_| return;
+    if (file_exists(data_dir, wcfg.save_location)) return;
 
     const split = split_save_location(wcfg.save_location);
     if (split.parent.len > 0) {
@@ -242,13 +237,56 @@ fn migrate_legacy_save(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
         new_dir.close(io);
     }
 
-    data_dir.rename(legacy_save_file_name, data_dir, wcfg.save_location, io) catch |err| {
+    if (file_exists(data_dir, root_default_save_file_name)) {
+        data_dir.rename(root_default_save_file_name, data_dir, wcfg.save_location, io) catch |err| {
+            log.warn("default save migration failed: {}", .{err});
+            return;
+        };
+        log.info("Migrated default save '{s}' -> '{s}'", .{
+            root_default_save_file_name, wcfg.save_location,
+        });
+        return;
+    }
+
+    if (!file_exists(data_dir, legacy_save_file_name)) return;
+
+    var backup_name_buf: [32]u8 = undefined;
+    const backup_name = choose_legacy_backup_name(data_dir, &backup_name_buf) orelse {
+        log.warn("legacy save migration: no available world.bak name", .{});
+        return;
+    };
+
+    data_dir.copyFile(legacy_save_file_name, data_dir, wcfg.save_location, io, .{ .replace = false }) catch |err| {
         log.warn("legacy save migration failed: {}", .{err});
         return;
     };
-    log.info("Migrated legacy save '{s}' -> '{s}'", .{
-        legacy_save_file_name, wcfg.save_location,
+
+    data_dir.rename(legacy_save_file_name, data_dir, backup_name, io) catch |err| {
+        log.warn("legacy save migration: failed to rename {s} to {s}: {}", .{
+            legacy_save_file_name, backup_name, err,
+        });
+        return;
+    };
+    log.info("Migrated legacy save '{s}' -> '{s}'; backup '{s}'", .{
+        legacy_save_file_name, wcfg.save_location, backup_name,
     });
+}
+
+fn choose_legacy_backup_name(data_dir: std.Io.Dir, out: *[32]u8) ?[]const u8 {
+    if (!file_exists(data_dir, "world.bak")) return "world.bak";
+
+    var i: u16 = 2;
+    while (i < 1000) : (i += 1) {
+        const name = std.fmt.bufPrint(out, "world.{d}.bak", .{i}) catch return null;
+        if (!file_exists(data_dir, name)) return name;
+    }
+    return null;
+}
+
+fn file_exists(dir: std.Io.Dir, path: []const u8) bool {
+    const file = dir.openFile(io, path, .{}) catch return false;
+    file.close(io);
+    return true;
 }
 
 fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
