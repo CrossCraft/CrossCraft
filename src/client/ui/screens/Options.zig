@@ -35,13 +35,19 @@ pub const Hooks = struct {
     on_fov_changed: ?*const fn () void = null,
 };
 
+pub const Result = enum {
+    none,
+    controls,
+    close,
+};
+
 pub fn wid(w: Widget) widget_id.WidgetId {
     return widget_id.from(Widget, w);
 }
 
-pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) bool {
+pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
     var col = ui.stack(.{ .axis = .vertical, .anchor = .middle_center, .cross_align = .center, .gap = 4 });
-    var close = false;
+    var result: Result = .none;
 
     ui.label("Options");
     {
@@ -128,15 +134,18 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) bool {
         .{ .id = .rain, .label = "Rain", .field = .rain },
     );
 
-    _ = ui.button(wid(.controls_placeholder), "Controls...", .{ .width = WIDGET_W, .enabled = false });
+    if (ui.button(wid(.controls_placeholder), "Controls...", .{ .width = WIDGET_W }) and result == .none) {
+        result = .controls;
+    }
 
-    if (ui.button(wid(.done), "Done", .{ .width = WIDGET_W })) {
+    if (ui.button(wid(.done), "Done", .{ .width = WIDGET_W }) and result == .none) {
         ui.close_request();
-        close = true;
+        result = .close;
     }
     col.end();
     ui.prompts(&.{ Prompts.select(), Prompts.back() });
-    return close or ui.close_requested or ui.cancel_pressed();
+    if (result == .none and (ui.close_requested or ui.cancel_pressed())) result = .close;
+    return result;
 }
 
 const Toggle = struct {

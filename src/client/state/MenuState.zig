@@ -23,6 +23,8 @@ const TexturePacks = @import("../ui/screens/TexturePacks.zig");
 const SelectWorld = @import("../ui/screens/SelectWorld.zig");
 const CreateWorld = @import("../ui/screens/CreateWorld.zig");
 const OptionsScreen = @import("../ui/screens/Options.zig");
+const ControlsScreen = @import("../ui/screens/Controls.zig");
+const GameplayBindings = @import("../player/bindings.zig");
 const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
 const common = @import("common");
@@ -46,7 +48,7 @@ pub fn transition_here(engine: *Engine) !void {
     try ae.Core.state_machine.transition(engine, &menu_state_inst);
 }
 
-pub const ScreenId = enum { main, direct_connect, texture_packs, select_world, create_world, options };
+pub const ScreenId = enum { main, direct_connect, texture_packs, select_world, create_world, options, controls };
 
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
@@ -57,6 +59,7 @@ active_screen: ScreenId,
 main_ui_state: UiState,
 dc_ui_state: UiState,
 options_ui_state: UiState,
+controls_ui_state: UiState,
 tp_ui_state: UiState,
 sw_ui_state: UiState,
 cw_ui_state: UiState,
@@ -68,6 +71,8 @@ dc_name: [DirectConnect.NAME_MAX]u8,
 dc_name_len: u8,
 
 options_rd_view: f32,
+controls_capture: ?Options.PcControl,
+controls_status: ControlsScreen.Status,
 
 tp_entries: [TexturePacks.max_packs + 1]TexturePacks.Entry,
 tp_entry_count: u8,
@@ -140,12 +145,15 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.main_ui_state = .{};
     self.dc_ui_state = .{};
     self.options_ui_state = .{};
+    self.controls_ui_state = .{};
     self.tp_ui_state = .{};
     self.sw_ui_state = .{};
     self.cw_ui_state = .{};
     self.dc_ip_len = 0;
     self.dc_name_len = 0;
     self.options_rd_view = @floatFromInt(Options.capped_render_distance());
+    self.controls_capture = null;
+    self.controls_status = .none;
     self.tp_entry_count = 0;
     self.tp_selected_index = null;
     self.sw_entry_count = 0;
@@ -324,6 +332,7 @@ fn file_exists(io: std.Io, dir: std.Io.Dir, path: []const u8) bool {
 fn deinit(ctx: *anyopaque, _: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
+    ControlsScreen.cancel_capture(controls_ctx(self));
     self.splash_mesh.deinit(self.render_alloc);
     self.font_batcher.deinit();
     self.batcher.deinit();
@@ -347,6 +356,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
         .select_world => try update_select_world(self, engine, &in),
         .create_world => try update_create_world(self, engine, &in),
         .options => try update_options(self, engine, &in),
+        .controls => try update_controls(self, engine, &in),
     }
 }
 
@@ -506,12 +516,28 @@ fn tp_select_row(self: *@This(), engine: *Engine, row: u8) void {
 fn update_options(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
     var list: UiDrawList = .{};
     var ui = self.begin_ui(&list, &self.options_ui_state, in, 0);
-    const leave = OptionsScreen.run(&ui, &Options.current, &self.options_rd_view, .{});
+    const action = OptionsScreen.run(&ui, &Options.current, &self.options_rd_view, .{});
     ui.end();
-    if (leave) {
+    switch (action) {
+        .none => {},
+        .controls => enter_controls(self),
+        .close => {
+            Options.save(engine.io, engine.dirs.data);
+            engine.set_vsync(Options.current.vsync);
+            enter_main(self);
+        },
+    }
+}
+
+fn update_controls(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
+    var list: UiDrawList = .{};
+    var ui = self.begin_ui(&list, &self.controls_ui_state, in, 0);
+    const result = ControlsScreen.run(&ui, &Options.current, controls_ctx(self));
+    ui.end();
+    if (result.changed) apply_control_options();
+    if (result.back) {
         Options.save(engine.io, engine.dirs.data);
-        engine.set_vsync(Options.current.vsync);
-        enter_main(self);
+        enter_options(self);
     }
 }
 
@@ -552,6 +578,25 @@ fn enter_options(self: *@This()) void {
     self.options_rd_view = @floatFromInt(Options.capped_render_distance());
     self.active_screen = .options;
     self.options_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
+fn enter_controls(self: *@This()) void {
+    ControlsScreen.cancel_capture(controls_ctx(self));
+    self.controls_status = .none;
+    self.active_screen = .controls;
+    self.controls_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
+fn controls_ctx(self: *@This()) ControlsScreen.Ctx {
+    return .{
+        .capture = &self.controls_capture,
+        .status = &self.controls_status,
+    };
+}
+
+fn apply_control_options() void {
+    ui_input.apply_options() catch |err| log.warn("failed to apply UI control bindings: {}", .{err});
+    GameplayBindings.apply_options() catch |err| log.warn("failed to apply gameplay control bindings: {}", .{err});
 }
 
 fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
@@ -612,6 +657,11 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         .options => {
             var ui = self.begin_ui(&list, &self.options_ui_state, &none, 0);
             _ = OptionsScreen.run(&ui, &Options.current, &self.options_rd_view, .{});
+            ui.end();
+        },
+        .controls => {
+            var ui = self.begin_ui(&list, &self.controls_ui_state, &none, 0);
+            _ = ControlsScreen.run(&ui, &Options.current, controls_ctx(self));
             ui.end();
         },
     }

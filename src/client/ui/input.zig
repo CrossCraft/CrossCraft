@@ -7,6 +7,7 @@ const ae = @import("aether");
 const Rendering = ae.Rendering;
 const input = ae.Core.input;
 
+const Options = @import("../Options.zig");
 const Scaling = @import("Scaling.zig");
 
 pub const NavDir = enum(u8) { none, up, down, left, right };
@@ -123,10 +124,7 @@ pub fn ensure_registered() !void {
     try input.bind_action(set, "ui_pause", .{ .source = .{ .gamepad_button = .Start } });
 
     try input.add_action(set, "ui_inventory", .button);
-    try input.bind_action(set, "ui_inventory", .{ .source = .{ .key = .B } });
-    if (ae.platform != .psp) {
-        try input.bind_action(set, "ui_inventory", .{ .source = .{ .gamepad_button = .Y } });
-    }
+    try bind_inventory(set);
 
     try input.add_action(set, "ui_up", .button);
     try input.bind_action(set, "ui_up", .{ .source = .{ .key = .Up } });
@@ -157,8 +155,32 @@ pub fn ensure_registered() !void {
     runtime.set = set;
 }
 
+pub fn apply_options() !void {
+    const previous = runtime.set orelse return;
+    runtime.set = null;
+    errdefer runtime.set = previous;
+    try ensure_registered();
+    try refresh_active_context(previous);
+}
+
 pub fn menu_set() input.ActionSetHandle {
     return runtime.set.?;
+}
+
+fn bind_inventory(set: input.ActionSetHandle) !void {
+    try input.bind_action(set, "ui_inventory", .{ .source = .{ .key = Options.current.key_inventory } });
+    if (ae.platform != .psp) {
+        try input.bind_action(set, "ui_inventory", .{ .source = .{ .gamepad_button = .Y } });
+    }
+}
+
+fn refresh_active_context(previous: input.ActionSetHandle) !void {
+    const set = runtime.set orelse return;
+    const top = input.stack_top() orelse return;
+    if (top.actions != previous) return;
+    var ctx = top.*;
+    ctx.actions = set;
+    _ = try input.replace_top(ctx);
 }
 
 /// Builds the per-frame UI snapshot. `dt` is in seconds. `repeat` is

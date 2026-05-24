@@ -1,8 +1,10 @@
 /// Gameplay ActionSet registration. Caller pushes a context referencing
 /// the returned handle while the player has agency.
+const std = @import("std");
 const builtin = @import("builtin");
 const ae = @import("aether");
 const input = ae.Core.input;
+const Options = @import("../Options.zig");
 
 pub const ActionSetHandle = input.ActionSetHandle;
 
@@ -21,36 +23,16 @@ pub fn init() !ActionSetHandle {
 
     // --- movement (vector2: x = strafe, y = forward/back) ---
     try input.add_action(set, "move", .vector2);
-    try input.bind_action(set, "move", .{ .source = .{ .key = .W }, .component = .y, .multiplier = 1.0 });
-    try input.bind_action(set, "move", .{ .source = .{ .key = .S }, .component = .y, .multiplier = -1.0 });
-    try input.bind_action(set, "move", .{ .source = .{ .key = .A }, .component = .x, .multiplier = -1.0 });
-    try input.bind_action(set, "move", .{ .source = .{ .key = .D }, .component = .x, .multiplier = 1.0 });
-    if (ae.platform == .psp) {
-        // PSP face buttons drive movement (Circle/Square = strafe, Triangle/Cross = forward/back).
-        try input.bind_action(set, "move", .{ .source = .{ .gamepad_button = .B }, .component = .x, .multiplier = 1.0 }); // Circle = right
-        try input.bind_action(set, "move", .{ .source = .{ .gamepad_button = .X }, .component = .x, .multiplier = -1.0 }); // Square = left
-        try input.bind_action(set, "move", .{ .source = .{ .gamepad_button = .Y }, .component = .y, .multiplier = 1.0 }); // Triangle = forward
-        try input.bind_action(set, "move", .{ .source = .{ .gamepad_button = .A }, .component = .y, .multiplier = -1.0 }); // Cross = back
-    } else {
-        // Desktop: left analog stick drives movement. LeftY is +1 when pushed
-        // down, so invert to make forward = +y.
-        try input.bind_action(set, "move", .{ .source = .{ .gamepad_axis = .LeftX }, .component = .x, .multiplier = 1.0 });
-        try input.bind_action(set, "move", .{ .source = .{ .gamepad_axis = .LeftY }, .component = .y, .multiplier = -1.0 });
-    }
+    try bind_move(set);
 
     // --- jump / sneak ---
     try input.add_action(set, "jump", .button);
-    try input.bind_action(set, "jump", .{ .source = .{ .key = .Space } });
+    try bind_jump(set);
     try input.add_action(set, "sneak", .button);
     try input.bind_action(set, "sneak", .{ .source = .{ .key = .LeftShift } });
     if (ae.platform == .psp) {
-        // D-pad up/down on PSP; on desktop the sticks handle movement and
-        // the D-pad is free for hotbar cycling.
-        try input.bind_action(set, "jump", .{ .source = .{ .gamepad_button = .DpadUp } });
         try input.bind_action(set, "sneak", .{ .source = .{ .gamepad_button = .DpadDown } });
     } else {
-        // Desktop gamepad: A = jump, X = sneak (standard platformer layout).
-        try input.bind_action(set, "jump", .{ .source = .{ .gamepad_button = .A } });
         try input.bind_action(set, "sneak", .{ .source = .{ .gamepad_button = .X } });
     }
 
@@ -74,10 +56,7 @@ pub fn init() !ActionSetHandle {
 
     // --- inventory toggle ---
     try input.add_action(set, "inventory_toggle", .button);
-    try input.bind_action(set, "inventory_toggle", .{ .source = .{ .key = .B } });
-    if (ae.platform != .psp) {
-        try input.bind_action(set, "inventory_toggle", .{ .source = .{ .gamepad_button = .Y } });
-    }
+    try bind_inventory_toggle(set);
 
     // ui_pause is mirrored from menu_set so build_frame can poll it from
     // either context.
@@ -94,13 +73,7 @@ pub fn init() !ActionSetHandle {
 
     // --- stick look (rate-based, applied as velocity * dt) ---
     try input.add_action(set, "look_stick", .vector2);
-    if (ae.platform == .psp) {
-        try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_axis = .LeftX }, .component = .x });
-        try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_axis = .LeftY }, .component = .y });
-    } else {
-        try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_axis = .RightX }, .component = .x });
-        try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_axis = .RightY }, .component = .y });
-    }
+    try bind_look_stick(set);
 
     // --- break / place ---
     try input.add_action(set, "break", .button);
@@ -122,8 +95,7 @@ pub fn init() !ActionSetHandle {
 
     // --- playerlist (held overlay) ---
     try input.add_action(set, "playerlist", .button);
-    try input.bind_action(set, "playerlist", .{ .source = .{ .key = .Tab } });
-    try input.bind_action(set, "playerlist", .{ .source = .{ .gamepad_button = .Back } });
+    try bind_playerlist(set);
 
     // chat_open (T) and chat_cmd (/) open the chat overlay; chat_send /
     // chat_cancel live on the chat ActionSet so Enter only sends when
@@ -134,8 +106,8 @@ pub fn init() !ActionSetHandle {
     try input.bind_action(set, "chat_cmd", .{ .source = .{ .key = .Slash } });
 
     // PSP: Cross (X) confirms / launches the OSK while the social overlay is
-    // open. Shares the same button as the 'move' backward action; the OSK
-    // fires synchronously so any simultaneous movement is harmless.
+    // open. It may share a face-button gameplay binding; the OSK fires
+    // synchronously so any simultaneous movement/look is harmless.
     if (ae.platform == .psp) {
         try input.add_action(set, "psp_osk", .button);
         try input.bind_action(set, "psp_osk", .{ .source = .{ .gamepad_button = .A } }); // Cross
@@ -176,4 +148,103 @@ pub fn init() !ActionSetHandle {
     try input.install_action_set(set);
     gameplay_set = set;
     return set;
+}
+
+pub fn apply_options() !void {
+    const previous = gameplay_set orelse return;
+    gameplay_set = null;
+    errdefer gameplay_set = previous;
+    _ = try init();
+    try refresh_active_context();
+}
+
+pub fn refresh_active_context() !void {
+    const set = gameplay_set orelse return;
+    const top = input.stack_top() orelse return;
+    if (!std.mem.eql(u8, top.name, "gameplay")) return;
+    if (top.actions == set) return;
+    var ctx = top.*;
+    ctx.actions = set;
+    _ = try input.replace_top(ctx);
+}
+
+fn bind_move(set: ActionSetHandle) !void {
+    if (ae.platform == .psp) {
+        switch (Options.current.psp_analog_mode) {
+            .move => {
+                try input.bind_action(set, "move", .{ .source = .{ .gamepad_axis = .LeftX }, .component = .x, .multiplier = 1.0 });
+                try input.bind_action(set, "move", .{ .source = .{ .gamepad_axis = .LeftY }, .component = .y, .multiplier = -1.0 });
+            },
+            .look => try bind_psp_face_move(set),
+        }
+        return;
+    }
+
+    try input.bind_action(set, "move", .{ .source = .{ .key = Options.current.key_forward }, .component = .y, .multiplier = 1.0 });
+    try input.bind_action(set, "move", .{ .source = .{ .key = Options.current.key_back }, .component = .y, .multiplier = -1.0 });
+    try input.bind_action(set, "move", .{ .source = .{ .key = Options.current.key_left }, .component = .x, .multiplier = -1.0 });
+    try input.bind_action(set, "move", .{ .source = .{ .key = Options.current.key_right }, .component = .x, .multiplier = 1.0 });
+    // Desktop: left analog stick drives movement. LeftY is +1 when pushed
+    // down, so invert to make forward = +y.
+    try input.bind_action(set, "move", .{ .source = .{ .gamepad_axis = .LeftX }, .component = .x, .multiplier = 1.0 });
+    try input.bind_action(set, "move", .{ .source = .{ .gamepad_axis = .LeftY }, .component = .y, .multiplier = -1.0 });
+}
+
+fn bind_psp_face_move(set: ActionSetHandle) !void {
+    try input.bind_action(set, "move", .{ .source = .{ .gamepad_button = .B }, .component = .x, .multiplier = 1.0 }); // Circle = right
+    try input.bind_action(set, "move", .{ .source = .{ .gamepad_button = .X }, .component = .x, .multiplier = -1.0 }); // Square = left
+    try input.bind_action(set, "move", .{ .source = .{ .gamepad_button = .Y }, .component = .y, .multiplier = 1.0 }); // Triangle = forward
+    try input.bind_action(set, "move", .{ .source = .{ .gamepad_button = .A }, .component = .y, .multiplier = -1.0 }); // Cross = back
+}
+
+fn bind_jump(set: ActionSetHandle) !void {
+    try input.bind_action(set, "jump", .{ .source = .{ .key = .Space } });
+    if (ae.platform == .psp) {
+        const button: input.Button = switch (Options.current.psp_jump_mode) {
+            .up => .DpadUp,
+            .select => .Back,
+        };
+        try input.bind_action(set, "jump", .{ .source = .{ .gamepad_button = button } });
+    } else {
+        try input.bind_action(set, "jump", .{ .source = .{ .gamepad_button = .A } });
+    }
+}
+
+fn bind_inventory_toggle(set: ActionSetHandle) !void {
+    try input.bind_action(set, "inventory_toggle", .{ .source = .{ .key = Options.current.key_inventory } });
+    if (ae.platform != .psp) {
+        try input.bind_action(set, "inventory_toggle", .{ .source = .{ .gamepad_button = .Y } });
+    }
+}
+
+fn bind_look_stick(set: ActionSetHandle) !void {
+    if (ae.platform == .psp) {
+        switch (Options.current.psp_analog_mode) {
+            .look => {
+                try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_axis = .LeftX }, .component = .x });
+                try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_axis = .LeftY }, .component = .y });
+            },
+            .move => {
+                try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_button = .B }, .component = .x, .multiplier = 1.0 }); // Circle = right
+                try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_button = .X }, .component = .x, .multiplier = -1.0 }); // Square = left
+                try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_button = .Y }, .component = .y, .multiplier = -1.0 }); // Triangle = up
+                try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_button = .A }, .component = .y, .multiplier = 1.0 }); // Cross = down
+            },
+        }
+    } else {
+        try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_axis = .RightX }, .component = .x });
+        try input.bind_action(set, "look_stick", .{ .source = .{ .gamepad_axis = .RightY }, .component = .y });
+    }
+}
+
+fn bind_playerlist(set: ActionSetHandle) !void {
+    try input.bind_action(set, "playerlist", .{ .source = .{ .key = .Tab } });
+    const button: input.Button = if (ae.platform == .psp)
+        switch (Options.current.psp_jump_mode) {
+            .up => .Back,
+            .select => .DpadUp,
+        }
+    else
+        .Back;
+    try input.bind_action(set, "playerlist", .{ .source = .{ .gamepad_button = button } });
 }

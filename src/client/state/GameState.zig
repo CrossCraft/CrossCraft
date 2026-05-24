@@ -45,6 +45,7 @@ const ui_input = @import("../ui/input.zig");
 const InventoryUi = @import("../ui/screens/Inventory.zig");
 const PauseMenu = @import("../ui/screens/PauseMenu.zig");
 const OptionsScreen = @import("../ui/screens/Options.zig");
+const ControlsScreen = @import("../ui/screens/Controls.zig");
 const DumpWorldScreen = @import("../ui/screens/DumpWorld.zig");
 const bindings = @import("../player/bindings.zig");
 const ae_input = ae.Core.input;
@@ -52,7 +53,7 @@ const ae_input = ae.Core.input;
 const log = std.log.scoped(.game);
 
 const selection_depth_nudge: f32 = 1.0 / 320.0;
-const PauseScreen = enum { main, options, dump_world };
+const PauseScreen = enum { main, options, controls, dump_world };
 
 fake_conn: FakeConn,
 conn: ClientConn,
@@ -97,8 +98,11 @@ paused: bool,
 pause_screen: PauseScreen,
 pause_ui_state: UiState,
 pause_options_ui_state: UiState,
+pause_controls_ui_state: UiState,
 pause_dump_ui_state: UiState,
 pause_options_rd_view: f32,
+pause_controls_capture: ?Options.PcControl,
+pause_controls_status: ControlsScreen.Status,
 dump_world_name: [DumpWorldScreen.NAME_MAX]u8,
 dump_world_name_len: u8,
 pause_ui_repeat: ui_input.Repeat,
@@ -299,8 +303,11 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.pause_ui_repeat = .{};
     self.pause_ui_state = .{};
     self.pause_options_ui_state = .{};
+    self.pause_controls_ui_state = .{};
     self.pause_dump_ui_state = .{};
     self.pause_options_rd_view = @floatFromInt(Options.capped_render_distance());
+    self.pause_controls_capture = null;
+    self.pause_controls_status = .none;
     self.dump_world_name = @splat(0);
     self.dump_world_name_len = 0;
 
@@ -338,6 +345,7 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     if (ae_input.current_text_session()) |s| {
         if (s.status == .active or s.status == .suspended) ae_input.cancel_text() catch {};
     }
+    ControlsScreen.cancel_capture(pause_controls_ctx(self));
 
     // Pop gameplay and any overlays still stacked on top of it.
     while (ae_input.stack_top()) |top| {
@@ -491,7 +499,9 @@ fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInpu
             self.player.look_delta = .{ 0, 0 };
             self.pause_ui_state.cancel_active_text();
             self.pause_options_ui_state.cancel_active_text();
+            self.pause_controls_ui_state.cancel_active_text();
             self.pause_dump_ui_state.cancel_active_text();
+            ControlsScreen.cancel_capture(pause_controls_ctx(self));
             try MenuState.transition_here(engine);
             return true;
         },
@@ -502,13 +512,29 @@ fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInpu
 fn update_pause_options(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
     var list: UiDrawList = .{};
     var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, in, OptionsScreen.LAYER_BASE);
-    const leave = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
+    const action = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
     ui.end();
     self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
-    if (leave) {
+    switch (action) {
+        .none => {},
+        .controls => enter_pause_controls(self),
+        .close => {
+            Options.save(engine.io, engine.dirs.data);
+            engine.set_vsync(Options.current.vsync);
+            leave_pause_options(self);
+        },
+    }
+}
+
+fn update_pause_controls(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
+    var list: UiDrawList = .{};
+    var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, in, OptionsScreen.LAYER_BASE);
+    const result = ControlsScreen.run(&ui, &Options.current, pause_controls_ctx(self));
+    ui.end();
+    if (result.changed) apply_control_options();
+    if (result.back) {
         Options.save(engine.io, engine.dirs.data);
-        engine.set_vsync(Options.current.vsync);
-        leave_pause_options(self);
+        enter_pause_options(self);
     }
 }
 
@@ -521,6 +547,25 @@ fn enter_pause_options(self: *@This()) void {
 fn leave_pause_options(self: *@This()) void {
     self.pause_screen = .main;
     self.pause_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
+fn enter_pause_controls(self: *@This()) void {
+    ControlsScreen.cancel_capture(pause_controls_ctx(self));
+    self.pause_controls_status = .none;
+    self.pause_screen = .controls;
+    self.pause_controls_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
+fn pause_controls_ctx(self: *@This()) ControlsScreen.Ctx {
+    return .{
+        .capture = &self.pause_controls_capture,
+        .status = &self.pause_controls_status,
+    };
+}
+
+fn apply_control_options() void {
+    ui_input.apply_options() catch |err| log.warn("failed to apply UI control bindings: {}", .{err});
+    bindings.apply_options() catch |err| log.warn("failed to apply gameplay control bindings: {}", .{err});
 }
 
 fn update_pause_dump_world(self: *@This(), in: *const ui_input.UiInput) !void {
@@ -613,10 +658,13 @@ fn close_pause(self: *@This()) void {
     self.paused = false;
     self.pause_screen = .main;
     _ = ae_input.pop_context() catch {};
+    bindings.refresh_active_context() catch |err| log.warn("failed to refresh gameplay controls: {}", .{err});
     self.player.look_delta = .{ 0, 0 };
     self.pause_ui_state.cancel_active_text();
     self.pause_options_ui_state.cancel_active_text();
+    self.pause_controls_ui_state.cancel_active_text();
     self.pause_dump_ui_state.cancel_active_text();
+    ControlsScreen.cancel_capture(pause_controls_ctx(self));
 }
 
 fn open_inventory(self: *@This()) void {
@@ -644,6 +692,7 @@ fn close_inventory(self: *@This()) void {
     if (!self.inventory_open) return;
     self.inventory_open = false;
     _ = ae_input.pop_context() catch {};
+    bindings.refresh_active_context() catch |err| log.warn("failed to refresh gameplay controls: {}", .{err});
     // Discard the spurious look delta produced by the cursor-mode swap.
     self.player.look_delta = .{ 0, 0 };
     self.inventory_ui_state.cancel_active_text();
@@ -776,6 +825,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
                     if (try update_pause_menu(self, engine, &ui_in)) return;
                 },
                 .options => try update_pause_options(self, engine, &ui_in),
+                .controls => try update_pause_controls(self, engine, &ui_in),
                 .dump_world => try update_pause_dump_world(self, &ui_in),
             }
         }
@@ -1086,6 +1136,13 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
                 var list: UiDrawList = .{};
                 var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, &none, OptionsScreen.LAYER_BASE);
                 _ = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
+                ui.end();
+                list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            },
+            .controls => {
+                var list: UiDrawList = .{};
+                var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, &none, OptionsScreen.LAYER_BASE);
+                _ = ControlsScreen.run(&ui, &Options.current, pause_controls_ctx(self));
                 ui.end();
                 list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
             },
