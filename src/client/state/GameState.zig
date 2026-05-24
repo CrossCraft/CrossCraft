@@ -10,6 +10,7 @@ const game = @import("game");
 const Server = game.Server;
 const World = game.World;
 const CompressWorker = game.CompressWorker;
+const CompressorThread = @import("CompressorThread.zig");
 const c = @import("common").consts;
 const proto = @import("common").protocol;
 const collision = @import("../player/collision.zig");
@@ -64,9 +65,9 @@ mp_read_future: ?std.Io.Future(void),
 /// Singleplayer compressor worker thread that drains classic_cw save jobs
 /// owned by the embedded server. Standalone servers spawn an equivalent
 /// thread in `ServerState.init`.
-sp_compressor_thread: ?Util.Thread,
+sp_compressor_thread: ?CompressorThread.Thread,
 /// Multiplayer-only compressor worker used by explicit world dumps.
-mp_compressor_thread: ?Util.Thread,
+mp_compressor_thread: ?CompressorThread.Thread,
 pipeline: Rendering.Pipeline.Handle,
 world: WorldRenderer,
 player: Player,
@@ -143,18 +144,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
                 &self.fake_conn.server_writer,
                 &self.fake_conn.connected,
             ) orelse return error.ServerFull;
-
-            // Drain classic_cw save jobs queued by Server.init (the
-            // initial post-worldgen save and any format-upgrade save
-            // from a v1.0 -> v1.1 migration sit on the lock-free LIFO
-            // until this thread picks them up). Mirrors the standalone
-            // server's pattern in ServerState.init.
-            self.sp_compressor_thread = try Util.Thread.spawn(.{
-                .name = "world_compress",
-                .stack_size = 512 * 1024,
-                .priority = .normal,
-                .allocator = engine.allocator(.user),
-            }, CompressWorker.worker_main, .{});
 
             self.conn.init(&self.fake_conn.client_reader, &self.fake_conn.client_writer);
             try self.conn.join(Session.username());
@@ -234,7 +223,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still, .char, .glyphs, .rain, .particles });
 
-    self.world = try WorldRenderer.init(
+    try self.world.init_in_place(
         render_alloc,
         engine.io,
         self.pipeline,
@@ -324,15 +313,13 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.held = try BlockHand.init(render_alloc, self.pipeline, ResourcePack.atlas);
     self.player.held_renderer = &self.held;
 
-    if (Session.mode == .multiplayer) {
-        try CompressWorker.init(engine.allocator(.user), engine.io);
-        errdefer CompressWorker.deinit();
-        self.mp_compressor_thread = try Util.Thread.spawn(.{
-            .name = "world_compress",
-            .stack_size = 512 * 1024,
-            .priority = .normal,
-            .allocator = engine.allocator(.user),
-        }, CompressWorker.worker_main, .{});
+    switch (Session.mode) {
+        .singleplayer => {},
+        .multiplayer => {
+            try CompressWorker.init(engine.allocator(.user), engine.io);
+            errdefer CompressWorker.deinit();
+            self.mp_compressor_thread = try CompressorThread.spawn(engine.allocator(.user));
+        },
     }
 
     self.inited = true;
@@ -405,36 +392,49 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
         .singleplayer => {
             // Server.deinit triggers the final classic_cw save; the
             // compressor thread must still be alive to drain it before
-            // we signal exit and join.
+            // we signal exit and join. Its backing storage is freed only
+            // after the thread is gone.
+            self.ensure_sp_compressor_started(engine) catch |err| {
+                log.err("failed to start SP compressor before shutdown: {}", .{err});
+            };
             Server.deinit();
             if (self.sp_compressor_thread) |*t| {
                 CompressWorker.signal_exit();
                 t.join();
                 self.sp_compressor_thread = null;
             }
+            CompressWorker.deinit();
         },
         .multiplayer => {
             World.deinit();
             if (self.mp_compressor_thread) |*t| {
-                CompressWorker.deinit();
                 CompressWorker.signal_exit();
                 t.join();
                 self.mp_compressor_thread = null;
             }
+            CompressWorker.deinit();
         },
     }
     self.inited = false;
 }
 
-fn tick(ctx: *anyopaque, _: *Engine) anyerror!void {
+fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     // MP updates arrive as packets; no local world tick.
     if (Session.mode == .singleplayer) {
         Server.drain_local_packets();
         Server.tick();
+        try self.ensure_sp_compressor_started(engine);
     }
     ResourcePack.tick_animations();
     send_player_position(&self.player);
+}
+
+fn ensure_sp_compressor_started(self: *@This(), engine: *Engine) !void {
+    if (self.sp_compressor_thread != null) return;
+    // Drain classic_cw save jobs queued by Server.init only after the state
+    // transition and initial memory report have completed.
+    self.sp_compressor_thread = try CompressorThread.spawn(engine.allocator(.user));
 }
 
 /// Emit PositionAndOrientationToServer every tick. Classic's wire format

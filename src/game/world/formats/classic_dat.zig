@@ -41,6 +41,7 @@ pub const ClassicDat = struct {
 
     pub fn load_world(
         _: ClassicDat,
+        _: std.mem.Allocator,
         raw_blocks: []u8,
         blocks: []Block,
         reader: *std.Io.Reader,

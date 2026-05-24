@@ -8,8 +8,8 @@
 //
 // This module owns the static state and the loop body. Spawning the OS
 // thread is the consumer's job (server's `ServerState`, client's
-// `LoadState`) since the game module is platform-agnostic and cannot pull
-// in Aether's `Util.Thread`. Pass `worker_main` as the spawn entry point.
+// `GameState` / migration code) since the game module is platform-agnostic.
+// Pass `worker_main` as the spawn entry point.
 //
 // Concurrency: only one job runs at a time -- the compressor is global
 // and not reentrant.
@@ -122,8 +122,8 @@ pub fn drain_once() bool {
     return true;
 }
 
-/// Long-running thread entry point. Spawn this with a 384 KB stack on a
-/// non-IO-tracked thread (Aether's `Util.Thread.spawn`).
+/// Long-running thread entry point. Spawn this with a large stack on a
+/// non-IO-tracked thread.
 ///
 /// Caveat: `std.Io.sleep` returns immediately from non-tracked threads on
 /// PSP, so this loop hot-spins there. Acceptable -- the work itself
@@ -132,7 +132,7 @@ pub fn drain_once() bool {
 pub fn worker_main() void {
     // PSP: pspsdk's per-thread kernel cwd is only initialised by io-tracked
     // thread entries (futureThreadEntry / groupThreadEntry call its private
-    // inheritCwd). `Util.Thread.spawn` skips that, so without this the
+    // inheritCwd). The compressor uses a raw OS thread, so without this the
     // worker starts with whatever the SCE default cwd is and every
     // relative-path file open from here returns the catch-all
     // `error.AccessDenied`. Re-apply the tracked cwd by reading it back

@@ -57,9 +57,9 @@ const psp_phat_profile: Profile = .{
     .init_audio = 1 * MB,
     .init_game = 1 * MB,
     .init_user = 12 * MB,
-    .rt_render = 14 * MB + 256 * KB,
+    .rt_render = 13 * MB + 512 * KB,
     .rt_audio = 0 * KB,
-    .rt_game = 256 * KB,
+    .rt_game = 1 * MB,
     .rt_user = 4 * MB + 512 * KB,
 };
 
@@ -72,9 +72,9 @@ const psp_slim_profile: Profile = .{
     .init_audio = 2 * MB,
     .init_game = 2 * MB,
     .init_user = 12 * MB,
-    .rt_render = 30 * MB + 512 * KB,
+    .rt_render = 29 * MB + 768 * KB,
     .rt_audio = 0 * KB,
-    .rt_game = 256 * KB,
+    .rt_game = 1 * MB,
     .rt_user = 4 * MB + 512 * KB,
 };
 

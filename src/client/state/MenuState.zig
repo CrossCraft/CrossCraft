@@ -32,6 +32,7 @@ const c = common.consts;
 const game = @import("game");
 const World = game.World;
 const CompressWorker = game.CompressWorker;
+const CompressorThread = @import("CompressorThread.zig");
 
 const build_options = @import("build_options");
 
@@ -204,14 +205,20 @@ fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.
     };
 
     common.BlockRegistry.init();
-    var data = World.WorldData.init(alloc, 0) catch |err| {
+    const data = alloc.create(World.WorldData) catch |err| {
+        log.warn("legacy save migration: failed to allocate world data object: {}", .{err});
+        return;
+    };
+    defer alloc.destroy(data);
+
+    data.init_in_place(alloc, 0) catch |err| {
         log.warn("legacy save migration: failed to allocate world data: {}", .{err});
         return;
     };
     defer data.deinit();
 
-    if (!load_legacy_world_dat(io, data_dir, &data)) return;
-    if (!write_converted_legacy_save(alloc, io, saves_dir, dest_name, &data)) return;
+    if (!load_legacy_world_dat(io, data_dir, data)) return;
+    if (!write_converted_legacy_save(alloc, io, saves_dir, dest_name, data)) return;
 
     data_dir.rename("world.dat", data_dir, backup_name, io) catch |err| {
         log.warn("legacy save migration: failed to rename world.dat to {s}: {}", .{ backup_name, err });
@@ -227,7 +234,7 @@ fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldDat
     var read_buf: [32768]u8 = undefined;
     var reader = file.reader(io, &read_buf);
     const load_format: World.SaveFormat = .{ .classic_dat = .{} };
-    const outcome = load_format.load_world(data.raw_blocks, data.blocks, &reader.interface) catch |err| {
+    const outcome = load_format.load_world(data.backing_allocator, data.raw_blocks, data.blocks, &reader.interface) catch |err| {
         log.warn("legacy save migration: failed to load world.dat: {}", .{err});
         return false;
     };
@@ -267,12 +274,7 @@ fn write_converted_legacy_save(
         log.warn("legacy save migration: failed to init compressor: {}", .{err});
         return false;
     };
-    var thread = Util.Thread.spawn(.{
-        .name = "legacy_save_convert",
-        .stack_size = 512 * 1024,
-        .priority = .normal,
-        .allocator = alloc,
-    }, CompressWorker.worker_main, .{}) catch |err| {
+    var thread = CompressorThread.spawn_named("legacy_save_convert", alloc) catch |err| {
         CompressWorker.deinit();
         log.warn("legacy save migration: failed to start compressor: {}", .{err});
         return false;

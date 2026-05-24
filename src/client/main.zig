@@ -3,7 +3,27 @@ const ae = @import("aether");
 const Util = ae.Util;
 
 // TODO: Make these options stuff nice
-pub const std_options = Util.std_options;
+pub const std_options: std.Options = .{
+    .log_level = Util.std_options.log_level,
+    .log_scope_levels = Util.std_options.log_scope_levels,
+    .logFn = locked_log_fn,
+};
+
+var log_lock: std.atomic.Value(bool) = .init(false);
+
+fn locked_log_fn(
+    comptime level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    while (log_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+        std.atomic.spinLoopHint();
+    }
+    defer log_lock.store(false, .release);
+
+    Util.std_options.logFn(level, scope, format, args);
+}
 
 const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
 comptime {

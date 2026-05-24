@@ -178,8 +178,9 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     // game/client.zig:reset_compressor, so match here. Wire format is
     // contiguous YZX (Java Classic compatible); scatter into chunk-aware layout.
     var src = std.Io.Reader.fixed(compressed[0..compressed_end]);
-    var window_buf: [flate.max_window_len]u8 = undefined;
-    var decompress = flate.Decompress.init(&src, .gzip, &window_buf);
+    const window_buf = try alloc.alloc(u8, flate.max_window_len);
+    defer alloc.free(window_buf);
+    var decompress = flate.Decompress.init(&src, .gzip, window_buf);
 
     decompress.reader.readSliceAll(World.data.raw_blocks[0..4]) catch |err| {
         log.err("level decompress header failed: {}", .{err});

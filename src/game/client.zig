@@ -473,9 +473,18 @@ pub fn init(self: *Self) void {
 /// if a packet was processed. Used for singleplayer (same-process) mode
 /// where there is no dedicated read thread.
 pub fn try_process_packet(self: *Self) bool {
-    const received = self.read_packet() catch return false;
+    const received = self.read_packet() catch |err| switch (err) {
+        error.ReadFailed => return false,
+        else => {
+            log.err("read packet failed for client id={d}: {}", .{ self.id, err });
+            return false;
+        },
+    };
     if (!received) return false;
-    self.protocol.handle_packet(self.buffer[1..], self.buffer[0]) catch return false;
+    self.protocol.handle_packet(self.buffer[1..], self.buffer[0]) catch |err| {
+        log.err("handle packet 0x{x:0>2} failed for client id={d}: {}", .{ self.buffer[0], self.id, err });
+        return false;
+    };
     return true;
 }
 

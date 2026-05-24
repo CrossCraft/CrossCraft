@@ -153,8 +153,10 @@ pub fn init(
     // fresh classic_cw world fires its first save during generation,
     // which submits a job to compress_worker's queue. Reordering
     // compress_worker.init after world.init would reset the queue
-    // head and silently drop that initial save.
-    try compress_worker.init(allocator.allocator(), io);
+    // head and silently drop that initial save. The host frees compressor
+    // storage after joining the worker thread, so do not back it with the
+    // server StaticAllocator that Server.deinit clears first.
+    try compress_worker.init(alloc, io);
 
     // wcfg.seed is used only on first generation; the saver restores
     // the saved seed when an existing save file is found. Format choice
@@ -351,10 +353,9 @@ fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
 pub fn deinit() void {
     allocator.transition_from_static_to_deinit();
 
-    // world.deinit submits and waits for the final .cw save; keep the
-    // compressor storage alive until that job has retired.
+    // world.deinit submits and waits for the final .cw save; the host-owned
+    // compressor thread/storage must remain alive until this returns.
     world.deinit();
-    compress_worker.deinit();
     if (!internal_use) players_db.deinit();
 
     allocator.deinit();

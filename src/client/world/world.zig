@@ -83,7 +83,8 @@ io: std.Io,
 
 const GridRef = packed struct { cx: u8, cz: u8, sy: u8 };
 
-pub fn init(
+pub fn init_in_place(
+    self: *Self,
     allocator: std.mem.Allocator,
     io: std.Io,
     pipeline: Rendering.Pipeline.Handle,
@@ -93,46 +94,48 @@ pub fn init(
     particles_tex: *const Rendering.Texture,
     atlas: TextureAtlas,
     camera: *const Camera,
-) !Self {
+) !void {
     const row_false = [_]bool{false} ** WORLD_CZ;
     const section_false = [_]bool{false} ** SECTIONS_Y;
     const col_section_false = [_][SECTIONS_Y]bool{section_false} ** WORLD_CZ;
-    var self: Self = .{
-        .grid = undefined,
-        .loaded = .{row_false} ** WORLD_CX,
-        .built = .{col_section_false} ** WORLD_CX,
-        .in_queue = .{col_section_false} ** WORLD_CX,
-        .dirty_buf = undefined,
-        .dirty_buf_len = 0,
-        .dirty_overflow = false,
-        .dirty_preserve_order = false,
-        .lod_check_x = camera.x,
-        .lod_check_y = camera.y,
-        .lod_check_z = camera.z,
-        .applied_render_distance = Options.capped_render_distance(),
-        .applied_fancy_leaves = Options.current.fancy_leaves,
-        .applied_ao = Options.current.ambient_occlusion,
-        .build_queue = undefined,
-        .build_cursor = 0,
-        .build_end = 0,
-        .build_estimator = Util.Estimator.init(),
-        .frame_visible = undefined,
-        .frame_visible_count = 0,
-        .frame_clip_count = 0,
-        .terrain = terrain,
-        .clouds = clouds,
-        .rain_tex = rain_tex,
-        .particles_tex = particles_tex,
-        .atlas = atlas,
-        .pipeline = pipeline,
-        .sky = try Sky.init(allocator, pipeline),
-        .particles = try ParticleSystem.init(allocator, pipeline, atlas),
-        .rain = try Rain.init(allocator, pipeline),
-        .cam_cx = camera_chunk(camera.x),
-        .cam_cz = camera_chunk(camera.z),
-        .allocator = allocator,
-        .io = io,
-    };
+    self.grid = undefined;
+    self.loaded = .{row_false} ** WORLD_CX;
+    self.built = .{col_section_false} ** WORLD_CX;
+    self.in_queue = .{col_section_false} ** WORLD_CX;
+    self.dirty_buf = undefined;
+    self.dirty_buf_len = 0;
+    self.dirty_overflow = false;
+    self.dirty_preserve_order = false;
+    self.lod_check_x = camera.x;
+    self.lod_check_y = camera.y;
+    self.lod_check_z = camera.z;
+    self.applied_render_distance = Options.capped_render_distance();
+    self.applied_fancy_leaves = Options.current.fancy_leaves;
+    self.applied_ao = Options.current.ambient_occlusion;
+    self.build_queue = undefined;
+    self.build_cursor = 0;
+    self.build_end = 0;
+    self.build_estimator = Util.Estimator.init();
+    self.frame_visible = undefined;
+    self.frame_visible_count = 0;
+    self.frame_clip_count = 0;
+    self.terrain = terrain;
+    self.clouds = clouds;
+    self.rain_tex = rain_tex;
+    self.particles_tex = particles_tex;
+    self.atlas = atlas;
+    self.pipeline = pipeline;
+    self.cam_cx = camera_chunk(camera.x);
+    self.cam_cz = camera_chunk(camera.z);
+    self.allocator = allocator;
+    self.io = io;
+
+    self.sky = try Sky.init(allocator, pipeline);
+    errdefer self.sky.deinit();
+    self.particles = try ParticleSystem.init(allocator, pipeline, atlas);
+    errdefer self.particles.deinit();
+    self.rain = try Rain.init(allocator, pipeline);
+    errdefer self.rain.deinit();
 
     self.recollect(camera);
 
@@ -147,8 +150,6 @@ pub fn init(
         self.in_queue[ref.cx][ref.cz][ref.sy] = false;
         self.build_cursor += 1;
     }
-
-    return self;
 }
 
 pub fn deinit(self: *Self) void {

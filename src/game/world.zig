@@ -64,7 +64,7 @@ pub fn init_empty(
     format: SaveFormat,
 ) !void {
     common.BlockRegistry.init();
-    data = try WorldData.init(allocator, seed);
+    try data.init_in_place(allocator, seed);
     errdefer data.deinit();
     sim = try WorldSimulation.init(allocator, seed);
     errdefer sim.deinit(allocator);
@@ -89,7 +89,7 @@ pub fn init(
     // Let loadscreen catch up
     try io.sleep(.fromMilliseconds(250), .real);
 
-    if (!saver.try_load(&data)) {
+    if (!saver.try_load(&data, scratch)) {
         data.seed = seed;
         load_status = .{ .generating = .raising };
         const start = std.Io.Clock.Timestamp.now(io, .boot);

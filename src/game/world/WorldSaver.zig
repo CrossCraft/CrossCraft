@@ -273,14 +273,18 @@ fn worker_world_name(self: *const WorldSaver, data: *const WorldData) []const u8
 /// Try to load the save file into `data`. Returns true on a successful
 /// load (data populated, dimensions match); false if the file is missing
 /// or invalid (caller falls back to worldgen).
-pub fn try_load(self: *WorldSaver, data: *WorldData) bool {
+pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator) bool {
     const file = self.save_dir.openFile(self.io, self.save_file_name, .{}) catch {
         return false;
     };
     defer file.close(self.io);
 
-    var read_buf: [BLOCK_SIZE]u8 = undefined;
-    var reader = file.reader(self.io, &read_buf);
+    const read_buf = scratch.alloc(u8, BLOCK_SIZE) catch |err| {
+        log.err("Failed to allocate save read buffer: {}", .{err});
+        return false;
+    };
+    defer scratch.free(read_buf);
+    var reader = file.reader(self.io, read_buf);
 
     // Sniff the on-disk format from the header so a misnamed or migrated
     // file (e.g. classic_dat content sitting at saves/world.cw after the
@@ -301,14 +305,14 @@ pub fn try_load(self: *WorldSaver, data: *WorldData) bool {
     }
     const sniff = SaveFormat.detect(prefix) orelse self.format;
     const load_format: SaveFormat = blk: {
-        if (std.meta.activeTag(sniff) == .classic_cw and !SaveFormat.verify_classic_cw(prefix)) {
+        if (std.meta.activeTag(sniff) == .classic_cw and !SaveFormat.verify_classic_cw(prefix, scratch)) {
             log.warn("save file is gzip but not ClassicWorld NBT; ignoring sniff", .{});
             break :blk self.format;
         }
         break :blk sniff;
     };
 
-    const outcome = load_format.load_world(data.raw_blocks, data.blocks, &reader.interface) catch |err| {
+    const outcome = load_format.load_world(scratch, data.raw_blocks, data.blocks, &reader.interface) catch |err| {
         // Surface the failure so a misnamed/foreign-size save doesn't
         // silently fall through to worldgen with no explanation.
         log.err("Failed to load world from {s} as {s}: {}", .{

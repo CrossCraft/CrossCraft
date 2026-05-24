@@ -10,6 +10,7 @@ const State = ae.Core.State;
 
 const Server = game.Server;
 const CompressWorker = game.CompressWorker;
+const CompressorThread = @import("CompressorThread.zig");
 const PlayersDb = game.PlayersDb;
 const Commands = game.Commands;
 const Consts = common.consts;
@@ -47,7 +48,7 @@ const Self = @This();
 conn_handles: []?ConnectionData,
 tasks: std.Io.Group,
 listener: std.Io.net.Server,
-compressor_thread: Util.Thread,
+compressor_thread: CompressorThread.Thread,
 
 pub fn state(self: *Self) State {
     return .{ .ptr = self, .tab = &.{
@@ -81,12 +82,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // (network) and world-save (classic_cw, gzip-on-disk). Off-loads the
     // deep `flate` call frames out of the per-task IO stacks (see
     // `psp_async_stack_size` in main.zig).
-    self.compressor_thread = try Util.Thread.spawn(.{
-        .name = "world_compress",
-        .stack_size = 384 * 1024,
-        .priority = .normal,
-        .allocator = alloc,
-    }, CompressWorker.worker_main, .{});
+    self.compressor_thread = try CompressorThread.spawn(alloc);
 
     engine.report();
 
@@ -198,6 +194,7 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
 
     CompressWorker.signal_exit();
     self.compressor_thread.join();
+    CompressWorker.deinit();
 
     engine.allocator(.user).free(self.conn_handles);
 
