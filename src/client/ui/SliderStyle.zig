@@ -21,6 +21,10 @@ pub const SliderStyle = struct {
     label_color_disabled: Color = Color.silver_fg,
     shadow_color_normal: Color = Color.menu_gray,
     shadow_color_hover: Color = Color.select_back,
+    focus_outline_color: Color = Color.white_fg,
+    active_outline_color: Color = Color.select_front,
+    focus_outline_thickness: i16 = 1,
+    active_outline_thickness: i16 = 2,
     text_padding_x: i16 = 4,
 };
 

@@ -39,6 +39,7 @@ const Options = @import("../Options.zig");
 const PrevInputs = struct {
     inventory_toggle: input.ButtonState = .released,
     noclip: input.ButtonState = .released,
+    jump: input.ButtonState = .released,
     break_: input.ButtonState = .released,
     place: input.ButtonState = .released,
     shoulder_r: input.ButtonState = .released,
@@ -70,6 +71,11 @@ pub const RaycastHit = struct {
     place_y: u16,
     place_z: u16,
     has_place: bool,
+};
+
+pub const FlyTapEvent = enum {
+    double,
+    triple,
 };
 
 /// Maximum reach in blocks for the selection raycast.
@@ -131,6 +137,7 @@ const PendingBlock = struct {
 const TICK: f32 = 0.05; // 50 ms, 20 TPS
 const MAX_FRAME_DT: f32 = 0.25;
 const NOCLIP_SPEED: f32 = 20.0;
+const FLY_SPEED: f32 = NOCLIP_SPEED;
 
 const JUMP_VEL: f32 = 0.42;
 const GRAVITY: f32 = 0.08;
@@ -166,6 +173,8 @@ const LAVA_DRAG: f32 = 0.5;
 // repeats every REPEAT_INTERVAL while the button stays held.
 const REPEAT_DELAY: f32 = 0.20; // seconds before first repeat
 const REPEAT_INTERVAL: f32 = 0.20; // seconds between subsequent repeats (~5/sec)
+
+const FLY_TAP_WINDOW: f32 = 0.25;
 
 // --- View bobbing tuning ---
 // Drives both the camera sway and the held-block screen-space sway. The
@@ -224,6 +233,7 @@ on_ground: bool,
 hit_horizontal: bool, // horizontal collision last tick (for water exit)
 can_liquid_jump: bool, // one-shot flag for water exit boost
 noclip: bool,
+fly: bool,
 tick_remainder: f32,
 
 move_dir: [2]f32, // x = strafe (right +), y = forward/back (forward +)
@@ -284,6 +294,9 @@ rain_toggle_pending: bool,
 /// each frame.  chat_open: blank field; chat_cmd: '/' prefix field.
 chat_open_pending: bool,
 chat_cmd_pending: bool,
+fly_tap_event: ?FlyTapEvent,
+jump_tap_count: u8,
+jump_tap_elapsed: f32,
 
 prev_inputs: PrevInputs,
 /// True iff the gameplay ActionSet owned the top context last frame. Used
@@ -343,6 +356,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .hit_horizontal = false,
         .can_liquid_jump = false,
         .noclip = false,
+        .fly = false,
         .tick_remainder = 0,
         .move_dir = .{ 0, 0 },
         .look_delta = .{ 0, 0 },
@@ -370,6 +384,9 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .rain_toggle_pending = false,
         .chat_open_pending = false,
         .chat_cmd_pending = false,
+        .fly_tap_event = null,
+        .jump_tap_count = 0,
+        .jump_tap_elapsed = 0,
         .prev_inputs = .{},
         .gameplay_was_active = false,
         .pending_block = null,
@@ -385,13 +402,45 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     };
 }
 
+pub fn consume_fly_tap_event(self: *Self) ?FlyTapEvent {
+    const event = self.fly_tap_event;
+    self.fly_tap_event = null;
+    return event;
+}
+
+pub fn clear_fly_tap_state(self: *Self) void {
+    self.fly_tap_event = null;
+    self.reset_jump_taps();
+}
+
+pub fn toggle_fly(self: *Self) void {
+    self.set_fly(!self.fly);
+}
+
+pub fn set_fly(self: *Self, enabled: bool) void {
+    if (self.fly == enabled) return;
+
+    self.fly = enabled;
+    self.vel_x = 0;
+    self.vel_y = 0;
+    self.vel_z = 0;
+    self.vel_y_prev = 0;
+    self.tick_remainder = 0;
+    self.hit_horizontal = false;
+    self.can_liquid_jump = false;
+
+    if (!enabled) {
+        self.on_ground = collision.on_ground(self.pos_x, self.pos_y, self.pos_z);
+    }
+}
+
 /// Apply one frame of player movement.
 pub fn update(self: *Self, dt: f32) void {
     std.debug.assert(dt >= 0);
 
     self.mouse_captured = input.effective_cursor_mode() == .captured;
 
-    self.poll_inputs();
+    self.poll_inputs(dt);
 
     // Process deferred gamepad shoulder actions. The one-frame delay lets
     // a same-frame L+R chord cancel the pending break/place before it fires.
@@ -438,6 +487,8 @@ pub fn update(self: *Self, dt: f32) void {
 
     if (self.noclip) {
         self.update_noclip(dt);
+    } else if (self.fly) {
+        self.update_fly(dt);
     } else {
         self.run_ticks(dt);
     }
@@ -495,6 +546,49 @@ fn update_noclip(self: *Self, dt: f32) void {
     self.pos_y += dy;
 
     // No interpolation in noclip -- prev tracks current
+    self.prev_x = self.pos_x;
+    self.prev_y = self.pos_y;
+    self.prev_z = self.pos_z;
+}
+
+// --- Fly (free movement with terrain collision) ---
+
+fn update_fly(self: *Self, dt: f32) void {
+    const clamped = @min(dt, MAX_FRAME_DT);
+    const sin_yaw = @sin(self.camera.yaw);
+    const cos_yaw = @cos(self.camera.yaw);
+    const strafe = self.move_dir[0];
+    const forward = self.move_dir[1];
+
+    const dx = (strafe * cos_yaw - forward * sin_yaw) * FLY_SPEED * clamped;
+    const dz = (-strafe * sin_yaw - forward * cos_yaw) * FLY_SPEED * clamped;
+
+    var dy: f32 = 0;
+    if (self.jumping) dy += FLY_SPEED * clamped;
+    if (self.sneaking) dy -= FLY_SPEED * clamped;
+
+    const result = collision.move_and_collide(
+        self.pos_x,
+        self.pos_y,
+        self.pos_z,
+        dx,
+        dy,
+        dz,
+        false,
+    );
+
+    self.pos_x = result.x;
+    self.pos_y = result.y;
+    self.pos_z = result.z;
+    self.on_ground = result.on_ground;
+    self.hit_horizontal = result.hit_x or result.hit_z;
+
+    self.vel_x = 0;
+    self.vel_y = 0;
+    self.vel_z = 0;
+    self.vel_y_prev = 0;
+
+    // No interpolation in fly -- prev tracks current.
     self.prev_x = self.pos_x;
     self.prev_y = self.pos_y;
     self.prev_z = self.pos_z;
@@ -793,7 +887,7 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
 // --- Camera sync (interpolation) ---
 
 fn sync_camera(self: *Self) void {
-    if (self.noclip) {
+    if (self.noclip or self.fly) {
         self.camera.x = self.pos_x;
         self.camera.y = self.pos_y + collision.EYE_HEIGHT;
         self.camera.z = self.pos_z;
@@ -1210,10 +1304,11 @@ fn draw_hotbar_blocks(self: *const Self, list: *UiDrawList, hud_y_shift: i16) vo
 
 // --- Per-frame poll ---
 
-fn poll_inputs(self: *Self) void {
+fn poll_inputs(self: *Self, dt: f32) void {
     const active_now = is_gameplay_active();
     const fresh_activation = active_now and !self.gameplay_was_active;
     self.gameplay_was_active = active_now;
+    self.age_jump_taps(dt);
 
     self.move_dir = input.get_action_vector2("move");
 
@@ -1222,7 +1317,8 @@ fn poll_inputs(self: *Self) void {
     self.look_delta = .{ look_raw[0] * sens, look_raw[1] * sens };
 
     self.look_rate = input.get_action_vector2("look_stick");
-    self.jumping = input.get_action_button("jump") == .pressed;
+    const jump = input.get_action_button("jump");
+    self.jumping = jump == .pressed;
     self.sneaking = input.get_action_button("sneak") == .pressed;
 
     self.break_held = input.get_action_button("break") == .pressed;
@@ -1238,6 +1334,7 @@ fn poll_inputs(self: *Self) void {
         if (comptime builtin.mode == .Debug and ae.platform != .psp) {
             self.prev_inputs.noclip = input.get_action_button("noclip");
         }
+        self.prev_inputs.jump = jump;
         self.prev_inputs.break_ = input.get_action_button("break");
         self.prev_inputs.place = input.get_action_button("place");
         self.prev_inputs.shoulder_r = input.get_action_button("shoulder_r");
@@ -1255,8 +1352,12 @@ fn poll_inputs(self: *Self) void {
         inline for (0..9) |i| {
             self.prev_inputs.hotbar_slot[i] = input.get_action_button(comptime hotbar_slot_name(i));
         }
+        self.reset_jump_taps();
         return;
     }
+
+    if (rising_edge(self.prev_inputs.jump, jump)) self.record_jump_tap();
+    self.prev_inputs.jump = jump;
 
     const inv = input.get_action_button("inventory_toggle");
     if (rising_edge(self.prev_inputs.inventory_toggle, inv)) {
@@ -1381,6 +1482,34 @@ fn poll_inputs(self: *Self) void {
     }
 }
 
+fn age_jump_taps(self: *Self, dt: f32) void {
+    if (self.jump_tap_count == 0) return;
+    self.jump_tap_elapsed += dt;
+    if (self.jump_tap_elapsed > FLY_TAP_WINDOW) self.reset_jump_taps();
+}
+
+fn record_jump_tap(self: *Self) void {
+    if (self.jump_tap_count == 0) {
+        self.jump_tap_count = 1;
+        self.jump_tap_elapsed = 0;
+        return;
+    }
+
+    self.jump_tap_count += 1;
+    self.jump_tap_elapsed = 0;
+    if (self.jump_tap_count == 2) {
+        self.fly_tap_event = .double;
+    } else {
+        self.fly_tap_event = .triple;
+        self.reset_jump_taps();
+    }
+}
+
+fn reset_jump_taps(self: *Self) void {
+    self.jump_tap_count = 0;
+    self.jump_tap_elapsed = 0;
+}
+
 fn is_gameplay_active() bool {
     const top = input.stack_top() orelse return false;
     const set = bindings.handle() orelse return false;
@@ -1446,10 +1575,16 @@ fn do_place(self: *Self) void {
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
     const block = self.hotbar[self.selected_slot];
     if (block.is_air()) return;
+    const target = World.data.get_block(hit.place_x, hit.place_y, hit.place_z);
+    const target_replaceable = target.is_place_replaceable();
+    const promotes_to_double_slab = block.id == .slab and
+        (target.id == .slab or (target_replaceable and hit.place_y > 0 and
+            World.data.get_block(hit.place_x, hit.place_y - 1, hit.place_z).id == .slab));
+    if (!target_replaceable and !promotes_to_double_slab) return;
     const bx0: f32 = @floatFromInt(hit.place_x);
     const by0: f32 = @floatFromInt(hit.place_y);
     const bz0: f32 = @floatFromInt(hit.place_z);
-    const bh: f32 = collision.block_height(block);
+    const bh: f32 = if (target.id == .slab and promotes_to_double_slab) 1.0 else collision.block_height(block);
     const overlaps = bh > 0 and
         self.pos_x + collision.HALF_W > bx0 and
         self.pos_x - collision.HALF_W < bx0 + 1.0 and
@@ -1458,24 +1593,16 @@ fn do_place(self: *Self) void {
         self.pos_z + collision.HALF_W > bz0 and
         self.pos_z - collision.HALF_W < bz0 + 1.0;
     if (overlaps) return;
-    const target = World.data.get_block(hit.place_x, hit.place_y, hit.place_z);
-    if (target.mesh_props().cross) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
     // Register a "virtual block" for collision so the player cannot
     // fall through before the server commits the placement to the
     // world on its next tick.
     //
-    // Exception: slab-on-slab. The server promotes the slab below the
-    // place cell to a double_slab and reverts the place cell to whatever
-    // was there before (usually air). A pending_block at the place cell
-    // would therefore never clear -- the "cell became non-air" condition
-    // in collide_and_move is never met -- leaving a permanent ghost
-    // half-slab. The `overlaps` check already guarantees the player
-    // cannot intersect the place cell, so no virtual surface is needed
-    // for this case.
-    const promotes_to_double_slab = block.id == .slab and hit.place_y > 0 and
-        World.data.get_block(hit.place_x, hit.place_y - 1, hit.place_z).id == .slab;
+    // Exception: slab-on-slab. Depending on the ray path, the server promotes
+    // either the target slab or the slab below a replaceable target cell. The
+    // same-cell form already has real collision; the below-slab form leaves the
+    // place cell unchanged, so a pending half-slab there would become a ghost.
     if (collision.block_height(block) > 0 and !promotes_to_double_slab) {
         self.pending_block = .{
             .x = hit.place_x,

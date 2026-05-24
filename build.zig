@@ -12,7 +12,6 @@ pub fn build(b: *std.Build) void {
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
     };
 
-    const slim = b.option(bool, "slim", "Slim mode: reduced memory, smaller render distance (for PSP-1000)") orelse false;
     const skip_pack = b.option(bool, "skip-pack", "Skip zipping resources into pack.zip (for CI builds without LFS assets)") orelse false;
 
     const config = Aether.Config.resolve(target, overrides);
@@ -144,7 +143,6 @@ pub fn build(b: *std.Build) void {
     }
 
     const build_options = b.addOptions();
-    build_options.addOption(bool, "slim", slim);
     build_options.addOption(bool, "embed_pack", should_embed);
     client_exe.root_module.addImport("build_options", build_options.createModule());
 
@@ -247,35 +245,14 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
 
-    const zip_tests = b.addTest(.{
+    const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/client/util/Zip.zig"),
+            .root_source_file = b.path("src/unit.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
-    test_step.dependOn(&b.addRunArtifact(zip_tests).step);
-
-    const nbt_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/nbt/nbt.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    test_step.dependOn(&b.addRunArtifact(nbt_tests).step);
-
-    const physics_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/common/physics.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "protocol", .module = protocol },
-            },
-        }),
-    });
-    test_step.dependOn(&b.addRunArtifact(physics_tests).step);
+    test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     // Standalone build step for the pack_zip host tool.
     // Usage: zig build pack-tool

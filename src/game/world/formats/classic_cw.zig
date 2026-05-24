@@ -51,12 +51,14 @@ pub const ClassicCw = struct {
 
     pub fn load_world(
         _: ClassicCw,
+        scratch: std.mem.Allocator,
         raw_blocks: []u8,
         blocks: []Block,
         reader: *std.Io.Reader,
     ) !LoadOutcome {
-        var window_buf: [std.compress.flate.max_window_len]u8 = undefined;
-        var decompress = std.compress.flate.Decompress.init(reader, .gzip, &window_buf);
+        const window_buf = try scratch.alloc(u8, std.compress.flate.max_window_len);
+        defer scratch.free(window_buf);
+        var decompress = std.compress.flate.Decompress.init(reader, .gzip, window_buf);
         return try read_classic_world_compound(&decompress.reader, raw_blocks, blocks);
     }
 };

@@ -41,11 +41,19 @@ fn ensure_loading_set() !ae.Core.input.ActionSetHandle {
     return set;
 }
 
-fn serverTask(alloc: std.mem.Allocator, scratch: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) void {
+fn serverTask(
+    alloc: std.mem.Allocator,
+    scratch: std.mem.Allocator,
+    seed: u64,
+    io: std.Io,
+    data_dir: std.Io.Dir,
+    save_location: []const u8,
+) void {
     // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
+    const selected_save = if (save_location.len > 0) save_location else Server.default_save_location;
     const config: Server.GameConfig = .{
         .embedded = .{
-            .world = .{ .seed = seed, .save_location = Server.default_save_location },
+            .world = .{ .seed = seed, .save_location = selected_save },
         },
     };
     Server.init(alloc, scratch, io, data_dir, config) catch |err| {
@@ -61,13 +69,27 @@ fn connectTask(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io
     connect_inner(alloc, seed, io, data_dir) catch |err| {
         log.err("multiplayer connect failed: {}", .{err});
         session_error = err;
-        // Close any partially-opened socket so GameState never tries to use it.
-        if (Session.mp_stream) |*s| {
-            s.close(io);
-            Session.mp_stream = null;
-        }
+        cleanup_failed_multiplayer_connect(io);
     };
     server_ready.store(true, .release);
+}
+
+fn cleanup_failed_multiplayer_connect(io: std.Io) void {
+    Session.mp_connected.store(false, .release);
+
+    // Close any partially-opened socket so GameState never tries to use it.
+    if (Session.mp_stream) |*s| {
+        s.close(io);
+        Session.mp_stream = null;
+    }
+
+    // On PSP, MenuState's net dialog initialises sceNet before LoadState runs.
+    // Normal disconnects unwind it in GameState.deinit; early load-screen
+    // failures never reach GameState, so release it here.
+    if (ae.platform == .psp) {
+        pspsdk.extra.net.disconnect();
+        pspsdk.extra.net.deinit();
+    }
 }
 
 fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) !void {
@@ -84,6 +106,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     Session.mp_stream = stream;
     Session.mp_reader = std.Io.net.Stream.Reader.init(stream, io, &Session.mp_read_buf);
     Session.mp_writer = std.Io.net.Stream.Writer.init(stream, io, &Session.mp_write_buf);
+    const reader = &Session.mp_reader.interface;
 
     // PSP: disable Nagle so per-tick packets hit the wire immediately.
     if (ae.platform == .psp) {
@@ -91,12 +114,20 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
             log.warn("TCP_NODELAY failed: {}", .{err});
     }
 
+    proto.send_player_id_to_server(&Session.mp_writer.interface, Session.username()) catch |err| {
+        capture_disconnect_after_write_failed(reader);
+        return err;
+    };
+    Session.mp_writer.interface.flush() catch |err| {
+        capture_disconnect_after_write_failed(reader);
+        return err;
+    };
+
     // Multiplayer never persists (owned_locally stays false), so the
     // save filename is unused; pass the convention for symmetry.
     try World.init_empty(alloc, io, data_dir, "world.dat", seed, World.default_format);
-
-    try proto.send_player_id_to_server(&Session.mp_writer.interface, Session.username());
-    try Session.mp_writer.interface.flush();
+    var world_owned_by_load = true;
+    errdefer if (world_owned_by_load) World.deinit();
 
     // Accumulate the gzipped LevelDataChunk payloads into a scratch buffer,
     // then decompress once on LevelFinalize. A 2 MiB bound is comfortable
@@ -106,8 +137,6 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     const compressed = try alloc.alloc(u8, compressed_cap);
     defer alloc.free(compressed);
     var compressed_end: usize = 0;
-
-    const reader = &Session.mp_reader.interface;
 
     done: while (true) {
         const packet_id = try reader.peekByte();
@@ -136,6 +165,10 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
                 reader.toss(len);
                 break :done;
             },
+            0x0E => {
+                capture_disconnect_reason(buf);
+                return error.ServerDisconnected;
+            },
             else => log.warn("unexpected packet 0x{x:0>2} during handshake", .{packet_id}),
         }
         reader.toss(len);
@@ -145,8 +178,9 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     // game/client.zig:reset_compressor, so match here. Wire format is
     // contiguous YZX (Java Classic compatible); scatter into chunk-aware layout.
     var src = std.Io.Reader.fixed(compressed[0..compressed_end]);
-    var window_buf: [flate.max_window_len]u8 = undefined;
-    var decompress = flate.Decompress.init(&src, .gzip, &window_buf);
+    const window_buf = try alloc.alloc(u8, flate.max_window_len);
+    defer alloc.free(window_buf);
+    var decompress = flate.Decompress.init(&src, .gzip, window_buf);
 
     decompress.reader.readSliceAll(World.data.raw_blocks[0..4]) catch |err| {
         log.err("level decompress header failed: {}", .{err});
@@ -158,6 +192,30 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     };
 
     World.finalize_loaded();
+    world_owned_by_load = false;
+}
+
+fn capture_disconnect_after_write_failed(reader: *std.Io.Reader) void {
+    const err = Session.mp_writer.err orelse return;
+    switch (err) {
+        error.ConnectionResetByPeer, error.SocketUnconnected => capture_disconnect_packet(reader) catch {},
+        else => {},
+    }
+}
+
+fn capture_disconnect_packet(reader: *std.Io.Reader) !void {
+    const packet_id = try reader.peekByte();
+    if (packet_id != 0x0E) return error.NotDisconnectPacket;
+    const len = try proto.packet_length_to_client(packet_id);
+    const buf = try reader.peek(len);
+    capture_disconnect_reason(buf);
+    reader.toss(len);
+}
+
+fn capture_disconnect_reason(packet: []const u8) void {
+    const reason = std.mem.trimEnd(u8, packet[1..65], " ");
+    log.info("server disconnected during handshake: {s}", .{reason});
+    Session.set_disconnect_reason(reason);
 }
 
 batcher: SpriteBatcher,
@@ -212,13 +270,22 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.server_notified = false;
 
     const io = engine.io;
-    const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
+    const random_seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
+    const singleplayer_seed = Session.singleplayer_seed(random_seed);
     server_ready.store(false, .monotonic);
     session_error = null;
+    Session.clear_disconnect_reason();
     // TODO: allocator pool budget may need tuning for server + client coexistence
     self.server_future = switch (Session.mode) {
-        .singleplayer => io.async(serverTask, .{ engine.allocator(.user), engine.allocator(.user), seed, io, engine.dirs.data }),
-        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), seed, io, engine.dirs.data }),
+        .singleplayer => io.async(serverTask, .{
+            engine.allocator(.user),
+            engine.allocator(.user),
+            singleplayer_seed,
+            io,
+            engine.dirs.data,
+            Session.singleplayer_save(),
+        }),
+        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), random_seed, io, engine.dirs.data }),
     };
 
     self.inited = true;
@@ -248,7 +315,7 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
                 .singleplayer => "Failed to start server",
                 .multiplayer => "Failed to connect to server",
             };
-            Session.set_disconnect_reason(reason);
+            Session.set_disconnect_reason_if_empty(reason);
             try DisconnectState.transition_here(engine);
             return;
         }

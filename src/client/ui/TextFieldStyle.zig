@@ -15,6 +15,10 @@ pub const TextFieldStyle = struct {
     text_shadow: Color = Color.menu_gray,
     placeholder_color: Color = Color.silver_fg,
     cursor_color: Color = Color.white_fg,
+    focus_outline_color: Color = Color.white_fg,
+    active_outline_color: Color = Color.select_front,
+    focus_outline_thickness: i16 = 1,
+    active_outline_thickness: i16 = 2,
 
     text_padding_x: i16 = 4,
 };

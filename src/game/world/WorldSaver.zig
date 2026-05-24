@@ -26,6 +26,8 @@ const c = common.consts;
 const log = std.log.scoped(.world);
 
 const BLOCK_SIZE = 32768;
+const DUMP_FILE_NAME_MAX = 256;
+const DUMP_WORLD_NAME_MAX = 64;
 
 const WorldSaver = @This();
 
@@ -34,6 +36,7 @@ save_dir: std.Io.Dir,
 save_file_name: []const u8,
 
 format: SaveFormat,
+format_for_worker: SaveFormat,
 
 /// False for worlds streamed from a remote server (multiplayer client).
 /// All save/autosave paths early-return when this is false so an MP client
@@ -48,6 +51,15 @@ autosave_enabled: bool,
 save_counter: u32,
 save_group: std.Io.Group,
 save_in_flight: std.atomic.Value(bool),
+
+/// Explicit user-triggered save target used for multiplayer world dumps.
+/// Copied into saver storage before dispatch so the async worker does not
+/// borrow UI-owned text buffers.
+save_override_active: bool,
+save_override_file_name: [DUMP_FILE_NAME_MAX]u8,
+save_override_file_name_len: u16,
+save_override_world_name: [DUMP_WORLD_NAME_MAX]u8,
+save_override_world_name_len: u8,
 
 /// Set by `try_load` when the on-disk format differs from `format`. The
 /// caller (world.init) fires one save afterwards so the file on disk is
@@ -70,14 +82,20 @@ pub fn init(io: std.Io, save_dir: std.Io.Dir, save_file_name: []const u8, format
         .save_dir = save_dir,
         .save_file_name = save_file_name,
         .format = format,
+        .format_for_worker = format,
         .owned_locally = false,
         .autosave_enabled = true,
         .save_counter = 0,
         .save_group = .init,
         .save_in_flight = .init(false),
+        .save_override_active = false,
+        .save_override_file_name = undefined,
+        .save_override_file_name_len = 0,
+        .save_override_world_name = undefined,
+        .save_override_world_name_len = 0,
         .needs_format_upgrade = false,
         .data_for_worker = undefined,
-        .cw_job = .{ .run = cw_save_run },
+        .cw_job = .{ .done = .init(true), .run = cw_save_run },
     };
 }
 
@@ -97,14 +115,57 @@ pub fn save(self: *WorldSaver, data: *const WorldData) void {
         log.warn("save already in flight; skipping", .{});
         return;
     }
+    self.save_override_active = false;
+    self.dispatch_save(data, self.format) catch |err| {
+        log.err("Failed to dispatch save worker: {}", .{err});
+    };
+}
+
+/// Save an explicit snapshot even when the world is not locally owned.
+/// Intended for user-requested multiplayer world dumps only.
+pub fn dump(
+    self: *WorldSaver,
+    data: *const WorldData,
+    save_file_name: []const u8,
+    world_name: []const u8,
+    format: SaveFormat,
+) !void {
+    if (save_file_name.len == 0 or save_file_name.len > self.save_override_file_name.len) {
+        return error.InvalidSaveFileName;
+    }
+    if (world_name.len == 0 or world_name.len > self.save_override_world_name.len) {
+        return error.InvalidWorldName;
+    }
+    if (self.save_in_flight.load(.acquire)) {
+        return error.SaveInFlight;
+    }
+
+    @memcpy(self.save_override_file_name[0..save_file_name.len], save_file_name);
+    self.save_override_file_name_len = @intCast(save_file_name.len);
+    @memcpy(self.save_override_world_name[0..world_name.len], world_name);
+    self.save_override_world_name_len = @intCast(world_name.len);
+    self.save_override_active = true;
+
+    self.dispatch_save(data, format) catch |err| {
+        self.save_override_active = false;
+        return err;
+    };
+}
+
+fn dispatch_save(self: *WorldSaver, data: *const WorldData, format: SaveFormat) !void {
+    if (self.save_in_flight.load(.acquire)) {
+        log.warn("save already in flight; skipping", .{});
+        return error.SaveInFlight;
+    }
     self.save_in_flight.store(true, .release);
     self.data_for_worker = data;
-    switch (self.format) {
+    self.format_for_worker = format;
+    switch (format) {
         .classic_dat => {
             self.save_group.concurrent(self.io, save_worker, .{self}) catch |err| {
-                log.err("Failed to dispatch save worker: {}", .{err});
+                self.save_override_active = false;
                 self.save_in_flight.store(false, .release);
-                return;
+                return err;
             };
         },
         .classic_cw => {
@@ -118,9 +179,10 @@ pub fn save(self: *WorldSaver, data: *const WorldData) void {
 /// `data.raw_blocks` is freed -- the worker reads it directly.
 pub fn wait_for_save(self: *WorldSaver) void {
     self.save_group.await(self.io) catch {};
-    // Spin on the cw_job done flag; the compressor thread finishes one
-    // job at a time and there's only one save in flight.
-    while (self.save_in_flight.load(.acquire)) {
+    // Keep the embedded job storage alive until the compressor worker has
+    // returned from `run` and published `done`. For classic_dat saves the
+    // job is already done, so this is a cheap no-op.
+    while (!self.cw_job.done.load(.acquire)) {
         std.Io.sleep(self.io, .fromMilliseconds(20), .real) catch break;
     }
 }
@@ -131,7 +193,12 @@ fn cw_save_run(base: *compress_worker.Job) anyerror!void {
 }
 
 fn save_worker(self: *WorldSaver) void {
-    defer self.save_in_flight.store(false, .release);
+    defer {
+        self.save_override_active = false;
+        self.save_in_flight.store(false, .release);
+    }
+
+    const save_file_name = self.worker_save_file_name();
 
     // PSP-only: drop the existing directory entry before recreating it.
     // After a rename or autosave, sceIoOpen with O_CREAT|O_TRUNC over a
@@ -140,14 +207,14 @@ fn save_worker(self: *WorldSaver) void {
     // that window. dirDeleteFile on pspsdk maps the missing-file case
     // to `error.AccessDenied` too, so swallow that variant.
     if (comptime builtin.os.tag == .psp) {
-        self.save_dir.deleteFile(self.io, self.save_file_name) catch |err| switch (err) {
+        self.save_dir.deleteFile(self.io, save_file_name) catch |err| switch (err) {
             error.AccessDenied => {},
-            else => log.warn("pre-delete '{s}' failed: {}", .{ self.save_file_name, err }),
+            else => log.warn("pre-delete '{s}' failed: {}", .{ save_file_name, err }),
         };
     }
 
-    const file = self.save_dir.createFile(self.io, self.save_file_name, .{}) catch |err| {
-        log.err("Failed to create save file '{s}': {}", .{ self.save_file_name, err });
+    const file = self.save_dir.createFile(self.io, save_file_name, .{}) catch |err| {
+        log.err("Failed to create save file '{s}': {}", .{ save_file_name, err });
         return;
     };
     defer file.close(self.io);
@@ -166,13 +233,14 @@ fn save_worker(self: *WorldSaver) void {
         .tick_count = data.tick_count,
         .raw_blocks = data.raw_blocks,
         .blocks = data.blocks,
-        .name = data.name[0..data.name_len],
+        .name = self.worker_world_name(data),
         .uuid = data.uuid,
         .spawn = spawn,
         .time_created = data.time_created,
         .last_modified = last_modified_ms,
     };
-    self.format.save_world(ctx, &writer.interface) catch |err| {
+    const format = self.format_for_worker;
+    format.save_world(ctx, &writer.interface) catch |err| {
         log.err("Failed to write save file: {}", .{err});
         return;
     };
@@ -188,21 +256,35 @@ fn save_worker(self: *WorldSaver) void {
     const kib_per_s: u64 = (total_bytes * std.time.us_per_s) /
         (@as(u64, @intCast(elapsed_us)) * 1024);
     log.info("Saved world to {s} ({d} bytes in {d}us, {d} KiB/s)", .{
-        self.save_file_name, total_bytes, elapsed_us, kib_per_s,
+        save_file_name, total_bytes, elapsed_us, kib_per_s,
     });
+}
+
+fn worker_save_file_name(self: *const WorldSaver) []const u8 {
+    if (!self.save_override_active) return self.save_file_name;
+    return self.save_override_file_name[0..self.save_override_file_name_len];
+}
+
+fn worker_world_name(self: *const WorldSaver, data: *const WorldData) []const u8 {
+    if (!self.save_override_active) return data.name[0..data.name_len];
+    return self.save_override_world_name[0..self.save_override_world_name_len];
 }
 
 /// Try to load the save file into `data`. Returns true on a successful
 /// load (data populated, dimensions match); false if the file is missing
 /// or invalid (caller falls back to worldgen).
-pub fn try_load(self: *WorldSaver, data: *WorldData) bool {
+pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator) bool {
     const file = self.save_dir.openFile(self.io, self.save_file_name, .{}) catch {
         return false;
     };
     defer file.close(self.io);
 
-    var read_buf: [BLOCK_SIZE]u8 = undefined;
-    var reader = file.reader(self.io, &read_buf);
+    const read_buf = scratch.alloc(u8, BLOCK_SIZE) catch |err| {
+        log.err("Failed to allocate save read buffer: {}", .{err});
+        return false;
+    };
+    defer scratch.free(read_buf);
+    var reader = file.reader(self.io, read_buf);
 
     // Sniff the on-disk format from the header so a misnamed or migrated
     // file (e.g. classic_dat content sitting at saves/world.cw after the
@@ -223,14 +305,14 @@ pub fn try_load(self: *WorldSaver, data: *WorldData) bool {
     }
     const sniff = SaveFormat.detect(prefix) orelse self.format;
     const load_format: SaveFormat = blk: {
-        if (std.meta.activeTag(sniff) == .classic_cw and !SaveFormat.verify_classic_cw(prefix)) {
+        if (std.meta.activeTag(sniff) == .classic_cw and !SaveFormat.verify_classic_cw(prefix, scratch)) {
             log.warn("save file is gzip but not ClassicWorld NBT; ignoring sniff", .{});
             break :blk self.format;
         }
         break :blk sniff;
     };
 
-    const outcome = load_format.load_world(data.raw_blocks, data.blocks, &reader.interface) catch |err| {
+    const outcome = load_format.load_world(scratch, data.raw_blocks, data.blocks, &reader.interface) catch |err| {
         // Surface the failure so a misnamed/foreign-size save doesn't
         // silently fall through to worldgen with no explanation.
         log.err("Failed to load world from {s} as {s}: {}", .{

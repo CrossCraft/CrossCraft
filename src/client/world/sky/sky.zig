@@ -21,6 +21,7 @@ const CLOUD_UV_REPEATS: u32 = 1;
 /// Texture appears this many times larger on screen without changing mesh;
 /// UVs span 1/CLOUD_TEX_SCALE of the texture across the grid.
 const CLOUD_TEX_SCALE: u32 = 2;
+const CLOUD_UV_PERIOD: f32 = PLANE_SIZE * @as(f32, @floatFromInt(CLOUD_TEX_SCALE)) / @as(f32, @floatFromInt(CLOUD_UV_REPEATS));
 const CLOUD_Y: f32 = 72.0;
 const CLOUD_SPEED: f32 = 0.175;
 const WORLD_CENTER: f32 = 128.0;
@@ -51,18 +52,7 @@ pub fn deinit(self: *Self) void {
 
 pub fn update(self: *Self, dt: f32) void {
     self.scroll += dt * CLOUD_SPEED;
-    if (self.scroll >= 256.0) {
-        self.scroll -= 256.0;
-        // The mesh snaps back 256 units (16 tiles), so each screen position
-        // now maps to a tile whose UV is 16*256 = 4096 SNORM units higher.
-        // Shift all U values by -4096 (wrapping) to compensate; GL_REPEAT
-        // handles negative SNORM16 correctly. Cycles back after 8 wraps.
-        const delta: i16 = -4096;
-        for (self.cloud_mesh.vertices.items) |*v| {
-            v.uv[0] +%= delta;
-        }
-        self.cloud_mesh.update();
-    }
+    if (self.scroll >= CLOUD_UV_PERIOD) self.scroll = @mod(self.scroll, CLOUD_UV_PERIOD);
 }
 
 const collision = @import("../../player/collision.zig");
@@ -92,16 +82,21 @@ pub fn draw_plane(self: *Self, camera: *const Camera, submerged: ?collision.Liqu
 }
 
 /// Draw cloud layer at fixed Y=72 anchored to the world center.
-/// The scroll offset slides clouds along +X over time.
-pub fn draw_clouds(self: *Self, _: *const Camera) void {
+/// The UV offset slides clouds along +X over time without touching the mesh.
+pub fn draw_clouds(self: *Self, _: *const Camera, submerged: ?collision.Liquid) void {
+    set_sky_fog(submerged);
     Rendering.gfx.api.set_alpha_blend(true);
     const m = Math.Mat4.scaling(PLANE_SIZE, 1.0, PLANE_SIZE)
         .mul(Math.Mat4.translation(
-        WORLD_CENTER - HALF_SIZE + self.scroll,
+        WORLD_CENTER - HALF_SIZE,
         CLOUD_Y,
         WORLD_CENTER - HALF_SIZE,
     ));
+    Rendering.gfx.api.set_uv_offset(-self.scroll / CLOUD_UV_PERIOD, 0.0);
+    Rendering.gfx.api.set_culling(false);
     self.cloud_mesh.draw(&m);
+    Rendering.gfx.api.set_culling(true);
+    Rendering.gfx.api.set_uv_offset(0.0, 0.0);
 }
 
 // --- Fog ---

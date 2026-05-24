@@ -35,8 +35,7 @@ jobs:
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_phat,   kind: game,   extra: "" }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_slim,   kind: game,   extra: -Dslim=true }
+          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: server, extra: "" }
     runs-on: ${{ matrix.os }}
     name: dev ${{ matrix.kind }} (${{ matrix.name }})
@@ -87,8 +86,7 @@ jobs:
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: game,   extra: -Dcpu=x86_64_v3 }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_phat,   kind: game,   extra: "" }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp_slim,   kind: game,   extra: -Dslim=true }
+          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: server, extra: "" }
     runs-on: ${{ matrix.os }}
     name: rel ${{ matrix.kind }} (${{ matrix.name }})
@@ -129,10 +127,10 @@ jobs:
         if: matrix.kind == 'game' && matrix.name == 'mac'
         run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
 
-      # PSP game (phat/slim): build.zig installs pack.zip into the PSP
+      # PSP game: build.zig installs pack.zip into the PSP
       # bundle dir alongside EBOOT.PBP / app.prx.
       - name: Build game (PSP)
-        if: matrix.kind == 'game' && (matrix.name == 'psp_phat' || matrix.name == 'psp_slim')
+        if: matrix.kind == 'game' && matrix.name == 'psp'
         run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
 
       # pack.zip size check guards against LFS regressions on every game
@@ -166,7 +164,7 @@ jobs:
         run: ditto -c -k --keepParent zig-out/bin/CrossCraft-Classic.app CrossCraft-Classic-macos.zip
 
       - name: Verify PSP game artifact
-        if: matrix.kind == 'game' && (matrix.name == 'psp_phat' || matrix.name == 'psp_slim')
+        if: matrix.kind == 'game' && matrix.name == 'psp'
         run: |
           eboot="zig-out/bin/CrossCraft-Classic-PSP/EBOOT.PBP"
           pack="zig-out/bin/CrossCraft-Classic-PSP/pack.zip"

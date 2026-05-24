@@ -43,8 +43,7 @@ chunk_non_opaque: [CHUNK_COUNT]u16,
 
 const default_name = "world";
 
-pub fn init(allocator: std.mem.Allocator, new_seed: u64) !WorldData {
-    var self: WorldData = undefined;
+pub fn init_in_place(self: *WorldData, allocator: std.mem.Allocator, new_seed: u64) !void {
     self.backing_allocator = allocator;
     self.raw_blocks = try allocator.alloc(u8, c.WorldDepth * c.WorldHeight * c.WorldLength + 4);
     self.blocks = @ptrCast(self.raw_blocks[4..]);
@@ -68,8 +67,6 @@ pub fn init(allocator: std.mem.Allocator, new_seed: u64) !WorldData {
     // too). Will move to the network sender in a later phase.
     const size: u32 = c.WorldDepth * c.WorldHeight * c.WorldLength;
     std.mem.writeInt(u32, self.raw_blocks[0..4], size, .big);
-
-    return self;
 }
 
 /// Stamp the world with a fresh random UUID and the current real-clock

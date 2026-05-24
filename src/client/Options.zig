@@ -5,9 +5,12 @@
 //! application data directory (`engine.dirs.data`).
 
 const std = @import("std");
+const builtin = @import("builtin");
+const ae = @import("aether");
 const Io = std.Io;
 const File = std.Io.File;
 const cfg = @import("config.zig");
+const input = ae.Core.input;
 
 const log = std.log.scoped(.options);
 
@@ -37,18 +40,36 @@ pub const ControllerTooltips = enum(u8) {
     }
 };
 
+pub const PcControl = enum(u8) {
+    forward,
+    back,
+    left,
+    right,
+    inventory,
+};
+
+pub const PspAnalogMode = enum(u8) {
+    move = 0,
+    look = 1,
+};
+
+pub const PspJumpMode = enum(u8) {
+    select = 0,
+    up = 1,
+};
+
 pub const Options = struct {
     /// Path of the active texture pack (relative to the data dir).
     /// Empty string means use the built-in default pack.
     active_texturepack_buf: [max_pack_path]u8 = [_]u8{0} ** max_pack_path,
     active_texturepack_len: u8 = 0,
 
-    /// Chunk render radius.  PSP defaults to 4; desktop defaults to 8.
-    /// Capped to the platform's compiled-in max via `capped_render_distance`.
+    /// Chunk render radius. PSP defaults to 4; desktop defaults to 8.
+    /// Capped to the active runtime profile via `capped_render_distance`.
     render_distance: u8 = if (@import("aether").platform == .psp)
-        @intCast(@min(@as(u32, 4), cfg.current.chunk_radius))
+        4
     else
-        @intCast(@min(@as(u32, 8), cfg.current.chunk_radius)),
+        8,
 
     /// SFX volume multiplier (0.0 = silent, 1.0 = full).
     sound_volume: f32 = 1.0,
@@ -60,7 +81,7 @@ pub const Options = struct {
     fov: f32 = 70.0,
 
     /// True = full leaf transparency (fancy); false = opaque leaves (fast).
-    /// Defaults off on PSP to keep meshing within budget.  Builds with
+    /// Defaults off on PSP to keep meshing within budget.  Profiles with
     /// `lod_near_radius_blocks == 0` cannot render fancy leaves at all.
     fancy_leaves: bool = @import("aether").platform != .psp,
 
@@ -87,6 +108,21 @@ pub const Options = struct {
     /// Weather: rain on/off.  Defaults off on every platform.
     rain: bool = false,
 
+    /// Distance fog for world geometry.  The sky renderer keeps its own fog
+    /// enabled so the horizon retains the intended look when this is off.
+    fog: bool = true,
+
+    /// Desktop keyboard controls. Gamepad bindings remain fixed.
+    key_forward: input.Key = .W,
+    key_back: input.Key = .S,
+    key_left: input.Key = .A,
+    key_right: input.Key = .D,
+    key_inventory: input.Key = .B,
+
+    /// PSP compact control swaps.
+    psp_analog_mode: PspAnalogMode = .look,
+    psp_jump_mode: PspJumpMode = .up,
+
     /// Returns the active texture pack path as a slice (may be empty).
     pub fn active_texturepack(self: *const Options) []const u8 {
         return self.active_texturepack_buf[0..self.active_texturepack_len];
@@ -98,22 +134,132 @@ pub const Options = struct {
         @memcpy(self.active_texturepack_buf[0..len], path[0..len]);
         self.active_texturepack_len = len;
     }
+
+    pub fn pc_key(self: *const Options, control: PcControl) input.Key {
+        return switch (control) {
+            .forward => self.key_forward,
+            .back => self.key_back,
+            .left => self.key_left,
+            .right => self.key_right,
+            .inventory => self.key_inventory,
+        };
+    }
+
+    pub fn set_pc_key(self: *Options, control: PcControl, key: input.Key) bool {
+        if (!pc_key_assignable(key)) return false;
+        inline for (std.meta.fields(PcControl)) |field| {
+            const other: PcControl = @enumFromInt(field.value);
+            if (other != control and self.pc_key(other) == key) return false;
+        }
+        switch (control) {
+            .forward => self.key_forward = key,
+            .back => self.key_back = key,
+            .left => self.key_left = key,
+            .right => self.key_right = key,
+            .inventory => self.key_inventory = key,
+        }
+        return true;
+    }
+
+    pub fn reset_pc_controls(self: *Options) void {
+        self.key_forward = .W;
+        self.key_back = .S;
+        self.key_left = .A;
+        self.key_right = .D;
+        self.key_inventory = .B;
+    }
+
+    pub fn reset_psp_controls(self: *Options) void {
+        self.psp_analog_mode = .look;
+        self.psp_jump_mode = .up;
+    }
 };
 
-/// Effective render distance, capped to the platform's compiled-in maximum.
-/// Desktop = 8 chunks; PSP slim = 4; PSP phat = 3.
+/// Effective render distance, capped to the active runtime profile.
 /// Always use this instead of `current.render_distance` directly so we
 /// never ask the renderer to load more sections than its arrays can hold.
 pub fn capped_render_distance() u8 {
-    const max: u8 = @intCast(@min(@as(u32, 255), cfg.current.chunk_radius));
+    const max: u8 = @intCast(@min(@as(u32, 255), cfg.current().chunk_radius));
     return @min(current.render_distance, max);
 }
 
 /// True when the build can render fancy (transparent) leaves at all.
-/// PSP phat forces opaque leaves via `lod_near_radius_blocks = 0`; this
+/// PSP-1000 forces opaque leaves via `lod_near_radius_blocks = 0`; this
 /// helper centralises the detection so the UI and load path agree.
 pub fn fancy_leaves_supported() bool {
-    return cfg.current.lod_near_radius_blocks > 0;
+    return cfg.current().lod_near_radius_blocks > 0;
+}
+
+pub fn pc_key_assignable(key: input.Key) bool {
+    switch (key) {
+        .Escape,
+        .T,
+        .Slash,
+        .Space,
+        .LeftShift,
+        .Tab,
+        .Num1,
+        .Num2,
+        .Num3,
+        .Num4,
+        .Num5,
+        .Num6,
+        .Num7,
+        .Num8,
+        .Num9,
+        => return false,
+        else => {},
+    }
+
+    if (ae.platform != .psp) {
+        switch (key) {
+            .F1,
+            .F5,
+            => return false,
+            else => {},
+        }
+        if (builtin.mode == .Debug and key == .X) return false;
+    }
+
+    return true;
+}
+
+pub fn pc_key_label(key: input.Key) []const u8 {
+    return switch (key) {
+        .Space => "Space",
+        .LeftShift => "Left Shift",
+        .RightShift => "Right Shift",
+        .LeftControl => "Left Ctrl",
+        .RightControl => "Right Ctrl",
+        .LeftAlt => "Left Alt",
+        .RightAlt => "Right Alt",
+        .LeftSuper => "Left Super",
+        .RightSuper => "Right Super",
+        .KpEnter => "Keypad Enter",
+        .KpDecimal => "Keypad Decimal",
+        .KpDivide => "Keypad Divide",
+        .KpMultiply => "Keypad Multiply",
+        .KpSubtract => "Keypad Minus",
+        .KpAdd => "Keypad Plus",
+        .KpEqual => "Keypad Equal",
+        else => @tagName(key),
+    };
+}
+
+pub fn pc_key_prompt_label(key: input.Key) []const u8 {
+    return switch (key) {
+        .Space => "SPC",
+        .LeftShift => "LSH",
+        .RightShift => "RSH",
+        .LeftControl => "LCT",
+        .RightControl => "RCT",
+        .LeftAlt => "ALT",
+        .RightAlt => "ALT",
+        .Tab => "TAB",
+        .Backspace => "BSP",
+        .Enter => "ENT",
+        else => @tagName(key),
+    };
 }
 
 // --- JSON shadow type ---
@@ -134,6 +280,14 @@ const JsonOptions = struct {
     vsync: bool = @import("aether").platform != .psp,
     controller_tooltips: u8 = 0,
     rain: bool = false,
+    fog: bool = true,
+    key_forward: []const u8 = "W",
+    key_back: []const u8 = "S",
+    key_left: []const u8 = "A",
+    key_right: []const u8 = "D",
+    key_inventory: []const u8 = "B",
+    psp_analog_mode: u8 = @intFromEnum(PspAnalogMode.look),
+    psp_jump_mode: u8 = @intFromEnum(PspJumpMode.up),
 };
 
 // --- public API ---
@@ -153,8 +307,8 @@ pub fn load(io: Io, dir: Io.Dir) void {
     };
     if (n == 0) return;
 
-    // A tiny stack arena for the JSON parser.  The only heap allocation it
-    // makes for JsonOptions is the `active_texturepack` string (<=255 bytes).
+    // A tiny stack arena for the JSON parser.  The heap allocations it makes
+    // for JsonOptions are the small string fields.
     var arena_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&arena_buf);
     const parsed = std.json.parseFromSlice(
@@ -192,6 +346,18 @@ pub fn load(io: Io, dir: Io.Dir) void {
         break :blk mode;
     };
     current.rain = j.rain;
+    current.fog = j.fog;
+    load_pc_controls(j);
+    current.psp_analog_mode = switch (j.psp_analog_mode) {
+        0 => .move,
+        1 => .look,
+        else => .look,
+    };
+    current.psp_jump_mode = switch (j.psp_jump_mode) {
+        0 => .select,
+        1 => .up,
+        else => .up,
+    };
 }
 
 /// Write current options to `options.json` in `dir`.
@@ -213,6 +379,14 @@ pub fn save(io: Io, dir: Io.Dir) void {
         .vsync = current.vsync,
         .controller_tooltips = @intFromEnum(current.controller_tooltips),
         .rain = current.rain,
+        .fog = current.fog,
+        .key_forward = @tagName(current.key_forward),
+        .key_back = @tagName(current.key_back),
+        .key_left = @tagName(current.key_left),
+        .key_right = @tagName(current.key_right),
+        .key_inventory = @tagName(current.key_inventory),
+        .psp_analog_mode = @intFromEnum(current.psp_analog_mode),
+        .psp_jump_mode = @intFromEnum(current.psp_jump_mode),
     };
 
     var json_buf: [max_json_size]u8 = undefined;
@@ -231,4 +405,56 @@ pub fn save(io: Io, dir: Io.Dir) void {
     file.writeStreamingAll(io, slice) catch |err| {
         log.err("write options.json failed: {}", .{err});
     };
+}
+
+fn load_pc_controls(j: JsonOptions) void {
+    var invalid = false;
+    const forward = parse_key(j.key_forward) orelse blk: {
+        invalid = true;
+        break :blk input.Key.W;
+    };
+    const back = parse_key(j.key_back) orelse blk: {
+        invalid = true;
+        break :blk input.Key.S;
+    };
+    const left = parse_key(j.key_left) orelse blk: {
+        invalid = true;
+        break :blk input.Key.A;
+    };
+    const right = parse_key(j.key_right) orelse blk: {
+        invalid = true;
+        break :blk input.Key.D;
+    };
+    const inventory = parse_key(j.key_inventory) orelse blk: {
+        invalid = true;
+        break :blk input.Key.B;
+    };
+
+    current.key_forward = forward;
+    current.key_back = back;
+    current.key_left = left;
+    current.key_right = right;
+    current.key_inventory = inventory;
+    if (invalid or !pc_controls_valid(&current)) current.reset_pc_controls();
+}
+
+fn parse_key(name: []const u8) ?input.Key {
+    return std.meta.stringToEnum(input.Key, name);
+}
+
+fn pc_controls_valid(opt: *const Options) bool {
+    const keys = [_]input.Key{
+        opt.key_forward,
+        opt.key_back,
+        opt.key_left,
+        opt.key_right,
+        opt.key_inventory,
+    };
+    for (keys, 0..) |key, i| {
+        if (!pc_key_assignable(key)) return false;
+        for (keys[i + 1 ..]) |other| {
+            if (key == other) return false;
+        }
+    }
+    return true;
 }

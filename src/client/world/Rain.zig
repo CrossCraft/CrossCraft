@@ -22,12 +22,6 @@ const EXTENT: i32 = if (ae.platform == .psp) 2 else 4;
 const EXTENT_U: u32 = @intCast(EXTENT);
 const EXTENT_F: f32 = @floatFromInt(EXTENT);
 
-/// Streak extends from camera.y - RAIN_BELOW up to camera.y + RAIN_ABOVE,
-/// clipped against surface and world ceiling.  PSP uses a shorter overhead
-/// span so fewer vertical sections fit inside the PSP 4096 virtual viewport
-/// after MODEL_SCALE, keeping per-frame vertex counts manageable.
-const RAIN_BELOW: f32 = 6.0;
-const RAIN_ABOVE: f32 = if (ae.platform == .psp) 4.0 else 16.0;
 /// Streak is cut into SECTION_HEIGHT-tall quad slices stacked vertically so
 /// V_PER_BLOCK can be much larger than a single i16 would allow across the
 /// full streak, giving a proper drop density instead of ~1 repeat per 30
@@ -96,16 +90,14 @@ const DROP_TILE_ROW: u32 = 1;
 const POS_SCALE: f32 = 128.0;
 const MODEL_SCALE: f32 = 256.0;
 
-const VERTS_PER_QUAD: u32 = 12; // two windings -> visible from both sides
+const VERTS_PER_QUAD: u32 = 6;
 const QUADS_PER_SECTION: u32 = 2; // crossed X-plane + Z-plane per section
 const COLUMNS_DIAM: u32 = 2 * EXTENT_U + 1;
 const MAX_COLUMNS: u32 = COLUMNS_DIAM * COLUMNS_DIAM;
-/// Upper bound on sections per column: ceil((RAIN_BELOW+RAIN_ABOVE)/SECTION_HEIGHT)
-/// plus slack for fractional endpoints.  Each section may be split once at
-/// the SNORM V wrap to keep stored UVs non-negative (PSP texture pipeline
-/// doesn't interpolate across the wrap cleanly), so budget 2x after the
-/// base count.
-const MAX_SECTIONS_BASE: u32 = @intFromFloat(@ceil((RAIN_BELOW + RAIN_ABOVE) / SECTION_HEIGHT) + 1.0);
+/// Upper bound on sections per column. Each section may be split once at the
+/// SNORM V wrap to keep stored UVs monotonic, so budget 2x after the base
+/// world-height count.
+const MAX_SECTIONS_BASE: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(c.WorldHeight)) / SECTION_HEIGHT));
 const MAX_SECTIONS_PER_COLUMN: u32 = MAX_SECTIONS_BASE * 2;
 const STREAK_MAX_VERTS: u32 = MAX_COLUMNS * MAX_SECTIONS_PER_COLUMN * QUADS_PER_SECTION * VERTS_PER_QUAD;
 const SPLASH_MAX_VERTS: u32 = @as(u32, SPLASH_MAX) * 6;
@@ -128,6 +120,9 @@ streak_mesh: Rendering.Mesh(Vertex),
 splash_mesh: Rendering.Mesh(Vertex),
 particle_atlas: TextureAtlas,
 scroll_v: i32,
+streak_mesh_dirty: bool,
+streak_cam_tile_x: i32,
+streak_cam_tile_z: i32,
 spawn_accum: f32,
 splashes: [SPLASH_MAX]Splash,
 splash_count: u16,
@@ -142,6 +137,9 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !
         .splash_mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
         .particle_atlas = TextureAtlas.init(PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_TILES, PARTICLE_ATLAS_TILES),
         .scroll_v = 0,
+        .streak_mesh_dirty = true,
+        .streak_cam_tile_x = 0,
+        .streak_cam_tile_z = 0,
         .spawn_accum = 0,
         .splashes = undefined,
         .splash_count = 0,
@@ -158,6 +156,10 @@ pub fn deinit(self: *Self) void {
     self.splash_mesh.deinit(self.allocator);
 }
 
+pub fn mark_dirty(self: *Self) void {
+    self.streak_mesh_dirty = true;
+}
+
 // --- Update ---
 
 pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
@@ -167,9 +169,8 @@ pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
         return;
     }
 
-    // V scroll: i32 accumulates; build_streaks takes @mod(scroll_v, 32768)
-    // so every frame's v_bottom/v_top stay on the same i16 side -- no wrap
-    // flip, consistent gradient direction.
+    // V scroll: i32 accumulates; draw_streaks converts @mod(scroll_v, 32768)
+    // to a normalized UV offset so the streak mesh stays static.
     const dv: i32 = @intFromFloat(@as(f32, @floatFromInt(FALL_SPEED)) * dt);
     self.scroll_v +%= dv;
 
@@ -242,33 +243,46 @@ fn maybe_spawn_splash(self: *Self, camera: *const Camera) void {
 
 // --- Drawing ---
 
-/// Build and draw the scrolling streak planes.  Caller must bind rain.png.
+/// Draw the scrolling streak planes.  Caller must bind rain.png.
 pub fn draw_streaks(self: *Self, camera: *const Camera) void {
     if (!Options.current.rain) return;
 
-    self.streak_mesh.vertices.clearRetainingCapacity();
-    build_streaks(&self.streak_mesh, camera, self.scroll_v);
+    const cam_tile_x_i: i32 = @intFromFloat(@floor(camera.x));
+    const cam_tile_z_i: i32 = @intFromFloat(@floor(camera.z));
+    if (self.streak_mesh_dirty or
+        cam_tile_x_i != self.streak_cam_tile_x or
+        cam_tile_z_i != self.streak_cam_tile_z)
+    {
+        self.streak_mesh.vertices.clearRetainingCapacity();
+        build_streaks(&self.streak_mesh, cam_tile_x_i, cam_tile_z_i);
+        if (self.streak_mesh.vertices.items.len > 0) self.streak_mesh.update();
+        self.streak_cam_tile_x = cam_tile_x_i;
+        self.streak_cam_tile_z = cam_tile_z_i;
+        self.streak_mesh_dirty = false;
+    }
     if (self.streak_mesh.vertices.items.len == 0) return;
-    self.streak_mesh.update();
 
-    const cam_tile_x: f32 = @floor(camera.x);
-    const cam_tile_z: f32 = @floor(camera.z);
+    const cam_tile_x: f32 = @floatFromInt(cam_tile_x_i);
+    const cam_tile_z: f32 = @floatFromInt(cam_tile_z_i);
 
     // Transparent sheet: alpha blend on, depth write off so overlapping
     // quads don't occlude each other on the depth buffer.
     Rendering.gfx.api.set_alpha_blend(true);
     Rendering.gfx.api.set_depth_write(false);
+    defer Rendering.gfx.api.set_depth_write(true);
     // Streaks sit close to the camera and span tall vertical columns; on PSP
     // the MODEL_SCALE * world coordinate can exit the 4096 virtual viewport,
     // so enable hardware clip planes to guarantee correct GU clipping.
     Rendering.gfx.api.set_clip_planes(true);
+    defer Rendering.gfx.api.set_clip_planes(false);
+    Rendering.gfx.api.set_culling(false);
+    defer Rendering.gfx.api.set_culling(true);
+    Rendering.gfx.api.set_uv_offset(0.0, streak_v_offset(self.scroll_v));
+    defer Rendering.gfx.api.set_uv_offset(0.0, 0.0);
 
     const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE)
         .mul(Math.Mat4.translation(cam_tile_x, 0, cam_tile_z));
     self.streak_mesh.draw(&m);
-
-    Rendering.gfx.api.set_clip_planes(false);
-    Rendering.gfx.api.set_depth_write(true);
 }
 
 /// Build and draw impact splashes.  Caller must bind particles.png.
@@ -308,14 +322,14 @@ pub fn draw_splashes(self: *Self, camera: *const Camera) void {
     self.splash_mesh.draw(&m);
 }
 
+fn streak_v_offset(scroll_v: i32) f32 {
+    return @as(f32, @floatFromInt(@mod(scroll_v, 32768))) / 32768.0;
+}
+
 // --- Streak mesh build ---
 
-fn build_streaks(mesh: *Rendering.Mesh(Vertex), camera: *const Camera, scroll_v: i32) void {
-    const cam_tile_x: i32 = @intFromFloat(@floor(camera.x));
-    const cam_tile_z: i32 = @intFromFloat(@floor(camera.z));
+fn build_streaks(mesh: *Rendering.Mesh(Vertex), cam_tile_x: i32, cam_tile_z: i32) void {
     const world_ceiling: f32 = @as(f32, @floatFromInt(c.WorldHeight));
-    const top_y: f32 = @min(camera.y + RAIN_ABOVE, world_ceiling);
-    const cam_floor: f32 = camera.y - RAIN_BELOW;
 
     var dz: i32 = -EXTENT;
     while (dz <= EXTENT) : (dz += 1) {
@@ -329,11 +343,7 @@ fn build_streaks(mesh: *Rendering.Mesh(Vertex), camera: *const Camera, scroll_v:
             const surface_i: i32 = rain_surface_at(gx, gz);
             if (surface_i >= c.WorldHeight) continue; // sky-blocked to ceiling
             const surface_f: f32 = @as(f32, @floatFromInt(surface_i));
-            if (camera.y < surface_f) continue; // camera below surface -> in a cave
-            // Clip streak to the [camera - RAIN_BELOW, camera + RAIN_ABOVE]
-            // window so the V delta across the quad fits comfortably in i16.
-            const bottom_y: f32 = @max(surface_f, cam_floor);
-            if (top_y <= bottom_y) continue;
+            if (world_ceiling <= surface_f) continue;
 
             // Linear fade from 1 at center to 0 at grid edge.  Columns past
             // EXTENT blocks horizontally disappear entirely.
@@ -344,7 +354,7 @@ fn build_streaks(mesh: *Rendering.Mesh(Vertex), camera: *const Camera, scroll_v:
             const alpha_byte: u8 = @intFromFloat(fade * BASE_ALPHA);
             const color: u32 = @bitCast(Color.rgba(255, 255, 255, alpha_byte));
 
-            emit_column_quads(mesh, dx, dz, bottom_y, top_y, scroll_v, color);
+            emit_column_quads(mesh, dx, dz, surface_f, world_ceiling, color);
         }
     }
 }
@@ -353,19 +363,14 @@ fn build_streaks(mesh: *Rendering.Mesh(Vertex), camera: *const Camera, scroll_v:
 /// high (dense drops) while the per-quad SNORM16 delta stays within i16, the
 /// streak is stacked as SECTION_HEIGHT-tall quads.  Section boundaries share
 /// the same i32 V value (computed from world Y via a single linear formula),
-/// so their @mod(32768) SNORM16s tile seamlessly across the seam.  Within a
-/// section the UV span crosses the SNORM16 wrap only if scroll_v happens to
-/// land so; in that case we split the section at the wrap Y and emit two
-/// sub-quads whose UVs both stay in [0, 32767] (PSP interpolation across a
-/// positive->negative UV produces a visible "bouncing" glitch that OpenGL
-/// REPEAT handles transparently).
+/// so their @mod(32768) SNORM16s tile seamlessly across the seam.  When a
+/// section crosses the SNORM16 wrap, split it so UVs stay monotonic.
 fn emit_column_quads(
     mesh: *Rendering.Mesh(Vertex),
     dx: i32,
     dz: i32,
     bottom_y: f32,
     top_y: f32,
-    scroll_v: i32,
     color: u32,
 ) void {
     const fx: f32 = @floatFromInt(dx);
@@ -381,11 +386,9 @@ fn emit_column_quads(
         const section_diff: i32 = @intFromFloat(@round(section_h * V_PER_BLOCK_F));
         std.debug.assert(section_diff >= 0 and section_diff <= 32767);
 
-        // V(y) = scroll_v + y * V_PER_BLOCK (in i32).  Pinning the section's
-        // low-Y V to @mod(., 32768) puts it in [0, 32767]; the high-Y V sits
-        // section_diff above it, which may exceed 32767 and thus cross the
-        // SNORM16 wrap exactly once within the section.
-        const v_bot_raw: i32 = scroll_v + @as(i32, @intFromFloat(@round(section_bottom * V_PER_BLOCK_F)));
+        // V(y) = y * V_PER_BLOCK (in i32).  Animation is a uniform texture
+        // offset, so this base mesh only has to keep each section monotonic.
+        const v_bot_raw: i32 = @intFromFloat(@round(section_bottom * V_PER_BLOCK_F));
         const v_bot_mod: i32 = @mod(v_bot_raw, 32768);
         const v_top_from_bot: i32 = v_bot_mod + section_diff;
 
@@ -463,10 +466,10 @@ fn emit_section_geom(
     const by = encode(y_bot);
     const ty = encode(y_top);
 
-    // Diagonal A: runs from (x_lo, z_lo) to (x_hi, z_hi).  Low-Y corners
-    // get v_bot, high-Y corners v_top so V increases with world Y and
-    // positive scroll_v animates drop content downward.
-    emit_quad_both_sides(
+    // Diagonal A: runs from (x_lo, z_lo) to (x_hi, z_hi). Low-Y corners
+    // get v_bot, high-Y corners v_top so V increases with world Y; the
+    // per-draw UV offset supplies the falling animation.
+    emit_quad(
         mesh,
         encode(x_lo),
         by,
@@ -493,7 +496,7 @@ fn emit_section_geom(
 
     // Diagonal B: runs from (x_lo, z_hi) to (x_hi, z_lo), crossing A at
     // the column center to form the X shape.
-    emit_quad_both_sides(
+    emit_quad(
         mesh,
         encode(x_lo),
         by,
@@ -519,9 +522,7 @@ fn emit_section_geom(
     );
 }
 
-/// Emit a quad as 12 verts (front + back winding) so both sides are visible
-/// under default backface culling.
-fn emit_quad_both_sides(
+fn emit_quad(
     mesh: *Rendering.Mesh(Vertex),
     // bottom-left
     x0: i16,
@@ -561,13 +562,6 @@ fn emit_quad_both_sides(
     mesh.vertices.appendAssumeCapacity(bl);
     mesh.vertices.appendAssumeCapacity(tr);
     mesh.vertices.appendAssumeCapacity(tl);
-    // Back: reverse winding so the opposite side is also lit.
-    mesh.vertices.appendAssumeCapacity(bl);
-    mesh.vertices.appendAssumeCapacity(tr);
-    mesh.vertices.appendAssumeCapacity(br);
-    mesh.vertices.appendAssumeCapacity(bl);
-    mesh.vertices.appendAssumeCapacity(tl);
-    mesh.vertices.appendAssumeCapacity(tr);
 }
 
 // --- Splash mesh build ---

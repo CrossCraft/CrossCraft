@@ -1,5 +1,4 @@
 const Ui = @import("../Ui.zig");
-const Prompts = @import("../Prompts.zig");
 const widget_id = @import("../widget_id.zig");
 
 pub const Widget = enum(u16) {
@@ -41,7 +40,7 @@ pub fn run(ui: *Ui, ctx: *Ctx) Action {
     if (ui.button(wid(.back), "Back", .{}) and action == .none) action = .back;
     col.end();
 
-    ui.prompts(&.{ Prompts.select(), Prompts.back() });
+    ui.contextual_prompts();
     if (action == .none and ui.cancel_pressed()) action = .back;
     return action;
 }

@@ -4,6 +4,7 @@
 //! controller-tooltip style in Options.
 
 const Buttons = @import("Buttons.zig");
+const Options = @import("../Options.zig");
 const PromptStrip = @import("PromptStrip.zig");
 
 pub const Prompt = PromptStrip.Prompt;
@@ -17,6 +18,27 @@ pub fn select() Prompt {
     };
 }
 
+pub fn edit() Prompt {
+    return switch (Buttons.resolve_style()) {
+        .kbm => .{ .chord = .{ .EnterKey, null }, .label = "Edit" },
+        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .A, null }, .label = "Edit" },
+    };
+}
+
+pub fn adjust() Prompt {
+    return switch (Buttons.resolve_style()) {
+        .kbm => .{ .chord = .{ .EnterKey, null }, .label = "Adjust" },
+        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .A, null }, .label = "Adjust" },
+    };
+}
+
+pub fn done() Prompt {
+    return switch (Buttons.resolve_style()) {
+        .kbm => .{ .chord = .{ .EnterKey, null }, .label = "Done" },
+        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .A, null }, .label = "Done" },
+    };
+}
+
 pub fn back() Prompt {
     return switch (Buttons.resolve_style()) {
         .kbm => .{ .chord = .{ .EscapeKey, null }, .label = "Back" },
@@ -24,11 +46,25 @@ pub fn back() Prompt {
     };
 }
 
+pub fn exit_adjust() Prompt {
+    return switch (Buttons.resolve_style()) {
+        .kbm => .{ .chord = .{ .EscapeKey, null }, .label = "Done" },
+        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .B, null }, .label = "Done" },
+    };
+}
+
+pub fn left_right() Prompt {
+    return switch (Buttons.resolve_style()) {
+        .kbm => .{ .chord = .{ .BlankKey, null }, .label = "Adjust", .letter_overlay = "<>" },
+        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .DpadLeft, .DpadRight }, .label = "Adjust" },
+    };
+}
+
 // --- in-game HUD actions ---
 
 pub fn inventory() Prompt {
     return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .BlankKey, null }, .label = "Inventory", .letter_overlay = "B" },
+        .kbm => .{ .chord = .{ .BlankKey, null }, .label = "Inventory", .letter_overlay = Options.pc_key_prompt_label(Options.current.key_inventory) },
         .nintendo, .xbox, .playstation => .{ .chord = .{ .Y, null }, .label = "Inventory" },
         .psp => .{ .chord = .{ .LButton, .RButton }, .label = "Inventory" },
     };

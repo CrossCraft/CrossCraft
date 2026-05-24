@@ -85,13 +85,14 @@ pub const SaveFormat = union(enum) {
     /// must include the gzip header plus enough deflate bytes to yield
     /// one inflated byte -- 256 bytes covers every real-world classic_cw
     /// save by a wide margin.
-    pub fn verify_classic_cw(prefix: []const u8) bool {
+    pub fn verify_classic_cw(prefix: []const u8, scratch: std.mem.Allocator) bool {
         // Gzip header alone is 10 bytes; need at least one deflated byte
         // beyond it to yield an inflated tag.
         if (prefix.len < 12) return false;
         var src = std.Io.Reader.fixed(prefix);
-        var window_buf: [std.compress.flate.max_window_len]u8 = undefined;
-        var decompress = std.compress.flate.Decompress.init(&src, .gzip, &window_buf);
+        const window_buf = scratch.alloc(u8, std.compress.flate.max_window_len) catch return false;
+        defer scratch.free(window_buf);
+        var decompress = std.compress.flate.Decompress.init(&src, .gzip, window_buf);
         const first = decompress.reader.takeByte() catch return false;
         // 0x0A == nbt.Tag.compound; named here as a literal so this module
         // doesn't pull in nbt for a single comparison.
@@ -110,12 +111,13 @@ pub const SaveFormat = union(enum) {
 
     pub fn load_world(
         self: SaveFormat,
+        scratch: std.mem.Allocator,
         raw_blocks: []u8,
         blocks: []Block,
         reader: *std.Io.Reader,
     ) !LoadOutcome {
         return switch (self) {
-            inline else => |arm| try arm.load_world(raw_blocks, blocks, reader),
+            inline else => |arm| try arm.load_world(scratch, raw_blocks, blocks, reader),
         };
     }
 };

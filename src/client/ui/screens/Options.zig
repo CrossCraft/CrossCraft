@@ -3,7 +3,6 @@ const ae = @import("aether");
 
 const Ui = @import("../Ui.zig");
 const Options = @import("../../Options.zig");
-const Prompts = @import("../Prompts.zig");
 const config = @import("../../config.zig");
 const widget_id = @import("../widget_id.zig");
 
@@ -21,6 +20,7 @@ pub const Widget = enum(u16) {
     rain = 11,
     done = 12,
     controls_placeholder = 13,
+    fog = 14,
     _,
 };
 
@@ -34,13 +34,19 @@ pub const Hooks = struct {
     on_fov_changed: ?*const fn () void = null,
 };
 
+pub const Result = enum {
+    none,
+    controls,
+    close,
+};
+
 pub fn wid(w: Widget) widget_id.WidgetId {
     return widget_id.from(Widget, w);
 }
 
-pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) bool {
+pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
     var col = ui.stack(.{ .axis = .vertical, .anchor = .middle_center, .cross_align = .center, .gap = 4 });
-    var close = false;
+    var result: Result = .none;
 
     ui.label("Options");
     {
@@ -86,7 +92,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) bool {
     {
         var row = ui.stack(.{ .axis = .horizontal, .gap = 4 });
         defer row.end();
-        const rd_max_u8: u8 = @intCast(@min(@as(u32, 255), config.current.chunk_radius));
+        const rd_max_u8: u8 = @intCast(@min(@as(u32, 255), config.current().chunk_radius));
         const rd_max: f32 = @floatFromInt(rd_max_u8);
         if (ui.slider(wid(.render_distance), rd_view, .{
             .label = ui.fmt("Render Distance: {d}", .{Options.capped_render_distance()}),
@@ -99,7 +105,9 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) bool {
             opt.render_distance = rounded;
             rd_view.* = @floatFromInt(rounded);
         }
-        _ = ui.button(wid(.controls_placeholder), "Controls...", .{ .width = WIDGET_W, .enabled = false });
+        if (ui.button(wid(.fog), ui.fmt("Fog: {s}", .{bool_str(opt.fog)}), .{ .width = WIDGET_W })) {
+            opt.fog = !opt.fog;
+        }
     }
 
     cycle_row(
@@ -125,19 +133,24 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) bool {
         .{ .id = .rain, .label = "Rain", .field = .rain },
     );
 
-    if (ui.button(wid(.done), "Done", .{ .width = WIDGET_W })) {
+    if (ui.button(wid(.controls_placeholder), "Controls...", .{ .width = WIDGET_W }) and result == .none) {
+        result = .controls;
+    }
+
+    if (ui.button(wid(.done), "Done", .{ .width = WIDGET_W }) and result == .none) {
         ui.close_request();
-        close = true;
+        result = .close;
     }
     col.end();
-    ui.prompts(&.{ Prompts.select(), Prompts.back() });
-    return close or ui.close_requested or ui.cancel_pressed();
+    ui.contextual_prompts();
+    if (result == .none and (ui.close_requested or ui.cancel_pressed())) result = .close;
+    return result;
 }
 
 const Toggle = struct {
     id: Widget,
     label: []const u8,
-    field: enum { fancy_leaves, ambient_occlusion, vsync, rain },
+    field: enum { fancy_leaves, ambient_occlusion, vsync, rain, fog },
     enabled: bool = true,
 };
 
@@ -150,6 +163,7 @@ fn cycle_row(ui: *Ui, opt: *Options.Options, a: Toggle, b: Toggle) void {
             .ambient_occlusion => &opt.ambient_occlusion,
             .vsync => &opt.vsync,
             .rain => &opt.rain,
+            .fog => &opt.fog,
         };
         if (ui.button(wid(t.id), ui.fmt("{s}: {s}", .{ t.label, bool_str(ptr.*) }), .{ .width = WIDGET_W, .enabled = t.enabled })) {
             ptr.* = !ptr.*;

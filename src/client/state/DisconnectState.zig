@@ -86,7 +86,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
     const go_back = DisconnectScreen.run(&ui, Session.disconnect_reason());
     ui.end();
     if (go_back) {
-        Session.disconnect_reason_len = 0;
+        Session.clear_disconnect_reason();
         try MenuState.transition_here(engine);
     }
 }

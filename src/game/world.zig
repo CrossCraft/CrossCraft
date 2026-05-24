@@ -19,6 +19,8 @@ const c = common.consts;
 pub const WorldData = @import("world/WorldData.zig");
 pub const WorldSimulation = @import("world/WorldSimulation.zig");
 pub const WorldSaver = @import("world/WorldSaver.zig");
+pub const DumpName = @import("world/DumpName.zig");
+pub const CreateName = @import("world/CreateName.zig");
 const fmt_mod = @import("world/SaveFormat.zig");
 pub const SaveFormat = fmt_mod.SaveFormat;
 pub const LoadOutcome = fmt_mod.LoadOutcome;
@@ -62,8 +64,10 @@ pub fn init_empty(
     format: SaveFormat,
 ) !void {
     common.BlockRegistry.init();
-    data = try WorldData.init(allocator, seed);
+    try data.init_in_place(allocator, seed);
+    errdefer data.deinit();
     sim = try WorldSimulation.init(allocator, seed);
+    errdefer sim.deinit(allocator);
     saver = WorldSaver.init(io, save_dir, save_file_name, format);
     load_status = .loading;
 }
@@ -85,7 +89,7 @@ pub fn init(
     // Let loadscreen catch up
     try io.sleep(.fromMilliseconds(250), .real);
 
-    if (!saver.try_load(&data)) {
+    if (!saver.try_load(&data, scratch)) {
         data.seed = seed;
         load_status = .{ .generating = .raising };
         const start = std.Io.Clock.Timestamp.now(io, .boot);
@@ -108,6 +112,7 @@ pub fn init(
 }
 
 pub fn deinit() void {
+    saver.wait_for_save();
     saver.save(&data);
     saver.wait_for_save();
 
@@ -156,8 +161,22 @@ pub fn save() void {
     saver.save(&data);
 }
 
+pub fn dump_named(save_file_name: []const u8, world_name: []const u8) !void {
+    try ensure_dump_dir();
+    try saver.dump(&data, save_file_name, world_name, default_format);
+}
+
 pub fn wait_for_save() void {
     saver.wait_for_save();
+}
+
+fn ensure_dump_dir() !void {
+    saver.save_dir.access(saver.io, "saves", .{}) catch {
+        saver.save_dir.createDir(saver.io, "saves", .default_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+    };
 }
 
 // --- Read-through helpers (shorthand for the most common drills) ---

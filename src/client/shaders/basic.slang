@@ -21,6 +21,7 @@ struct CameraState {
     uint _pad;
     float3 fogColor;
     uint alphaBlendEnabled;
+    float2 uvOffset;
 #endif
 };
 
@@ -37,6 +38,7 @@ struct PushConstants {
     float fogEnd;
     float3 fogColor;
     uint alphaBlendEnabled;
+    float2 uvOffset;
 };
 
 [[vk::push_constant]]
@@ -49,6 +51,7 @@ SamplerState g_sampler;
 Texture2D g_textures[];
 
 float4x4 getModel() { return pc.model; }
+float2 getUvOffset() { return pc.uvOffset; }
 
 #else
 
@@ -66,6 +69,7 @@ ConstantBuffer<PerObject> perObject;
 Sampler2D u_combinedTexture;
 
 float4x4 getModel() { return perObject.model; }
+float2 getUvOffset() { return camera.uvOffset; }
 
 #endif
 
@@ -75,7 +79,7 @@ VertexOutput vertexMain(VertexInput input) {
     float4 viewPos = mul(camera.view, mul(getModel(), float4(input.position, 1.0)));
     output.position = mul(camera.proj, viewPos);
     output.viewDepth = -viewPos.z;
-    output.uv = input.uv;
+    output.uv = input.uv + getUvOffset();
     output.color = input.color;
     return output;
 }
