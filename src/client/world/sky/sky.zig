@@ -93,7 +93,9 @@ pub fn draw_clouds(self: *Self, _: *const Camera, submerged: ?collision.Liquid) 
         WORLD_CENTER - HALF_SIZE,
     ));
     Rendering.gfx.api.set_uv_offset(-self.scroll / CLOUD_UV_PERIOD, 0.0);
+    Rendering.gfx.api.set_culling(false);
     self.cloud_mesh.draw(&m);
+    Rendering.gfx.api.set_culling(true);
     Rendering.gfx.api.set_uv_offset(0.0, 0.0);
 }
 
