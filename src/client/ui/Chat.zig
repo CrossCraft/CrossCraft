@@ -31,7 +31,7 @@ const Self = @This();
 // --- Configuration ---
 
 pub const MAX_MESSAGES: u8 = 10;
-const MSG_MAX_LEN: u8 = 64;
+const MSG_MAX_LEN: u8 = 96;
 pub const INPUT_MAX_LEN: u8 = 64;
 
 const MSG_SHOW_SECS: f32 = 4.5;

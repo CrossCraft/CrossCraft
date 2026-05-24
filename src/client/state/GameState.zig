@@ -53,6 +53,7 @@ const ae_input = ae.Core.input;
 const log = std.log.scoped(.game);
 
 const selection_depth_nudge: f32 = 1.0 / 320.0;
+const MP_FLY_WARNING = "&cUsing fly in multiplayer may get you banned! Know what you're doing! Triple tap to enable.";
 const PauseScreen = enum { main, options, controls, dump_world };
 
 fake_conn: FakeConn,
@@ -83,6 +84,7 @@ chat: Chat,
 /// chat cursor) is visible.  Cleared when Select is pressed again or the
 /// OSK completes.
 psp_social_mode: bool,
+mp_fly_unlocked: bool,
 selection: SelectionOutline,
 steve: SteveModel,
 held: BlockHand,
@@ -286,6 +288,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         self.conn.chat = &self.chat;
     }
     self.psp_social_mode = false;
+    self.mp_fly_unlocked = false;
     self.hotbar_tooltip_timer = 0;
     self.prev_selected_slot = 0;
     self.report_timer = 0;
@@ -835,7 +838,10 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         self.player.rain_toggle_pending = false;
         self.player.chat_open_pending = false;
         self.player.chat_cmd_pending = false;
+        self.player.clear_fly_tap_state();
     } else {
+        handle_fly_tap(self);
+
         if (self.player.hud_toggle_pending) {
             self.player.hud_toggle_pending = false;
             self.hud_hidden = !self.hud_hidden;
@@ -911,6 +917,30 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
     } else if (self.hotbar_tooltip_timer > 0) {
         self.hotbar_tooltip_timer -= dt;
         if (self.hotbar_tooltip_timer < 0) self.hotbar_tooltip_timer = 0;
+    }
+}
+
+fn handle_fly_tap(self: *@This()) void {
+    const event = self.player.consume_fly_tap_event() orelse return;
+
+    switch (Session.mode) {
+        .singleplayer => {
+            if (event == .double) self.player.toggle_fly();
+        },
+        .multiplayer => {
+            if (self.mp_fly_unlocked) {
+                if (event == .double) self.player.toggle_fly();
+                return;
+            }
+
+            switch (event) {
+                .double => self.chat.receive(MP_FLY_WARNING),
+                .triple => {
+                    self.mp_fly_unlocked = true;
+                    self.player.set_fly(true);
+                },
+            }
+        },
     }
 }
 
