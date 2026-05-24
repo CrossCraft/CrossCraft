@@ -39,6 +39,9 @@ in_queue: [WORLD_CX][WORLD_CZ][SECTIONS_Y]bool,
 dirty_buf: [MAX_DIRTY_BUF]GridRef,
 dirty_buf_len: u32,
 dirty_overflow: bool,
+/// Preserve dirty_buf order and move those sections ahead of background
+/// rebuilds. Used for block changes where edge rebuild order affects flicker.
+dirty_preserve_order: bool,
 /// Camera position at the last LOD check. refresh_lod_states only runs when
 /// the camera has moved at least 1 block since this was recorded.
 lod_check_x: f32,
@@ -102,6 +105,7 @@ pub fn init(
         .dirty_buf = undefined,
         .dirty_buf_len = 0,
         .dirty_overflow = false,
+        .dirty_preserve_order = false,
         .lod_check_x = camera.x,
         .lod_check_y = camera.y,
         .lod_check_z = camera.z,
@@ -215,9 +219,11 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
         self.queue_unbuilt_sections(camera);
         self.dirty_overflow = false;
         self.dirty_buf_len = 0;
+        self.dirty_preserve_order = false;
     } else if (self.dirty_buf_len > 0) {
         self.flush_dirty_sections(camera);
         self.dirty_buf_len = 0;
+        self.dirty_preserve_order = false;
     }
 
     if (self.build_cursor >= self.build_end) return;
@@ -436,6 +442,7 @@ fn recollect(self: *Self, camera: *const Camera) void {
     // Phase 4: queue ALL unbuilt sections (not just newly-loaded)
     self.dirty_buf_len = 0;
     self.dirty_overflow = false;
+    self.dirty_preserve_order = false;
     self.queue_unbuilt_sections(camera);
     // init_column set all LOD states for the new columns; sync the check
     // position so update() does not fire a redundant refresh next frame.
@@ -509,6 +516,11 @@ fn queue_unbuilt_sections(self: *Self, cam: *const Camera) void {
 /// Insert sections from dirty_buf into the live build queue without a full
 /// rescan. Falls back to queue_unbuilt_sections if the queue would overflow.
 fn flush_dirty_sections(self: *Self, cam: *const Camera) void {
+    if (self.dirty_preserve_order) {
+        self.flush_ordered_dirty_sections(cam);
+        return;
+    }
+
     var added: u32 = 0;
     for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
         if (self.built[ref.cx][ref.cz][ref.sy]) continue; // already rebuilt
@@ -528,6 +540,51 @@ fn flush_dirty_sections(self: *Self, cam: *const Camera) void {
     if (added > 0 and self.build_end - self.build_cursor > 1) {
         sort_build_queue(self.build_queue[self.build_cursor..self.build_end], cam);
     }
+}
+
+/// Move dirty sections to the front of the unprocessed queue while preserving
+/// dirty_buf order. Sections already queued by background work are removed
+/// from their old position; freshly-dirtied sections are inserted up front.
+fn flush_ordered_dirty_sections(self: *Self, cam: *const Camera) void {
+    var front: [MAX_DIRTY_BUF]GridRef = undefined;
+    var front_len: u32 = 0;
+
+    for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
+        if (self.built[ref.cx][ref.cz][ref.sy]) continue;
+        if (contains_grid_ref(front[0..front_len], ref)) continue;
+        front[front_len] = ref;
+        front_len += 1;
+    }
+    if (front_len == 0) return;
+
+    var reordered: [MAX_ACTIVE]GridRef = undefined;
+    var count: u32 = 0;
+
+    for (front[0..front_len]) |ref| {
+        if (count >= MAX_ACTIVE) {
+            self.queue_unbuilt_sections(cam);
+            return;
+        }
+        reordered[count] = ref;
+        self.in_queue[ref.cx][ref.cz][ref.sy] = true;
+        count += 1;
+    }
+
+    for (self.build_queue[self.build_cursor..self.build_end]) |ref| {
+        if (contains_grid_ref(front[0..front_len], ref)) continue;
+        if (count >= MAX_ACTIVE) {
+            self.queue_unbuilt_sections(cam);
+            return;
+        }
+        reordered[count] = ref;
+        count += 1;
+    }
+
+    for (reordered[0..count], 0..) |ref, i| {
+        self.build_queue[i] = ref;
+    }
+    self.build_cursor = 0;
+    self.build_end = count;
 }
 
 fn try_evict_farthest(self: *Self, cam: *const Camera) bool {
@@ -562,23 +619,67 @@ fn try_evict_farthest(self: *Self, cam: *const Camera) bool {
 
 /// Mark a section for rebuild (e.g. after a block change).
 pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
+    self.mark_section_dirty_impl(cx, sy, cz, false, false);
+}
+
+/// Mark the affected sections for a single block mutation in an order that
+/// avoids one-frame gaps at section edges. Removals rebuild neighbors before
+/// the owner so newly exposed neighbor faces are hidden by the old owner mesh
+/// until the owner rebuild commits. Additions do the inverse.
+pub fn mark_block_change_dirty(self: *Self, cx: u8, sy: u8, cz: u8, lx: u16, ly: u16, lz: u16, removing: bool) void {
+    if (removing) {
+        self.mark_block_neighbor_sections_dirty(cx, sy, cz, lx, ly, lz);
+        self.mark_section_dirty_impl(cx, sy, cz, true, true);
+    } else {
+        self.mark_section_dirty_impl(cx, sy, cz, true, true);
+        self.mark_block_neighbor_sections_dirty(cx, sy, cz, lx, ly, lz);
+    }
+}
+
+fn mark_block_neighbor_sections_dirty(self: *Self, cx: u8, sy: u8, cz: u8, lx: u16, ly: u16, lz: u16) void {
+    if (lx == 0 and cx > 0) self.mark_section_dirty_impl(cx - 1, sy, cz, true, true);
+    if (lx == 15) self.mark_section_dirty_impl(cx + 1, sy, cz, true, true);
+    if (lz == 0 and cz > 0) self.mark_section_dirty_impl(cx, sy, cz - 1, true, true);
+    if (lz == 15) self.mark_section_dirty_impl(cx, sy, cz + 1, true, true);
+    if (ly == 0 and sy > 0) self.mark_section_dirty_impl(cx, sy - 1, cz, true, true);
+    if (ly == 15) self.mark_section_dirty_impl(cx, sy + 1, cz, true, true);
+}
+
+fn mark_section_dirty_impl(self: *Self, cx: u8, sy: u8, cz: u8, track_queued: bool, preserve_order: bool) void {
     if (cx >= WORLD_CX or cz >= WORLD_CZ or sy >= SECTIONS_Y) return;
     self.rain.mark_dirty();
     if (!self.loaded[cx][cz]) return;
     self.built[cx][cz][sy] = false;
     // Section already in the build queue; it will be rebuilt when the queue
     // reaches it - no need to track it again.
-    if (self.in_queue[cx][cz][sy]) return;
+    if (self.in_queue[cx][cz][sy] and !track_queued) return;
     // Track for incremental insert on the next update(). On overflow, flag a
     // full rescan so no dirty sections are silently dropped.
+    self.record_dirty_ref(.{ .cx = cx, .cz = cz, .sy = sy }, preserve_order);
+}
+
+fn record_dirty_ref(self: *Self, ref: GridRef, preserve_order: bool) void {
     if (!self.dirty_overflow) {
+        if (contains_grid_ref(self.dirty_buf[0..self.dirty_buf_len], ref)) {
+            if (preserve_order) self.dirty_preserve_order = true;
+            return;
+        }
         if (self.dirty_buf_len < MAX_DIRTY_BUF) {
-            self.dirty_buf[self.dirty_buf_len] = .{ .cx = cx, .cz = cz, .sy = sy };
+            self.dirty_buf[self.dirty_buf_len] = ref;
             self.dirty_buf_len += 1;
+            if (preserve_order) self.dirty_preserve_order = true;
         } else {
             self.dirty_overflow = true;
+            if (preserve_order) self.dirty_preserve_order = true;
         }
     }
+}
+
+fn contains_grid_ref(haystack: []const GridRef, needle: GridRef) bool {
+    for (haystack) |ref| {
+        if (ref.cx == needle.cx and ref.cz == needle.cz and ref.sy == needle.sy) return true;
+    }
+    return false;
 }
 
 /// Flip ao_enabled on every loaded section whose last-built state disagrees

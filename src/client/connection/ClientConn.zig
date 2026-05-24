@@ -1,6 +1,8 @@
 const std = @import("std");
 const zb = @import("protocol");
-const proto = @import("common").protocol;
+const common = @import("common");
+const proto = common.protocol;
+const Block = common.consts.Block;
 
 const World = @import("game").World;
 const WorldRenderer = @import("../world/world.zig");
@@ -189,23 +191,18 @@ fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
     // Apply the change locally. Singleplayer's in-process server already
     // wrote it to the shared World singleton, so this is a no-op echo there;
     // for real multiplayer it is the only path that updates the client world.
-    World.set_block(event.x, event.y, event.z, .{ .id = @enumFromInt(event.block) });
+    const block: Block = .{ .id = @enumFromInt(event.block) };
+    World.set_block(event.x, event.y, event.z, block);
     // Translate world block coords to (cx, sy, cz) section indices.
     const cx: u8 = @intCast(event.x >> 4);
     const cz: u8 = @intCast(event.z >> 4);
     const sy: u8 = @intCast(event.y >> 4);
-    wr.mark_section_dirty(cx, sy, cz);
     // Border blocks need their neighbor sections rebuilt as well, since
     // greedy meshing reads a 1-block padding from adjacent sections.
     const lx: u16 = event.x & 0xF;
     const ly: u16 = event.y & 0xF;
     const lz: u16 = event.z & 0xF;
-    if (lx == 0 and cx > 0) wr.mark_section_dirty(cx - 1, sy, cz);
-    if (lx == 15) wr.mark_section_dirty(cx + 1, sy, cz);
-    if (lz == 0 and cz > 0) wr.mark_section_dirty(cx, sy, cz - 1);
-    if (lz == 15) wr.mark_section_dirty(cx, sy, cz + 1);
-    if (ly == 0 and sy > 0) wr.mark_section_dirty(cx, sy - 1, cz);
-    if (ly == 15) wr.mark_section_dirty(cx, sy + 1, cz);
+    wr.mark_block_change_dirty(cx, sy, cz, lx, ly, lz, block.is_air());
     // Lighting propagation: a sunlight change at (x,y,z) affects every
     // transparent block below it down to the next light-blocking block.
     // Mark the section column (and XZ-boundary neighbours) dirty for each
