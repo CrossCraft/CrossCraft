@@ -1,5 +1,6 @@
 comptime {
     _ = @import("client/util/Zip.zig");
+    _ = @import("client/graphics/TextureAtlas.zig");
     _ = @import("nbt/nbt.zig");
     _ = @import("common/physics.zig");
     _ = @import("game/world/DumpName.zig");
