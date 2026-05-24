@@ -3,7 +3,6 @@ const ae = @import("aether");
 
 const Ui = @import("../Ui.zig");
 const Options = @import("../../Options.zig");
-const Prompts = @import("../Prompts.zig");
 const config = @import("../../config.zig");
 const widget_id = @import("../widget_id.zig");
 
@@ -143,7 +142,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
         result = .close;
     }
     col.end();
-    ui.prompts(&.{ Prompts.select(), Prompts.back() });
+    ui.contextual_prompts();
     if (result == .none and (ui.close_requested or ui.cancel_pressed())) result = .close;
     return result;
 }

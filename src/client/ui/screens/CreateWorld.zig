@@ -1,5 +1,4 @@
 const Ui = @import("../Ui.zig");
-const Prompts = @import("../Prompts.zig");
 const widget_id = @import("../widget_id.zig");
 
 pub const NAME_MAX: u8 = @import("game").World.CreateName.NAME_MAX;
@@ -65,7 +64,7 @@ pub fn run(ui: *Ui, ctx: *Ctx) Action {
     if (ui.button(wid(.back), "Back", .{}) and action == .none) action = .back;
     col.end();
 
-    ui.prompts(&.{ Prompts.select(), Prompts.back() });
+    ui.contextual_prompts();
     if (action == .none and (name_event == .submit or seed_event == .submit) and ctx.create_enabled) action = .create;
     if (action == .none and ui.cancel_pressed()) action = .back;
     return action;

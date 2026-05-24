@@ -10,6 +10,7 @@ const button_style_mod = @import("ButtonStyle.zig");
 const slider_style_mod = @import("SliderStyle.zig");
 const text_field_style_mod = @import("TextFieldStyle.zig");
 const prompt_strip = @import("PromptStrip.zig");
+const prompts_mod = @import("Prompts.zig");
 const ui_input = @import("input.zig");
 const widget_id = @import("widget_id.zig");
 const FontBatcher = @import("FontBatcher.zig");
@@ -565,6 +566,35 @@ pub fn prompts(self: *Self, list: []const Prompt) void {
     );
 }
 
+pub fn contextual_prompts(self: *Self) void {
+    if (self.state.captured) |id| {
+        if (self.current_focusable_kind(id)) |kind| {
+            if (kind == .slider) {
+                self.prompts(&.{ prompts_mod.left_right(), prompts_mod.exit_adjust() });
+                return;
+            }
+        }
+    }
+    if (self.state.active_text) |id| {
+        if (self.current_focusable_kind(id)) |kind| {
+            if (kind == .text_field) {
+                self.prompts(&.{ prompts_mod.done(), prompts_mod.cancel() });
+                return;
+            }
+        }
+    }
+
+    const kind = self.prompt_focusable_kind() orelse {
+        self.prompts(&.{ prompts_mod.select(), prompts_mod.back() });
+        return;
+    };
+    switch (kind) {
+        .text_field => self.prompts(&.{ prompts_mod.edit(), prompts_mod.back() }),
+        .slider => self.prompts(&.{ prompts_mod.adjust(), prompts_mod.back() }),
+        else => self.prompts(&.{ prompts_mod.select(), prompts_mod.back() }),
+    }
+}
+
 pub fn cancel_pressed(self: *const Self) bool {
     return self.input.cancel_edge and !self.cancel_consumed and !self.claimed_confirm;
 }
@@ -944,6 +974,17 @@ fn find_current_id(self: *const Self, id: WidgetId) ?u8 {
     return null;
 }
 
+fn current_focusable_kind(self: *const Self, id: WidgetId) ?UiState.FocusableKind {
+    const idx = self.find_current_id(id) orelse return null;
+    return self.focusables[idx].kind;
+}
+
+fn prompt_focusable_kind(self: *const Self) ?UiState.FocusableKind {
+    if (self.state.focused) |id| return self.current_focusable_kind(id);
+    if (self.state.focus_source == .pad and self.focus_count > 0) return self.focusables[0].kind;
+    return null;
+}
+
 fn spatial_advance(self: *Self, from_idx: u8, dir: ui_input.NavDir) void {
     if (dir == .none) return;
     const cur = self.state.focusables[from_idx].rect;
@@ -1297,6 +1338,43 @@ fn draw_button(ui: *Self, rect: LogicalRect, text: []const u8, focused: bool, op
     });
 }
 
+fn draw_rect_outline(ui: *Self, rect: LogicalRect, thickness: i16, color: Color, layer: u8) void {
+    const w = rect.width();
+    const h = rect.height();
+    if (thickness <= 0 or w <= 0 or h <= 0) return;
+
+    const t = @min(thickness, @min(w, h));
+    ui.draw.add_rect(&.{
+        .pos_offset = .{ .x = rect.x0, .y = rect.y0 },
+        .pos_extent = .{ .x = w, .y = t },
+        .color = color,
+        .layer = layer,
+    });
+    if (h > t) {
+        ui.draw.add_rect(&.{
+            .pos_offset = .{ .x = rect.x0, .y = rect.y1 - t },
+            .pos_extent = .{ .x = w, .y = t },
+            .color = color,
+            .layer = layer,
+        });
+    }
+
+    const side_h = h - 2 * t;
+    if (side_h <= 0 or w <= t) return;
+    ui.draw.add_rect(&.{
+        .pos_offset = .{ .x = rect.x0, .y = rect.y0 + t },
+        .pos_extent = .{ .x = t, .y = side_h },
+        .color = color,
+        .layer = layer,
+    });
+    ui.draw.add_rect(&.{
+        .pos_offset = .{ .x = rect.x1 - t, .y = rect.y0 + t },
+        .pos_extent = .{ .x = t, .y = side_h },
+        .color = color,
+        .layer = layer,
+    });
+}
+
 fn draw_slider(ui: *Self, rect: LogicalRect, id: WidgetId, value: f32, opts: SliderOpts, focused: bool) void {
     const style = opts.style;
     const elide = switch (style.sizing) {
@@ -1333,6 +1411,11 @@ fn draw_slider(ui: *Self, rect: LogicalRect, id: WidgetId, value: f32, opts: Sli
         .origin = .top_left,
         .sizing = elide,
     });
+    if (dragging) {
+        draw_rect_outline(ui, rect, style.active_outline_thickness, style.active_outline_color, ui.layer_base + 5);
+    } else if (focused) {
+        draw_rect_outline(ui, rect, style.focus_outline_thickness, style.focus_outline_color, ui.layer_base + 5);
+    }
     if (opts.label.len == 0) return;
     const inner_w: i16 = @max(rect.width() - 2 * style.text_padding_x, 0);
     const fit = ui.fonts.fit_width(opts.label, inner_w, 0, 1);
@@ -1368,9 +1451,15 @@ fn draw_textfield(ui: *Self, rect: LogicalRect, id: WidgetId, buf: *TextBuf, opt
         .origin = .top_left,
         .sizing = elide,
     });
+    const active = ui.state.active_text != null and ui.state.active_text.? == id;
+    const focused = ui.state_focused_eq(id) or ui.state_hovered_eq(id);
+    if (active) {
+        draw_rect_outline(ui, rect, style.active_outline_thickness, style.active_outline_color, ui.layer_base + 4);
+    } else if (focused) {
+        draw_rect_outline(ui, rect, style.focus_outline_thickness, style.focus_outline_color, ui.layer_base + 4);
+    }
     const text_x = rect.x0 + style.text_padding_x;
     const text_y = rect.y0 + @divTrunc(rect.height() - 8, 2);
-    const active = ui.state.active_text != null and ui.state.active_text.? == id;
     const len = buf.len.*;
     if (len > 0) {
         const text = buf.bytes[0..len];

@@ -18,10 +18,45 @@ pub fn select() Prompt {
     };
 }
 
+pub fn edit() Prompt {
+    return switch (Buttons.resolve_style()) {
+        .kbm => .{ .chord = .{ .EnterKey, null }, .label = "Edit" },
+        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .A, null }, .label = "Edit" },
+    };
+}
+
+pub fn adjust() Prompt {
+    return switch (Buttons.resolve_style()) {
+        .kbm => .{ .chord = .{ .EnterKey, null }, .label = "Adjust" },
+        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .A, null }, .label = "Adjust" },
+    };
+}
+
+pub fn done() Prompt {
+    return switch (Buttons.resolve_style()) {
+        .kbm => .{ .chord = .{ .EnterKey, null }, .label = "Done" },
+        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .A, null }, .label = "Done" },
+    };
+}
+
 pub fn back() Prompt {
     return switch (Buttons.resolve_style()) {
         .kbm => .{ .chord = .{ .EscapeKey, null }, .label = "Back" },
         .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .B, null }, .label = "Back" },
+    };
+}
+
+pub fn exit_adjust() Prompt {
+    return switch (Buttons.resolve_style()) {
+        .kbm => .{ .chord = .{ .EscapeKey, null }, .label = "Done" },
+        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .B, null }, .label = "Done" },
+    };
+}
+
+pub fn left_right() Prompt {
+    return switch (Buttons.resolve_style()) {
+        .kbm => .{ .chord = .{ .BlankKey, null }, .label = "Adjust", .letter_overlay = "<>" },
+        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .DpadLeft, .DpadRight }, .label = "Adjust" },
     };
 }
 
