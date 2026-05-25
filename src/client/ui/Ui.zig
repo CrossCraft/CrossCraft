@@ -214,22 +214,24 @@ pub fn end(self: *Self) void {
     while (i < self.scroll_view_count) : (i += 1) self.state.scroll_views[i] = self.scroll_views[i];
 
     if (self.state.focused) |id| {
-        if (self.find_current_id(id) == null) self.state.focused = null;
+        if (self.find_current_visible_id(id) == null) self.state.focused = null;
     }
     if (self.state.hovered) |id| {
-        if (self.find_current_id(id) == null) self.state.hovered = null;
+        if (self.find_current_visible_id(id) == null) self.state.hovered = null;
     }
     if (self.state.active_text) |id| {
-        if (self.find_current_id(id) == null) self.state.cancel_active_text();
+        if (self.find_current_visible_id(id) == null) self.state.cancel_active_text();
     }
     if (self.state.captured) |id| {
-        if (self.find_current_id(id) == null) {
+        if (self.find_current_visible_id(id) == null) {
             self.state.captured = null;
             self.state.captured_via_click = false;
         }
     }
-    if (self.state.focus_source == .pad and self.state.focused == null and self.focus_count > 0) {
-        self.state.focused = self.focusables[0].id;
+    if (self.state.focus_source == .pad and self.state.focused == null) {
+        if (first_visible_focusable_idx(self.focusables[0..self.focus_count])) |idx| {
+            self.state.focused = self.focusables[idx].id;
+        }
     }
     self.depth = 0;
 }
@@ -820,7 +822,6 @@ fn push_focusable(self: *Self, f_in: UiState.Focusable) void {
     std.debug.assert(self.focus_count < MAX_FOCUSABLES);
     var f = f_in;
     if (f.scroll_clip == null) f.scroll_clip = self.current_scroll_clip();
-    if (!focusable_in_clip(f.rect, f.scroll_clip)) return;
     self.focusables[self.focus_count] = f;
     self.focus_count += 1;
 }
@@ -840,6 +841,15 @@ fn focusable_in_clip(rect: LogicalRect, clip: ?UiState.ScrollClip) bool {
     const c = clip orelse return true;
     const v = c.viewport;
     return !(rect.x1 <= v.x0 or rect.x0 >= v.x1 or rect.y1 <= v.y0 or rect.y0 >= v.y1);
+}
+
+fn first_visible_focusable_idx(focusables: []const UiState.Focusable) ?u8 {
+    var fallback: ?u8 = null;
+    for (focusables, 0..) |f, i| {
+        if (fallback == null) fallback = @intCast(i);
+        if (focusable_in_clip(f.rect, f.scroll_clip)) return @intCast(i);
+    }
+    return fallback;
 }
 
 fn offset_focus_range(self: *Self, start: u8, finish: u8, dx: i16, dy: i16) void {
@@ -915,8 +925,8 @@ fn route_pre_frame(self: *Self) void {
         self.state.focus_source = .pad;
         if (self.focused_previous_idx()) |idx| {
             if (self.state.focusables[idx].kind != .slot_grid) self.spatial_advance(idx, self.input.nav);
-        } else if (self.state.focusable_count > 0) {
-            self.state.focused = self.state.focusables[0].id;
+        } else if (first_visible_focusable_idx(self.state.focusables[0..self.state.focusable_count])) |idx| {
+            self.state.focused = self.state.focusables[idx].id;
         }
         self.autoscroll_to_focus();
     }
@@ -974,6 +984,13 @@ fn find_current_id(self: *const Self, id: WidgetId) ?u8 {
     return null;
 }
 
+fn find_current_visible_id(self: *const Self, id: WidgetId) ?u8 {
+    const idx = self.find_current_id(id) orelse return null;
+    const f = self.focusables[idx];
+    if (!focusable_in_clip(f.rect, f.scroll_clip)) return null;
+    return idx;
+}
+
 fn current_focusable_kind(self: *const Self, id: WidgetId) ?UiState.FocusableKind {
     const idx = self.find_current_id(id) orelse return null;
     return self.focusables[idx].kind;
@@ -981,13 +998,16 @@ fn current_focusable_kind(self: *const Self, id: WidgetId) ?UiState.FocusableKin
 
 fn prompt_focusable_kind(self: *const Self) ?UiState.FocusableKind {
     if (self.state.focused) |id| return self.current_focusable_kind(id);
-    if (self.state.focus_source == .pad and self.focus_count > 0) return self.focusables[0].kind;
+    if (self.state.focus_source == .pad) {
+        if (first_visible_focusable_idx(self.focusables[0..self.focus_count])) |idx| return self.focusables[idx].kind;
+    }
     return null;
 }
 
 fn spatial_advance(self: *Self, from_idx: u8, dir: ui_input.NavDir) void {
     if (dir == .none) return;
-    const cur = self.state.focusables[from_idx].rect;
+    const cur_focus = &self.state.focusables[from_idx];
+    const cur = cur_focus.rect;
     const cur_cx: i32 = (@as(i32, cur.x0) + @as(i32, cur.x1)) >> 1;
     const cur_cy: i32 = (@as(i32, cur.y0) + @as(i32, cur.y1)) >> 1;
 
@@ -996,6 +1016,7 @@ fn spatial_advance(self: *Self, from_idx: u8, dir: ui_input.NavDir) void {
     var i: u8 = 0;
     while (i < self.state.focusable_count) : (i += 1) {
         if (i == from_idx) continue;
+        if (!nav_candidate_visible(cur_focus, &self.state.focusables[i])) continue;
         const r = self.state.focusables[i].rect;
         const cx: i32 = (@as(i32, r.x0) + @as(i32, r.x1)) >> 1;
         const cy: i32 = (@as(i32, r.y0) + @as(i32, r.y1)) >> 1;
@@ -1030,6 +1051,13 @@ fn spatial_advance(self: *Self, from_idx: u8, dir: ui_input.NavDir) void {
         }
     }
     if (best) |b| self.state.focused = self.state.focusables[b].id;
+}
+
+fn nav_candidate_visible(cur: *const UiState.Focusable, candidate: *const UiState.Focusable) bool {
+    if (focusable_in_clip(candidate.rect, candidate.scroll_clip)) return true;
+    const cur_clip = cur.scroll_clip orelse return false;
+    const candidate_clip = candidate.scroll_clip orelse return false;
+    return cur_clip.list_id == candidate_clip.list_id;
 }
 
 fn autoscroll_to_focus(self: *Self) void {
