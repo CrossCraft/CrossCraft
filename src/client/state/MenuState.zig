@@ -38,6 +38,7 @@ const CompressorThread = @import("CompressorThread.zig");
 const build_options = @import("build_options");
 
 const log = std.log.scoped(.menu);
+const default_create_world_name = "world";
 
 const embedded_pack: []const u8 =
     if (build_options.embed_pack) @embedFile("default_pack") else &.{};
@@ -463,7 +464,7 @@ fn update_select_world(self: *@This(), engine: *Engine, in: *const ui_input.UiIn
         .none => {},
         .cancel => enter_main(self),
         .toggle_delete => self.sw_delete_mode = !self.sw_delete_mode,
-        .create => enter_create_world(self),
+        .create => enter_create_world(self, engine),
         .select => |row| sw_select_row(self, engine, row),
     }
 }
@@ -506,9 +507,13 @@ fn sw_select_row(self: *@This(), engine: *Engine, row: u8) void {
 }
 
 fn create_world_available(self: *const @This(), engine: *Engine) bool {
+    return create_world_name_available(engine, self.create_world_name_slice());
+}
+
+fn create_world_name_available(engine: *Engine, name: []const u8) bool {
     var path_buf: [World.CreateName.PATH_MAX]u8 = undefined;
     var name_buf: [World.CreateName.NAME_MAX]u8 = undefined;
-    const result = World.CreateName.build_path(self.create_world_name_slice(), &path_buf, &name_buf) catch return false;
+    const result = World.CreateName.build_path(name, &path_buf, &name_buf) catch return false;
     return !file_exists(engine.io, engine.dirs.data, result.path);
 }
 
@@ -603,12 +608,38 @@ fn enter_select_world(self: *@This(), engine: *Engine) void {
     self.sw_ui_state.open(!ui_input.profile_uses_pointer());
 }
 
-fn enter_create_world(self: *@This()) void {
-    self.cw_name_len = 0;
+fn enter_create_world(self: *@This(), engine: *Engine) void {
+    seed_create_world_name(self, engine);
     self.cw_seed_len = 0;
     self.sw_delete_mode = false;
     self.active_screen = .create_world;
     self.cw_ui_state.open(!ui_input.profile_uses_pointer());
+}
+
+fn seed_create_world_name(self: *@This(), engine: *Engine) void {
+    if (create_world_name_available(engine, default_create_world_name)) {
+        set_create_world_name(self, default_create_world_name);
+        return;
+    }
+
+    var candidate_buf: [World.CreateName.NAME_MAX]u8 = undefined;
+    var i: u16 = 1;
+    while (i < 1000) : (i += 1) {
+        const candidate = std.fmt.bufPrint(&candidate_buf, "world_{d}", .{i}) catch break;
+        if (create_world_name_available(engine, candidate)) {
+            set_create_world_name(self, candidate);
+            return;
+        }
+    }
+
+    self.cw_name_len = 0;
+}
+
+fn set_create_world_name(self: *@This(), name: []const u8) void {
+    @memset(&self.cw_name, 0);
+    const len = @min(name.len, self.cw_name.len);
+    @memcpy(self.cw_name[0..len], name[0..len]);
+    self.cw_name_len = @intCast(len);
 }
 
 fn enter_options(self: *@This()) void {

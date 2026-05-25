@@ -2,7 +2,7 @@ const Ui = @import("../Ui.zig");
 const widget_id = @import("../widget_id.zig");
 
 pub const NAME_MAX: u8 = @import("game").World.CreateName.NAME_MAX;
-pub const SEED_MAX: u8 = 64;
+pub const SEED_MAX: u8 = NAME_MAX;
 const OPTION_W: i16 = 150;
 
 pub const Widget = enum(u16) {
