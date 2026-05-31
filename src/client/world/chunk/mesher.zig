@@ -87,9 +87,11 @@ inline fn prefetch_y_slice(chunk_ptr: *const [c.ChunkVolume]c.Block, y_local: u3
 // --- Pack ---
 
 fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
+    const AIR: Row = .{ .opq = 0, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
     const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
+    if (y >= @as(i32, WORLD_H)) return AIR;
     if (wz_raw < 0 or wz_raw >= @as(i32, WORLD_D)) return BOUNDARY;
-    if (y < 0 or y >= @as(i32, WORLD_H)) return BOUNDARY;
+    if (y < 0) return BOUNDARY;
 
     var opq: u32 = 0;
     var vis: u32 = 0;

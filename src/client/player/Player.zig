@@ -1009,7 +1009,11 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
             dist_z += ONE;
         }
 
-        if (!in_world(bx, by, bz)) return null;
+        // Treat out-of-world cells as empty while the ray is still in range.
+        // This lets a camera above the build limit trace back down into the
+        // world, while placement still rejects an out-of-bounds adjacent cell
+        // through has_place below.
+        if (!in_world(bx, by, bz)) continue;
         if (!is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) continue;
 
         const block = World.data.get_block(@intCast(bx), @intCast(by), @intCast(bz));
