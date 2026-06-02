@@ -43,7 +43,12 @@ const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_
 pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else if (ae.platform == .nintendo_3ds) ae.ThreeDS.panic else std.debug.FullPanic(std.debug.defaultPanic);
 pub const std_options_debug_threaded_io = if (is_freestanding_console) null else std.Io.Threaded.global_single_threaded;
 pub const std_options_debug_io: std.Io = if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_3ds) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
-pub const std_options_cwd = if (ae.platform == .psp) psp_cwd else null;
+pub const std_options_cwd = if (ae.platform == .psp)
+    psp_cwd
+else if (ae.platform == .nintendo_3ds)
+    ae.Cio.cwd
+else
+    null;
 fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
 }
