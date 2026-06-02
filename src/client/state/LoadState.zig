@@ -5,6 +5,7 @@ const Util = ae.Util;
 const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
+const PathDir = @TypeOf((@as(ae.Core.paths.Dirs, undefined)).data);
 
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
@@ -32,6 +33,10 @@ var mp_server_motd: [64]u8 = @splat(' ');
 /// Empty action set; exists only so push_context has a valid installed
 /// set during the loading screen.
 var loading_set: ?ae.Core.input.ActionSetHandle = null;
+
+fn std_data_dir(dir: PathDir) std.Io.Dir {
+    return if (@hasField(PathDir, "handle")) dir else std.Io.Dir.cwd();
+}
 
 fn ensure_loading_set() !ae.Core.input.ActionSetHandle {
     if (loading_set) |h| return h;
@@ -275,6 +280,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     server_ready.store(false, .monotonic);
     session_error = null;
     Session.clear_disconnect_reason();
+    const data_dir = std_data_dir(engine.dirs.data);
     // TODO: allocator pool budget may need tuning for server + client coexistence
     self.server_future = switch (Session.mode) {
         .singleplayer => io.async(serverTask, .{
@@ -282,10 +288,10 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             engine.allocator(.user),
             singleplayer_seed,
             io,
-            engine.dirs.data,
+            data_dir,
             Session.singleplayer_save(),
         }),
-        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), random_seed, io, engine.dirs.data }),
+        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), random_seed, io, data_dir }),
     };
 
     self.inited = true;

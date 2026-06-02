@@ -1,8 +1,10 @@
 const std = @import("std");
+const ae = @import("aether");
 const Ui = @import("../Ui.zig");
 const Prompts = @import("../Prompts.zig");
 const widget_id = @import("../widget_id.zig");
 const Options = @import("../../Options.zig");
+const PathDir = @TypeOf((@as(ae.Core.paths.Dirs, undefined)).data);
 
 const log = std.log.scoped(.menu);
 
@@ -47,7 +49,7 @@ pub const Entry = struct {
     label_len: u8 = 0,
     path_buf: [max_path_len]u8 = undefined,
     path_len: u8 = 0,
-    dir: std.Io.Dir = undefined,
+    dir: PathDir = undefined,
 
     pub fn label(self: *const Entry) []const u8 {
         return self.label_buf[0..self.label_len];
@@ -84,7 +86,7 @@ pub fn run(ui: *Ui, entries: []const Entry, selected_index: ?u8) Result {
     return result;
 }
 
-pub fn scan(io: std.Io, resources_dir: std.Io.Dir, data_dir: std.Io.Dir, out: *[max_packs + 1]Entry) u8 {
+pub fn scan(io: std.Io, resources_dir: PathDir, data_dir: PathDir, out: *[max_packs + 1]Entry) u8 {
     var count: u8 = 0;
     add_entry(out, &count, "Default", default_path, resources_dir);
 
@@ -110,7 +112,7 @@ pub fn scan(io: std.Io, resources_dir: std.Io.Dir, data_dir: std.Io.Dir, out: *[
     return count;
 }
 
-fn add_entry(out: *[max_packs + 1]Entry, count: *u8, label: []const u8, path: []const u8, dir: std.Io.Dir) void {
+fn add_entry(out: *[max_packs + 1]Entry, count: *u8, label: []const u8, path: []const u8, dir: PathDir) void {
     if (count.* >= max_packs + 1) return;
     if (label.len > max_path_len or path.len > max_path_len) return;
 

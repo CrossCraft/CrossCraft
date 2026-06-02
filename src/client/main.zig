@@ -7,6 +7,7 @@ pub const std_options: std.Options = .{
     .log_level = Util.std_options.log_level,
     .log_scope_levels = Util.std_options.log_scope_levels,
     .logFn = locked_log_fn,
+    .page_size_min = if (ae.platform == .nintendo_3ds) 4 * 1024 else null,
 };
 
 var log_lock: std.atomic.Value(bool) = .init(false);
@@ -35,11 +36,14 @@ pub const psp_stack_size: u32 = 512 * 1024;
 pub const psp_async_stack_size: u32 = 64 * 1024;
 pub const psp_heap_reserve_kb_size: u32 = 2048 + 512;
 
-// PSP: override panic/IO handlers that would otherwise pull in posix symbols.
-pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
-pub const std_options_debug_threaded_io = if (ae.platform == .psp) null else std.Io.Threaded.global_single_threaded;
-pub const std_options_debug_io = if (ae.platform == .psp) sdk.extra.Io.psp_io else std.Io.Threaded.global_single_threaded.io();
-pub const std_options_cwd = if (ae.platform == .psp) psp_cwd else null;
+const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_3ds;
+
+// PSP and 3DS override panic/IO handlers that would otherwise pull in
+// posix symbols unavailable on their targets.
+pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else if (ae.platform == .nintendo_3ds) ae.ThreeDS.panic else std.debug.FullPanic(std.debug.defaultPanic);
+pub const std_options_debug_threaded_io = if (is_freestanding_console) null else std.Io.Threaded.global_single_threaded;
+pub const std_options_debug_io: std.Io = if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_3ds) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
+pub const std_options_cwd = if (ae.platform == .psp) psp_cwd else if (ae.platform == .nintendo_3ds) ae.Cio.cwd else null;
 fn psp_cwd() std.Io.Dir {
     return .{ .handle = -1 };
 }

@@ -1,7 +1,9 @@
 const std = @import("std");
+const ae = @import("aether");
 const Ui = @import("../Ui.zig");
 const Prompts = @import("../Prompts.zig");
 const widget_id = @import("../widget_id.zig");
+const PathDir = @TypeOf((@as(ae.Core.paths.Dirs, undefined)).data);
 
 const log = std.log.scoped(.menu);
 
@@ -98,7 +100,7 @@ pub fn run(ui: *Ui, entries: []const Entry, delete_mode: bool) Result {
     return result;
 }
 
-pub fn scan(io: std.Io, data_dir: std.Io.Dir, out: *[max_worlds]Entry) u8 {
+pub fn scan(io: std.Io, data_dir: PathDir, out: *[max_worlds]Entry) u8 {
     var count: u8 = 0;
     var dir = data_dir.openDir(io, "saves", .{ .iterate = true }) catch |err| {
         log.warn("saves/ not iterable: {}", .{err});
@@ -121,7 +123,7 @@ pub fn scan(io: std.Io, data_dir: std.Io.Dir, out: *[max_worlds]Entry) u8 {
     return count;
 }
 
-pub fn delete_entry(io: std.Io, data_dir: std.Io.Dir, entry: *const Entry) bool {
+pub fn delete_entry(io: std.Io, data_dir: PathDir, entry: *const Entry) bool {
     data_dir.deleteFile(io, entry.path()) catch |err| {
         log.warn("failed to delete save '{s}': {}", .{ entry.path(), err });
         return false;
@@ -134,7 +136,7 @@ fn has_cw_ext(name: []const u8) bool {
     return std.ascii.eqlIgnoreCase(name[name.len - 3 ..], ".cw");
 }
 
-fn stat_file_size(io: std.Io, dir: std.Io.Dir, name: []const u8) ?u64 {
+fn stat_file_size(io: std.Io, dir: PathDir, name: []const u8) ?u64 {
     const file = dir.openFile(io, name, .{}) catch |err| {
         log.warn("failed to open save '{s}': {}", .{ name, err });
         return null;

@@ -5,6 +5,7 @@ const Util = ae.Util;
 const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
+const PathDir = @TypeOf((@as(ae.Core.paths.Dirs, undefined)).data);
 
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
@@ -185,7 +186,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     engine.report();
 }
 
-fn migrate_default_saves(alloc: std.mem.Allocator, io: std.Io, data_dir: std.Io.Dir) void {
+fn migrate_default_saves(alloc: std.mem.Allocator, io: std.Io, data_dir: PathDir) void {
     var saves_dir = data_dir.createDirPathOpen(io, "saves", .{}) catch |err| {
         log.warn("legacy save migration: failed to open saves/: {}", .{err});
         return;
@@ -196,7 +197,7 @@ fn migrate_default_saves(alloc: std.mem.Allocator, io: std.Io, data_dir: std.Io.
     migrate_legacy_world_dat(alloc, io, data_dir, saves_dir);
 }
 
-fn migrate_root_default_save(io: std.Io, data_dir: std.Io.Dir, saves_dir: std.Io.Dir) void {
+fn migrate_root_default_save(io: std.Io, data_dir: PathDir, saves_dir: PathDir) void {
     if (!file_exists(io, data_dir, Server.root_default_save_file_name)) return;
 
     var dest_name_buf: [SelectWorld.max_file_name_len]u8 = undefined;
@@ -220,7 +221,7 @@ fn migrate_root_default_save(io: std.Io, data_dir: std.Io.Dir, saves_dir: std.Io
     log.info("Migrated default save {s} -> {s}", .{ Server.root_default_save_file_name, dest_path });
 }
 
-fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.Io.Dir, saves_dir: std.Io.Dir) void {
+fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: PathDir, saves_dir: PathDir) void {
     if (!file_exists(io, data_dir, Server.legacy_save_file_name)) return;
 
     var dest_name_buf: [SelectWorld.max_file_name_len]u8 = undefined;
@@ -262,7 +263,7 @@ fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.
     });
 }
 
-fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldData) bool {
+fn load_legacy_world_dat(io: std.Io, data_dir: PathDir, data: *World.WorldData) bool {
     const file = data_dir.openFile(io, Server.legacy_save_file_name, .{}) catch return false;
     defer file.close(io);
 
@@ -302,10 +303,15 @@ fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldDat
 fn write_converted_legacy_save(
     alloc: std.mem.Allocator,
     io: std.Io,
-    saves_dir: std.Io.Dir,
+    saves_dir: PathDir,
     dest_name: []const u8,
     data: *World.WorldData,
 ) bool {
+    if (!@hasField(PathDir, "handle")) {
+        log.warn("legacy save migration: unsupported data directory type", .{});
+        return false;
+    }
+
     CompressWorker.init(alloc, io) catch |err| {
         log.warn("legacy save migration: failed to init compressor: {}", .{err});
         return false;
@@ -339,7 +345,7 @@ fn write_converted_legacy_save(
     return st.size > 0;
 }
 
-fn choose_legacy_dest_name(io: std.Io, saves_dir: std.Io.Dir, out: *[SelectWorld.max_file_name_len]u8) ?[]const u8 {
+fn choose_legacy_dest_name(io: std.Io, saves_dir: PathDir, out: *[SelectWorld.max_file_name_len]u8) ?[]const u8 {
     if (!file_exists(io, saves_dir, "world.cw")) return "world.cw";
 
     var i: u16 = 2;
@@ -350,7 +356,7 @@ fn choose_legacy_dest_name(io: std.Io, saves_dir: std.Io.Dir, out: *[SelectWorld
     return null;
 }
 
-fn choose_legacy_backup_name(io: std.Io, data_dir: std.Io.Dir, out: *[32]u8) ?[]const u8 {
+fn choose_legacy_backup_name(io: std.Io, data_dir: PathDir, out: *[32]u8) ?[]const u8 {
     if (!file_exists(io, data_dir, "world.bak")) return "world.bak";
 
     var i: u16 = 2;
@@ -361,7 +367,7 @@ fn choose_legacy_backup_name(io: std.Io, data_dir: std.Io.Dir, out: *[32]u8) ?[]
     return null;
 }
 
-fn file_exists(io: std.Io, dir: std.Io.Dir, path: []const u8) bool {
+fn file_exists(io: std.Io, dir: PathDir, path: []const u8) bool {
     const file = dir.openFile(io, path, .{}) catch return false;
     file.close(io);
     return true;
@@ -849,7 +855,7 @@ fn draw_logo(self: *@This()) void {
     });
 }
 
-fn apply_pack(self: *@This(), dir: std.Io.Dir, path: []const u8) void {
+fn apply_pack(self: *@This(), dir: PathDir, path: []const u8) void {
     ResourcePack.switch_pack(dir, path) catch |err| {
         log.err("switch_pack('{s}') failed: {}", .{ path, err });
         return;

@@ -11,6 +11,7 @@ const Io = std.Io;
 const File = std.Io.File;
 const cfg = @import("config.zig");
 const input = ae.Core.input;
+const PathDir = @TypeOf((@as(ae.Core.paths.Dirs, undefined)).data);
 
 const log = std.log.scoped(.options);
 
@@ -294,7 +295,7 @@ const JsonOptions = struct {
 
 /// Load options from `options.json` in `dir`.  Falls back to defaults when
 /// the file does not exist or cannot be parsed.
-pub fn load(io: Io, dir: Io.Dir) void {
+pub fn load(io: Io, dir: PathDir) void {
     const file = dir.openFile(io, options_file, .{}) catch return;
     defer file.close(io);
 
@@ -365,7 +366,7 @@ pub fn load(io: Io, dir: Io.Dir) void {
 /// is unimplemented on PSP and the partial-write risk is negligible here:
 /// options.json is ~300 bytes, and `load`'s parse-error fallback to
 /// defaults already covers a torn write.
-pub fn save(io: Io, dir: Io.Dir) void {
+pub fn save(io: Io, dir: PathDir) void {
     const j = JsonOptions{
         .active_texturepack = current.active_texturepack(),
         .render_distance = current.render_distance,
