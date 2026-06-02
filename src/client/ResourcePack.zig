@@ -14,7 +14,6 @@ const ae = @import("aether");
 const Rendering = ae.Rendering;
 const Zip = @import("util/Zip.zig");
 const TextureAtlas = @import("graphics/TextureAtlas.zig").TextureAtlas;
-const PathDir = @TypeOf((@as(ae.Core.paths.Dirs, undefined)).data);
 
 // --- texture identifiers ---
 
@@ -73,7 +72,7 @@ var pack_path_len: usize = 0;
 /// Dir the current pack was opened against. Recorded by `init`/`switch_pack`
 /// so later operations (texture reload, audio stream reopen) don't have to
 /// thread a Dir through every call site.
-var pack_dir: PathDir = undefined;
+var pack_dir: std.Io.Dir = undefined;
 
 const log = std.log.scoped(.respack);
 
@@ -105,7 +104,7 @@ pub fn init(
     render_alloc: std.mem.Allocator,
     game_alloc: std.mem.Allocator,
     io: std.Io,
-    dir: PathDir,
+    dir: std.Io.Dir,
     path: []const u8,
 ) !void {
     if (pack_initialized) return;
@@ -145,7 +144,7 @@ pub fn get_pack_path() []const u8 {
     return pack_path_buf[0..pack_path_len];
 }
 
-pub fn get_dir() PathDir {
+pub fn get_dir() std.Io.Dir {
     return pack_dir;
 }
 
@@ -160,7 +159,7 @@ pub fn get_dir() PathDir {
 /// Callers pick the dir based on source: `engine.dirs.resources` to go
 /// back to the bundled default pack; `engine.dirs.data` for a
 /// user-installed pack under `texturepacks/`.
-pub fn switch_pack(dir: PathDir, path: []const u8) !void {
+pub fn switch_pack(dir: std.Io.Dir, path: []const u8) !void {
     std.debug.assert(pack_initialized);
     std.debug.assert(path.len > 0 and path.len <= max_pack_path_len);
 
@@ -233,9 +232,8 @@ pub fn switch_pack(dir: PathDir, path: []const u8) !void {
     log.info("switched to pack '{s}'", .{path});
 }
 
-fn same_dir(a: PathDir, b: PathDir) bool {
-    if (@hasField(PathDir, "handle")) return a.handle == b.handle;
-    return a.eql(b);
+fn same_dir(a: std.Io.Dir, b: std.Io.Dir) bool {
+    return a.handle == b.handle;
 }
 
 // --- texture access ---

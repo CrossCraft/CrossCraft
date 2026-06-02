@@ -78,16 +78,54 @@ const psp_slim_profile: Profile = .{
     .rt_user = 4 * MB + 512 * KB,
 };
 
-var active_profile: Profile = if (ae.platform == .psp) psp_phat_profile else desktop_profile;
+const old_3ds_profile: Profile = .{
+    .hardware = .old_3ds,
+    .total_memory_mb = 36,
+    .chunk_radius = 6,
+    .lod_near_radius_blocks = 28,
+    .init_render = 4 * MB,
+    .init_audio = 2 * MB,
+    .init_game = 2 * MB,
+    .init_user = 12 * MB,
+    .rt_render = 29 * MB + 768 * KB,
+    .rt_audio = 0 * KB,
+    .rt_game = 1 * MB,
+    .rt_user = 4 * MB + 512 * KB,
+};
+
+const new_3ds_profile: Profile = .{
+    .hardware = .new_3ds,
+    .total_memory_mb = old_3ds_profile.total_memory_mb,
+    .chunk_radius = old_3ds_profile.chunk_radius,
+    .lod_near_radius_blocks = old_3ds_profile.lod_near_radius_blocks,
+    .init_render = old_3ds_profile.init_render,
+    .init_audio = old_3ds_profile.init_audio,
+    .init_game = old_3ds_profile.init_game,
+    .init_user = old_3ds_profile.init_user,
+    .rt_render = old_3ds_profile.rt_render,
+    .rt_audio = old_3ds_profile.rt_audio,
+    .rt_game = old_3ds_profile.rt_game,
+    .rt_user = old_3ds_profile.rt_user,
+};
+
+var active_profile: Profile = switch (ae.platform) {
+    .psp => psp_phat_profile,
+    .nintendo_3ds => old_3ds_profile,
+    else => desktop_profile,
+};
 
 /// Select the runtime capability profile. Must run before any client memory
 /// allocation so PSP-1000 stays on the conservative pool layout while PSP
 /// 2000+ can use the larger profile in the same binary.
 pub fn init() void {
-    active_profile = if (ae.platform == .psp) switch (sdk.model.current()) {
-        .phat => psp_phat_profile,
-        .slim => psp_slim_profile,
-    } else desktop_profile;
+    active_profile = switch (ae.platform) {
+        .psp => switch (sdk.model.current()) {
+            .phat => psp_phat_profile,
+            .slim => psp_slim_profile,
+        },
+        .nintendo_3ds => old_3ds_profile,
+        else => desktop_profile,
+    };
 }
 
 pub fn current() Profile {
@@ -132,5 +170,9 @@ pub fn apply_init_budgets(engine: *Engine) void {
 }
 
 fn max_chunk_radius() u32 {
-    return if (ae.platform == .psp) psp_slim_profile.chunk_radius else desktop_profile.chunk_radius;
+    return switch (ae.platform) {
+        .psp => psp_slim_profile.chunk_radius,
+        .nintendo_3ds => new_3ds_profile.chunk_radius,
+        else => desktop_profile.chunk_radius,
+    };
 }

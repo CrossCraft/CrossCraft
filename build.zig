@@ -90,7 +90,7 @@ pub fn build(b: *std.Build) void {
 
     // Packaging strategy per platform:
     //   PSP: install into bin/<psp_client_dir>/ for EBOOT layout.
-    //   3DS: pack.zip is copied into RomFS and embedded by exportArtifact.
+    //   3DS: install beside the 3dsx; users copy the directory to SDMC.
     //   macOS: routed through Aether.exportArtifact into the .app bundle's
     //     Contents/Resources/ — see below.
     //   Desktop, embedding: pack.zip is baked into the binary; no loose file.
@@ -104,8 +104,14 @@ pub fn build(b: *std.Build) void {
             );
             break :blk &psp_install.step;
         }
+        if (is_3ds) {
+            const nintendo_3ds_install = b.addInstallFile(
+                pack_zip,
+                "bin/" ++ nintendo_3ds_client_dir ++ "/pack.zip",
+            );
+            break :blk &nintendo_3ds_install.step;
+        }
         if (is_macos) break :blk null; // Aether.exportArtifact installs via opts.resources.
-        if (is_3ds) break :blk null; // Aether.exportArtifact embeds it into RomFS.
         if (should_embed) break :blk null; // Baked into binary; no separate file needed.
 
         // -Duse-cwd path: install pack.zip alongside the binary in
@@ -136,36 +142,31 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .overrides = overrides,
     });
-    client_exe.root_module.addImport("game", game);
-    client_exe.root_module.addImport("common", common);
-    client_exe.root_module.addImport("protocol", protocol);
+    const client_root = Aether.userRootModule(client_exe);
+    client_root.addImport("game", game);
+    client_root.addImport("common", common);
+    client_root.addImport("protocol", protocol);
 
     // Embed pack.zip directly in the binary on Linux/Windows release builds.
     // CI and dev builds use -Duse-cwd=true which skips embedding, keeping
     // artifacts small (pack.zip can be 90+ MB).
     if (should_embed) {
-        client_exe.root_module.addAnonymousImport("default_pack", .{
+        client_root.addAnonymousImport("default_pack", .{
             .root_source_file = pack_zip_path.?,
         });
     }
 
     const build_options = b.addOptions();
     build_options.addOption(bool, "embed_pack", should_embed);
-    client_exe.root_module.addImport("build_options", build_options.createModule());
+    client_root.addImport("build_options", build_options.createModule());
 
     Aether.addShader(ae_dep.builder, b, client_exe, config, "basic", .{
         .slang = b.path("src/client/shaders/basic.slang"),
     });
 
-    const nintendo_3ds_romfs: ?std.Build.LazyPath = if (is_3ds and pack_zip_path != null) blk: {
-        const romfs = b.addWriteFiles();
-        _ = romfs.addCopyFile(pack_zip_path.?, "pack.zip");
-        break :blk romfs.getDirectory();
-    } else null;
-
     // On macOS we pipe pack.zip through exportArtifact so it lands in
-    // Contents/Resources/ inside the .app bundle. On 3DS, RomFS handles it.
-    // On PSP/desktop the install_pack branch above handles placement.
+    // Contents/Resources/ inside the .app bundle. On PSP/3DS/desktop the
+    // install_pack branch above handles placement.
     const mac_resources: []const Aether.ExportOptions.Resource = if (is_macos and pack_zip_path != null)
         &.{.{ .path = pack_zip_path.?, .name = "pack.zip" }}
     else
@@ -178,7 +179,6 @@ pub fn build(b: *std.Build) void {
         .resources = mac_resources,
         .smdh_long_description = if (is_3ds) "Clean-room Minecraft Classic" else "",
         .smdh_author = if (is_3ds) "CrossCraft" else "",
-        .romfs = nintendo_3ds_romfs,
         // Reusing the Vita icon as a placeholder. 128×128 upscales for
         // the larger .icns slots but it's serviceable. Swap in a 1024×1024
         // PNG later if you want sharper Dock/Finder rendering.
@@ -195,8 +195,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .overrides = server_overrides,
     });
-    server_exe.root_module.addImport("game", game);
-    server_exe.root_module.addImport("common", common);
+    const server_root = Aether.userRootModule(server_exe);
+    server_root.addImport("game", game);
+    server_root.addImport("common", common);
 
     if (is_psp) {
         Aether.exportArtifact(ae_dep.builder, b, server_exe, config, .{

@@ -5,7 +5,6 @@ const Util = ae.Util;
 const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
-const PathDir = @TypeOf((@as(ae.Core.paths.Dirs, undefined)).data);
 
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
@@ -136,8 +135,11 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     Options.save(engine.io, engine.dirs.data);
     engine.set_vsync(Options.current.vsync);
 
-    const pack_dir = if (build_options.embed_pack) engine.dirs.data else engine.dirs.resources;
-    try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, pack_dir, "pack.zip");
+    const default_pack_dir = if (ae.platform == .nintendo_3ds or build_options.embed_pack)
+        engine.dirs.data
+    else
+        engine.dirs.resources;
+    try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, default_pack_dir, "pack.zip");
     errdefer ResourcePack.deinit();
     try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui, .glyphs });
 
@@ -186,7 +188,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     engine.report();
 }
 
-fn migrate_default_saves(alloc: std.mem.Allocator, io: std.Io, data_dir: PathDir) void {
+fn migrate_default_saves(alloc: std.mem.Allocator, io: std.Io, data_dir: std.Io.Dir) void {
     var saves_dir = data_dir.createDirPathOpen(io, "saves", .{}) catch |err| {
         log.warn("legacy save migration: failed to open saves/: {}", .{err});
         return;
@@ -197,7 +199,7 @@ fn migrate_default_saves(alloc: std.mem.Allocator, io: std.Io, data_dir: PathDir
     migrate_legacy_world_dat(alloc, io, data_dir, saves_dir);
 }
 
-fn migrate_root_default_save(io: std.Io, data_dir: PathDir, saves_dir: PathDir) void {
+fn migrate_root_default_save(io: std.Io, data_dir: std.Io.Dir, saves_dir: std.Io.Dir) void {
     if (!file_exists(io, data_dir, Server.root_default_save_file_name)) return;
 
     var dest_name_buf: [SelectWorld.max_file_name_len]u8 = undefined;
@@ -221,7 +223,7 @@ fn migrate_root_default_save(io: std.Io, data_dir: PathDir, saves_dir: PathDir) 
     log.info("Migrated default save {s} -> {s}", .{ Server.root_default_save_file_name, dest_path });
 }
 
-fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: PathDir, saves_dir: PathDir) void {
+fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.Io.Dir, saves_dir: std.Io.Dir) void {
     if (!file_exists(io, data_dir, Server.legacy_save_file_name)) return;
 
     var dest_name_buf: [SelectWorld.max_file_name_len]u8 = undefined;
@@ -263,7 +265,7 @@ fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: Path
     });
 }
 
-fn load_legacy_world_dat(io: std.Io, data_dir: PathDir, data: *World.WorldData) bool {
+fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldData) bool {
     const file = data_dir.openFile(io, Server.legacy_save_file_name, .{}) catch return false;
     defer file.close(io);
 
@@ -303,15 +305,10 @@ fn load_legacy_world_dat(io: std.Io, data_dir: PathDir, data: *World.WorldData) 
 fn write_converted_legacy_save(
     alloc: std.mem.Allocator,
     io: std.Io,
-    saves_dir: PathDir,
+    saves_dir: std.Io.Dir,
     dest_name: []const u8,
     data: *World.WorldData,
 ) bool {
-    if (!@hasField(PathDir, "handle")) {
-        log.warn("legacy save migration: unsupported data directory type", .{});
-        return false;
-    }
-
     CompressWorker.init(alloc, io) catch |err| {
         log.warn("legacy save migration: failed to init compressor: {}", .{err});
         return false;
@@ -345,7 +342,7 @@ fn write_converted_legacy_save(
     return st.size > 0;
 }
 
-fn choose_legacy_dest_name(io: std.Io, saves_dir: PathDir, out: *[SelectWorld.max_file_name_len]u8) ?[]const u8 {
+fn choose_legacy_dest_name(io: std.Io, saves_dir: std.Io.Dir, out: *[SelectWorld.max_file_name_len]u8) ?[]const u8 {
     if (!file_exists(io, saves_dir, "world.cw")) return "world.cw";
 
     var i: u16 = 2;
@@ -356,7 +353,7 @@ fn choose_legacy_dest_name(io: std.Io, saves_dir: PathDir, out: *[SelectWorld.ma
     return null;
 }
 
-fn choose_legacy_backup_name(io: std.Io, data_dir: PathDir, out: *[32]u8) ?[]const u8 {
+fn choose_legacy_backup_name(io: std.Io, data_dir: std.Io.Dir, out: *[32]u8) ?[]const u8 {
     if (!file_exists(io, data_dir, "world.bak")) return "world.bak";
 
     var i: u16 = 2;
@@ -367,7 +364,7 @@ fn choose_legacy_backup_name(io: std.Io, data_dir: PathDir, out: *[32]u8) ?[]con
     return null;
 }
 
-fn file_exists(io: std.Io, dir: PathDir, path: []const u8) bool {
+fn file_exists(io: std.Io, dir: std.Io.Dir, path: []const u8) bool {
     const file = dir.openFile(io, path, .{}) catch return false;
     file.close(io);
     return true;
@@ -600,7 +597,8 @@ fn enter_direct_connect(self: *@This()) void {
 }
 
 fn enter_texture_packs(self: *@This(), engine: *Engine) void {
-    self.tp_entry_count = TexturePacks.scan(engine.io, engine.dirs.resources, engine.dirs.data, &self.tp_entries);
+    const default_pack_dir = if (ae.platform == .nintendo_3ds) engine.dirs.data else engine.dirs.resources;
+    self.tp_entry_count = TexturePacks.scan(engine.io, default_pack_dir, engine.dirs.data, &self.tp_entries);
     self.tp_selected_index = TexturePacks.find_active_index(self.tp_entries[0..self.tp_entry_count]);
     self.active_screen = .texture_packs;
     self.tp_ui_state.open(!ui_input.profile_uses_pointer());
@@ -855,7 +853,7 @@ fn draw_logo(self: *@This()) void {
     });
 }
 
-fn apply_pack(self: *@This(), dir: PathDir, path: []const u8) void {
+fn apply_pack(self: *@This(), dir: std.Io.Dir, path: []const u8) void {
     ResourcePack.switch_pack(dir, path) catch |err| {
         log.err("switch_pack('{s}') failed: {}", .{ path, err });
         return;

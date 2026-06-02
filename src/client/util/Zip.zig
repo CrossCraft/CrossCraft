@@ -9,13 +9,11 @@
 const Zip = @This();
 
 const std = @import("std");
-const ae = @import("aether");
 const Io = std.Io;
 const File = std.Io.File;
 const flate = std.compress.flate;
 const zip = std.zip;
 const assert = std.debug.assert;
-const PathDir = @TypeOf((@as(ae.Core.paths.Dirs, undefined)).data);
 
 const max_filename_len: u32 = 256;
 const max_streams: u32 = 2;
@@ -95,7 +93,7 @@ pub const Iterator = struct {
 /// Opens the archive at `path` (resolved against `dir`). Pass the
 /// engine-owned resources or data dir -- not `Io.Dir.cwd()`, which is not
 /// guaranteed to match the app root under Finder-launched `.app` bundles.
-pub fn init(allocator: std.mem.Allocator, _io: Io, dir: PathDir, path: []const u8) !*Zip {
+pub fn init(allocator: std.mem.Allocator, _io: Io, dir: std.Io.Dir, path: []const u8) !*Zip {
     std.debug.assert(path.len > 0);
 
     const self = try allocator.create(Zip);
