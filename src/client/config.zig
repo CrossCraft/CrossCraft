@@ -134,22 +134,7 @@ pub fn current() Profile {
 
 pub fn main_memory_bytes() usize {
     const profile = current();
-    if (ae.platform == .nintendo_3ds) {
-        const non_render =
-            @as(usize, @max(profile.init_audio, profile.rt_audio)) +
-            @as(usize, @max(profile.init_game, profile.rt_game)) +
-            @as(usize, @max(profile.init_user, profile.rt_user));
-        return non_render + @as(usize, MB);
-    }
     return @as(usize, profile.total_memory_mb) * MB;
-}
-
-pub fn render_memory_capacity() ?usize {
-    const profile = current();
-    if (ae.platform == .nintendo_3ds) {
-        return @as(usize, @max(profile.init_render, profile.rt_render));
-    }
-    return null;
 }
 
 /// Max chunks that fit within the radius (circular, clamped to 16x16 world).

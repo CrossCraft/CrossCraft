@@ -76,7 +76,6 @@ pub fn main(init: std.process.Init) !void {
         .app_name = if (ae.platform == .nintendo_3ds) "CrossCraft-Classic-3DS" else null,
         .vsync = true,
         .resizable = true,
-        .render_capacity = game_config.render_memory_capacity(),
     }, &state);
     defer engine.deinit();
     defer ResourcePack.deinit();
