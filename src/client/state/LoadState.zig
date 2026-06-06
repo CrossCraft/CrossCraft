@@ -22,6 +22,7 @@ const flate = std.compress.flate;
 const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
 
 const log = std.log.scoped(.game);
+const DIAG_ONE_DIRT_QUAD_3DS = false;
 
 // Module-level: only one LoadState instance may exist at a time.
 var server_ready: std.atomic.Value(bool) = .init(false);
@@ -342,19 +343,15 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.batcher.clear();
     var y: i16 = 0;
     const tile_size = 32;
-    while (y < extent_y) : (y += tile_size) {
-        var x: i16 = 0;
-        while (x < extent_x) : (x += tile_size) {
-            const dirt = ResourcePack.get_tex(.dirt);
-            self.batcher.add_sprite(&.{
-                .texture = dirt,
-                .pos_offset = .{ .x = x, .y = y },
-                .pos_extent = .{ .x = tile_size, .y = tile_size },
-                .tex_offset = .{ .x = 0, .y = 0 },
-                .tex_extent = .{ .x = @intCast(dirt.width), .y = @intCast(dirt.height) },
-                .color = .menu_tiles,
-                .layer = 0,
-            });
+    if (DIAG_ONE_DIRT_QUAD_3DS) {
+        add_dirt_tile(self, ResourcePack.get_tex(.dirt), 0, 0, tile_size);
+    } else {
+        while (y < extent_y) : (y += tile_size) {
+            var x: i16 = 0;
+            while (x < extent_x) : (x += tile_size) {
+                const dirt = ResourcePack.get_tex(.dirt);
+                add_dirt_tile(self, dirt, x, y, tile_size);
+            }
         }
     }
 
@@ -466,6 +463,18 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // Throttle to ~20 FPS while server generates on background thread;
     // avoids burning CPU on draw calls that show a static progress bar.
     try std.Io.sleep(engine.io, std.Io.Duration.fromMilliseconds(50), .real);
+}
+
+fn add_dirt_tile(self: *@This(), dirt: *const Rendering.Texture, x: i16, y: i16, tile_size: i16) void {
+    self.batcher.add_sprite(&.{
+        .texture = dirt,
+        .pos_offset = .{ .x = x, .y = y },
+        .pos_extent = .{ .x = tile_size, .y = tile_size },
+        .tex_offset = .{ .x = 0, .y = 0 },
+        .tex_extent = .{ .x = @intCast(dirt.width), .y = @intCast(dirt.height) },
+        .color = .menu_tiles,
+        .layer = 0,
+    });
 }
 
 pub fn state(self: *@This()) State {

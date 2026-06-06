@@ -61,8 +61,7 @@ const game_config = @import("config.zig");
 
 pub fn main(init: std.process.Init) !void {
     game_config.init();
-    const profile = game_config.current();
-    const memory = try init.gpa.alloc(u8, profile.total_memory_mb * 1024 * 1024);
+    const memory = try init.gpa.alloc(u8, game_config.main_memory_bytes());
     defer init.gpa.free(memory);
 
     var menu_state: MenuState = undefined;
@@ -77,6 +76,7 @@ pub fn main(init: std.process.Init) !void {
         .app_name = if (ae.platform == .nintendo_3ds) "CrossCraft-Classic-3DS" else null,
         .vsync = true,
         .resizable = true,
+        .render_capacity = game_config.render_memory_capacity(),
     }, &state);
     defer engine.deinit();
     defer ResourcePack.deinit();

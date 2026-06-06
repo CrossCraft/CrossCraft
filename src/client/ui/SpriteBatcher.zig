@@ -144,13 +144,14 @@ pub fn flush(self: *Self) !void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
 
+    sort_sprites(self.sprites[self.current][0..self.count]);
+
     const curr = std.mem.sliceAsBytes(self.sprites[self.current][0..self.count]);
     const prev = std.mem.sliceAsBytes(self.sprites[self.current ^ 1][0..self.prev_count]);
     const sprites_changed = curr.len != prev.len or !std.mem.eql(u8, curr, prev);
     const size_changed = screen_w != self.last_screen_w or screen_h != self.last_screen_h;
 
     if (sprites_changed or size_changed) {
-        sort_sprites(self.sprites[self.current][0..self.count]);
         try self.rebuild_batches(screen_w, screen_h);
         self.last_screen_w = screen_w;
         self.last_screen_h = screen_h;

@@ -39,6 +39,7 @@ const build_options = @import("build_options");
 
 const log = std.log.scoped(.menu);
 const default_create_world_name = "world";
+const DIAG_ONE_DIRT_QUAD_3DS = false;
 
 const embedded_pack: []const u8 =
     if (build_options.embed_pack) @embedFile("default_pack") else &.{};
@@ -823,20 +824,28 @@ fn draw_dirt_tiles(self: *@This()) void {
     const rect = current_screen_rect();
     var y: i16 = 0;
     const tile_size: i16 = 32;
+    if (DIAG_ONE_DIRT_QUAD_3DS) {
+        add_dirt_tile(self, 0, 0, tile_size);
+        return;
+    }
     while (y < rect.y1) : (y += tile_size) {
         var x: i16 = 0;
         while (x < rect.x1) : (x += tile_size) {
-            self.batcher.add_sprite(&.{
-                .texture = self.dirt,
-                .pos_offset = .{ .x = x, .y = y },
-                .pos_extent = .{ .x = tile_size, .y = tile_size },
-                .tex_offset = .{ .x = 0, .y = 0 },
-                .tex_extent = .{ .x = @intCast(self.dirt.width), .y = @intCast(self.dirt.height) },
-                .color = .menu_tiles,
-                .layer = 0,
-            });
+            add_dirt_tile(self, x, y, tile_size);
         }
     }
+}
+
+fn add_dirt_tile(self: *@This(), x: i16, y: i16, tile_size: i16) void {
+    self.batcher.add_sprite(&.{
+        .texture = self.dirt,
+        .pos_offset = .{ .x = x, .y = y },
+        .pos_extent = .{ .x = tile_size, .y = tile_size },
+        .tex_offset = .{ .x = 0, .y = 0 },
+        .tex_extent = .{ .x = @intCast(self.dirt.width), .y = @intCast(self.dirt.height) },
+        .color = .menu_tiles,
+        .layer = 0,
+    });
 }
 
 fn draw_logo(self: *@This()) void {
