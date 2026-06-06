@@ -3,7 +3,7 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const Vertex = @import("../../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const mesher = @import("mesher.zig");
 const World = @import("game").World;
@@ -42,11 +42,11 @@ allocator: std.mem.Allocator,
 
 const Self = @This();
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Self {
+pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !Self {
     return .{
-        .@"opaque" = try BatchMesh.new(allocator, pipeline),
-        .trans = try BatchMesh.new(allocator, pipeline),
-        .fluid = try BatchMesh.new(allocator, pipeline),
+        .@"opaque" = try BatchMesh.new(allocator),
+        .trans = try BatchMesh.new(allocator),
+        .fluid = try BatchMesh.new(allocator),
         .cx = cx,
         .sy = sy,
         .cz = cz,

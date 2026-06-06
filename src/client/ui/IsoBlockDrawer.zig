@@ -23,7 +23,7 @@
 // so the GPU draws them in submission order.
 //
 // Vertex positions are pre-converted to NDC SNORM16 on the CPU and the draw
-// runs with identity proj/view, mirroring SpriteBatcher's pipeline state.
+// runs with identity proj/view, mirroring SpriteBatcher's render state.
 
 const std = @import("std");
 const ae = @import("aether");
@@ -33,7 +33,7 @@ const Rendering = ae.Rendering;
 const c = @import("common").consts;
 const Block = c.Block;
 
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Face = @import("../world/chunk/face.zig").Face;
 const Scaling = @import("Scaling.zig");
@@ -64,7 +64,6 @@ const VERTS_PER_BLOCK: usize = 18;
 const MAX_BLOCKS: usize = 9 + 45;
 const VERT_CAPACITY: usize = MAX_BLOCKS * VERTS_PER_BLOCK;
 
-pipeline: Rendering.Pipeline.Handle,
 terrain: *const Rendering.Texture,
 atlas: TextureAtlas,
 mesh: Rendering.Mesh(Vertex),
@@ -73,7 +72,6 @@ allocator: std.mem.Allocator,
 
 pub fn init(
     allocator: std.mem.Allocator,
-    pipeline: Rendering.Pipeline.Handle,
     terrain: *const Rendering.Texture,
     atlas: TextureAtlas,
 ) !Self {
@@ -81,10 +79,9 @@ pub fn init(
     // a first, then b" -- matching the rotateY-then-rotateX order.
     const iso = Math.Mat4.rotationY(ROT_Y_RAD).mul(Math.Mat4.rotationX(ROT_X_RAD));
     var self: Self = .{
-        .pipeline = pipeline,
         .terrain = terrain,
         .atlas = atlas,
-        .mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
+        .mesh = try Rendering.Mesh(Vertex).new(allocator),
         .iso_xform = iso,
         .allocator = allocator,
     };
@@ -145,7 +142,6 @@ pub fn flush(self: *Self) void {
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
     Rendering.gfx.api.set_view_matrix(&Math.Mat4.identity());
-    Rendering.Pipeline.bind(self.pipeline);
     self.terrain.bind();
 
     const ident = Math.Mat4.identity();

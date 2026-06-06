@@ -12,14 +12,12 @@ const UiDrawList = @import("../ui/UiDrawList.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
 const Scaling = @import("../ui/Scaling.zig");
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const ResourcePack = @import("../ResourcePack.zig");
 const ui_input = @import("../ui/input.zig");
 const DisconnectScreen = @import("../ui/screens/Disconnect.zig");
 const Session = @import("Session.zig");
 const MenuState = @import("MenuState.zig");
 
-var pipeline: Rendering.Pipeline.Handle = undefined;
 var disconnect_state: @This() = undefined;
 var disconnect_state_inst: State = undefined;
 const DIAG_ONE_DIRT_QUAD_3DS = false;
@@ -40,14 +38,13 @@ inited: bool,
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
-    pipeline = try Rendering.Pipeline.new(Vertex.Layout);
 
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
     try ResourcePack.apply_tex_set(&.{ .dirt, .font, .gui, .glyphs });
 
-    self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
-    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
+    self.batcher = try SpriteBatcher.init(render_alloc);
+    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
     self.ui_repeat = .{};
     self.ui_state = .{};
 
@@ -71,7 +68,6 @@ fn deinit(ctx: *anyopaque, _: *Engine) void {
     _ = ae.Core.input.pop_context() catch {};
     self.font_batcher.deinit();
     self.batcher.deinit();
-    Rendering.Pipeline.deinit(pipeline);
     self.inited = false;
 }
 

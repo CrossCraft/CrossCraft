@@ -18,7 +18,7 @@ const Rendering = ae.Rendering;
 const c = @import("common").consts;
 const Block = c.Block;
 
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Camera = @import("Camera.zig");
 const face_mod = @import("../world/chunk/face.zig");
@@ -72,7 +72,6 @@ const SwingKind = enum { idle, place, dig };
 
 const Self = @This();
 
-pipeline: Rendering.Pipeline.Handle,
 atlas: TextureAtlas,
 mesh: Rendering.Mesh(Vertex),
 cached_block: Block,
@@ -87,11 +86,10 @@ swing_period: f32,
 prev_swing_y: f32,
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, atlas: TextureAtlas) !Self {
+pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
     var self: Self = .{
-        .pipeline = pipeline,
         .atlas = atlas,
-        .mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
+        .mesh = try Rendering.Mesh(Vertex).new(allocator),
         .cached_block = SENTINEL,
         .pending_block = SENTINEL,
         .cached_shadowed = false,
@@ -279,7 +277,6 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
         Rendering.gfx.api.set_proj_matrix(&proj);
     }
 
-    Rendering.Pipeline.bind(self.pipeline);
     terrain.bind();
 
     const anim = self.compute_anim();

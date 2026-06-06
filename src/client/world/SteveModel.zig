@@ -18,7 +18,7 @@ const Rendering = ae.Rendering;
 
 const c = @import("common").consts;
 const collision = @import("../player/collision.zig");
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 const Color = @import("../graphics/Color.zig").Color;
 const Player = @import("../player/Player.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
@@ -80,22 +80,20 @@ name_tags: [c.MAX_PLAYERS]?BatchMesh,
 name_aspects: [c.MAX_PLAYERS]f32,
 anim_time: f32,
 allocator: std.mem.Allocator,
-pipeline: Rendering.Pipeline.Handle,
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
+pub fn init(allocator: std.mem.Allocator) !Self {
     var self: Self = .{
-        .torso = try Rendering.Mesh(Vertex).new(allocator, pipeline),
-        .head = try Rendering.Mesh(Vertex).new(allocator, pipeline),
-        .right_arm = try Rendering.Mesh(Vertex).new(allocator, pipeline),
-        .left_arm = try Rendering.Mesh(Vertex).new(allocator, pipeline),
-        .right_leg = try Rendering.Mesh(Vertex).new(allocator, pipeline),
-        .left_leg = try Rendering.Mesh(Vertex).new(allocator, pipeline),
+        .torso = try Rendering.Mesh(Vertex).new(allocator),
+        .head = try Rendering.Mesh(Vertex).new(allocator),
+        .right_arm = try Rendering.Mesh(Vertex).new(allocator),
+        .left_arm = try Rendering.Mesh(Vertex).new(allocator),
+        .right_leg = try Rendering.Mesh(Vertex).new(allocator),
+        .left_leg = try Rendering.Mesh(Vertex).new(allocator),
         .states = std.mem.zeroes([c.MAX_PLAYERS]PlayerState),
         .name_tags = .{null} ** c.MAX_PLAYERS,
         .name_aspects = .{1.0} ** c.MAX_PLAYERS,
         .anim_time = 0,
         .allocator = allocator,
-        .pipeline = pipeline,
     };
     const meshes = [_]*Rendering.Mesh(Vertex){
         &self.torso,     &self.head,
@@ -217,7 +215,6 @@ pub fn draw(self: *Self, local: *const Player) void {
     const local_y = local.pos_y;
     const local_z = local.pos_z;
 
-    Rendering.Pipeline.bind(self.pipeline);
     ResourcePack.get_tex(.char).bind();
 
     // Idle sway (Z-axis, outward only, always active).
@@ -285,7 +282,6 @@ pub fn draw(self: *Self, local: *const Player) void {
 // --- Name tags (call from GameState.draw after draw()) ---
 
 pub fn draw_nametags(self: *Self, local: *const Player, fonts: *const FontBatcher) void {
-    Rendering.Pipeline.bind(self.pipeline);
     fonts.texture.bind();
 
     for (&self.states, &self.name_tags, &self.name_aspects) |*st, *nt, aspect| {

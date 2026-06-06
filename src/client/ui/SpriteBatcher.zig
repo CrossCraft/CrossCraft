@@ -8,7 +8,7 @@ const layout = @import("layout.zig");
 const texture_region = @import("texture_region.zig");
 
 pub const Color = @import("../graphics/Color.zig").Color;
-pub const Vertex = @import("../graphics/Vertex.zig").Vertex;
+pub const Vertex = @import("aether").Rendering.Vertex;
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
 const Self = @This();
@@ -52,10 +52,9 @@ current: u1,
 last_screen_w: u32,
 last_screen_h: u32,
 batches: std.ArrayList(TextureBatch),
-pipeline_handle: Rendering.Pipeline.Handle,
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
+pub fn init(allocator: std.mem.Allocator) !Self {
     return Self{
         .sprites = undefined,
         .count = 0,
@@ -64,7 +63,6 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !
         .last_screen_w = 0,
         .last_screen_h = 0,
         .batches = try std.ArrayList(TextureBatch).initCapacity(allocator, 4),
-        .pipeline_handle = pipeline,
         .allocator = allocator,
     };
 }
@@ -159,7 +157,6 @@ pub fn flush(self: *Self) !void {
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
     Rendering.gfx.api.set_view_matrix(&Math.Mat4.identity());
-    Rendering.Pipeline.bind(self.pipeline_handle);
 
     const ident = Math.Mat4.identity();
     for (self.batches.items) |*batch| {
@@ -181,7 +178,7 @@ fn rebuild_batches(self: *Self, screen_w: u32, screen_h: u32) !void {
         const group_count: u16 = i - group_start;
 
         if (batch_idx >= self.batches.items.len) {
-            const mesh = try BatchMesh.new(self.allocator, self.pipeline_handle);
+            const mesh = try BatchMesh.new(self.allocator);
             try self.batches.append(self.allocator, .{ .texture = tex, .mesh = mesh });
         }
 

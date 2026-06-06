@@ -9,7 +9,7 @@ const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 
 pub const Anchor = layout.Anchor;
 pub const Color = @import("../graphics/Color.zig").Color;
-pub const Vertex = @import("../graphics/Vertex.zig").Vertex;
+pub const Vertex = @import("aether").Rendering.Vertex;
 pub const BatchMesh = Rendering.Mesh(Vertex);
 
 const Self = @This();
@@ -89,12 +89,11 @@ current: u1,
 last_screen_w: u32,
 last_screen_h: u32,
 mesh: BatchMesh,
-pipeline_handle: Rendering.Pipeline.Handle,
 allocator: std.mem.Allocator,
 
 // --- Public API ---
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, texture: *const Rendering.Texture) !Self {
+pub fn init(allocator: std.mem.Allocator, texture: *const Rendering.Texture) !Self {
     std.debug.assert(texture.width == 128);
     std.debug.assert(texture.height == 128);
     return .{
@@ -109,8 +108,7 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, t
         .current = 0,
         .last_screen_w = 0,
         .last_screen_h = 0,
-        .mesh = try BatchMesh.new(allocator, pipeline),
-        .pipeline_handle = pipeline,
+        .mesh = try BatchMesh.new(allocator),
         .allocator = allocator,
     };
 }
@@ -183,7 +181,6 @@ pub fn flush(self: *Self) !void {
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
     Rendering.gfx.api.set_view_matrix(&Math.Mat4.identity());
-    Rendering.Pipeline.bind(self.pipeline_handle);
     self.texture.bind();
     self.mesh.draw(&Math.Mat4.identity());
 }
@@ -245,8 +242,7 @@ pub fn fit_width(self: *const Self, str: []const u8, max_w: i16, spacing: i8, te
 
 /// Creates a standalone mesh for a rendered string in normalized [-1,1] space.
 /// The caller owns the returned mesh and must call `mesh.deinit()` when done.
-/// Draw with `mesh.draw(&model_matrix)` after binding a compatible pipeline and
-/// the font texture.
+/// Draw with `mesh.draw(&model_matrix)` after binding the font texture.
 pub fn build_mesh(
     self: *const Self,
     str: []const u8,
@@ -257,7 +253,7 @@ pub fn build_mesh(
 ) !BatchMesh {
     std.debug.assert(str.len > 0);
     std.debug.assert(text_scale > 0);
-    var mesh = try BatchMesh.new(self.allocator, self.pipeline_handle);
+    var mesh = try BatchMesh.new(self.allocator);
     errdefer mesh.deinit(self.allocator);
 
     const has_shadow = shadow_color.a > 0;

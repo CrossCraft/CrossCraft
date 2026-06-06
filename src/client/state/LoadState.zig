@@ -9,7 +9,6 @@ const State = Core.State;
 const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
 const FontBatcher = @import("../ui/FontBatcher.zig");
 const Scaling = @import("../ui/Scaling.zig");
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const ResourcePack = @import("../ResourcePack.zig");
 const Server = @import("game").Server;
 const World = @import("game").World;
@@ -229,7 +228,6 @@ render_alloc: std.mem.Allocator,
 /// initialised state never frees undefined fields.
 inited: bool,
 
-var pipeline: Rendering.Pipeline.Handle = undefined;
 var game_state: GameState = undefined;
 var state_inst: State = undefined;
 
@@ -257,14 +255,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         .consumes_text = false,
     });
 
-    pipeline = try Rendering.Pipeline.new(Vertex.Layout);
-
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
     try ResourcePack.apply_tex_set(&.{ .dirt, .font });
 
-    self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
-    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
+    self.batcher = try SpriteBatcher.init(render_alloc);
+    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
     self.time = 0;
     self.server_notified = false;
 
@@ -301,7 +297,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
 
     _ = ae.Core.input.pop_context() catch {};
 
-    Rendering.Pipeline.deinit(pipeline);
     self.inited = false;
 }
 

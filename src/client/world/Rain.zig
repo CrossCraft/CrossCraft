@@ -6,7 +6,7 @@ const Rendering = ae.Rendering;
 const World = @import("game").World;
 const c = @import("common").consts;
 
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 const Color = @import("../graphics/Color.zig").Color;
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
@@ -131,10 +131,10 @@ allocator: std.mem.Allocator,
 
 // --- Lifecycle ---
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
+pub fn init(allocator: std.mem.Allocator) !Self {
     var self: Self = .{
-        .streak_mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
-        .splash_mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
+        .streak_mesh = try Rendering.Mesh(Vertex).new(allocator),
+        .splash_mesh = try Rendering.Mesh(Vertex).new(allocator),
         .particle_atlas = TextureAtlas.init(PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_TILES, PARTICLE_ATLAS_TILES),
         .scroll_v = 0,
         .streak_mesh_dirty = true,

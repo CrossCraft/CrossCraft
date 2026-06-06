@@ -12,7 +12,6 @@ const UiDrawList = @import("../ui/UiDrawList.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
 const Scaling = @import("../ui/Scaling.zig");
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const Options = @import("../Options.zig");
 const ResourcePack = @import("../ResourcePack.zig");
 const SoundManager = @import("../SoundManager.zig");
@@ -96,14 +95,10 @@ logo: *const Rendering.Texture,
 render_alloc: std.mem.Allocator,
 inited: bool,
 
-var pipeline: Rendering.Pipeline.Handle = undefined;
-
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
     @import("../config.zig").apply_init_budgets(engine);
-
-    pipeline = try Rendering.Pipeline.new(Vertex.Layout);
 
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
@@ -142,8 +137,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     errdefer ResourcePack.deinit();
     try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui, .glyphs });
 
-    self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
-    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
+    self.batcher = try SpriteBatcher.init(render_alloc);
+    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
     self.splash_mesh = try self.font_batcher.build_mesh("Classic!", .splash_front, .splash_back, 0, 1);
     self.time = 0;
     self.ui_repeat = .{};
@@ -377,7 +372,6 @@ fn deinit(ctx: *anyopaque, _: *Engine) void {
     self.font_batcher.deinit();
     self.batcher.deinit();
     _ = ae.Core.input.pop_context() catch {};
-    Rendering.Pipeline.deinit(pipeline);
     self.inited = false;
 }
 
@@ -744,7 +738,6 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (self.active_screen == .main) {
         const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;
         const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 72, .top_center, .top_center, 22, pulse, 2);
-        Rendering.Pipeline.bind(pipeline);
         ResourcePack.get_tex(.font).bind();
         self.splash_mesh.draw(&model);
     }

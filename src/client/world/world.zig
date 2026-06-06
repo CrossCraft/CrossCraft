@@ -72,7 +72,6 @@ clouds: *const Rendering.Texture,
 rain_tex: *const Rendering.Texture,
 particles_tex: *const Rendering.Texture,
 atlas: TextureAtlas,
-pipeline: Rendering.Pipeline.Handle,
 sky: Sky,
 particles: ParticleSystem,
 rain: Rain,
@@ -87,7 +86,6 @@ pub fn init_in_place(
     self: *Self,
     allocator: std.mem.Allocator,
     io: std.Io,
-    pipeline: Rendering.Pipeline.Handle,
     terrain: *const Rendering.Texture,
     clouds: *const Rendering.Texture,
     rain_tex: *const Rendering.Texture,
@@ -124,17 +122,16 @@ pub fn init_in_place(
     self.rain_tex = rain_tex;
     self.particles_tex = particles_tex;
     self.atlas = atlas;
-    self.pipeline = pipeline;
     self.cam_cx = camera_chunk(camera.x);
     self.cam_cz = camera_chunk(camera.z);
     self.allocator = allocator;
     self.io = io;
 
-    self.sky = try Sky.init(allocator, pipeline);
+    self.sky = try Sky.init(allocator);
     errdefer self.sky.deinit();
-    self.particles = try ParticleSystem.init(allocator, pipeline, atlas);
+    self.particles = try ParticleSystem.init(allocator, atlas);
     errdefer self.particles.deinit();
-    self.rain = try Rain.init(allocator, pipeline);
+    self.rain = try Rain.init(allocator);
     errdefer self.rain.deinit();
 
     self.recollect(camera);
@@ -272,8 +269,6 @@ fn mark_first_built(sec: *ChunkMesh) void {
 pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     const submerged = collision.liquid_at_point(camera.x, camera.y, camera.z);
 
-    Rendering.Pipeline.bind(self.pipeline);
-
     Rendering.Texture.Default.bind();
     Sky.clear(submerged);
     self.sky.draw_plane(camera, submerged);
@@ -351,7 +346,6 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
 /// blend over particles.  No-op when the rain option is off.
 pub fn draw_rain_pass(self: *Self, camera: *const Camera) void {
     if (!Options.current.rain) return;
-    Rendering.Pipeline.bind(self.pipeline);
     self.rain_tex.bind();
     self.rain.draw_streaks(camera);
     self.particles_tex.bind();
@@ -366,7 +360,6 @@ pub fn draw_fluid_pass(self: *Self) void {
     const visible = self.frame_visible[0..self.frame_visible_count];
     const clip_count = self.frame_clip_count;
 
-    Rendering.Pipeline.bind(self.pipeline);
     self.terrain.bind();
     Rendering.gfx.api.set_alpha_blend(true);
 
@@ -457,7 +450,6 @@ fn init_column(self: *Self, cx: u8, cz: u8, cam: *const Camera) bool {
     for (0..SECTIONS_Y) |sy| {
         self.grid[cx][cz][sy] = ChunkMesh.init(
             self.allocator,
-            self.pipeline,
             @intCast(cx),
             @intCast(sy),
             @intCast(cz),

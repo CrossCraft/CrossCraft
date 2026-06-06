@@ -23,7 +23,6 @@ const Options = @import("../Options.zig");
 
 const ResourcePack = @import("../ResourcePack.zig");
 const SoundManager = @import("../SoundManager.zig");
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
 const WorldRenderer = @import("../world/world.zig");
 const SelectionOutline = @import("../world/SelectionOutline.zig");
 const SteveModel = @import("../world/SteveModel.zig");
@@ -68,7 +67,6 @@ mp_read_future: ?std.Io.Future(void),
 sp_compressor_thread: ?CompressorThread.Thread,
 /// Multiplayer-only compressor worker used by explicit world dumps.
 mp_compressor_thread: ?CompressorThread.Thread,
-pipeline: Rendering.Pipeline.Handle,
 world: WorldRenderer,
 player: Player,
 ui_batcher: SpriteBatcher,
@@ -195,8 +193,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // Redistribute memory for game state
     @import("../config.zig").apply_runtime_budgets(engine);
 
-    self.pipeline = try Rendering.Pipeline.new(Vertex.Layout);
-
     // Player -- owns the camera; spawn Y is eye-level from the server.
     // Use whichever writer the active connection drains position packets
     // into: the FakeConn ring for SP, or the live TCP stream for MP.
@@ -224,7 +220,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try self.world.init_in_place(
         render_alloc,
         engine.io,
-        self.pipeline,
         ResourcePack.get_tex(.terrain),
         ResourcePack.get_tex(.clouds),
         ResourcePack.get_tex(.rain),
@@ -240,16 +235,15 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.player.particle_sink = &self.world.particles;
 
     // UI sprite batcher for HUD overlay (crosshair, hotbar bg, selector).
-    self.ui_batcher = try SpriteBatcher.init(render_alloc, self.pipeline);
+    self.ui_batcher = try SpriteBatcher.init(render_alloc);
 
     // Font batcher used by the inventory tooltip.
-    self.font_batcher = try FontBatcher.init(render_alloc, self.pipeline, ResourcePack.get_tex(.font));
+    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
 
     // Iso-projected block icons for hotbar + inventory slots; draws to the
     // same terrain atlas as the world.
     self.iso_blocks = try IsoBlockDrawer.init(
         render_alloc,
-        self.pipeline,
         ResourcePack.get_tex(.terrain),
         ResourcePack.atlas,
     );
@@ -286,8 +280,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // its dim quad and panel sprites/text flush after every gameplay UI pass
     // (HUD sprites, iso blocks, HUD font) and cleanly sit on top of all of
     // them without depending on layer ordering across separate render passes.
-    self.pause_batcher = try SpriteBatcher.init(render_alloc, self.pipeline);
-    self.pause_font_batcher = try FontBatcher.init(render_alloc, self.pipeline, ResourcePack.get_tex(.font));
+    self.pause_batcher = try SpriteBatcher.init(render_alloc);
+    self.pause_font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
     self.paused = false;
     self.pause_screen = .main;
     self.pause_ui_repeat = .{};
@@ -302,13 +296,13 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.dump_world_name_len = 0;
 
     // Block selection outline (line mesh, drawn after the world pass).
-    self.selection = try SelectionOutline.init(render_alloc, self.pipeline);
+    self.selection = try SelectionOutline.init(render_alloc);
 
     // Remote player Steve model renderer.
-    self.steve = try SteveModel.init(render_alloc, self.pipeline);
+    self.steve = try SteveModel.init(render_alloc);
 
     // Held-block viewmodel. Uses the same terrain atlas as the world.
-    self.held = try BlockHand.init(render_alloc, self.pipeline, ResourcePack.atlas);
+    self.held = try BlockHand.init(render_alloc, ResourcePack.atlas);
     self.player.held_renderer = &self.held;
 
     switch (Session.mode) {
@@ -380,7 +374,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.font_batcher.deinit();
     self.ui_batcher.deinit();
     self.world.deinit();
-    Rendering.Pipeline.deinit(self.pipeline);
 
     // Tear down the game-side world/server allocations. SP went through
     // Server.init (which sets up the static allocator + compressor and owns

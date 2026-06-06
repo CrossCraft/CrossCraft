@@ -5,7 +5,7 @@ const Transform = Rendering.Transform;
 const common = @import("common");
 const SubvoxelBounds = common.BlockRegistry.SubvoxelBounds;
 
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 
 // Outline geometry lives in the same SNORM16 space as chunk meshes:
 // 1 block = 2048 units (matches face.zig:encode_pos). The selection mesh
@@ -66,9 +66,9 @@ mesh: Rendering.Mesh(Vertex),
 allocator: std.mem.Allocator,
 last_bounds: ?SubvoxelBounds = null,
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
+pub fn init(allocator: std.mem.Allocator) !Self {
     var self: Self = .{
-        .mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
+        .mesh = try Rendering.Mesh(Vertex).new(allocator),
         .allocator = allocator,
     };
     try self.mesh.vertices.ensureTotalCapacity(allocator, VERTEX_COUNT);
@@ -93,8 +93,8 @@ pub fn update(self: *Self, bounds: SubvoxelBounds) !void {
     self.mesh.update();
 }
 
-/// Draw the outline at `transform`. Caller must have a 3D pipeline bound and
-/// proj/view set; the model matrix comes from `transform.get_matrix()`.
+/// Draw the outline at `transform`. Caller must have proj/view set; the model
+/// matrix comes from `transform.get_matrix()`.
 pub fn draw(self: *Self, transform: *const Transform) void {
     const m = transform.get_matrix();
     self.mesh.draw(&m);

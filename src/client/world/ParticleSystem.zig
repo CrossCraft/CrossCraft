@@ -6,7 +6,7 @@ const Rendering = ae.Rendering;
 const World = @import("game").World;
 const c = @import("common").consts;
 
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const face_mod = @import("chunk/face.zig");
@@ -88,9 +88,9 @@ allocator: std.mem.Allocator,
 
 // --- Lifecycle ---
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, atlas: TextureAtlas) !Self {
+pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
     var self: Self = .{
-        .mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
+        .mesh = try Rendering.Mesh(Vertex).new(allocator),
         .atlas = atlas,
         .particles = undefined,
         .count = 0,

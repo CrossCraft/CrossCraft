@@ -2,7 +2,7 @@ const std = @import("std");
 const common = @import("common");
 const BlockRegistry = common.BlockRegistry;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
-const Vertex = @import("../../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 
 pub const Face = common.consts.Face;
 

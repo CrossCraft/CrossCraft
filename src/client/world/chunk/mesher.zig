@@ -4,7 +4,7 @@ const c = common.consts;
 const prefetch = common.prefetch;
 const World = @import("game").World;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
-const Vertex = @import("../../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 

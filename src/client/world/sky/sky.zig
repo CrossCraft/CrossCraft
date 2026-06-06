@@ -3,7 +3,7 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const Vertex = @import("../../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 const Color = @import("../../graphics/Color.zig").Color;
 const Camera = @import("../../player/Camera.zig");
 
@@ -33,10 +33,10 @@ cloud_mesh: BatchMesh,
 scroll: f32,
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
+pub fn init(allocator: std.mem.Allocator) !Self {
     var self: Self = .{
-        .plane_mesh = try BatchMesh.new(allocator, pipeline),
-        .cloud_mesh = try BatchMesh.new(allocator, pipeline),
+        .plane_mesh = try BatchMesh.new(allocator),
+        .cloud_mesh = try BatchMesh.new(allocator),
         .scroll = 0,
         .allocator = allocator,
     };
