@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) void {
 
     const overrides: Aether.Config.Overrides = .{
         .gfx = b.option(Aether.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
+        .audio = b.option(Aether.Audio, "audio", "Audio backend override (default: auto-detect from target)"),
         .psp_display_mode = b.option(Aether.PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),

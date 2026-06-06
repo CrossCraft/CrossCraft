@@ -101,7 +101,6 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, a
         .prev_swing_y = 0,
         .allocator = allocator,
     };
-    self.mesh.primitive = .triangles;
     // Reserve once at init so rebuild() stays infallible and never touches
     // the allocator on subsequent slot changes.
     try self.mesh.vertices.ensureTotalCapacity(allocator, VERT_CAPACITY);

@@ -103,7 +103,6 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !
         &self.right_leg, &self.left_leg,
     };
     for (meshes) |m| {
-        m.primitive = .triangles;
         try m.vertices.ensureTotalCapacity(allocator, LIMB_VERTS);
     }
     build_torso(&self.torso.vertices);

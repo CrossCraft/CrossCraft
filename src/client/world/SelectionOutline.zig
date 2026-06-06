@@ -71,7 +71,6 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !
         .mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
         .allocator = allocator,
     };
-    self.mesh.primitive = .triangles;
     try self.mesh.vertices.ensureTotalCapacity(allocator, VERTEX_COUNT);
     return self;
 }

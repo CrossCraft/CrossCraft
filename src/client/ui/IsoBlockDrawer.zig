@@ -88,7 +88,6 @@ pub fn init(
         .iso_xform = iso,
         .allocator = allocator,
     };
-    self.mesh.primitive = .triangles;
     try self.mesh.vertices.ensureTotalCapacity(allocator, VERT_CAPACITY);
     return self;
 }
