@@ -113,7 +113,7 @@ Four Zig modules, wired together in `build.zig`:
 - `protocol` - generated at build time from `protocol.zb` by the ZeeBuffer compiler. Edit the schema, not the generated file.
 - `common` (`src/common/`) - shared primitives: fixed-point math, noise, RNG, allocators (`counting_allocator`, `static_allocator`, `fa_buffer`), constants, protocol re-export. No graphics, no platform.
 - `game` (`src/game/`) - shared gameplay and world logic used by both client and server (`world.zig`, `worldgen.zig`, `server.zig`, `client.zig`). Phase-specific behavior branches inside this module.
-- Client (`src/client/main.zig`) - built via `Aether.addGame`. Subdirs cover `world/` (chunks, blocks, sky, particles, selection outline), `state/` (menu, load, game), `connection/` (real `ClientConn` and an in-process `FakeConn` for singleplayer), `player/`, `graphics/`, `ui/`, `shaders/`, and `util/`.
+- Client (`src/client/main.zig`) - built via `Aether.addGame`. Subdirs cover `world/` (chunks, blocks, sky, particles, selection outline), `state/` (menu, load, game), `connection/` (real `ClientConn` and an in-process `FakeConn` for singleplayer), `player/`, `graphics/`, `ui/`, and `util/`.
 - Server (`src/server/main.zig`) - a plain executable on most targets; on PSP it goes through `Aether.addGame` to pick up `pspsdk` and the linker script.
 
 The client always speaks the protocol. Singleplayer is just an in-process server behind a `FakeConn`, not a parallel code path.

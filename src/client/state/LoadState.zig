@@ -257,9 +257,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         .consumes_text = false,
     });
 
-    const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
-    const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
-    pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
+    pipeline = try Rendering.Pipeline.new(Vertex.Layout);
 
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;

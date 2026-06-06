@@ -195,9 +195,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // Redistribute memory for game state
     @import("../config.zig").apply_runtime_budgets(engine);
 
-    const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
-    const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
-    self.pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
+    self.pipeline = try Rendering.Pipeline.new(Vertex.Layout);
 
     // Player -- owns the camera; spawn Y is eye-level from the server.
     // Use whichever writer the active connection drains position packets

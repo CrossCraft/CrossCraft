@@ -161,10 +161,6 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "embed_pack", should_embed);
     client_root.addImport("build_options", build_options.createModule());
 
-    Aether.addShader(ae_dep.builder, b, client_exe, config, "basic", .{
-        .slang = b.path("src/client/shaders/basic.slang"),
-    });
-
     // On macOS we pipe pack.zip through exportArtifact so it lands in
     // Contents/Resources/ inside the .app bundle. On PSP/3DS/desktop the
     // install_pack branch above handles placement.
