@@ -47,6 +47,21 @@ pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
     var col = ui.stack(.{ .axis = .vertical, .anchor = .middle_center, .cross_align = .center, .gap = 4 });
 
     ui.label("Controls");
+    if (!Options.controls_rebinding_supported()) {
+        ui.label("Fixed on this platform");
+        if (ui.button(wid(.done), "Done", .{ .width = WIDGET_W })) {
+            cancel_capture(ctx);
+            result.back = true;
+        }
+        col.end();
+        ui.prompts(&.{ Prompts.select(), Prompts.back() });
+        if (ui.cancel_pressed()) {
+            cancel_capture(ctx);
+            result.back = true;
+        }
+        return result;
+    }
+
     var suppress_actions = false;
     if (ae.platform == .psp) {
         run_psp(ui, opt, &result);

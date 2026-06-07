@@ -558,7 +558,7 @@ fn update_options(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) 
     ui.end();
     switch (action) {
         .none => {},
-        .controls => enter_controls(self),
+        .controls => if (Options.controls_rebinding_supported()) enter_controls(self),
         .close => {
             Options.save(engine.io, engine.dirs.data);
             engine.set_vsync(Options.current.vsync);

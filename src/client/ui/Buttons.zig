@@ -97,6 +97,7 @@ pub fn glyph_y_offset() i16 {
 
 pub fn resolve_style() Style {
     if (ae.platform == .psp) return .psp;
+    if (ae.platform == .nintendo_3ds and Options.current.controller_tooltips != .off) return .nintendo;
     return switch (Options.current.controller_tooltips) {
         // Auto follows whatever device produced input most recently; the
         // Xbox sheet stands in for any gamepad since we don't probe vendor.
@@ -153,8 +154,8 @@ fn lookup_controller(button: Button, style: Style) Rect {
     const row0 = pc_row_pair_base(style);
     const row1 = row0 + PC_TILE;
     return switch (button) {
-        .A => pc_tile(0, row0),
-        .B => pc_tile(1, row0),
+        .A => pc_tile(if (style == .nintendo) 1 else 0, row0),
+        .B => pc_tile(if (style == .nintendo) 0 else 1, row0),
         .X => pc_tile(2, row0),
         .Y => pc_tile(3, row0),
         .DpadUp => pc_tile(4, row0),
@@ -231,6 +232,8 @@ test "lookup covers every style for the buttons it supports" {
     // is exercised at comptime by the compiler for the rest.
     const r = lookup(.A, .xbox);
     try std.testing.expect(r.render_w > 0 and r.render_h > 0);
+    try std.testing.expect(lookup(.A, .nintendo).tex_x == PC_TILE);
+    try std.testing.expect(lookup(.B, .nintendo).tex_x == 0);
     const p = lookup(.LButton, .psp);
     try std.testing.expect(p.tex_w == PSP_WIDE_W);
     const k = lookup(.EscapeKey, .kbm);

@@ -15,16 +15,20 @@ const input = ae.Core.input;
 const log = std.log.scoped(.options);
 
 const options_file = "options.json";
+const json_format_version: u8 = 2;
 const max_pack_path: usize = 256;
 /// Generous upper bound for the JSON file (typical size ~300 bytes).
 const max_json_size: usize = 4096;
+
+pub const SENS_MIN: f32 = 0.1;
+pub const SENS_MAX: f32 = 10.0;
 
 /// Live singleton.  Any system may read `Options.current`; only `load` and
 /// the settings UI should write it.
 pub var current: Options = .{};
 
-/// In-game controller prompt style.  PSP only supports `auto` / `off`; the
-/// other layouts are desktop-only and are corrected to `auto` on load.
+/// In-game controller prompt style.  PSP and 3DS only support `auto` / `off`;
+/// the other layouts are desktop-only and are corrected to `auto` on load.
 pub const ControllerTooltips = enum(u8) {
     auto = 0,
     xbox = 1,
@@ -33,7 +37,7 @@ pub const ControllerTooltips = enum(u8) {
     off = 4,
 
     pub fn platform_supports(self: ControllerTooltips) bool {
-        if (comptime @import("aether").platform == .psp) {
+        if (comptime fixed_controller_glyph_style()) {
             return self == .auto or self == .off;
         }
         return true;
@@ -98,11 +102,12 @@ pub const Options = struct {
     /// Cap frames to the display refresh rate.  Applied via
     /// `engine.set_vsync` on load and whenever the options menu is dismissed.
     /// PSP defaults to off; the 60 Hz cap costs more than it's worth given the
-    /// platform's frame-time budget.
+    /// platform's frame-time budget.  3DS forces this on.
     vsync: bool = @import("aether").platform != .psp,
 
     /// In-game controller prompt style.  `auto` picks glyphs from the
-    /// connected controller on desktop, or the only available layout on PSP.
+    /// connected controller on desktop, or the fixed platform layout on
+    /// PSP/3DS.
     controller_tooltips: ControllerTooltips = .auto,
 
     /// Weather: rain on/off.  Defaults off on every platform.
@@ -190,6 +195,28 @@ pub fn fancy_leaves_supported() bool {
     return cfg.current().lod_near_radius_blocks > 0;
 }
 
+/// True when VSync can be changed by the options UI.
+/// 3DS requires VSync on, so persisted false values are ignored there.
+pub fn vsync_toggle_supported() bool {
+    return ae.platform != .nintendo_3ds;
+}
+
+pub fn effective_vsync(vsync: bool) bool {
+    return if (vsync_toggle_supported()) vsync else true;
+}
+
+/// True when the platform has one built-in controller glyph family.
+/// The options menu treats this as an on/off choice.
+pub fn fixed_controller_glyph_style() bool {
+    return ae.platform == .psp or ae.platform == .nintendo_3ds;
+}
+
+/// True when the controls screen can edit bindings on this platform.
+/// 3DS bindings are fixed for now.
+pub fn controls_rebinding_supported() bool {
+    return ae.platform != .nintendo_3ds;
+}
+
 pub fn pc_key_assignable(key: input.Key) bool {
     switch (key) {
         .Escape,
@@ -262,19 +289,81 @@ pub fn pc_key_prompt_label(key: input.Key) []const u8 {
     };
 }
 
+pub fn sensitivity_percent(v: f32) u32 {
+    const cl = std.math.clamp(v, SENS_MIN, SENS_MAX);
+    const lmin = std.math.log10(SENS_MIN);
+    const lmax = std.math.log10(SENS_MAX);
+    return @intFromFloat(@round((std.math.log10(cl) - lmin) / (lmax - lmin) * 100));
+}
+
+pub fn sensitivity_from_percent(percent: u32) f32 {
+    const pct = @as(f32, @floatFromInt(@min(percent, 100))) / 100.0;
+    const lmin = std.math.log10(SENS_MIN);
+    const lmax = std.math.log10(SENS_MAX);
+    return std.math.pow(f32, 10.0, lmin + (lmax - lmin) * pct);
+}
+
 // --- JSON shadow type ---
 // Field names match the JSON keys.  `active_texturepack` is a `[]const u8`
 // so the JSON parser can allocate it into the per-call arena; the caller
 // copies the value into the fixed buffer before the arena is freed.
 
+const JsonNumber = struct {
+    value: f64 = 0.0,
+
+    fn fromInt(value: i64) JsonNumber {
+        return .{ .value = @as(f64, @floatFromInt(value)) };
+    }
+
+    pub fn jsonParse(
+        allocator: std.mem.Allocator,
+        source: anytype,
+        options: std.json.ParseOptions,
+    ) std.json.ParseError(@TypeOf(source.*))!JsonNumber {
+        const token = try source.nextAllocMax(allocator, .alloc_if_needed, options.max_value_len.?);
+        const slice = switch (token) {
+            inline .number, .allocated_number, .string, .allocated_string => |s| s,
+            else => return error.UnexpectedToken,
+        };
+        const value = try std.fmt.parseFloat(f64, slice);
+        if (!std.math.isFinite(value)) return error.InvalidNumber;
+        return .{ .value = value };
+    }
+
+    pub fn jsonParseFromValue(
+        allocator: std.mem.Allocator,
+        source: std.json.Value,
+        options: std.json.ParseOptions,
+    ) std.json.ParseFromValueError!JsonNumber {
+        _ = allocator;
+        _ = options;
+        const value = switch (source) {
+            .integer => |i| @as(f64, @floatFromInt(i)),
+            .float => |f| f,
+            .number_string, .string => |s| try std.fmt.parseFloat(f64, s),
+            else => return error.UnexpectedToken,
+        };
+        if (!std.math.isFinite(value)) return error.InvalidNumber;
+        return .{ .value = value };
+    }
+
+    pub fn jsonStringify(self: JsonNumber, jws: anytype) !void {
+        try jws.write(@as(i64, @intFromFloat(@round(self.value))));
+    }
+};
+
 const JsonOptions = struct {
+    /// Version 1 stored runtime float units/multipliers. Version 2 stores
+    /// integer menu values in the same keys: volume and sensitivity percent,
+    /// and FOV degrees.
+    version: u8 = 1,
     active_texturepack: []const u8 = "",
     render_distance: u8 = if (@import("aether").platform == .psp) 4 else 8,
-    sound_volume: f32 = 1.0,
-    music_volume: f32 = 0.5,
-    fov: f32 = 70.0,
+    sound_volume: ?JsonNumber = null,
+    music_volume: ?JsonNumber = null,
+    fov: ?JsonNumber = null,
     fancy_leaves: bool = @import("aether").platform != .psp,
-    sensitivity: f32 = 3.0,
+    sensitivity: ?JsonNumber = null,
     ambient_occlusion: bool = false,
     bouncy_chunks: bool = false,
     vsync: bool = @import("aether").platform != .psp,
@@ -323,16 +412,29 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
     defer parsed.deinit();
 
     const j = parsed.value;
+    const integer_json = j.version >= 2;
     current.set_active_texturepack(j.active_texturepack);
     current.render_distance = j.render_distance;
-    current.sound_volume = std.math.clamp(j.sound_volume, 0.0, 1.0);
-    current.music_volume = std.math.clamp(j.music_volume, 0.0, 1.0);
-    current.fov = std.math.clamp(j.fov, 10.0, 170.0);
+    current.sound_volume = if (integer_json)
+        json_percent_to_unit(j.sound_volume orelse JsonNumber.fromInt(100))
+    else
+        json_float_f32(j.sound_volume orelse .{ .value = 1.0 }, 0.0, 1.0);
+    current.music_volume = if (integer_json)
+        json_percent_to_unit(j.music_volume orelse JsonNumber.fromInt(50))
+    else
+        json_float_f32(j.music_volume orelse .{ .value = 0.5 }, 0.0, 1.0);
+    current.fov = if (integer_json)
+        json_rounded_f32(j.fov orelse JsonNumber.fromInt(70), 10.0, 170.0)
+    else
+        json_float_f32(j.fov orelse .{ .value = 70.0 }, 10.0, 170.0);
     current.fancy_leaves = j.fancy_leaves and fancy_leaves_supported();
-    current.sensitivity = std.math.clamp(j.sensitivity, 0.1, 20.0);
+    current.sensitivity = if (integer_json)
+        sensitivity_from_percent(json_percent(j.sensitivity orelse JsonNumber.fromInt(sensitivity_percent(3.0))))
+    else
+        json_float_f32(j.sensitivity orelse .{ .value = 3.0 }, SENS_MIN, 20.0);
     current.ambient_occlusion = j.ambient_occlusion;
     current.bouncy_chunks = j.bouncy_chunks;
-    current.vsync = j.vsync;
+    current.vsync = effective_vsync(j.vsync);
     current.controller_tooltips = blk: {
         const mode: ControllerTooltips = switch (j.controller_tooltips) {
             0 => .auto,
@@ -367,16 +469,17 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
 /// defaults already covers a torn write.
 pub fn save(io: Io, dir: std.Io.Dir) void {
     const j = JsonOptions{
+        .version = json_format_version,
         .active_texturepack = current.active_texturepack(),
         .render_distance = current.render_distance,
-        .sound_volume = current.sound_volume,
-        .music_volume = current.music_volume,
-        .fov = current.fov,
+        .sound_volume = JsonNumber.fromInt(unit_to_json_percent(current.sound_volume)),
+        .music_volume = JsonNumber.fromInt(unit_to_json_percent(current.music_volume)),
+        .fov = JsonNumber.fromInt(float_to_json_int(current.fov)),
         .fancy_leaves = current.fancy_leaves,
-        .sensitivity = current.sensitivity,
+        .sensitivity = JsonNumber.fromInt(sensitivity_percent(current.sensitivity)),
         .ambient_occlusion = current.ambient_occlusion,
         .bouncy_chunks = current.bouncy_chunks,
-        .vsync = current.vsync,
+        .vsync = effective_vsync(current.vsync),
         .controller_tooltips = @intFromEnum(current.controller_tooltips),
         .rain = current.rain,
         .fog = current.fog,
@@ -405,6 +508,31 @@ pub fn save(io: Io, dir: std.Io.Dir) void {
     file.writeStreamingAll(io, slice) catch |err| {
         log.err("write options.json failed: {}", .{err});
     };
+}
+
+fn json_float_f32(n: JsonNumber, min: f32, max: f32) f32 {
+    return std.math.clamp(@as(f32, @floatCast(n.value)), min, max);
+}
+
+fn json_rounded_f32(n: JsonNumber, min: f32, max: f32) f32 {
+    return std.math.clamp(@as(f32, @floatCast(@round(n.value))), min, max);
+}
+
+fn json_percent(n: JsonNumber) u32 {
+    const clamped = std.math.clamp(@round(n.value), 0.0, 100.0);
+    return @intFromFloat(clamped);
+}
+
+fn json_percent_to_unit(n: JsonNumber) f32 {
+    return @as(f32, @floatFromInt(json_percent(n))) / 100.0;
+}
+
+fn unit_to_json_percent(v: f32) i64 {
+    return @intFromFloat(@round(std.math.clamp(v, 0.0, 1.0) * 100.0));
+}
+
+fn float_to_json_int(v: f32) i64 {
+    return @intFromFloat(@round(v));
 }
 
 fn load_pc_controls(j: JsonOptions) void {
@@ -457,4 +585,59 @@ fn pc_controls_valid(opt: *const Options) bool {
         }
     }
     return true;
+}
+
+test "versioned options json accepts legacy floats and new integer values" {
+    const legacy_json =
+        \\{"sound_volume":1,"music_volume":0.5,"fov":70.5,"sensitivity":3}
+    ;
+    const legacy = try std.json.parseFromSlice(
+        JsonOptions,
+        std.testing.allocator,
+        legacy_json,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer legacy.deinit();
+    try std.testing.expectEqual(@as(u8, 1), legacy.value.version);
+    try std.testing.expectEqual(@as(f32, 1.0), json_float_f32(legacy.value.sound_volume.?, 0.0, 1.0));
+    try std.testing.expectEqual(@as(f32, 0.5), json_float_f32(legacy.value.music_volume.?, 0.0, 1.0));
+    try std.testing.expectEqual(@as(f32, 70.5), json_float_f32(legacy.value.fov.?, 10.0, 170.0));
+    try std.testing.expectEqual(@as(f32, 3.0), json_float_f32(legacy.value.sensitivity.?, SENS_MIN, 20.0));
+
+    const integer_json =
+        \\{"version":2,"sound_volume":100,"music_volume":50,"fov":71,"sensitivity":65}
+    ;
+    const integer = try std.json.parseFromSlice(
+        JsonOptions,
+        std.testing.allocator,
+        integer_json,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer integer.deinit();
+    try std.testing.expectEqual(@as(u8, 2), integer.value.version);
+    try std.testing.expectEqual(@as(f32, 1.0), json_percent_to_unit(integer.value.sound_volume.?));
+    try std.testing.expectEqual(@as(f32, 0.5), json_percent_to_unit(integer.value.music_volume.?));
+    try std.testing.expectEqual(@as(f32, 71.0), json_rounded_f32(integer.value.fov.?, 10.0, 170.0));
+    try std.testing.expectApproxEqAbs(sensitivity_from_percent(65), sensitivity_from_percent(json_percent(integer.value.sensitivity.?)), 0.0001);
+}
+
+test "current options json writes menu numbers as integers" {
+    const j = JsonOptions{
+        .version = json_format_version,
+        .sound_volume = JsonNumber.fromInt(unit_to_json_percent(1.0)),
+        .music_volume = JsonNumber.fromInt(unit_to_json_percent(0.5)),
+        .fov = JsonNumber.fromInt(float_to_json_int(70.5)),
+        .sensitivity = JsonNumber.fromInt(sensitivity_percent(3.0)),
+    };
+
+    var json_buf: [512]u8 = undefined;
+    var out = std.Io.Writer.fixed(&json_buf);
+    try std.json.Stringify.value(j, .{}, &out);
+    const written = out.buffered();
+
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"version\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"sound_volume\":100") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"music_volume\":50") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"fov\":71") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, ".") == null);
 }
