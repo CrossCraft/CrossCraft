@@ -303,7 +303,7 @@ pub fn sensitivity_from_percent(percent: u32) f32 {
     return std.math.pow(f32, 10.0, lmin + (lmax - lmin) * pct);
 }
 
-// --- JSON shadow type ---
+// --- JSON shadow types ---
 // Field names match the JSON keys.  `active_texturepack` is a `[]const u8`
 // so the JSON parser can allocate it into the per-call arena; the caller
 // copies the value into the fixed buffer before the arena is freed.
@@ -346,13 +346,9 @@ const JsonNumber = struct {
         if (!std.math.isFinite(value)) return error.InvalidNumber;
         return .{ .value = value };
     }
-
-    pub fn jsonStringify(self: JsonNumber, jws: anytype) !void {
-        try jws.write(@as(i64, @intFromFloat(@round(self.value))));
-    }
 };
 
-const JsonOptions = struct {
+const LoadJsonOptions = struct {
     /// Version 1 stored runtime float units/multipliers. Version 2 stores
     /// integer menu values in the same keys: volume and sensitivity percent,
     /// and FOV degrees.
@@ -379,6 +375,30 @@ const JsonOptions = struct {
     psp_jump_mode: u8 = @intFromEnum(PspJumpMode.up),
 };
 
+const SaveJsonOptions = struct {
+    version: u8 = json_format_version,
+    active_texturepack: []const u8 = "",
+    render_distance: u8,
+    sound_volume: u8,
+    music_volume: u8,
+    fov: u16,
+    fancy_leaves: bool,
+    sensitivity: u8,
+    ambient_occlusion: bool,
+    bouncy_chunks: bool,
+    vsync: bool,
+    controller_tooltips: u8,
+    rain: bool,
+    fog: bool,
+    key_forward: []const u8,
+    key_back: []const u8,
+    key_left: []const u8,
+    key_right: []const u8,
+    key_inventory: []const u8,
+    psp_analog_mode: u8,
+    psp_jump_mode: u8,
+};
+
 // --- public API ---
 
 /// Load options from `options.json` in `dir`.  Falls back to defaults when
@@ -401,7 +421,7 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
     var arena_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&arena_buf);
     const parsed = std.json.parseFromSlice(
-        JsonOptions,
+        LoadJsonOptions,
         fba.allocator(),
         json_buf[0..n],
         .{ .ignore_unknown_fields = true },
@@ -468,15 +488,14 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
 /// options.json is ~300 bytes, and `load`'s parse-error fallback to
 /// defaults already covers a torn write.
 pub fn save(io: Io, dir: std.Io.Dir) void {
-    const j = JsonOptions{
-        .version = json_format_version,
+    const j = SaveJsonOptions{
         .active_texturepack = current.active_texturepack(),
         .render_distance = current.render_distance,
-        .sound_volume = JsonNumber.fromInt(unit_to_json_percent(current.sound_volume)),
-        .music_volume = JsonNumber.fromInt(unit_to_json_percent(current.music_volume)),
-        .fov = JsonNumber.fromInt(float_to_json_int(current.fov)),
+        .sound_volume = unit_to_json_percent(current.sound_volume),
+        .music_volume = unit_to_json_percent(current.music_volume),
+        .fov = float_to_json_int(current.fov),
         .fancy_leaves = current.fancy_leaves,
-        .sensitivity = JsonNumber.fromInt(sensitivity_percent(current.sensitivity)),
+        .sensitivity = @intCast(sensitivity_percent(current.sensitivity)),
         .ambient_occlusion = current.ambient_occlusion,
         .bouncy_chunks = current.bouncy_chunks,
         .vsync = effective_vsync(current.vsync),
@@ -527,15 +546,15 @@ fn json_percent_to_unit(n: JsonNumber) f32 {
     return @as(f32, @floatFromInt(json_percent(n))) / 100.0;
 }
 
-fn unit_to_json_percent(v: f32) i64 {
+fn unit_to_json_percent(v: f32) u8 {
     return @intFromFloat(@round(std.math.clamp(v, 0.0, 1.0) * 100.0));
 }
 
-fn float_to_json_int(v: f32) i64 {
+fn float_to_json_int(v: f32) u16 {
     return @intFromFloat(@round(v));
 }
 
-fn load_pc_controls(j: JsonOptions) void {
+fn load_pc_controls(j: LoadJsonOptions) void {
     var invalid = false;
     const forward = parse_key(j.key_forward) orelse blk: {
         invalid = true;
@@ -592,7 +611,7 @@ test "versioned options json accepts legacy floats and new integer values" {
         \\{"sound_volume":1,"music_volume":0.5,"fov":70.5,"sensitivity":3}
     ;
     const legacy = try std.json.parseFromSlice(
-        JsonOptions,
+        LoadJsonOptions,
         std.testing.allocator,
         legacy_json,
         .{ .ignore_unknown_fields = true },
@@ -608,7 +627,7 @@ test "versioned options json accepts legacy floats and new integer values" {
         \\{"version":2,"sound_volume":100,"music_volume":50,"fov":71,"sensitivity":65}
     ;
     const integer = try std.json.parseFromSlice(
-        JsonOptions,
+        LoadJsonOptions,
         std.testing.allocator,
         integer_json,
         .{ .ignore_unknown_fields = true },
@@ -622,12 +641,26 @@ test "versioned options json accepts legacy floats and new integer values" {
 }
 
 test "current options json writes menu numbers as integers" {
-    const j = JsonOptions{
-        .version = json_format_version,
-        .sound_volume = JsonNumber.fromInt(unit_to_json_percent(1.0)),
-        .music_volume = JsonNumber.fromInt(unit_to_json_percent(0.5)),
-        .fov = JsonNumber.fromInt(float_to_json_int(70.5)),
-        .sensitivity = JsonNumber.fromInt(sensitivity_percent(3.0)),
+    const j = SaveJsonOptions{
+        .sound_volume = unit_to_json_percent(1.0),
+        .music_volume = unit_to_json_percent(0.5),
+        .fov = float_to_json_int(70.5),
+        .sensitivity = @intCast(sensitivity_percent(3.0)),
+        .render_distance = 8,
+        .fancy_leaves = true,
+        .ambient_occlusion = false,
+        .bouncy_chunks = false,
+        .vsync = true,
+        .controller_tooltips = 0,
+        .rain = false,
+        .fog = true,
+        .key_forward = "W",
+        .key_back = "S",
+        .key_left = "A",
+        .key_right = "D",
+        .key_inventory = "B",
+        .psp_analog_mode = @intFromEnum(PspAnalogMode.look),
+        .psp_jump_mode = @intFromEnum(PspJumpMode.up),
     };
 
     var json_buf: [512]u8 = undefined;
