@@ -16,6 +16,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const common = @import("common");
 const flate = std.compress.flate;
 
 pub const Job = struct {
@@ -147,7 +148,7 @@ pub fn worker_main() void {
 
     while (!should_exit()) {
         if (!drain_once()) {
-            std.Io.sleep(stored_io, .fromMilliseconds(10), .real) catch {};
+            std.Io.sleep(stored_io, common.time.ms(10), .real) catch {};
         }
     }
 }

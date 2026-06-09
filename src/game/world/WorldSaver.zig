@@ -183,7 +183,7 @@ pub fn wait_for_save(self: *WorldSaver) void {
     // returned from `run` and published `done`. For classic_dat saves the
     // job is already done, so this is a cheap no-op.
     while (!self.cw_job.done.load(.acquire)) {
-        std.Io.sleep(self.io, .fromMilliseconds(20), .real) catch break;
+        std.Io.sleep(self.io, common.time.ms(20), .real) catch break;
     }
 }
 

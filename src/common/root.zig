@@ -7,5 +7,6 @@ pub const noise = @import("noise.zig");
 pub const physics = @import("physics.zig");
 pub const prefetch = @import("prefetch.zig");
 pub const static_allocator = @import("static_allocator.zig");
+pub const time = @import("time.zig");
 pub const trig = @import("trig.zig");
 pub const xorshift64 = @import("xorshift64.zig");

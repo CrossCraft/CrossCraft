@@ -87,7 +87,7 @@ pub fn init(
     saver.owned_locally = true;
 
     // Let loadscreen catch up
-    try io.sleep(.fromMilliseconds(250), .real);
+    try io.sleep(common.time.ms(250), .real);
 
     if (!saver.try_load(&data, scratch)) {
         data.seed = seed;

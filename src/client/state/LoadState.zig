@@ -16,6 +16,7 @@ const GameState = @import("GameState.zig");
 const DisconnectState = @import("DisconnectState.zig");
 const Session = @import("Session.zig");
 const proto = @import("common").protocol;
+const common_time = @import("common").time;
 const flate = std.compress.flate;
 
 const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
@@ -455,7 +456,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     try self.font_batcher.flush();
     // Throttle to ~20 FPS while server generates on background thread;
     // avoids burning CPU on draw calls that show a static progress bar.
-    try std.Io.sleep(engine.io, std.Io.Duration.fromMilliseconds(50), .real);
+    try std.Io.sleep(engine.io, common_time.ms(50), .real);
 }
 
 fn add_dirt_tile(self: *@This(), dirt: *const Rendering.Texture, x: i16, y: i16, tile_size: i16) void {
