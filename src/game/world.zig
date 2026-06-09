@@ -38,6 +38,11 @@ pub const LoadStatus = union(enum) {
     complete,
 };
 
+const load_status_loading: u16 = 0;
+const load_status_complete: u16 = 1;
+const load_status_generating_base: u16 = 16;
+const load_status_downloading_base: u16 = 128;
+
 // Default format for both init paths. Standalone overrides via
 // server.properties; embedded singleplayer takes this value as-is.
 pub const default_format: SaveFormat = .{ .classic_cw = .{} };
@@ -45,7 +50,41 @@ pub const default_format: SaveFormat = .{ .classic_cw = .{} };
 pub var data: WorldData = undefined;
 pub var sim: WorldSimulation = undefined;
 pub var saver: WorldSaver = undefined;
-pub var load_status: LoadStatus = .loading;
+var load_status_atomic: std.atomic.Value(u16) = .init(load_status_loading);
+
+pub fn get_load_status() LoadStatus {
+    return decode_load_status(load_status_atomic.load(.acquire));
+}
+
+pub fn set_load_status(status: LoadStatus) void {
+    load_status_atomic.store(encode_load_status(status), .release);
+}
+
+fn encode_load_status(status: LoadStatus) u16 {
+    return switch (status) {
+        .loading => load_status_loading,
+        .complete => load_status_complete,
+        .generating => |phase| load_status_generating_base + @as(u16, @intFromEnum(phase)),
+        .downloading => |pct| load_status_downloading_base + @as(u16, pct),
+    };
+}
+
+fn decode_load_status(encoded: u16) LoadStatus {
+    if (encoded == load_status_complete) return .complete;
+    if (encoded >= load_status_downloading_base) {
+        return .{ .downloading = @intCast(@min(encoded - load_status_downloading_base, 100)) };
+    }
+    if (encoded >= load_status_generating_base) {
+        const max_phase: u16 = @intFromEnum(worldgen.GenPhase.plants);
+        const phase: u8 = @intCast(@min(encoded - load_status_generating_base, max_phase));
+        return .{ .generating = @enumFromInt(phase) };
+    }
+    return .loading;
+}
+
+fn set_generation_phase(phase: worldgen.GenPhase) void {
+    set_load_status(.{ .generating = phase });
+}
 
 // --- Lifecycle ---
 
@@ -69,7 +108,7 @@ pub fn init_empty(
     sim = try WorldSimulation.init(allocator, seed);
     errdefer sim.deinit(allocator);
     saver = WorldSaver.init(io, save_dir, save_file_name, format);
-    load_status = .loading;
+    set_load_status(.loading);
 }
 
 /// Singleplayer init: allocate, try to load, fall back to worldgen,
@@ -91,9 +130,9 @@ pub fn init(
 
     if (!saver.try_load(&data, scratch)) {
         data.seed = seed;
-        load_status = .{ .generating = .raising };
+        set_load_status(.{ .generating = .raising });
         const start = std.Io.Clock.Timestamp.now(io, .boot);
-        try worldgen.generate(scratch, data.blocks, data.seed, io, &load_status.generating);
+        try worldgen.generate(scratch, data.blocks, data.seed, io, set_generation_phase);
         const end = std.Io.Clock.Timestamp.now(io, .boot);
         const elapsed_ns: i64 = @truncate(end.raw.nanoseconds - start.raw.nanoseconds);
         const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
@@ -128,7 +167,7 @@ pub fn deinit() void {
 pub fn finalize_loaded() void {
     data.compute_chunk_counts();
     data.compute_light_map();
-    load_status = .complete;
+    set_load_status(.complete);
     log.info("World seed: {d}", .{data.seed});
 }
 

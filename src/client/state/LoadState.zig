@@ -34,6 +34,40 @@ var mp_server_motd: [64]u8 = @splat(' ');
 /// set during the loading screen.
 var loading_set: ?ae.Core.input.ActionSetHandle = null;
 
+fn completed_future() std.Io.Future(void) {
+    return .{ .any_future = null, .result = {} };
+}
+
+fn start_server_future(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    scratch: std.mem.Allocator,
+    seed: u64,
+    data_dir: std.Io.Dir,
+    save_location: []const u8,
+) std.Io.Future(void) {
+    return io.concurrent(serverTask, .{ alloc, scratch, seed, io, data_dir, save_location }) catch |err| {
+        log.err("server task concurrency unavailable: {}", .{err});
+        session_error = err;
+        server_ready.store(true, .release);
+        return completed_future();
+    };
+}
+
+fn start_connect_future(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    seed: u64,
+    data_dir: std.Io.Dir,
+) std.Io.Future(void) {
+    return io.concurrent(connectTask, .{ alloc, seed, io, data_dir }) catch |err| {
+        log.err("connect task concurrency unavailable: {}", .{err});
+        session_error = err;
+        server_ready.store(true, .release);
+        return completed_future();
+    };
+}
+
 fn ensure_loading_set() !ae.Core.input.ActionSetHandle {
     if (loading_set) |h| return h;
     const set = try ae.Core.input.register_action_set("loading");
@@ -60,6 +94,7 @@ fn serverTask(
     Server.init(alloc, scratch, io, data_dir, config) catch |err| {
         log.err("server init failed: {}", .{err});
         session_error = err;
+        server_ready.store(true, .release);
         return;
     };
     World.saver.autosave_enabled = false;
@@ -160,7 +195,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
                 @memcpy(compressed[compressed_end..][0..length], buf[3 .. 3 + @as(usize, length)]);
                 compressed_end += length;
                 const percent = buf[1027];
-                World.load_status = .{ .downloading = percent };
+                World.set_load_status(.{ .downloading = percent });
             },
             0x04 => {
                 reader.toss(len);
@@ -274,15 +309,15 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     const data_dir = engine.dirs.data;
     // TODO: allocator pool budget may need tuning for server + client coexistence
     self.server_future = switch (Session.mode) {
-        .singleplayer => io.async(serverTask, .{
+        .singleplayer => start_server_future(
+            io,
             engine.allocator(.user),
             engine.allocator(.user),
             singleplayer_seed,
-            io,
             data_dir,
             Session.singleplayer_save(),
-        }),
-        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), random_seed, io, data_dir }),
+        ),
+        .multiplayer => start_connect_future(io, engine.allocator(.user), random_seed, data_dir),
     };
 
     self.inited = true;
@@ -353,7 +388,8 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     const bar_width: i16 = 100;
     const bar_height: i16 = 2;
     const bar_y: i16 = 16;
-    const progress: f32 = switch (World.load_status) {
+    const load_status = World.get_load_status();
+    const progress: f32 = switch (load_status) {
         .loading => @min(self.time / 3.0, 1.0),
         .generating => |phase| @as(f32, @floatFromInt(@intFromEnum(phase))) / 10.0,
         .downloading => |pct| @as(f32, @floatFromInt(pct)) / 100.0,
@@ -392,7 +428,6 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
 
     self.font_batcher.clear();
 
-    const load_status = World.load_status;
     const loading: []const u8 = blk: {
         if (Session.mode == .multiplayer) {
             const trimmed = std.mem.trimEnd(u8, &mp_server_name, " ");
@@ -456,7 +491,12 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     try self.font_batcher.flush();
     // Throttle to ~20 FPS while server generates on background thread;
     // avoids burning CPU on draw calls that show a static progress bar.
-    try std.Io.sleep(engine.io, common_time.ms(50), .real);
+    // 3DS already blocks on vblank after draw; sleeping here delays the
+    // present itself and can let the worker finish before any phase frame
+    // reaches the screen.
+    if (ae.platform != .nintendo_3ds) {
+        try std.Io.sleep(engine.io, common_time.ms(50), .real);
+    }
 }
 
 fn add_dirt_tile(self: *@This(), dirt: *const Rendering.Texture, x: i16, y: i16, tile_size: i16) void {
