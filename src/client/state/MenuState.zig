@@ -301,6 +301,11 @@ fn write_converted_legacy_save(
     dest_name: []const u8,
     data: *World.WorldData,
 ) bool {
+    if (comptime ae.platform == .wasm) {
+        log.warn("legacy save migration unavailable on wasm", .{});
+        return false;
+    }
+
     CompressWorker.init(alloc, io) catch |err| {
         log.warn("legacy save migration: failed to init compressor: {}", .{err});
         return false;
@@ -395,7 +400,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
 fn update_main(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
     var list: UiDrawList = .{};
     var ui = self.begin_ui(&list, &self.main_ui_state, in, 0);
-    const action = MainMenu.run(&ui);
+    const action = MainMenu.run(&ui, main_menu_options());
     ui.end();
     switch (action) {
         .none => {},
@@ -582,6 +587,13 @@ fn enter_main(self: *@This()) void {
     self.main_ui_state.open(!ui_input.profile_uses_pointer());
 }
 
+fn main_menu_options() MainMenu.Options {
+    return .{
+        .multiplayer_enabled = ae.platform != .wasm,
+        .texture_packs_enabled = ae.platform != .wasm,
+    };
+}
+
 fn enter_direct_connect(self: *@This()) void {
     self.active_screen = .direct_connect;
     self.dc_ui_state.open(!ui_input.profile_uses_pointer());
@@ -681,7 +693,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     switch (self.active_screen) {
         .main => {
             var ui = self.begin_ui(&list, &self.main_ui_state, &none, 0);
-            _ = MainMenu.run(&ui);
+            _ = MainMenu.run(&ui, main_menu_options());
             ui.end();
         },
         .direct_connect => {

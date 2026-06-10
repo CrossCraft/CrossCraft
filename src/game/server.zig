@@ -114,6 +114,7 @@ pub fn init(
     config: GameConfig,
 ) !void {
     allocator = .init(alloc);
+    errdefer allocator.deinit();
     io = _io;
 
     var wcfg = config.world();
@@ -138,6 +139,11 @@ pub fn init(
     const split = split_save_location(wcfg.save_location);
     save_dir = try resolve_save_dir(data_dir, split.parent);
     save_dir_owned = split.parent.len > 0;
+    errdefer if (save_dir_owned) {
+        save_dir.close(io);
+        save_dir_owned = false;
+        save_dir = undefined;
+    };
     const save_file_name = copy_save_file_name(split.file_name) catch |err| {
         log.err("WorldConfig.save_location file name is invalid: {}", .{err});
         return err;
@@ -155,6 +161,7 @@ pub fn init(
     // storage after joining the worker thread, so do not back it with the
     // server StaticAllocator that Server.deinit clears first.
     try compress_worker.init(alloc, io);
+    errdefer compress_worker.deinit();
 
     // wcfg.seed is used only on first generation; the saver restores
     // the saved seed when an existing save file is found. Format choice
@@ -168,12 +175,14 @@ pub fn init(
         wcfg.seed,
         wcfg.save_format,
     );
+    errdefer world.deinit_after_init_error();
 
     // players_db must allocate from the raw `alloc`, not the static
     // wrapper -- StaticAllocator forbids any post-init allocation, and
     // its records table is final-sized once max_players_saved is known.
     if (!internal_use) {
         try players_db.init(alloc, io, save_dir, max_players_saved);
+        errdefer players_db.deinit();
     }
 
     allocator.transition_from_init_to_static();

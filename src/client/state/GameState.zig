@@ -156,6 +156,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             self.conn.drain_packets();
         },
         .multiplayer => {
+            if (comptime ae.platform == .wasm) return error.UnsupportedPlatform;
+
             const pspsdk = if (ae.platform == .psp) @import("pspsdk") else {};
             const PSP_MAIN_PRIO_RUNTIME: i32 = 64;
             const psp_main_thid = if (ae.platform == .psp)
@@ -314,6 +316,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     switch (Session.mode) {
         .singleplayer => {},
         .multiplayer => {
+            if (comptime ae.platform == .wasm) return error.UnsupportedPlatform;
+
             try CompressWorker.init(engine.allocator(.user), engine.io);
             errdefer CompressWorker.deinit();
             self.mp_compressor_thread = try CompressorThread.spawn(engine.allocator(.user));
@@ -441,6 +445,8 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
 }
 
 fn ensure_sp_compressor_started(self: *@This(), engine: *Engine) !void {
+    if (comptime ae.platform == .wasm) return;
+
     if (self.sp_compressor_thread != null) return;
     // Drain classic_cw save jobs queued by Server.init only after the state
     // transition and initial memory report have completed.

@@ -46,6 +46,10 @@ fn start_server_future(
     data_dir: std.Io.Dir,
     save_location: []const u8,
 ) std.Io.Future(void) {
+    if (comptime ae.platform == .wasm) {
+        serverTask(alloc, scratch, seed, io, data_dir, save_location);
+        return completed_future();
+    }
     return io.concurrent(serverTask, .{ alloc, scratch, seed, io, data_dir, save_location }) catch |err| {
         log.err("server task concurrency unavailable: {}", .{err});
         session_error = err;
@@ -60,6 +64,11 @@ fn start_connect_future(
     seed: u64,
     data_dir: std.Io.Dir,
 ) std.Io.Future(void) {
+    if (comptime ae.platform == .wasm) {
+        session_error = error.UnsupportedPlatform;
+        server_ready.store(true, .release);
+        return completed_future();
+    }
     return io.concurrent(connectTask, .{ alloc, seed, io, data_dir }) catch |err| {
         log.err("connect task concurrency unavailable: {}", .{err});
         session_error = err;
@@ -307,12 +316,16 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     session_error = null;
     Session.clear_disconnect_reason();
     const data_dir = engine.dirs.data;
+    const server_scratch = if (comptime ae.platform == .wasm)
+        std.heap.wasm_allocator
+    else
+        engine.allocator(.user);
     // TODO: allocator pool budget may need tuning for server + client coexistence
     self.server_future = switch (Session.mode) {
         .singleplayer => start_server_future(
             io,
             engine.allocator(.user),
-            engine.allocator(.user),
+            server_scratch,
             singleplayer_seed,
             data_dir,
             Session.singleplayer_save(),
@@ -342,9 +355,10 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
         self.server_notified = true;
         if (session_error) |err| {
             log.err("session start failed: {}", .{err});
+            var reason_buf: [64]u8 = undefined;
             const reason: []const u8 = switch (Session.mode) {
-                .singleplayer => "Failed to start server",
-                .multiplayer => "Failed to connect to server",
+                .singleplayer => std.fmt.bufPrint(&reason_buf, "Failed to start server: {s}", .{@errorName(err)}) catch "Failed to start server",
+                .multiplayer => std.fmt.bufPrint(&reason_buf, "Failed to connect: {s}", .{@errorName(err)}) catch "Failed to connect to server",
             };
             Session.set_disconnect_reason_if_empty(reason);
             try DisconnectState.transition_here(engine);

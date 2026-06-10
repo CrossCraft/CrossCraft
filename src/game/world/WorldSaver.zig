@@ -160,6 +160,10 @@ fn dispatch_save(self: *WorldSaver, data: *const WorldData, format: SaveFormat) 
     self.save_in_flight.store(true, .release);
     self.data_for_worker = data;
     self.format_for_worker = format;
+    if (comptime builtin.os.tag == .wasi) {
+        save_worker(self);
+        return;
+    }
     switch (format) {
         .classic_dat => {
             self.save_group.concurrent(self.io, save_worker, .{self}) catch |err| {
@@ -184,6 +188,18 @@ pub fn wait_for_save(self: *WorldSaver) void {
     // job is already done, so this is a cheap no-op.
     while (!self.cw_job.done.load(.acquire)) {
         std.Io.sleep(self.io, common.time.ms(20), .real) catch break;
+    }
+}
+
+/// Drop a queued classic_cw save before the compressor thread exists. This is
+/// only for init error unwind; normal shutdown must call `wait_for_save`.
+pub fn cancel_pending_before_compressor(self: *WorldSaver) void {
+    self.save_group.await(self.io) catch {};
+    if (self.cw_job.done.load(.acquire)) return;
+
+    if (compress_worker.cancel_pending_before_worker(&self.cw_job)) {
+        self.save_override_active = false;
+        self.save_in_flight.store(false, .release);
     }
 }
 

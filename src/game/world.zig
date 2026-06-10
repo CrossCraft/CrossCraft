@@ -123,6 +123,13 @@ pub fn init(
     format: SaveFormat,
 ) !void {
     try init_empty(allocator, io, save_dir, save_file_name, seed, format);
+    var initialized_empty = true;
+    errdefer if (initialized_empty) {
+        const backing_allocator = data.backing_allocator;
+        sim.deinit(backing_allocator);
+        saver.deinit();
+        data.deinit();
+    };
     saver.owned_locally = true;
 
     // Let loadscreen catch up
@@ -147,12 +154,22 @@ pub fn init(
         saver.save(&data);
     }
     finalize_loaded();
+    initialized_empty = false;
 }
 
 pub fn deinit() void {
     saver.wait_for_save();
     saver.save(&data);
     saver.wait_for_save();
+
+    const allocator = data.backing_allocator;
+    sim.deinit(allocator);
+    saver.deinit();
+    data.deinit();
+}
+
+pub fn deinit_after_init_error() void {
+    saver.cancel_pending_before_compressor();
 
     const allocator = data.backing_allocator;
     sim.deinit(allocator);

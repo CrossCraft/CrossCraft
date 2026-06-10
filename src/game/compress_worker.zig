@@ -100,6 +100,31 @@ pub fn submit(job: *Job) void {
     }
 }
 
+/// Remove a queued job before `worker_main` has been spawned. Used by init
+/// error paths that must free job storage without waiting on a worker thread
+/// that does not exist yet.
+pub fn cancel_pending_before_worker(job: *Job) bool {
+    var node = queue_head.swap(null, .acquire);
+    var restore_head: ?*Job = null;
+    var canceled = false;
+
+    while (node) |current| {
+        const next = current.next;
+        if (current == job) {
+            current.next = null;
+            current.done.store(true, .release);
+            canceled = true;
+        } else {
+            current.next = restore_head;
+            restore_head = current;
+        }
+        node = next;
+    }
+
+    queue_head.store(restore_head, .release);
+    return canceled;
+}
+
 pub fn signal_exit() void {
     worker_exit.store(true, .release);
 }

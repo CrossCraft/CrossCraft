@@ -4,6 +4,8 @@ const Aether = @import("engine");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const web_host = b.option([]const u8, "web-host", "serve-web: bind host (default: 127.0.0.1)") orelse "127.0.0.1";
+    const web_port = b.option(u16, "web-port", "serve-web: bind port (default: 8080)") orelse 8080;
 
     const overrides: Aether.Config.Overrides = .{
         .gfx = b.option(Aether.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
@@ -26,13 +28,11 @@ pub fn build(b: *std.Build) void {
 
     const protocol = b.addModule("protocol", .{
         .root_source_file = protocol_path,
-        .target = target,
         .optimize = optimize,
     });
 
     const common = b.addModule("common", .{
         .root_source_file = b.path("src/common/root.zig"),
-        .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "protocol", .module = protocol },
@@ -41,13 +41,11 @@ pub fn build(b: *std.Build) void {
 
     const nbt = b.addModule("nbt", .{
         .root_source_file = b.path("src/nbt/nbt.zig"),
-        .target = target,
         .optimize = optimize,
     });
 
     const game = b.addModule("game", .{
         .root_source_file = b.path("src/game/root.zig"),
-        .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "protocol", .module = protocol },
@@ -298,4 +296,49 @@ pub fn build(b: *std.Build) void {
         }),
     });
     pack_tool_step.dependOn(&b.addInstallArtifact(pack_tool_exe, .{}).step);
+
+    const web_target = Aether.webTarget(b);
+    const web_overrides: Aether.Config.Overrides = .{
+        .gfx = .webgl,
+        .use_cwd = true,
+    };
+    const web_exe = Aether.addGame(ae_dep.builder, b, .{
+        .name = "CrossCraft-Classic",
+        .root_source_file = b.path("src/client/web_main.zig"),
+        .target = web_target,
+        .optimize = optimize,
+        .overrides = web_overrides,
+    });
+    const web_root = Aether.userRootModule(web_exe);
+    web_root.addImport("game", game);
+    web_root.addImport("common", common);
+    web_root.addImport("protocol", protocol);
+
+    const web_build_options = b.addOptions();
+    web_build_options.addOption(bool, "embed_pack", false);
+    web_root.addImport("build_options", web_build_options.createModule());
+
+    const web_resource_files: []const Aether.ExportOptions.Resource = if (pack_zip_path) |pack_zip|
+        &.{.{ .path = pack_zip, .name = "pack.zip" }}
+    else
+        &.{};
+    const web_install = Aether.addWebBundle(ae_dep.builder, b, web_exe, .{
+        .web_resource_files = web_resource_files,
+        .web_resource_manifest = if (pack_zip_path != null) "pack.zip\n" else "",
+    });
+
+    const web_step = b.step("web", "Build the browser-playable WASM site in zig-out/web");
+    web_step.dependOn(&web_install.step);
+
+    const serve_web_cmd = Aether.addServeWebStep(
+        ae_dep.builder,
+        b,
+        "crosscraft-serve-web",
+        web_install,
+        web_host,
+        web_port,
+    );
+
+    const serve_web_step = b.step("serve-web", "Serve zig-out/web with WASM MIME and COOP/COEP headers");
+    serve_web_step.dependOn(&serve_web_cmd.step);
 }
