@@ -793,8 +793,15 @@ pub fn generate(
 
 noinline fn logStep(io: std.Io, prev: std.Io.Clock.Timestamp, name: []const u8) std.Io.Clock.Timestamp {
     const now = std.Io.Clock.Timestamp.now(io, .boot);
-    const elapsed_ns: i64 = @truncate(now.raw.nanoseconds - prev.raw.nanoseconds);
-    const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
+    const elapsed_ms = elapsed_ms_between(prev, now);
     log.info("{s}: {d}ms", .{ name, elapsed_ms });
     return now;
+}
+
+fn elapsed_ms_between(start: std.Io.Clock.Timestamp, end: std.Io.Clock.Timestamp) i64 {
+    const elapsed_ns = end.raw.nanoseconds - start.raw.nanoseconds;
+    const max_reasonable_ns: i96 = 30 * std.time.ns_per_s;
+    if (elapsed_ns < 0 or elapsed_ns > max_reasonable_ns) return 0;
+    const elapsed_ns_i64: i64 = @intCast(elapsed_ns);
+    return @divTrunc(elapsed_ns_i64, std.time.ns_per_ms);
 }

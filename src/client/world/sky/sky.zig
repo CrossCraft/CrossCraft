@@ -52,7 +52,7 @@ pub fn deinit(self: *Self) void {
 
 pub fn update(self: *Self, dt: f32) void {
     self.scroll += dt * CLOUD_SPEED;
-    if (self.scroll >= CLOUD_UV_PERIOD) self.scroll = @mod(self.scroll, CLOUD_UV_PERIOD);
+    while (self.scroll >= CLOUD_UV_PERIOD) self.scroll -= CLOUD_UV_PERIOD;
 }
 
 const collision = @import("../../player/collision.zig");

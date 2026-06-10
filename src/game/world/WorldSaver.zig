@@ -194,8 +194,10 @@ fn cw_save_run(base: *compress_worker.Job) anyerror!void {
 
 fn save_worker(self: *WorldSaver) void {
     defer {
+        log.info("save worker publish begin", .{});
         self.save_override_active = false;
         self.save_in_flight.store(false, .release);
+        log.info("save worker publish end", .{});
     }
 
     const save_file_name = self.worker_save_file_name();
@@ -217,7 +219,8 @@ fn save_worker(self: *WorldSaver) void {
         log.err("Failed to create save file '{s}': {}", .{ save_file_name, err });
         return;
     };
-    defer file.close(self.io);
+    var file_closed = false;
+    defer if (!file_closed) file.close(self.io);
 
     var write_buf: [BLOCK_SIZE]u8 = undefined;
     var writer = file.writer(self.io, &write_buf);
@@ -258,6 +261,10 @@ fn save_worker(self: *WorldSaver) void {
     log.info("Saved world to {s} ({d} bytes in {d}us, {d} KiB/s)", .{
         save_file_name, total_bytes, elapsed_us, kib_per_s,
     });
+    log.info("save worker close begin", .{});
+    file.close(self.io);
+    file_closed = true;
+    log.info("save worker close end", .{});
 }
 
 fn worker_save_file_name(self: *const WorldSaver) []const u8 {

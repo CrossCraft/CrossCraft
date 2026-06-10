@@ -103,15 +103,13 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
 
-    engine.dirs.data.access(engine.io, "texturepacks", .{}) catch {
-        engine.dirs.data.createDir(engine.io, "texturepacks", .default_dir) catch |err| {
-            log.warn("failed to create texturepacks/: {}", .{err});
-        };
+    engine.dirs.data.createDir(engine.io, "texturepacks", .default_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => log.warn("failed to create texturepacks/: {}", .{err}),
     };
-    engine.dirs.data.access(engine.io, "saves", .{}) catch {
-        engine.dirs.data.createDir(engine.io, "saves", .default_dir) catch |err| {
-            log.warn("failed to create saves/: {}", .{err});
-        };
+    engine.dirs.data.createDir(engine.io, "saves", .default_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => log.warn("failed to create saves/: {}", .{err}),
     };
     migrate_default_saves(engine.allocator(.user), engine.io, engine.dirs.data);
     if (build_options.embed_pack) {
