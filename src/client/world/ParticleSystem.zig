@@ -173,7 +173,7 @@ pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, _:
 
 // --- Simulation ---
 
-pub fn update(self: *Self, dt: f32) void {
+pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
     std.debug.assert(dt >= 0);
 
     var i: u16 = 0;
@@ -203,6 +203,8 @@ pub fn update(self: *Self, dt: f32) void {
         }
         i += 1;
     }
+
+    self.rebuild_mesh(camera);
 }
 
 // Particles spawn inside the block they came from (the local world isn't
@@ -298,7 +300,14 @@ fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
 
 // --- Rendering ---
 
-pub fn draw(self: *Self, camera: *const Camera) void {
+pub fn draw(self: *Self) void {
+    if (self.count == 0) return;
+    const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
+    self.mesh.draw(&m);
+}
+
+fn rebuild_mesh(self: *Self, camera: *const Camera) void {
+    self.mesh.vertices.clearRetainingCapacity();
     if (self.count == 0) return;
 
     // Camera basis for billboarding. Right is yaw-only so the quad never
@@ -318,15 +327,11 @@ pub fn draw(self: *Self, camera: *const Camera) void {
     const upy = cp * HALF_SIZE;
     const upz = -cy * sp * HALF_SIZE;
 
-    self.mesh.vertices.clearRetainingCapacity();
     var i: u16 = 0;
     while (i < self.count) : (i += 1) {
         emit_particle(&self.mesh, &self.particles[i], rx, rz, upx, upy, upz);
     }
     self.mesh.update();
-
-    const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
-    self.mesh.draw(&m);
 }
 
 /// Append the 6 verts (two triangles) of one billboarded particle quad.

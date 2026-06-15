@@ -163,7 +163,7 @@ pub fn deinit(self: *Self) void {
 
 pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
     self.sky.update(dt);
-    self.particles.update(dt);
+    self.particles.update(dt, camera);
     self.rain.update(dt, camera);
 
     // Advance the bouncy-rise animation for every loaded section. Runs before
@@ -338,7 +338,7 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
 
     // Particles between transparent and fluid so they depth-test against
     // opaque + transparent geometry and blend before water is drawn.
-    self.particles.draw(camera);
+    self.particles.draw();
 }
 
 /// Draw rain streaks + impact splashes.  Slots between draw_world_pass and
@@ -349,7 +349,7 @@ pub fn draw_rain_pass(self: *Self, camera: *const Camera) void {
     self.rain_tex.bind();
     self.rain.draw_streaks(camera);
     self.particles_tex.bind();
-    self.rain.draw_splashes(camera);
+    self.rain.draw_splashes();
 }
 
 /// Draw the fluid (water/lava) pass. Must be called after draw_world_pass on

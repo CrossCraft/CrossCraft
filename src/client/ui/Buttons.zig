@@ -97,7 +97,7 @@ pub fn glyph_y_offset() i16 {
 
 pub fn resolve_style() Style {
     if (ae.platform == .psp) return .psp;
-    if (ae.platform == .nintendo_3ds and Options.current.controller_tooltips != .off) return .nintendo;
+    if ((ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) and Options.current.controller_tooltips != .off) return .nintendo;
     return switch (Options.current.controller_tooltips) {
         // Auto follows whatever device produced input most recently; the
         // Xbox sheet stands in for any gamepad since we don't probe vendor.

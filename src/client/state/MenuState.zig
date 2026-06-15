@@ -38,7 +38,6 @@ const build_options = @import("build_options");
 
 const log = std.log.scoped(.menu);
 const default_create_world_name = "world";
-const DIAG_ONE_DIRT_QUAD_3DS = false;
 
 const embedded_pack: []const u8 =
     if (build_options.embed_pack) @embedFile("default_pack") else &.{};
@@ -127,7 +126,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     Options.save(engine.io, engine.dirs.data);
     engine.set_vsync(Options.current.vsync);
 
-    const default_pack_dir = if (ae.platform == .nintendo_3ds or build_options.embed_pack)
+    const default_pack_dir = if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch or build_options.embed_pack)
         engine.dirs.data
     else
         engine.dirs.resources;
@@ -395,6 +394,79 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
         .options => try update_options(self, engine, &in),
         .controls => try update_controls(self, engine, &in),
     }
+    if (!self.inited) return;
+    try prepare_batches(self, engine);
+}
+
+fn prepare_batches(self: *@This(), engine: *Engine) !void {
+    self.batcher.clear();
+    self.font_batcher.clear();
+    draw_dirt_tiles(self);
+
+    switch (self.active_screen) {
+        .main => {
+            draw_logo(self);
+            draw_corner_labels(self);
+        },
+        else => {},
+    }
+
+    var list: UiDrawList = .{};
+    var none = empty_input();
+    switch (self.active_screen) {
+        .main => {
+            var ui = self.begin_ui(&list, &self.main_ui_state, &none, 0);
+            _ = MainMenu.run(&ui, main_menu_options());
+            ui.end();
+        },
+        .direct_connect => {
+            var ui = self.begin_ui(&list, &self.dc_ui_state, &none, 0);
+            var dc: DirectConnect.Ctx = .{
+                .ip = &self.dc_ip,
+                .ip_len = &self.dc_ip_len,
+                .name = &self.dc_name,
+                .name_len = &self.dc_name_len,
+            };
+            _ = DirectConnect.run(&ui, &dc);
+            ui.end();
+        },
+        .texture_packs => {
+            var ui = self.begin_ui(&list, &self.tp_ui_state, &none, 0);
+            _ = TexturePacks.run(&ui, self.tp_entries[0..self.tp_entry_count], self.tp_selected_index);
+            ui.end();
+        },
+        .select_world => {
+            var ui = self.begin_ui(&list, &self.sw_ui_state, &none, 0);
+            _ = SelectWorld.run(&ui, self.sw_entries[0..self.sw_entry_count], self.sw_delete_mode);
+            ui.end();
+        },
+        .create_world => {
+            var ui = self.begin_ui(&list, &self.cw_ui_state, &none, 0);
+            var cw: CreateWorld.Ctx = .{
+                .name = &self.cw_name,
+                .name_len = &self.cw_name_len,
+                .seed = &self.cw_seed,
+                .seed_len = &self.cw_seed_len,
+                .create_enabled = self.create_world_available(engine),
+            };
+            _ = CreateWorld.run(&ui, &cw);
+            ui.end();
+        },
+        .options => {
+            var ui = self.begin_ui(&list, &self.options_ui_state, &none, 0);
+            _ = OptionsScreen.run(&ui, &Options.current, &self.options_rd_view, .{});
+            ui.end();
+        },
+        .controls => {
+            var ui = self.begin_ui(&list, &self.controls_ui_state, &none, 0);
+            _ = ControlsScreen.run(&ui, &Options.current, controls_ctx(self));
+            ui.end();
+        },
+    }
+    list.flush_into(&self.batcher, &self.font_batcher, null);
+
+    try self.batcher.update();
+    try self.font_batcher.update();
 }
 
 fn update_main(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
@@ -600,7 +672,7 @@ fn enter_direct_connect(self: *@This()) void {
 }
 
 fn enter_texture_packs(self: *@This(), engine: *Engine) void {
-    const default_pack_dir = if (ae.platform == .nintendo_3ds) engine.dirs.data else engine.dirs.resources;
+    const default_pack_dir = if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) engine.dirs.data else engine.dirs.resources;
     self.tp_entry_count = TexturePacks.scan(engine.io, default_pack_dir, engine.dirs.data, &self.tp_entries);
     self.tp_selected_index = TexturePacks.find_active_index(self.tp_entries[0..self.tp_entry_count]);
     self.active_screen = .texture_packs;
@@ -676,74 +748,9 @@ fn apply_control_options() void {
 
 fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    self.batcher.clear();
-    self.font_batcher.clear();
-    draw_dirt_tiles(self);
-
-    switch (self.active_screen) {
-        .main => {
-            draw_logo(self);
-            draw_corner_labels(self);
-        },
-        else => {},
-    }
-
-    var list: UiDrawList = .{};
-    var none = empty_input();
-    switch (self.active_screen) {
-        .main => {
-            var ui = self.begin_ui(&list, &self.main_ui_state, &none, 0);
-            _ = MainMenu.run(&ui, main_menu_options());
-            ui.end();
-        },
-        .direct_connect => {
-            var ui = self.begin_ui(&list, &self.dc_ui_state, &none, 0);
-            var dc: DirectConnect.Ctx = .{
-                .ip = &self.dc_ip,
-                .ip_len = &self.dc_ip_len,
-                .name = &self.dc_name,
-                .name_len = &self.dc_name_len,
-            };
-            _ = DirectConnect.run(&ui, &dc);
-            ui.end();
-        },
-        .texture_packs => {
-            var ui = self.begin_ui(&list, &self.tp_ui_state, &none, 0);
-            _ = TexturePacks.run(&ui, self.tp_entries[0..self.tp_entry_count], self.tp_selected_index);
-            ui.end();
-        },
-        .select_world => {
-            var ui = self.begin_ui(&list, &self.sw_ui_state, &none, 0);
-            _ = SelectWorld.run(&ui, self.sw_entries[0..self.sw_entry_count], self.sw_delete_mode);
-            ui.end();
-        },
-        .create_world => {
-            var ui = self.begin_ui(&list, &self.cw_ui_state, &none, 0);
-            var cw: CreateWorld.Ctx = .{
-                .name = &self.cw_name,
-                .name_len = &self.cw_name_len,
-                .seed = &self.cw_seed,
-                .seed_len = &self.cw_seed_len,
-                .create_enabled = self.create_world_available(engine),
-            };
-            _ = CreateWorld.run(&ui, &cw);
-            ui.end();
-        },
-        .options => {
-            var ui = self.begin_ui(&list, &self.options_ui_state, &none, 0);
-            _ = OptionsScreen.run(&ui, &Options.current, &self.options_rd_view, .{});
-            ui.end();
-        },
-        .controls => {
-            var ui = self.begin_ui(&list, &self.controls_ui_state, &none, 0);
-            _ = ControlsScreen.run(&ui, &Options.current, controls_ctx(self));
-            ui.end();
-        },
-    }
-    list.flush_into(&self.batcher, &self.font_batcher, null);
-
-    try self.batcher.flush();
-    try self.font_batcher.flush();
+    _ = engine;
+    self.batcher.draw();
+    self.font_batcher.draw();
 
     if (self.active_screen == .main) {
         const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;
@@ -825,10 +832,6 @@ fn draw_dirt_tiles(self: *@This()) void {
     const rect = current_screen_rect();
     var y: i16 = 0;
     const tile_size: i16 = 32;
-    if (DIAG_ONE_DIRT_QUAD_3DS) {
-        add_dirt_tile(self, 0, 0, tile_size);
-        return;
-    }
     while (y < rect.y1) : (y += tile_size) {
         var x: i16 = 0;
         while (x < rect.x1) : (x += tile_size) {

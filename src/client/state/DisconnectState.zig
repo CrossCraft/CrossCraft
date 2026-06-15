@@ -20,7 +20,6 @@ const MenuState = @import("MenuState.zig");
 
 var disconnect_state: @This() = undefined;
 var disconnect_state_inst: State = undefined;
-const DIAG_ONE_DIRT_QUAD_3DS = false;
 
 pub fn transition_here(engine: *Engine) !void {
     disconnect_state_inst = disconnect_state.state();
@@ -83,11 +82,12 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
     if (go_back) {
         Session.clear_disconnect_reason();
         try MenuState.transition_here(engine);
+        return;
     }
+    try prepare_batches(self);
 }
 
-fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
-    var self = Util.ctx_to_self(@This(), ctx);
+fn prepare_batches(self: *@This()) !void {
     self.batcher.clear();
     self.font_batcher.clear();
     draw_dirt_tiles(self);
@@ -99,8 +99,14 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
     ui.end();
     list.flush_into(&self.batcher, &self.font_batcher, null);
 
-    try self.batcher.flush();
-    try self.font_batcher.flush();
+    try self.batcher.update();
+    try self.font_batcher.update();
+}
+
+fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
+    var self = Util.ctx_to_self(@This(), ctx);
+    self.batcher.draw();
+    self.font_batcher.draw();
 }
 
 fn begin_ui(self: *@This(), list: *UiDrawList, in: *const ui_input.UiInput) Ui {
@@ -149,10 +155,6 @@ fn draw_dirt_tiles(self: *@This()) void {
     const rect = current_screen_rect();
     var y: i16 = 0;
     const tile_size: i16 = 32;
-    if (DIAG_ONE_DIRT_QUAD_3DS) {
-        add_dirt_tile(self, 0, 0, tile_size);
-        return;
-    }
     while (y < rect.y1) : (y += tile_size) {
         var x: i16 = 0;
         while (x < rect.x1) : (x += tile_size) {

@@ -136,7 +136,7 @@ pub fn clear(self: *Self) void {
     self.count = 0;
 }
 
-pub fn flush(self: *Self) !void {
+pub fn update(self: *Self) !void {
     if (self.count == 0) return;
 
     const screen_w = Rendering.gfx.surface.get_width();
@@ -154,6 +154,10 @@ pub fn flush(self: *Self) !void {
         self.last_screen_w = screen_w;
         self.last_screen_h = screen_h;
     }
+}
+
+pub fn draw(self: *Self) void {
+    if (self.count == 0) return;
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
     Rendering.gfx.api.set_view_matrix(&Math.Mat4.identity());
@@ -163,6 +167,11 @@ pub fn flush(self: *Self) !void {
         batch.texture.bind();
         batch.mesh.draw(&ident);
     }
+}
+
+pub fn flush(self: *Self) !void {
+    try self.update();
+    self.draw();
 }
 
 fn rebuild_batches(self: *Self, screen_w: u32, screen_h: u32) !void {

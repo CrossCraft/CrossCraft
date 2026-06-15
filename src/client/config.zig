@@ -14,6 +14,7 @@ pub const HardwareClass = enum {
     psp_slim,
     old_3ds,
     new_3ds,
+    nintendo_switch,
 };
 
 hardware: HardwareClass,
@@ -108,9 +109,25 @@ const new_3ds_profile: Profile = .{
     .rt_user = old_3ds_profile.rt_user,
 };
 
+const nintendo_switch_profile: Profile = .{
+    .hardware = .nintendo_switch,
+    .total_memory_mb = desktop_profile.total_memory_mb,
+    .chunk_radius = 12,
+    .lod_near_radius_blocks = 40,
+    .init_render = desktop_profile.init_render,
+    .init_audio = desktop_profile.init_audio,
+    .init_game = desktop_profile.init_game,
+    .init_user = desktop_profile.init_user,
+    .rt_render = desktop_profile.rt_render,
+    .rt_audio = desktop_profile.rt_audio,
+    .rt_game = desktop_profile.rt_game,
+    .rt_user = desktop_profile.rt_user,
+};
+
 var active_profile: Profile = switch (ae.platform) {
     .psp => psp_phat_profile,
     .nintendo_3ds => old_3ds_profile,
+    .nintendo_switch => nintendo_switch_profile,
     else => desktop_profile,
 };
 
@@ -124,6 +141,7 @@ pub fn init() void {
             .slim => psp_slim_profile,
         },
         .nintendo_3ds => old_3ds_profile,
+        .nintendo_switch => nintendo_switch_profile,
         else => desktop_profile,
     };
 }

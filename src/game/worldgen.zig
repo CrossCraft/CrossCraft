@@ -751,44 +751,57 @@ pub fn generate(
     set_phase(.raising);
     stepRaising(heightmap, &rng);
     t = logStep(io, t, "Raising");
+    yieldAfterPhase(io);
 
     set_phase(.erosion);
     stepErosion(heightmap, &rng);
     t = logStep(io, t, "Erosion");
+    yieldAfterPhase(io);
 
     set_phase(.strata);
     stepStrata(blocks, heightmap, &rng);
     t = logStep(io, t, "Strata");
+    yieldAfterPhase(io);
 
     @memset(cave_mask, 0);
     @memset(ore_mask, 0);
     set_phase(.caves);
     stepCaves(cave_mask, &rng);
     t = logStep(io, t, "Caves");
+    yieldAfterPhase(io);
 
     set_phase(.ores);
     stepOres(ore_mask, &rng);
     t = logStep(io, t, "Ores");
+    yieldAfterPhase(io);
 
     set_phase(.merge);
     stepMerge(blocks, cave_mask, ore_mask);
     t = logStep(io, t, "Merge");
+    yieldAfterPhase(io);
 
     set_phase(.water);
     stepFloodWater(blocks, &rng, flood_queue);
     t = logStep(io, t, "Water");
+    yieldAfterPhase(io);
 
     set_phase(.lava);
     stepFloodLava(blocks, &rng, flood_queue);
     t = logStep(io, t, "Lava");
+    yieldAfterPhase(io);
 
     set_phase(.surface);
     stepSurface(blocks, heightmap, &rng);
     t = logStep(io, t, "Surface");
+    yieldAfterPhase(io);
 
     set_phase(.plants);
     stepPlants(blocks, heightmap, &rng);
     _ = logStep(io, t, "Plants");
+}
+
+fn yieldAfterPhase(io: std.Io) void {
+    std.Io.sleep(io, common.time.ms(1), .real) catch {};
 }
 
 noinline fn logStep(io: std.Io, prev: std.Io.Clock.Timestamp, name: []const u8) std.Io.Clock.Timestamp {

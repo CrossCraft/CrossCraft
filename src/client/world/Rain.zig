@@ -185,6 +185,9 @@ pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
     }
     // Guard against huge dt (pause, load stall) piling a burst.
     if (self.spawn_accum > 64.0) self.spawn_accum = 0;
+
+    self.rebuild_streak_mesh(camera);
+    self.rebuild_splash_mesh(camera);
 }
 
 fn update_splashes(self: *Self, dt: f32) void {
@@ -246,20 +249,8 @@ fn maybe_spawn_splash(self: *Self, camera: *const Camera) void {
 /// Draw the scrolling streak planes.  Caller must bind rain.png.
 pub fn draw_streaks(self: *Self, camera: *const Camera) void {
     if (!Options.current.rain) return;
-
     const cam_tile_x_i: i32 = @intFromFloat(@floor(camera.x));
     const cam_tile_z_i: i32 = @intFromFloat(@floor(camera.z));
-    if (self.streak_mesh_dirty or
-        cam_tile_x_i != self.streak_cam_tile_x or
-        cam_tile_z_i != self.streak_cam_tile_z)
-    {
-        self.streak_mesh.vertices.clearRetainingCapacity();
-        build_streaks(&self.streak_mesh, cam_tile_x_i, cam_tile_z_i);
-        if (self.streak_mesh.vertices.items.len > 0) self.streak_mesh.update();
-        self.streak_cam_tile_x = cam_tile_x_i;
-        self.streak_cam_tile_z = cam_tile_z_i;
-        self.streak_mesh_dirty = false;
-    }
     if (self.streak_mesh.vertices.items.len == 0) return;
 
     const cam_tile_x: f32 = @floatFromInt(cam_tile_x_i);
@@ -286,8 +277,37 @@ pub fn draw_streaks(self: *Self, camera: *const Camera) void {
 }
 
 /// Build and draw impact splashes.  Caller must bind particles.png.
-pub fn draw_splashes(self: *Self, camera: *const Camera) void {
+pub fn draw_splashes(self: *Self) void {
     if (!Options.current.rain) return;
+    if (self.splash_count == 0) return;
+
+    // Splashes use absolute-world encoding (no translation) so we can share
+    // MODEL_SCALE with ParticleSystem and use a plain scaling matrix.
+    Rendering.gfx.api.set_alpha_blend(true);
+    const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
+    self.splash_mesh.draw(&m);
+}
+
+fn rebuild_streak_mesh(self: *Self, camera: *const Camera) void {
+    const cam_tile_x_i: i32 = @intFromFloat(@floor(camera.x));
+    const cam_tile_z_i: i32 = @intFromFloat(@floor(camera.z));
+    if (!self.streak_mesh_dirty and
+        cam_tile_x_i == self.streak_cam_tile_x and
+        cam_tile_z_i == self.streak_cam_tile_z)
+    {
+        return;
+    }
+
+    self.streak_mesh.vertices.clearRetainingCapacity();
+    build_streaks(&self.streak_mesh, cam_tile_x_i, cam_tile_z_i);
+    self.streak_mesh.update();
+    self.streak_cam_tile_x = cam_tile_x_i;
+    self.streak_cam_tile_z = cam_tile_z_i;
+    self.streak_mesh_dirty = false;
+}
+
+fn rebuild_splash_mesh(self: *Self, camera: *const Camera) void {
+    self.splash_mesh.vertices.clearRetainingCapacity();
     if (self.splash_count == 0) return;
 
     // Same billboard basis as ParticleSystem: right is yaw-only (no roll),
@@ -308,18 +328,11 @@ pub fn draw_splashes(self: *Self, camera: *const Camera) void {
     const tv1 = tv0 + self.particle_atlas.tileHeight();
     const color: u32 = @bitCast(Color.rgba(180, 180, 220, 255));
 
-    self.splash_mesh.vertices.clearRetainingCapacity();
     var i: u16 = 0;
     while (i < self.splash_count) : (i += 1) {
         emit_splash(&self.splash_mesh, &self.splashes[i], rx, rz, upx, upy, upz, tu0, tv0, tu1, tv1, color);
     }
     self.splash_mesh.update();
-
-    // Splashes use absolute-world encoding (no translation) so we can share
-    // MODEL_SCALE with ParticleSystem and use a plain scaling matrix.
-    Rendering.gfx.api.set_alpha_blend(true);
-    const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
-    self.splash_mesh.draw(&m);
 }
 
 fn streak_v_offset(scroll_v: i32) f32 {

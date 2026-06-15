@@ -12,6 +12,7 @@ pub fn build(b: *std.Build) void {
         .audio = b.option(Aether.Audio, "audio", "Audio backend override (default: auto-detect from target)"),
         .psp_display_mode = b.option(Aether.PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
+        .nintendo_switch = b.option(bool, "nintendo-switch", "Build for Nintendo Switch (requires -Dtarget=aarch64-freestanding-none and devkitA64/libnx)"),
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
         .flush_logs = b.option(bool, "flush-logs", "Flush aether.log after every log message (debugging hard hangs; default: false)"),
     };
@@ -56,9 +57,11 @@ pub fn build(b: *std.Build) void {
 
     const psp_client_dir = "CrossCraft-Classic-PSP";
     const nintendo_3ds_client_dir = "CrossCraft-Classic-3DS";
+    const nintendo_switch_client_dir = "CrossCraft-Classic-Switch";
     const is_psp = config.platform == .psp;
     const is_macos = config.platform == .macos;
     const is_3ds = config.platform == .nintendo_3ds;
+    const is_switch = config.platform == .nintendo_switch;
     const is_desktop = switch (config.platform) {
         .windows, .linux => true,
         else => false,
@@ -91,6 +94,7 @@ pub fn build(b: *std.Build) void {
     // Packaging strategy per platform:
     //   PSP: install into bin/<psp_client_dir>/ for EBOOT layout.
     //   3DS: install beside the 3dsx; users copy the directory to SDMC.
+    //   Switch: install beside the NRO; users copy the directory to SDMC.
     //   macOS: routed through Aether.exportArtifact into the .app bundle's
     //     Contents/Resources/ — see below.
     //   Desktop, embedding: pack.zip is baked into the binary; no loose file.
@@ -111,6 +115,13 @@ pub fn build(b: *std.Build) void {
             );
             break :blk &nintendo_3ds_install.step;
         }
+        if (is_switch) {
+            const nintendo_switch_install = b.addInstallFile(
+                pack_zip,
+                "bin/" ++ nintendo_switch_client_dir ++ "/pack.zip",
+            );
+            break :blk &nintendo_switch_install.step;
+        }
         if (is_macos) break :blk null; // Aether.exportArtifact installs via opts.resources.
         if (should_embed) break :blk null; // Baked into binary; no separate file needed.
 
@@ -125,6 +136,7 @@ pub fn build(b: *std.Build) void {
     const ae_dep = b.dependency("engine", .{
         .target = target,
         .optimize = optimize,
+        .@"nintendo-switch" = overrides.nintendo_switch orelse false,
     });
 
     // OpenGL builds get a `_GL` suffix so the default (Vulkan on desktop,
@@ -167,14 +179,15 @@ pub fn build(b: *std.Build) void {
         &.{.{ .path = pack_zip_path.?, .name = "pack.zip" }}
     else
         &.{};
-
     Aether.exportArtifact(ae_dep.builder, b, client_exe, config, .{
         .title = "CrossCraft Classic",
-        .output_dir = if (is_psp) psp_client_dir else if (is_3ds) nintendo_3ds_client_dir else null,
+        .output_dir = if (is_psp) psp_client_dir else if (is_3ds) nintendo_3ds_client_dir else if (is_switch) nintendo_switch_client_dir else null,
         .bundle_id = "com.iridescentrose.crosscraft-classic",
         .resources = mac_resources,
         .smdh_long_description = if (is_3ds) "Clean-room Minecraft Classic" else "",
         .smdh_author = if (is_3ds) "CrossCraft" else "",
+        .switch_author = if (is_switch) "CrossCraft" else "",
+        .switch_version = if (is_switch) "0.0.0" else "",
         // Reusing the Vita icon as a placeholder. 128×128 upscales for
         // the larger .icns slots but it's serviceable. Swap in a 1024×1024
         // PNG later if you want sharper Dock/Finder rendering.
@@ -183,7 +196,10 @@ pub fn build(b: *std.Build) void {
         .pic1 = if (is_psp) b.path("assets/psp/PIC1.png") else null,
     });
 
-    const server_overrides: Aether.Config.Overrides = .{ .use_cwd = true };
+    const server_overrides: Aether.Config.Overrides = .{
+        .nintendo_switch = overrides.nintendo_switch,
+        .use_cwd = true,
+    };
     const server_exe = Aether.addHeadless(ae_dep.builder, b, .{
         .name = "CrossCraft-Classic-Server",
         .root_source_file = b.path("src/server/main.zig"),
@@ -232,11 +248,11 @@ pub fn build(b: *std.Build) void {
     // Aether.exportArtifact onto b.getInstallStep()). Installing a flat
     // copy alongside would duplicate the binary and confuse downstream
     // packaging.
-    if (!is_macos and !is_3ds) {
+    if (!is_macos and !is_3ds and !is_switch) {
         build_game_step.dependOn(&b.addInstallArtifact(client_exe, .{}).step);
     }
     if (install_pack) |ip| build_game_step.dependOn(ip);
-    if (is_psp or is_macos or is_3ds) {
+    if (is_psp or is_macos or is_3ds or is_switch) {
         // exportArtifact registers pipeline / bundle steps on
         // b.getInstallStep(); wire them into the game step so
         // `zig build game -Dtarget=<platform>` produces the artifact.
@@ -254,6 +270,35 @@ pub fn build(b: *std.Build) void {
         run_client_step.dependOn(&link_cmd.step);
 
         const link_step = b.step("3dslink", "Push the 3dsx to a networked 3DS via 3dslink");
+        link_step.dependOn(&link_cmd.step);
+    } else if (is_switch) {
+        const nro_path = b.getInstallPath(
+            .bin,
+            b.fmt("{s}/{s}.nro", .{ nintendo_switch_client_dir, client_name }),
+        );
+        const nxlink_path = b.option([]const u8, "nxlink-path", "Switch: path to nxlink (default: $DEVKITPRO/tools/bin/nxlink or /opt/devkitpro/tools/bin/nxlink)") orelse blk: {
+            const dkp = b.graph.environ_map.get("DEVKITPRO") orelse "/opt/devkitpro";
+            break :blk b.pathJoin(&.{ dkp, "tools/bin/nxlink" });
+        };
+        const link_cmd = b.addSystemCommand(&.{nxlink_path});
+        if (b.option([]const u8, "nxlink-address", "Switch: target IP for nxlink push (default: mDNS auto-discover)")) |ip| {
+            link_cmd.addArgs(&.{ "-a", ip });
+        }
+        if (b.option(u32, "nxlink-retries", "Switch: nxlink retry count (default: 10)")) |n| {
+            link_cmd.addArgs(&.{ "-r", b.fmt("{d}", .{n}) });
+        }
+        if (b.option(bool, "nxlink-server", "Switch: pass -s so nxlink stays listening after upload (relays stdout/stderr from nro)") orelse false) {
+            link_cmd.addArg("-s");
+        }
+        link_cmd.addArg(nro_path);
+        link_cmd.step.dependOn(build_game_step);
+        if (b.args) |args| {
+            link_cmd.addArg("--args");
+            link_cmd.addArgs(args);
+        }
+        run_client_step.dependOn(&link_cmd.step);
+
+        const link_step = b.step("nxlink", "Push the nro to a networked Switch via nxlink");
         link_step.dependOn(&link_cmd.step);
     } else {
         const run_client_cmd = b.addRunArtifact(client_exe);

@@ -27,8 +27,9 @@ pub const SENS_MAX: f32 = 10.0;
 /// the settings UI should write it.
 pub var current: Options = .{};
 
-/// In-game controller prompt style.  PSP and 3DS only support `auto` / `off`;
-/// the other layouts are desktop-only and are corrected to `auto` on load.
+/// In-game controller prompt style.  PSP and Nintendo consoles only support
+/// `auto` / `off`; the other layouts are desktop-only and are corrected to
+/// `auto` on load.
 pub const ControllerTooltips = enum(u8) {
     auto = 0,
     xbox = 1,
@@ -107,7 +108,7 @@ pub const Options = struct {
 
     /// In-game controller prompt style.  `auto` picks glyphs from the
     /// connected controller on desktop, or the fixed platform layout on
-    /// PSP/3DS.
+    /// PSP / Nintendo consoles.
     controller_tooltips: ControllerTooltips = .auto,
 
     /// Weather: rain on/off.  Defaults off on every platform.
@@ -208,13 +209,13 @@ pub fn effective_vsync(vsync: bool) bool {
 /// True when the platform has one built-in controller glyph family.
 /// The options menu treats this as an on/off choice.
 pub fn fixed_controller_glyph_style() bool {
-    return ae.platform == .psp or ae.platform == .nintendo_3ds;
+    return ae.platform == .psp or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
 }
 
 /// True when the controls screen can edit bindings on this platform.
-/// 3DS bindings are fixed for now.
+/// Nintendo console bindings are fixed for now.
 pub fn controls_rebinding_supported() bool {
-    return ae.platform != .nintendo_3ds;
+    return ae.platform != .nintendo_3ds and ae.platform != .nintendo_switch;
 }
 
 pub fn pc_key_assignable(key: input.Key) bool {

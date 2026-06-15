@@ -22,7 +22,6 @@ const flate = std.compress.flate;
 const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
 
 const log = std.log.scoped(.game);
-const DIAG_ONE_DIRT_QUAD_3DS = false;
 
 // Module-level: only one LoadState instance may exist at a time.
 var server_ready: std.atomic.Value(bool) = .init(false);
@@ -372,11 +371,10 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
 fn update(ctx: *anyopaque, _: *Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
+    try prepare_batches(self);
 }
 
-fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
-    var self = Util.ctx_to_self(@This(), ctx);
-
+fn prepare_batches(self: *@This()) !void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const scale = Scaling.compute(screen_w, screen_h);
@@ -386,15 +384,11 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.batcher.clear();
     var y: i16 = 0;
     const tile_size = 32;
-    if (DIAG_ONE_DIRT_QUAD_3DS) {
-        add_dirt_tile(self, ResourcePack.get_tex(.dirt), 0, 0, tile_size);
-    } else {
-        while (y < extent_y) : (y += tile_size) {
-            var x: i16 = 0;
-            while (x < extent_x) : (x += tile_size) {
-                const dirt = ResourcePack.get_tex(.dirt);
-                add_dirt_tile(self, dirt, x, y, tile_size);
-            }
+    while (y < extent_y) : (y += tile_size) {
+        var x: i16 = 0;
+        while (x < extent_x) : (x += tile_size) {
+            const dirt = ResourcePack.get_tex(.dirt);
+            add_dirt_tile(self, dirt, x, y, tile_size);
         }
     }
 
@@ -438,7 +432,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         });
     }
 
-    try self.batcher.flush();
+    try self.batcher.update();
 
     self.font_batcher.clear();
 
@@ -502,13 +496,21 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         .origin = .middle_center,
     });
 
-    try self.font_batcher.flush();
+    try self.font_batcher.update();
+}
+
+fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
+    var self = Util.ctx_to_self(@This(), ctx);
+
+    self.batcher.draw();
+    self.font_batcher.draw();
+
     // Throttle to ~20 FPS while server generates on background thread;
     // avoids burning CPU on draw calls that show a static progress bar.
     // 3DS already blocks on vblank after draw; sleeping here delays the
     // present itself and can let the worker finish before any phase frame
     // reaches the screen.
-    if (ae.platform != .nintendo_3ds) {
+    if (ae.platform != .nintendo_3ds and ae.platform != .nintendo_switch) {
         try std.Io.sleep(engine.io, common_time.ms(50), .real);
     }
 }

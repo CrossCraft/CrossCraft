@@ -126,7 +126,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.trace_first_tick = true;
     self.trace_first_update = true;
     self.trace_first_draw = true;
-
     // Push the gameplay context up front so any later init failure is
     // matched by the deinit pop below.
     const gameplay_set = try bindings.init();
@@ -325,10 +324,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     }
 
     self.inited = true;
-    if (ae.platform == .nintendo_3ds) {
-        engine.trace_next_loops(32);
-        Rendering.gfx.api.trace_next_frames(32);
-    }
     engine.report();
 }
 
@@ -912,6 +907,10 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         // Player physics keep ticking with overlays open (matching
         // Classic); the masked ActionSet zeroes input.
         self.player.update(dt);
+        if (self.player.selected) |hit| {
+            const block_id = World.data.get_block(hit.x, hit.y, hit.z);
+            if (!block_id.is_air()) try self.selection.update(block_id.bounds());
+        }
         if (trace) log.info("trace: first update player done", .{});
     }
 
@@ -935,7 +934,10 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         engine.report();
     }
 
-    if (self.paused) return;
+    if (self.paused) {
+        try prepare_ui_batches(self);
+        return;
+    }
 
     const slot_block = self.player.hotbar[self.player.selected_slot];
     self.held.update(dt, slot_block, player_in_shadow(&self.player));
@@ -948,6 +950,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         self.hotbar_tooltip_timer -= dt;
         if (self.hotbar_tooltip_timer < 0) self.hotbar_tooltip_timer = 0;
     }
+    try prepare_ui_batches(self);
     if (trace) {
         log.info("trace: first update end", .{});
         self.trace_first_update = false;
@@ -995,6 +998,138 @@ fn player_in_shadow(player: *const Player) bool {
     const by_i: i32 = @intFromFloat(fy);
     const bz_i: i32 = @intFromFloat(fz);
     return !World.is_sunlit(@intCast(bx_i), @intCast(by_i), @intCast(bz_i));
+}
+
+fn prepare_ui_batches(self: *@This()) !void {
+    self.ui_batcher.clear();
+    self.font_batcher.clear();
+    self.iso_blocks.begin();
+
+    var hud_list: UiDrawList = .{};
+
+    if (!self.hud_hidden) {
+        hud_list.add_text(&.{
+            .str = "0.30",
+            .pos_x = 2,
+            .pos_y = 2,
+            .color = .white_fg,
+            .shadow_color = .menu_gray,
+            .spacing = 0,
+            .layer = 252,
+            .reference = .top_left,
+            .origin = .top_left,
+        });
+    }
+
+    const tooltips_on = PromptStrip.enabled() and !self.hud_hidden;
+    const show_glyphs = tooltips_on and !self.paused and !self.inventory_open;
+    const hud_y_shift: i16 = if (tooltips_on) Buttons.strip_height() else 0;
+
+    if (!self.hud_hidden) {
+        self.player.draw_ui_into(&hud_list, ResourcePack.get_tex(.gui), self.inventory_open, hud_y_shift);
+    }
+    if (self.inventory_open) {
+        var inv_list: UiDrawList = .{};
+        var none = empty_input();
+        var inv_ui = begin_game_ui(self, &inv_list, &self.inventory_ui_state, &none, InventoryUi.LAYER_BASE);
+        _ = InventoryUi.run(&inv_ui, self.inventory_blocks[0..], &self.inventory_slot);
+        inv_ui.end();
+        inv_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
+    }
+
+    const show_playerlist = if (ae.platform == .psp)
+        self.psp_social_mode
+    else
+        self.player.playerlist_held and Session.mode == .multiplayer and !self.inventory_open and !self.chat.open;
+    if (show_playerlist) {
+        self.player_list.draw_into(&hud_list, Session.username());
+    }
+    self.chat.draw_into(&hud_list, &self.font_batcher, hud_y_shift);
+
+    if (self.hotbar_tooltip_timer > 0 and !self.inventory_open and !self.hud_hidden) {
+        const block = self.player.hotbar[self.player.selected_slot];
+        const name = block.display_name();
+        if (name.len > 0) {
+            const alpha: u8 = if (self.hotbar_tooltip_timer >= 0.5)
+                255
+            else
+                @intFromFloat(self.hotbar_tooltip_timer / 0.5 * 255.0);
+            const shadow_alpha: u8 = if (self.hotbar_tooltip_timer >= 0.5)
+                255
+            else
+                @intFromFloat(self.hotbar_tooltip_timer / 0.5 * 255.0);
+            hud_list.add_text(&.{
+                .str = name,
+                .pos_x = 0,
+                .pos_y = -26 - hud_y_shift,
+                .color = Color.rgba(255, 255, 255, alpha),
+                .shadow_color = Color.rgba(50, 50, 50, shadow_alpha),
+                .spacing = 0,
+                .layer = 252,
+                .reference = .bottom_center,
+                .origin = .bottom_center,
+            });
+        }
+    }
+
+    if (show_glyphs) {
+        self.draw_hud_prompts(&hud_list);
+    }
+
+    hud_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
+    try self.ui_batcher.update();
+    self.iso_blocks.update();
+    try self.font_batcher.update();
+
+    self.pause_batcher.clear();
+    self.pause_font_batcher.clear();
+    if (!self.paused) return;
+
+    draw_pause_dim(self);
+    var none = empty_input();
+    switch (self.pause_screen) {
+        .main => {
+            var list: UiDrawList = .{};
+            var ui = begin_pause_ui(self, &list, &self.pause_ui_state, &none, PauseMenu.LAYER_BASE);
+            _ = PauseMenu.run(&ui, Session.mode == .singleplayer);
+            ui.end();
+            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+        },
+        .options => {
+            var list: UiDrawList = .{};
+            var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, &none, OptionsScreen.LAYER_BASE);
+            _ = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
+            ui.end();
+            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+        },
+        .controls => {
+            var list: UiDrawList = .{};
+            var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, &none, OptionsScreen.LAYER_BASE);
+            _ = ControlsScreen.run(&ui, &Options.current, pause_controls_ctx(self));
+            ui.end();
+            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+        },
+        .dump_world => {
+            var path_buf: [World.DumpName.PATH_MAX]u8 = undefined;
+            var name_buf: [World.DumpName.NAME_MAX]u8 = undefined;
+            const can_save = blk: {
+                _ = World.DumpName.build_path(self.dump_world_name_slice(), &path_buf, &name_buf) catch break :blk false;
+                break :blk true;
+            };
+            var list: UiDrawList = .{};
+            var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, &none, DumpWorldScreen.LAYER_BASE);
+            var dump_ctx: DumpWorldScreen.Ctx = .{
+                .name = &self.dump_world_name,
+                .name_len = &self.dump_world_name_len,
+                .save_enabled = can_save,
+            };
+            _ = DumpWorldScreen.run(&ui, &dump_ctx);
+            ui.end();
+            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+        },
+    }
+    try self.pause_batcher.update();
+    try self.pause_font_batcher.update();
 }
 
 fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
@@ -1045,7 +1180,6 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         const block_id = World.data.get_block(hit.x, hit.y, hit.z);
         if (block_id.is_air()) break :blk;
         const bounds = block_id.bounds();
-        try self.selection.update(bounds);
         Rendering.Texture.Default.bind();
         var t = Rendering.Transform.new();
         const cp = @cos(self.player.camera.pitch);
@@ -1094,161 +1228,25 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // and the inventory panel. The font batcher flushes last for the
     // tooltip. A depth clear between each pass keeps z-tests clean.
     Rendering.gfx.api.clear_depth();
-    self.ui_batcher.clear();
-    self.font_batcher.clear();
-    self.iso_blocks.begin();
-
-    var hud_list: UiDrawList = .{};
-
-    if (!self.hud_hidden) {
-        hud_list.add_text(&.{
-            .str = "0.30",
-            .pos_x = 2,
-            .pos_y = 2,
-            .color = .white_fg,
-            .shadow_color = .menu_gray,
-            .spacing = 0,
-            .layer = 252,
-            .reference = .top_left,
-            .origin = .top_left,
-        });
-    }
-
-    // Controller-tooltip strip applies to every in-world HUD context --
-    // normal play, inventory open, social overlay, chat.  The prompt
-    // *contents* swap per context in draw_hud_prompts.  Hidden only when
-    // the pause screen draws its own strip.  Chat + inventory both ride
-    // up by hud_y_shift so the strip never overlaps them.
-    //
-    // hud_y_shift keys off tooltip enablement alone so the hotbar does
-    // not snap down when the pause overlay replaces the in-world strip.
-    const tooltips_on = PromptStrip.enabled() and !self.hud_hidden;
-    // Inventory overlay owns its own PromptStrip, so
-    // suppress the in-world strip while it is open.
-    const show_glyphs = tooltips_on and !self.paused and !self.inventory_open;
-    const hud_y_shift: i16 = if (tooltips_on) Buttons.strip_height() else 0;
-
-    if (!self.hud_hidden) {
-        self.player.draw_ui_into(&hud_list, ResourcePack.get_tex(.gui), self.inventory_open, hud_y_shift);
-    }
-    if (self.inventory_open) {
-        var inv_list: UiDrawList = .{};
-        var none = empty_input();
-        var inv_ui = begin_game_ui(self, &inv_list, &self.inventory_ui_state, &none, InventoryUi.LAYER_BASE);
-        _ = InventoryUi.run(&inv_ui, self.inventory_blocks[0..], &self.inventory_slot);
-        inv_ui.end();
-        inv_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
-    }
-    // Desktop: hold Tab to show player list (hidden while inventory or chat open).
-    // PSP: show during social mode, which coexists with the chat input field.
-    const show_playerlist = if (ae.platform == .psp)
-        self.psp_social_mode
-    else
-        self.player.playerlist_held and Session.mode == .multiplayer and !self.inventory_open and !self.chat.open;
-    if (show_playerlist) {
-        self.player_list.draw_into(&hud_list, Session.username());
-    }
-    self.chat.draw_into(&hud_list, &self.font_batcher, hud_y_shift);
-
-    // Hotbar tooltip: block name above the hotbar, fades out over the last 0.5s.
-    // Rides the hotbar up when the controller-tooltip strip is visible.
-    if (self.hotbar_tooltip_timer > 0 and !self.inventory_open and !self.hud_hidden) {
-        const block = self.player.hotbar[self.player.selected_slot];
-        const name = block.display_name();
-        if (name.len > 0) {
-            const alpha: u8 = if (self.hotbar_tooltip_timer >= 0.5)
-                255
-            else
-                @intFromFloat(self.hotbar_tooltip_timer / 0.5 * 255.0);
-            const shadow_alpha: u8 = if (self.hotbar_tooltip_timer >= 0.5)
-                255
-            else
-                @intFromFloat(self.hotbar_tooltip_timer / 0.5 * 255.0);
-            hud_list.add_text(&.{
-                .str = name,
-                .pos_x = 0,
-                .pos_y = -26 - hud_y_shift,
-                .color = Color.rgba(255, 255, 255, alpha),
-                .shadow_color = Color.rgba(50, 50, 50, shadow_alpha),
-                .spacing = 0,
-                .layer = 252,
-                .reference = .bottom_center,
-                .origin = .bottom_center,
-            });
-        }
-    }
-
-    if (show_glyphs) {
-        self.draw_hud_prompts(&hud_list);
-    }
-
-    hud_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
-
-    try self.ui_batcher.flush();
+    self.ui_batcher.draw();
     if (trace) log.info("trace: first draw ui sprites flushed", .{});
 
     Rendering.gfx.api.clear_depth();
-    self.iso_blocks.flush();
+    self.iso_blocks.draw();
     if (trace) log.info("trace: first draw iso flushed", .{});
 
     Rendering.gfx.api.clear_depth();
-    try self.font_batcher.flush();
+    self.font_batcher.draw();
     if (trace) log.info("trace: first draw font flushed", .{});
 
     // Pause overlay uses its own batchers so it flushes cleanly after every
     // gameplay UI pass without depending on cross-batcher layer ordering.
     if (self.paused) {
-        self.pause_batcher.clear();
-        self.pause_font_batcher.clear();
-        draw_pause_dim(self);
-        var none = empty_input();
-        switch (self.pause_screen) {
-            .main => {
-                var list: UiDrawList = .{};
-                var ui = begin_pause_ui(self, &list, &self.pause_ui_state, &none, PauseMenu.LAYER_BASE);
-                _ = PauseMenu.run(&ui, Session.mode == .singleplayer);
-                ui.end();
-                list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
-            },
-            .options => {
-                var list: UiDrawList = .{};
-                var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, &none, OptionsScreen.LAYER_BASE);
-                _ = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
-                ui.end();
-                list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
-            },
-            .controls => {
-                var list: UiDrawList = .{};
-                var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, &none, OptionsScreen.LAYER_BASE);
-                _ = ControlsScreen.run(&ui, &Options.current, pause_controls_ctx(self));
-                ui.end();
-                list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
-            },
-            .dump_world => {
-                var path_buf: [World.DumpName.PATH_MAX]u8 = undefined;
-                var name_buf: [World.DumpName.NAME_MAX]u8 = undefined;
-                const can_save = blk: {
-                    _ = World.DumpName.build_path(self.dump_world_name_slice(), &path_buf, &name_buf) catch break :blk false;
-                    break :blk true;
-                };
-                var list: UiDrawList = .{};
-                var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, &none, DumpWorldScreen.LAYER_BASE);
-                var dump_ctx: DumpWorldScreen.Ctx = .{
-                    .name = &self.dump_world_name,
-                    .name_len = &self.dump_world_name_len,
-                    .save_enabled = can_save,
-                };
-                _ = DumpWorldScreen.run(&ui, &dump_ctx);
-                ui.end();
-                list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
-            },
-        }
+        Rendering.gfx.api.clear_depth();
+        self.pause_batcher.draw();
 
         Rendering.gfx.api.clear_depth();
-        try self.pause_batcher.flush();
-
-        Rendering.gfx.api.clear_depth();
-        try self.pause_font_batcher.flush();
+        self.pause_font_batcher.draw();
     }
     if (trace) {
         log.info("trace: first draw end", .{});

@@ -18,8 +18,14 @@ fn locked_log_fn(
     comptime format: []const u8,
     args: anytype,
 ) void {
-    while (log_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
-        std.atomic.spinLoopHint();
+    if (comptime ae.platform == .nintendo_switch) {
+        if (log_lock.cmpxchgStrong(false, true, .acquire, .monotonic) != null) {
+            return;
+        }
+    } else {
+        while (log_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) {
+            std.atomic.spinLoopHint();
+        }
     }
     defer log_lock.store(false, .release);
 
@@ -36,16 +42,16 @@ pub const psp_stack_size: u32 = 512 * 1024;
 pub const psp_async_stack_size: u32 = 64 * 1024;
 pub const psp_heap_reserve_kb_size: u32 = 2048 + 512;
 
-const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_3ds;
+const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
 
-// PSP and 3DS override panic/IO handlers that would otherwise pull in
+// PSP, 3DS, and Switch override panic/IO handlers that would otherwise pull in
 // posix symbols unavailable on their targets.
-pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else if (ae.platform == .nintendo_3ds) ae.ThreeDS.panic else std.debug.FullPanic(std.debug.defaultPanic);
+pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else if (ae.platform == .nintendo_3ds) ae.ThreeDS.panic else if (ae.platform == .nintendo_switch) @import("root").panic else std.debug.FullPanic(std.debug.defaultPanic);
 pub const std_options_debug_threaded_io = if (is_freestanding_console) null else std.Io.Threaded.global_single_threaded;
-pub const std_options_debug_io: std.Io = if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_3ds) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
+pub const std_options_debug_io: std.Io = if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
 pub const std_options_cwd = if (ae.platform == .psp)
     psp_cwd
-else if (ae.platform == .nintendo_3ds)
+else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch)
     ae.Cio.cwd
 else
     null;
@@ -73,7 +79,11 @@ pub fn main(init: std.process.Init) !void {
         .width = 854,
         .height = 480,
         .title = "CrossCraft Classic",
-        .app_name = if (ae.platform == .nintendo_3ds) "CrossCraft-Classic-3DS" else null,
+        .app_name = switch (ae.platform) {
+            .nintendo_3ds => "CrossCraft-Classic-3DS",
+            .nintendo_switch => "CrossCraft-Classic-Switch",
+            else => null,
+        },
         .vsync = true,
         .resizable = true,
     }, &state);

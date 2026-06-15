@@ -134,11 +134,16 @@ pub fn add_block(
     self.emit_iso_face(.y_pos, h, y_bot, y_top, cx, cy, block, is_slab);
 }
 
-/// Upload the queued mesh and render it. Sets identity proj/view (matching
-/// SpriteBatcher) and binds the terrain texture before drawing.
-pub fn flush(self: *Self) void {
+/// Upload the queued mesh. Call before the active draw frame.
+pub fn update(self: *Self) void {
     if (self.mesh.vertices.items.len == 0) return;
     self.mesh.update();
+}
+
+/// Render the queued mesh. Sets identity proj/view (matching SpriteBatcher)
+/// and binds the terrain texture before drawing.
+pub fn draw(self: *Self) void {
+    if (self.mesh.vertices.items.len == 0) return;
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
     Rendering.gfx.api.set_view_matrix(&Math.Mat4.identity());
@@ -146,6 +151,11 @@ pub fn flush(self: *Self) void {
 
     const ident = Math.Mat4.identity();
     self.mesh.draw(&ident);
+}
+
+pub fn flush(self: *Self) void {
+    self.update();
+    self.draw();
 }
 
 // --- Internals ---
