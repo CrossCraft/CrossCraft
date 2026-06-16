@@ -7,6 +7,7 @@ const Profile = @This();
 
 const MB: u32 = 1024 * 1024;
 const KB: u32 = 1024;
+const SWITCH_TOTAL_MEMORY_MB: u32 = 224;
 
 pub const HardwareClass = enum {
     desktop,
@@ -111,17 +112,27 @@ const new_3ds_profile: Profile = .{
 
 const nintendo_switch_profile: Profile = .{
     .hardware = .nintendo_switch,
-    .total_memory_mb = desktop_profile.total_memory_mb,
+    .total_memory_mb = SWITCH_TOTAL_MEMORY_MB,
     .chunk_radius = 12,
     .lod_near_radius_blocks = 40,
-    .init_render = desktop_profile.init_render,
     .init_audio = desktop_profile.init_audio,
     .init_game = desktop_profile.init_game,
     .init_user = desktop_profile.init_user,
-    .rt_render = desktop_profile.rt_render,
+    .init_render = render_remainder(
+        SWITCH_TOTAL_MEMORY_MB,
+        desktop_profile.init_audio,
+        desktop_profile.init_game,
+        desktop_profile.init_user,
+    ),
     .rt_audio = desktop_profile.rt_audio,
     .rt_game = desktop_profile.rt_game,
     .rt_user = desktop_profile.rt_user,
+    .rt_render = render_remainder(
+        SWITCH_TOTAL_MEMORY_MB,
+        desktop_profile.rt_audio,
+        desktop_profile.rt_game,
+        desktop_profile.rt_user,
+    ),
 };
 
 var active_profile: Profile = switch (ae.platform) {
@@ -190,6 +201,18 @@ pub fn apply_init_budgets(engine: *Engine) void {
     engine.set_budget(.audio, profile.init_audio);
     engine.set_budget(.game, profile.init_game);
     engine.set_budget(.user, profile.init_user);
+}
+
+fn render_remainder(
+    comptime total_memory_mb: u32,
+    comptime audio: u32,
+    comptime game: u32,
+    comptime user: u32,
+) u32 {
+    const total = total_memory_mb * MB;
+    const reserved = audio + game + user;
+    if (reserved > total) @compileError("non-render memory pools exceed total memory");
+    return total - reserved;
 }
 
 fn max_chunk_radius() u32 {
