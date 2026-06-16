@@ -52,6 +52,10 @@ pub fn main(init: std.process.Init) !void {
     // PSP-1000 has ~24 MiB of user RAM after the kernel's reservation;
     // desktop has plenty so cap at a comfortable working set.
     const total_mb: usize = if (ae.platform == .psp) 18 else 32;
+    const total_bytes = total_mb * 1024 * 1024;
+    const render_budget = 4 * 1024;
+    const game_budget = 512 * 1024;
+    const user_budget = total_bytes - render_budget - game_budget;
     const memory = try init.gpa.alloc(u8, total_mb * 1024 * 1024);
     defer init.gpa.free(memory);
 
@@ -61,10 +65,10 @@ pub fn main(init: std.process.Init) !void {
     var engine: ae.Engine = undefined;
     try engine.init(init.io, init.environ_map, memory, .{
         .memory = .{
-            .render = 64, // Default texture TODO: Fix this in Aether?
+            .render = render_budget,
             .audio = 0,
-            .game = 512 * 1024,
-            .user = (total_mb - 1) * 1024 * 1024,
+            .game = game_budget,
+            .user = user_budget,
         },
         .title = "CrossCraft Classic Server",
         .vsync = false,

@@ -36,9 +36,10 @@ pub const Rect = struct {
 };
 
 /// A single physical button.  Semantic naming: A=bottom, B=right, X=left,
-/// Y=top, matching Xbox conventions.  On PSP A=Cross, B=Circle, X=Square,
-/// Y=Triangle; the sprite art lives in the physically-correct position on
-/// each sheet regardless of the manufacturer label.
+/// Y=top, matching Xbox conventions.  On Nintendo-style sheets this maps to
+/// B/A/Y/X labels respectively; on PSP it maps to Cross/Circle/Square/
+/// Triangle.  Sprite art lives in the physically-correct position on each
+/// sheet regardless of manufacturer label.
 ///
 /// Not every value is valid in every style (e.g. `.LMB` is KB+M-only,
 /// `.Home` is PSP-only).  `lookup` hits `unreachable` on invalid combos;
@@ -156,8 +157,8 @@ fn lookup_controller(button: Button, style: Style) Rect {
     return switch (button) {
         .A => pc_tile(if (style == .nintendo) 1 else 0, row0),
         .B => pc_tile(if (style == .nintendo) 0 else 1, row0),
-        .X => pc_tile(2, row0),
-        .Y => pc_tile(3, row0),
+        .X => pc_tile(if (style == .nintendo) 3 else 2, row0),
+        .Y => pc_tile(if (style == .nintendo) 2 else 3, row0),
         .DpadUp => pc_tile(4, row0),
         .DpadDown => pc_tile(5, row0),
         .DpadLeft => pc_tile(6, row0),
@@ -234,6 +235,8 @@ test "lookup covers every style for the buttons it supports" {
     try std.testing.expect(r.render_w > 0 and r.render_h > 0);
     try std.testing.expect(lookup(.A, .nintendo).tex_x == PC_TILE);
     try std.testing.expect(lookup(.B, .nintendo).tex_x == 0);
+    try std.testing.expect(lookup(.X, .nintendo).tex_x == 3 * PC_TILE);
+    try std.testing.expect(lookup(.Y, .nintendo).tex_x == 2 * PC_TILE);
     const p = lookup(.LButton, .psp);
     try std.testing.expect(p.tex_w == PSP_WIDE_W);
     const k = lookup(.EscapeKey, .kbm);
