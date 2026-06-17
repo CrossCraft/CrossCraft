@@ -105,14 +105,6 @@ pub fn init() !ActionSetHandle {
     try input.add_action(set, "chat_cmd", .button);
     try input.bind_action(set, "chat_cmd", .{ .source = .{ .key = .Slash } });
 
-    // PSP: Cross (X) confirms / launches the OSK while the social overlay is
-    // open. It may share a face-button gameplay binding; the OSK fires
-    // synchronously so any simultaneous movement/look is harmless.
-    if (ae.platform == .psp) {
-        try input.add_action(set, "psp_osk", .button);
-        try input.bind_action(set, "psp_osk", .{ .source = .{ .gamepad_button = .A } }); // Cross
-    }
-
     // --- hotbar slot cycle ---
     try input.add_action(set, "hotbar_left", .button);
     try input.bind_action(set, "hotbar_left", .{ .source = .{ .gamepad_button = .DpadLeft } });

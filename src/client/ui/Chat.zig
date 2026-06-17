@@ -75,11 +75,9 @@ fn ensure_chat_set() !input.ActionSetHandle {
     try input.add_action(set, "chat_cancel", .button);
     try input.bind_action(set, "chat_cancel", .{ .source = .{ .key = .Escape } });
     try input.bind_action(set, "chat_cancel", .{ .source = .{ .gamepad_button = .B } });
-    if (ae.platform == .psp) {
-        // PSP Select (Back) toggles social mode -- pressing it again with
-        // chat already open exits without sending.
-        try input.bind_action(set, "chat_cancel", .{ .source = .{ .gamepad_button = .Back } });
-    }
+    // Controller Select/Back toggles social mode -- pressing it again with
+    // chat already open exits without sending.
+    try input.bind_action(set, "chat_cancel", .{ .source = .{ .gamepad_button = .Back } });
 
     try input.install_action_set(set);
     chat_set = set;
@@ -101,11 +99,12 @@ msg_head: u8,
 msg_count: u8,
 
 /// True while the chat panel is visible (input field, even if no active
-/// text session yet -- e.g. PSP social mode shows the panel pre-OSK).
+/// text session yet -- e.g. controller social mode shows the panel before
+/// the user starts chat entry).
 open: bool,
 /// Set when the chat overlay is open AND a TextInputSession is in flight.
-/// Distinct from `open` so PSP social mode can show the panel without yet
-/// having armed the OSK.
+/// Distinct from `open` so controller social mode can show the panel without
+/// yet having armed text entry.
 session_active: bool,
 /// Optional command prefix prepended to outgoing messages, displayed
 /// ahead of the typed text. Zero = no prefix.
@@ -194,9 +193,8 @@ pub fn open_overlay(self: *Self, player: *Player, slash_prefix: bool) void {
     handle_terminal_if_done(self, player);
 }
 
-/// PSP social mode: show the chat panel without arming the OSK, so the
-/// player list can sit alongside it. The OSK fires later when X is
-/// pressed and `begin_session_now` is called.
+/// Controller social mode: show the chat panel without arming text entry, so
+/// the player list can sit alongside it. Confirm starts text entry later.
 pub fn open_overlay_social(self: *Self, _: *Player) void {
     if (self.open) return;
     self.open = true;
@@ -218,16 +216,8 @@ pub fn open_overlay_social(self: *Self, _: *Player) void {
         self.open = false;
         return;
     };
-    // session_active stays false; the panel is empty until X arms the OSK.
-}
-
-/// PSP: invoked from GameState when X (Cross) is pressed during social
-/// mode. Begins the text session synchronously (OSK shows), services the
-/// terminal result, and closes the overlay if the user submitted.
-pub fn begin_session_now(self: *Self, player: *Player) void {
-    if (!self.open or self.session_active) return;
-    self.begin_session();
-    handle_terminal_if_done(self, player);
+    // session_active stays false; the panel is empty until confirm starts
+    // text entry.
 }
 
 fn begin_session(self: *Self) void {
@@ -315,15 +305,12 @@ pub fn update(self: *Self, player: *Player) void {
             input.submit_text() catch {};
             send_session(self, player);
             self.close_overlay(player);
-        } else if (ae.platform == .psp) {
-            // PSP social mode: the panel is open without an active session
-            // (waiting for the player to summon the OSK). X arms it; the
-            // backend runs the modal OSK synchronously and returns with a
-            // terminal session for `handle_terminal_if_done` to service.
+        } else {
+            // Controller social mode: the panel is open without an active
+            // session. Confirm starts text entry; modal OSK platforms return
+            // synchronously and desktop keeps the session active.
             self.begin_session();
             handle_terminal_if_done(self, player);
-        } else {
-            self.close_overlay(player);
         }
         return;
     }
@@ -372,9 +359,8 @@ pub fn draw_into(self: *Self, list: *UiDrawList, fonts: *const FontBatcher, y_sh
     var input_lens: [INPUT_WRAP_MAX_LINES]u8 = undefined;
     var input_line_count: u8 = 0;
 
-    // Read the live session buffer; on PSP between OSK opens the session
-    // may not yet be active (social mode's pre-OSK panel) -- show only the
-    // prompt in that state.
+    // Read the live session buffer; in social mode the session may not yet
+    // be active -- show only the prompt in that state.
     const body: []const u8 = if (self.open)
         if (input.current_text_session()) |s| s.buffer.items else &.{}
     else

@@ -45,7 +45,6 @@ const PrevInputs = struct {
     shoulder_r: input.ButtonState = .released,
     shoulder_l: input.ButtonState = .released,
     playerlist: input.ButtonState = .released,
-    psp_osk: input.ButtonState = .released,
     hud_toggle: input.ButtonState = .released,
     rain_toggle: input.ButtonState = .released,
     chat_open: input.ButtonState = .released,
@@ -277,10 +276,11 @@ place_repeat_timer: f32,
 /// True while the playerlist key/button is held (desktop: hold-to-show).
 playerlist_held: bool,
 /// Rising edge of the playerlist press; consumed by GameState each frame.
-/// On PSP this drives the social-mode toggle instead of hold-to-show.
+/// Controller-sourced edges drive the social-mode toggle instead of
+/// keyboard Tab's hold-to-show behavior.
 playerlist_edge: bool,
-/// PSP only: Cross (X) pressed while social mode is open -- arm the OSK.
-psp_osk_edge: bool,
+/// True when `playerlist_edge` came from the controller player-list button.
+playerlist_edge_controller: bool,
 
 /// Rising edge of the hud_toggle press (desktop F1); consumed by GameState
 /// each frame to flip its `hud_hidden` state.
@@ -379,7 +379,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .place_repeat_timer = 0,
         .playerlist_held = false,
         .playerlist_edge = false,
-        .psp_osk_edge = false,
+        .playerlist_edge_controller = false,
         .hud_toggle_pending = false,
         .rain_toggle_pending = false,
         .chat_open_pending = false,
@@ -1344,7 +1344,6 @@ fn poll_inputs(self: *Self, dt: f32) void {
         self.prev_inputs.shoulder_r = input.get_action_button("shoulder_r");
         self.prev_inputs.shoulder_l = input.get_action_button("shoulder_l");
         self.prev_inputs.playerlist = input.get_action_button("playerlist");
-        if (ae.platform == .psp) self.prev_inputs.psp_osk = input.get_action_button("psp_osk");
         if (ae.platform != .psp) {
             self.prev_inputs.hud_toggle = input.get_action_button("hud_toggle");
             self.prev_inputs.rain_toggle = input.get_action_button("rain_toggle");
@@ -1430,14 +1429,11 @@ fn poll_inputs(self: *Self, dt: f32) void {
 
     const pll = input.get_action_button("playerlist");
     self.playerlist_held = pll == .pressed;
-    if (rising_edge(self.prev_inputs.playerlist, pll)) self.playerlist_edge = true;
-    self.prev_inputs.playerlist = pll;
-
-    if (ae.platform == .psp) {
-        const osk = input.get_action_button("psp_osk");
-        if (rising_edge(self.prev_inputs.psp_osk, osk)) self.psp_osk_edge = true;
-        self.prev_inputs.psp_osk = osk;
+    if (rising_edge(self.prev_inputs.playerlist, pll)) {
+        self.playerlist_edge = true;
+        self.playerlist_edge_controller = playerlist_controller_pressed_this_frame();
     }
+    self.prev_inputs.playerlist = pll;
 
     if (ae.platform != .psp) {
         const hud = input.get_action_button("hud_toggle");
@@ -1518,6 +1514,27 @@ fn is_gameplay_active() bool {
     const top = input.stack_top() orelse return false;
     const set = bindings.handle() orelse return false;
     return @intFromEnum(top.actions) == @intFromEnum(set);
+}
+
+fn playerlist_controller_button() input.Button {
+    if (ae.platform == .psp) {
+        return switch (Options.current.psp_jump_mode) {
+            .up => .Back,
+            .select => .DpadUp,
+        };
+    }
+    return .Back;
+}
+
+fn playerlist_controller_pressed_this_frame() bool {
+    const button = playerlist_controller_button();
+    for (input.frame_events()) |ev| {
+        switch (ev.kind) {
+            .gamepad_button_down => |b| if (b.button == button) return true,
+            else => {},
+        }
+    }
+    return false;
 }
 
 fn hotbar_slot_name(comptime i: usize) []const u8 {

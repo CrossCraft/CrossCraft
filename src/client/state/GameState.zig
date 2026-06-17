@@ -79,10 +79,9 @@ inventory_repeat: ui_input.Repeat,
 inventory_blocks: [BlockRegistry.INVENTORY_SLOTS]c.Block,
 player_list: PlayerList,
 chat: Chat,
-/// PSP only: true while the Select-toggled social overlay (player list +
-/// chat cursor) is visible.  Cleared when Select is pressed again or the
-/// OSK completes.
-psp_social_mode: bool,
+/// Controller social overlay: true while the Select/Back-toggled player
+/// list + chat cursor is visible. Keyboard Tab keeps hold-to-show behavior.
+social_mode: bool,
 mp_fly_unlocked: bool,
 selection: SelectionOutline,
 steve: SteveModel,
@@ -275,7 +274,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         self.chat = Chat.init();
         self.conn.chat = &self.chat;
     }
-    self.psp_social_mode = false;
+    self.social_mode = false;
     self.mp_fly_unlocked = false;
     self.hotbar_tooltip_timer = 0;
     self.prev_selected_slot = 0;
@@ -797,24 +796,19 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
     const trace = self.trace_first_update;
     if (trace) log.info("trace: first update begin dt={d}", .{dt});
 
-    // PSP: Select toggles the social overlay (playerlist + chat cursor);
-    // Cross arms the OSK via begin_text_input.
-    if (ae.platform == .psp) {
-        if (self.player.playerlist_edge) {
-            self.player.playerlist_edge = false;
-            if (self.psp_social_mode) {
-                self.psp_social_mode = false;
+    // Controller Select/Back toggles the social overlay (player list + chat
+    // cursor). Keyboard Tab still uses the Classic hold-to-show player list.
+    if (self.player.playerlist_edge) {
+        const controller_edge = self.player.playerlist_edge_controller;
+        self.player.playerlist_edge = false;
+        self.player.playerlist_edge_controller = false;
+        if (controller_edge) {
+            if (self.social_mode) {
+                self.social_mode = false;
                 self.chat.close_overlay(&self.player);
             } else if (Session.mode == .multiplayer and !self.inventory_open) {
-                self.psp_social_mode = true;
+                self.social_mode = true;
                 self.chat.open_overlay_social(&self.player);
-            }
-        }
-        if (self.player.psp_osk_edge) {
-            self.player.psp_osk_edge = false;
-            if (self.psp_social_mode) {
-                self.chat.begin_session_now(&self.player);
-                self.psp_social_mode = false;
             }
         }
     }
@@ -901,6 +895,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         if (self.inventory_open) update_inventory_tree(self, &ui_in);
 
         if (self.chat.open) self.chat.update(&self.player);
+        if (self.social_mode and !self.chat.open) self.social_mode = false;
 
         self.chat.tick(dt);
 
@@ -1037,10 +1032,8 @@ fn prepare_ui_batches(self: *@This()) !void {
         inv_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
     }
 
-    const show_playerlist = if (ae.platform == .psp)
-        self.psp_social_mode
-    else
-        self.player.playerlist_held and Session.mode == .multiplayer and !self.inventory_open and !self.chat.open;
+    const show_playerlist = Session.mode == .multiplayer and !self.inventory_open and
+        (self.social_mode or (self.player.playerlist_held and !self.chat.open));
     if (show_playerlist) {
         self.player_list.draw_into(&hud_list, Session.username());
     }
@@ -1281,8 +1274,8 @@ fn draw_pause_dim(self: *@This()) void {
 ///
 /// Content switches by context so the strip always describes the
 /// currently-available actions:
-///   * PSP social mode: [Exit, Chat].
-///   * Desktop chat open: [Send, Cancel].
+///   * Controller social mode: [Exit, Chat].
+///   * Chat session open: [Send, Cancel].
 ///   * Normal play: [Inventory, Place?, Break?] -- Place requires an
 ///     aimed-at placement slot, Break any non-Air target.
 ///
@@ -1297,12 +1290,12 @@ fn draw_hud_prompts(self: *@This(), list: *UiDrawList) void {
     var buf: [3]PromptStrip.Prompt = undefined;
     var n: u8 = 0;
 
-    if (ae.platform == .psp and self.psp_social_mode) {
+    if (self.social_mode and !self.chat.session_active) {
         buf[n] = Prompts.exit_list();
         n += 1;
         buf[n] = Prompts.chat();
         n += 1;
-    } else if (ae.platform != .psp and self.chat.open) {
+    } else if (self.chat.open) {
         buf[n] = Prompts.send();
         n += 1;
         buf[n] = Prompts.cancel();
