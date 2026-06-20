@@ -30,8 +30,16 @@ file_reader: File.Reader,
 cd_record_count: u64,
 cd_zip_offset: u64,
 cd_size: u64,
+index: []IndexEntry,
+name_blob: []u8,
 
 streams: [max_streams]StreamSlot,
+
+const IndexEntry = struct {
+    entry: zip.Iterator.Entry,
+    name_offset: usize,
+    name_len: u32,
+};
 
 const StreamSlot = struct {
     in_use: bool = false,
@@ -55,7 +63,7 @@ pub const Entry = struct {
     inner: zip.Iterator.Entry,
     filename: []const u8,
 
-    pub fn isDirectory(self: *const Entry) bool {
+    pub fn is_directory(self: *const Entry) bool {
         return self.filename.len > 0 and self.filename[self.filename.len - 1] == '/';
     }
 };
@@ -110,6 +118,10 @@ pub fn init(allocator: std.mem.Allocator, _io: Io, dir: std.Io.Dir, path: []cons
     self.cd_record_count = iter.cd_record_count;
     self.cd_zip_offset = iter.cd_zip_offset;
     self.cd_size = iter.cd_size;
+    self.index = &.{};
+    self.name_blob = &.{};
+    errdefer self.free_index();
+    try self.build_index();
 
     for (&self.streams) |*slot| {
         slot.in_use = false;
@@ -122,6 +134,7 @@ pub fn deinit(self: *Zip) void {
     for (self.streams) |slot| {
         assert(!slot.in_use);
     }
+    self.free_index();
     self.file.close(self.io);
     const allocator = self.allocator;
     allocator.destroy(self);
@@ -139,57 +152,99 @@ pub fn iterator(self: *Zip) Iterator {
     };
 }
 
+fn raw_iterator(self: *Zip) zip.Iterator {
+    return .{
+        .input = &self.file_reader,
+        .cd_record_count = self.cd_record_count,
+        .cd_zip_offset = self.cd_zip_offset,
+        .cd_size = self.cd_size,
+    };
+}
+
+fn build_index(self: *Zip) !void {
+    if (self.cd_record_count > max_cd_entries) return error.ZipTooManyEntries;
+
+    var index_len: usize = 0;
+    var name_bytes: usize = 0;
+    var iter = self.raw_iterator();
+    while (try iter.next()) |entry| {
+        if (entry.filename_len > max_filename_len) continue;
+        index_len += 1;
+        name_bytes += entry.filename_len;
+    }
+
+    const new_index = try self.allocator.alloc(IndexEntry, index_len);
+    errdefer self.allocator.free(new_index);
+    const new_name_blob = try self.allocator.alloc(u8, name_bytes);
+    errdefer self.allocator.free(new_name_blob);
+
+    var name_offset: usize = 0;
+    var i: usize = 0;
+    iter = self.raw_iterator();
+    while (try iter.next()) |entry| {
+        if (entry.filename_len > max_filename_len) continue;
+
+        const name_len: usize = @intCast(entry.filename_len);
+        const name = new_name_blob[name_offset .. name_offset + name_len];
+        try self.file_reader.seekTo(entry.header_zip_offset + @sizeOf(zip.CentralDirectoryFileHeader));
+        try self.file_reader.interface.readSliceAll(name);
+
+        new_index[i] = .{
+            .entry = entry,
+            .name_offset = name_offset,
+            .name_len = entry.filename_len,
+        };
+        name_offset += name_len;
+        i += 1;
+    }
+    assert(i == index_len);
+    assert(name_offset == name_bytes);
+
+    self.index = new_index;
+    self.name_blob = new_name_blob;
+}
+
+fn free_index(self: *Zip) void {
+    self.allocator.free(self.index);
+    self.allocator.free(self.name_blob);
+    self.index = &.{};
+    self.name_blob = &.{};
+}
+
+fn find_index_entry(self: *const Zip, path: []const u8) ?*const IndexEntry {
+    if (path.len > max_filename_len) return null;
+
+    for (self.index) |*entry| {
+        if (entry.name_len != path.len) continue;
+        const name_len: usize = @intCast(entry.name_len);
+        const name = self.name_blob[entry.name_offset .. entry.name_offset + name_len];
+        if (std.mem.eql(u8, name, path)) return entry;
+    }
+    return null;
+}
+
 pub fn open(self: *Zip, path: []const u8) !Stream {
     const slot_index: u32 = for (&self.streams, 0..) |*slot, i| {
         if (!slot.in_use) break @as(u32, @intCast(i));
     } else return error.StreamsExhausted;
 
     const slot = &self.streams[slot_index];
+    const index_entry = self.find_index_entry(path) orelse return error.FileNotFound;
 
-    var iter: zip.Iterator = .{
-        .input = &self.file_reader,
-        .cd_record_count = self.cd_record_count,
-        .cd_zip_offset = self.cd_zip_offset,
-        .cd_size = self.cd_size,
+    slot.filename_len = index_entry.name_len;
+    try setup_stream(self, slot, &index_entry.entry);
+    slot.in_use = true;
+
+    return .{
+        .slot_index = slot_index,
+        .reader = &slot.limited.interface,
+        .data_offset = slot.data_offset,
+        .uncompressed_size = slot.uncompressed_size,
+        .compression_method = index_entry.entry.compression_method,
     };
-
-    var count: u32 = 0;
-    while (count < max_cd_entries) : (count += 1) {
-        const entry = iter.next() catch |err| return err;
-        const zip_entry = entry orelse return error.FileNotFound;
-
-        if (zip_entry.filename_len != path.len) continue;
-        if (zip_entry.filename_len > max_filename_len) continue;
-
-        // Read filename from central directory header
-        self.file_reader.seekTo(
-            zip_entry.header_zip_offset + @sizeOf(zip.CentralDirectoryFileHeader),
-        ) catch |err| return err;
-
-        self.file_reader.interface.readSliceAll(
-            slot.filename_buf[0..zip_entry.filename_len],
-        ) catch |err| return err;
-
-        if (!std.mem.eql(u8, slot.filename_buf[0..zip_entry.filename_len], path)) continue;
-
-        // Found the matching entry - set up streaming
-        slot.filename_len = zip_entry.filename_len;
-        try setupStream(self, slot, &zip_entry);
-        slot.in_use = true;
-
-        return .{
-            .slot_index = slot_index,
-            .reader = &slot.limited.interface,
-            .data_offset = slot.data_offset,
-            .uncompressed_size = slot.uncompressed_size,
-            .compression_method = zip_entry.compression_method,
-        };
-    }
-
-    return error.FileNotFound;
 }
 
-fn setupStream(self: *Zip, slot: *StreamSlot, entry: *const zip.Iterator.Entry) !void {
+fn setup_stream(self: *Zip, slot: *StreamSlot, entry: *const zip.Iterator.Entry) !void {
     slot.stream_file_reader = File.Reader.init(self.file, self.io, &slot.stream_read_buf);
 
     // Read local file header to compute the data offset
@@ -234,7 +289,7 @@ fn setupStream(self: *Zip, slot: *StreamSlot, entry: *const zip.Iterator.Entry) 
     }
 }
 
-pub fn closeStream(self: *Zip, stream: *const Stream) void {
+pub fn close_stream(self: *Zip, stream: *const Stream) void {
     assert(stream.slot_index < max_streams);
     const slot = &self.streams[stream.slot_index];
     assert(slot.in_use);
@@ -245,7 +300,7 @@ pub fn closeStream(self: *Zip, stream: *const Stream) void {
 
 const testing = std.testing;
 
-fn openTestZip() !*Zip {
+fn open_test_zip() !*Zip {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     errdefer tmp.cleanup();
@@ -276,6 +331,10 @@ fn openTestZip() !*Zip {
     self.cd_record_count = it.cd_record_count;
     self.cd_zip_offset = it.cd_zip_offset;
     self.cd_size = it.cd_size;
+    self.index = &.{};
+    self.name_blob = &.{};
+    errdefer self.free_index();
+    try self.build_index();
 
     for (&self.streams) |*slot| {
         slot.in_use = false;
@@ -285,14 +344,14 @@ fn openTestZip() !*Zip {
 }
 
 test "init and deinit" {
-    const z = try openTestZip();
+    const z = try open_test_zip();
     defer z.deinit();
 
     try testing.expect(z.cd_record_count == 3);
 }
 
 test "iterate entries" {
-    const z = try openTestZip();
+    const z = try open_test_zip();
     defer z.deinit();
 
     var it = z.iterator();
@@ -315,11 +374,11 @@ test "iterate entries" {
 }
 
 test "open by path stored" {
-    const z = try openTestZip();
+    const z = try open_test_zip();
     defer z.deinit();
 
     var stream = try z.open("hello.txt");
-    defer z.closeStream(&stream);
+    defer z.close_stream(&stream);
 
     var buf: [64]u8 = undefined;
     var result: Io.Writer = .fixed(&buf);
@@ -329,11 +388,11 @@ test "open by path stored" {
 }
 
 test "open by path deflate" {
-    const z = try openTestZip();
+    const z = try open_test_zip();
     defer z.deinit();
 
     var stream = try z.open("compressed.txt");
-    defer z.closeStream(&stream);
+    defer z.close_stream(&stream);
 
     const expected = "This is a compressed file. " ** 20;
 
@@ -345,11 +404,11 @@ test "open by path deflate" {
 }
 
 test "open nested path" {
-    const z = try openTestZip();
+    const z = try open_test_zip();
     defer z.deinit();
 
     var stream = try z.open("subdir/nested.txt");
-    defer z.closeStream(&stream);
+    defer z.close_stream(&stream);
 
     var buf: [64]u8 = undefined;
     var result: Io.Writer = .fixed(&buf);
@@ -359,7 +418,7 @@ test "open nested path" {
 }
 
 test "open nonexistent" {
-    const z = try openTestZip();
+    const z = try open_test_zip();
     defer z.deinit();
 
     const result = z.open("nope.txt");
@@ -367,14 +426,14 @@ test "open nonexistent" {
 }
 
 test "two simultaneous streams" {
-    const z = try openTestZip();
+    const z = try open_test_zip();
     defer z.deinit();
 
     var s1 = try z.open("hello.txt");
-    defer z.closeStream(&s1);
+    defer z.close_stream(&s1);
 
     var s2 = try z.open("subdir/nested.txt");
-    defer z.closeStream(&s2);
+    defer z.close_stream(&s2);
 
     var buf1: [64]u8 = undefined;
     var w1: Io.Writer = .fixed(&buf1);
@@ -389,14 +448,14 @@ test "two simultaneous streams" {
 }
 
 test "stream slot exhaustion" {
-    const z = try openTestZip();
+    const z = try open_test_zip();
     defer z.deinit();
 
     var s1 = try z.open("hello.txt");
-    defer z.closeStream(&s1);
+    defer z.close_stream(&s1);
 
     var s2 = try z.open("subdir/nested.txt");
-    defer z.closeStream(&s2);
+    defer z.close_stream(&s2);
 
     const result = z.open("compressed.txt");
     try testing.expectError(error.StreamsExhausted, result);

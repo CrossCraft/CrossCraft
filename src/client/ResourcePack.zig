@@ -404,7 +404,7 @@ fn load_texture_from_zip(id: Tex) !Rendering.Texture {
     var buf: [256]u8 = undefined;
     const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{tex_path(id)});
     var stream = try pack.open(path);
-    defer pack.closeStream(&stream);
+    defer pack.close_stream(&stream);
     return try Rendering.Texture.load_from_reader(alloc, stream.reader);
 }
 
@@ -412,7 +412,7 @@ fn load_image_from_zip(id: Tex) !Image.Image {
     var buf: [256]u8 = undefined;
     const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{tex_path(id)});
     var stream = try pack.open(path);
-    defer pack.closeStream(&stream);
+    defer pack.close_stream(&stream);
     return try Image.load_png_ex(alloc, alloc, stream.reader, .rgba8);
 }
 

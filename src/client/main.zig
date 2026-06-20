@@ -66,20 +66,15 @@ const ResourcePack = @import("ResourcePack.zig");
 const game_config = @import("config.zig");
 
 pub fn main(init: std.process.Init) !void {
-    boot_stage(init.io, "main.enter");
     game_config.init();
-    boot_stage(init.io, "config.init.done");
 
     const memory = try init.gpa.alignedAlloc(u8, .fromByteUnits(16), game_config.main_memory_bytes());
     defer init.gpa.free(memory);
-    boot_stage(init.io, "arena.alloc.done");
 
     var menu_state: MenuState = undefined;
     const state = menu_state.state();
-    boot_stage(init.io, "menu.state.ready");
 
     var engine: ae.Engine = undefined;
-    boot_stage(init.io, "engine.init.begin");
     engine.init(init.io, init.environ_map, memory, .{
         .memory = game_config.init_memory(),
         .width = 854,
@@ -93,21 +88,10 @@ pub fn main(init: std.process.Init) !void {
         .vsync = true,
         .resizable = true,
     }, &state) catch |err| return fail_stage("engine.init", err);
-    boot_stage(init.io, "engine.init.done");
     defer engine.deinit();
     defer ResourcePack.deinit();
 
-    boot_stage(init.io, "engine.run.begin");
     engine.run() catch |err| return fail_stage("engine.run", err);
-}
-
-fn boot_stage(io: std.Io, comptime stage: []const u8) void {
-    if (comptime ae.platform != .nintendo_3ds) return;
-
-    const file = std.Io.Dir.cwd().createFile(io, "sdmc:/crosscraft_boot_stage.txt", .{ .truncate = true }) catch
-        return;
-    defer file.close(io);
-    file.writeStreamingAll(io, stage ++ "\n") catch {};
 }
 
 fn fail_stage(comptime stage: []const u8, err: anyerror) anyerror {

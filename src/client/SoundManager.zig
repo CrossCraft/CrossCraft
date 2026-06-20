@@ -266,7 +266,7 @@ fn scan_music(pack: *Zip) void {
 /// the WAV header parse works regardless of compression method.
 fn resolve_wav(pack: *Zip, path: []const u8) !SoundEntry {
     var stream = try pack.open(path);
-    defer pack.closeStream(&stream);
+    defer pack.close_stream(&stream);
 
     const wav = try Audio.wav.open(stream.reader);
     const pcm_size = wav.byte_length orelse return error.UnknownLength;
