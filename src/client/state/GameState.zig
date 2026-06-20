@@ -53,7 +53,7 @@ const ae_input = ae.Core.input;
 const log = std.log.scoped(.game);
 
 const selection_depth_nudge: f32 = 1.0 / 320.0;
-const MP_READ_STACK_SIZE = 128 * 1024;
+const MP_READ_STACK_SIZE = 512 * 1024;
 const MP_FLY_WARNING = "&cUsing fly in multiplayer may get you banned! Know what you're doing! Triple tap to enable.";
 const PauseScreen = enum { main, options, controls, dump_world };
 
