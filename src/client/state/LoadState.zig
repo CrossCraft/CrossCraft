@@ -33,47 +33,68 @@ var mp_server_motd: [64]u8 = @splat(' ');
 /// set during the loading screen.
 var loading_set: ?ae.Core.input.ActionSetHandle = null;
 
-fn completed_future() std.Io.Future(void) {
-    return .{ .any_future = null, .result = {} };
-}
+const TaskHandle = union(enum) {
+    thread: Util.Thread,
+    none,
 
-fn start_server_future(
+    fn await(self: *TaskHandle) void {
+        switch (self.*) {
+            .thread => |t| t.join(),
+            .none => {},
+        }
+        self.* = .none;
+    }
+};
+
+fn start_server_task(
     io: std.Io,
     alloc: std.mem.Allocator,
     scratch: std.mem.Allocator,
     seed: u64,
     data_dir: std.Io.Dir,
     save_location: []const u8,
-) std.Io.Future(void) {
+) TaskHandle {
     if (comptime ae.platform == .wasm) {
         serverTask(alloc, scratch, seed, io, data_dir, save_location);
-        return completed_future();
+        return .none;
     }
-    return io.concurrent(serverTask, .{ alloc, scratch, seed, io, data_dir, save_location }) catch |err| {
-        log.err("server task concurrency unavailable: {}", .{err});
+
+    return .{ .thread = Util.Thread.spawn(.{
+        .name = "load_server",
+        .stack_size = 512 * 1024,
+        .priority = .normal,
+        .allocator = alloc,
+    }, serverTask, .{ alloc, scratch, seed, io, data_dir, save_location }) catch |err| {
+        log.err("server task thread unavailable: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
-        return completed_future();
-    };
+        return .none;
+    } };
 }
 
-fn start_connect_future(
+fn start_connect_task(
     io: std.Io,
     alloc: std.mem.Allocator,
     seed: u64,
     data_dir: std.Io.Dir,
-) std.Io.Future(void) {
+) TaskHandle {
     if (comptime ae.platform == .wasm) {
         session_error = error.UnsupportedPlatform;
         server_ready.store(true, .release);
-        return completed_future();
+        return .none;
     }
-    return io.concurrent(connectTask, .{ alloc, seed, io, data_dir }) catch |err| {
-        log.err("connect task concurrency unavailable: {}", .{err});
+
+    return .{ .thread = Util.Thread.spawn(.{
+        .name = "mp_connect",
+        .stack_size = 512 * 1024,
+        .priority = .normal,
+        .allocator = alloc,
+    }, connectTask, .{ alloc, seed, io, data_dir }) catch |err| {
+        log.err("connect task thread unavailable: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
-        return completed_future();
-    };
+        return .none;
+    } };
 }
 
 fn ensure_loading_set() !ae.Core.input.ActionSetHandle {
@@ -265,7 +286,7 @@ fn capture_disconnect_reason(packet: []const u8) void {
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 time: f32,
-server_future: std.Io.Future(void),
+server_task: TaskHandle,
 server_notified: bool,
 render_alloc: std.mem.Allocator,
 /// True once `init` ran to completion. Guards `deinit` so a partially
@@ -320,8 +341,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     else
         engine.allocator(.user);
     // TODO: allocator pool budget may need tuning for server + client coexistence
-    self.server_future = switch (Session.mode) {
-        .singleplayer => start_server_future(
+    self.server_task = switch (Session.mode) {
+        .singleplayer => start_server_task(
             io,
             engine.allocator(.user),
             server_scratch,
@@ -329,17 +350,17 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             data_dir,
             Session.singleplayer_save(),
         ),
-        .multiplayer => start_connect_future(io, engine.allocator(.user), random_seed, data_dir),
+        .multiplayer => start_connect_task(io, engine.allocator(.user), random_seed, data_dir),
     };
 
     self.inited = true;
     engine.report();
 }
 
-fn deinit(ctx: *anyopaque, engine: *Engine) void {
+fn deinit(ctx: *anyopaque, _: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
-    self.server_future.await(engine.io);
+    self.server_task.await();
     self.font_batcher.deinit();
     self.batcher.deinit();
 

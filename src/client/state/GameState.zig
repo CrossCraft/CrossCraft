@@ -53,6 +53,7 @@ const ae_input = ae.Core.input;
 const log = std.log.scoped(.game);
 
 const selection_depth_nudge: f32 = 1.0 / 320.0;
+const MP_READ_STACK_SIZE = 128 * 1024;
 const MP_FLY_WARNING = "&cUsing fly in multiplayer may get you banned! Know what you're doing! Triple tap to enable.";
 const PauseScreen = enum { main, options, controls, dump_world };
 
@@ -60,10 +61,10 @@ fake_conn: FakeConn,
 conn: ClientConn,
 // MP read-loop task: owns the TCP read side, drives ClientConn
 // callbacks, clears `Session.mp_connected` on exit.
-mp_read_future: ?std.Io.Future(void),
-/// Singleplayer compressor worker thread that drains classic_cw save jobs
-/// owned by the embedded server. Standalone servers spawn an equivalent
-/// thread in `ServerState.init`.
+mp_read_thread: ?Util.Thread,
+/// Singleplayer compressor worker thread that drains save jobs owned by the
+/// embedded server. Standalone servers spawn an equivalent thread in
+/// `ServerState.init`.
 sp_compressor_thread: ?CompressorThread.Thread,
 /// Multiplayer-only compressor worker used by explicit world dumps.
 mp_compressor_thread: ?CompressorThread.Thread,
@@ -119,7 +120,7 @@ trace_first_draw: bool,
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
-    self.mp_read_future = null;
+    self.mp_read_thread = null;
     self.sp_compressor_thread = null;
     self.mp_compressor_thread = null;
     self.trace_first_tick = true;
@@ -186,10 +187,13 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             self.chat = Chat.init();
             self.conn.chat = &self.chat;
 
-            // Must be `concurrent`, not `async`: PSP's `async` falls back
-            // to inline execution when it can't spawn a thread, which
-            // would hang GameState.init inside an infinite read loop.
-            self.mp_read_future = try engine.io.concurrent(
+            self.mp_read_thread = try Util.Thread.spawn(
+                .{
+                    .name = "mp_read",
+                    .stack_size = MP_READ_STACK_SIZE,
+                    .priority = .normal,
+                    .allocator = engine.allocator(.user),
+                },
                 ClientConn.read_loop,
                 .{ &self.conn, &Session.mp_connected },
             );
@@ -359,9 +363,9 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
                 s.close(engine.io);
                 Session.mp_stream = null;
             }
-            if (self.mp_read_future) |*f| {
-                f.await(engine.io);
-                self.mp_read_future = null;
+            if (self.mp_read_thread) |t| {
+                t.join();
+                self.mp_read_thread = null;
             }
             // PSP: tear down the networking stack so the next connect cycle
             // re-runs net dialog + net.init from a clean state. Skipping this
@@ -389,10 +393,10 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     // World.init_empty, plus a small compressor worker for explicit dumps.
     switch (Session.mode) {
         .singleplayer => {
-            // Server.deinit triggers the final classic_cw save; the
-            // compressor thread must still be alive to drain it before
-            // we signal exit and join. Its backing storage is freed only
-            // after the thread is gone.
+            // Server.deinit triggers the final save; the compressor thread
+            // must still be alive to drain it before we signal exit and
+            // join. Its backing storage is freed only after the thread is
+            // gone.
             self.ensure_sp_compressor_started(engine) catch |err| {
                 log.err("failed to start SP compressor before shutdown: {}", .{err});
             };
@@ -442,8 +446,8 @@ fn ensure_sp_compressor_started(self: *@This(), engine: *Engine) !void {
     if (comptime ae.platform == .wasm) return;
 
     if (self.sp_compressor_thread != null) return;
-    // Drain classic_cw save jobs queued by Server.init only after the state
-    // transition and initial memory report have completed.
+    // Drain save jobs queued by Server.init only after the state transition
+    // and initial memory report have completed.
     self.sp_compressor_thread = try CompressorThread.spawn(engine.allocator(.user));
 }
 
@@ -562,19 +566,19 @@ fn update_pause_controls(self: *@This(), engine: *Engine, in: *const ui_input.Ui
 fn enter_pause_options(self: *@This()) void {
     self.pause_screen = .options;
     self.pause_options_rd_view = @floatFromInt(Options.capped_render_distance());
-    self.pause_options_ui_state.open(!ui_input.profile_uses_pointer());
+    self.pause_options_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn leave_pause_options(self: *@This()) void {
     self.pause_screen = .main;
-    self.pause_ui_state.open(!ui_input.profile_uses_pointer());
+    self.pause_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn enter_pause_controls(self: *@This()) void {
     ControlsScreen.cancel_capture(pause_controls_ctx(self));
     self.pause_controls_status = .none;
     self.pause_screen = .controls;
-    self.pause_controls_ui_state.open(!ui_input.profile_uses_pointer());
+    self.pause_controls_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn pause_controls_ctx(self: *@This()) ControlsScreen.Ctx {
@@ -619,12 +623,12 @@ fn update_pause_dump_world(self: *@This(), in: *const ui_input.UiInput) !void {
 fn enter_pause_dump_world(self: *@This()) void {
     seed_dump_world_name(self);
     self.pause_screen = .dump_world;
-    self.pause_dump_ui_state.open(!ui_input.profile_uses_pointer());
+    self.pause_dump_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn leave_pause_dump_world(self: *@This()) void {
     self.pause_screen = .main;
-    self.pause_ui_state.open(!ui_input.profile_uses_pointer());
+    self.pause_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn dump_world_name_slice(self: *const @This()) []const u8 {
@@ -665,7 +669,7 @@ fn open_pause(self: *@This()) void {
     self.paused = true;
     self.pause_screen = .main;
     self.pause_ui_repeat = .{};
-    self.pause_ui_state.open(!ui_input.profile_uses_pointer());
+    self.pause_ui_state.open(ui_input.seed_focus_on_open());
     ae_input.push_context(.{
         .name = "pause",
         .cursor_mode = .visible,
@@ -699,7 +703,7 @@ fn open_inventory(self: *@This()) void {
     else
         0;
     self.inventory_repeat = .{};
-    self.inventory_ui_state.open(!ui_input.profile_uses_pointer());
+    self.inventory_ui_state.open(ui_input.seed_focus_on_open());
     self.inventory_ui_state.focused = InventoryUi.wid(.grid);
     ae_input.push_context(.{
         .name = "inventory",

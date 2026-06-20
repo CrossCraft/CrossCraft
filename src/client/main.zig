@@ -7,7 +7,6 @@ pub const std_options: std.Options = .{
     .log_level = Util.std_options.log_level,
     .log_scope_levels = Util.std_options.log_scope_levels,
     .logFn = locked_log_fn,
-    .page_size_min = if (ae.platform == .nintendo_3ds) 4 * 1024 else null,
 };
 
 var log_lock: std.atomic.Value(bool) = .init(false);
@@ -42,16 +41,17 @@ pub const psp_stack_size: u32 = 512 * 1024;
 pub const psp_async_stack_size: u32 = 64 * 1024;
 pub const psp_heap_reserve_kb_size: u32 = 2048 + 512;
 
-const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
+const is_freestanding_console = ae.platform == .psp or ae.platform == .nintendo_switch;
 
-// PSP, 3DS, and Switch override panic/IO handlers that would otherwise pull in
-// posix symbols unavailable on their targets.
-pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else if (ae.platform == .nintendo_3ds) ae.ThreeDS.panic else if (ae.platform == .nintendo_switch) @import("root").panic else std.debug.FullPanic(std.debug.defaultPanic);
+// PSP and Switch override panic/IO handlers that would otherwise pull in
+// posix symbols unavailable on their targets. 3DS is handled by Aether's
+// zitrus entry root, not by C stdio.
+pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else if (ae.platform == .nintendo_switch) @import("root").panic else std.debug.FullPanic(std.debug.defaultPanic);
 pub const std_options_debug_threaded_io = if (is_freestanding_console) null else std.Io.Threaded.global_single_threaded;
-pub const std_options_debug_io: std.Io = if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
+pub const std_options_debug_io: std.Io = if (ae.platform == .psp) sdk.extra.Io.psp_io else if (ae.platform == .nintendo_switch) ae.Cio.io() else std.Io.Threaded.global_single_threaded.io();
 pub const std_options_cwd = if (ae.platform == .psp)
     psp_cwd
-else if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch)
+else if (ae.platform == .nintendo_switch)
     ae.Cio.cwd
 else
     null;
@@ -66,15 +66,21 @@ const ResourcePack = @import("ResourcePack.zig");
 const game_config = @import("config.zig");
 
 pub fn main(init: std.process.Init) !void {
+    boot_stage(init.io, "main.enter");
     game_config.init();
-    const memory = try init.gpa.alloc(u8, game_config.main_memory_bytes());
+    boot_stage(init.io, "config.init.done");
+
+    const memory = try init.gpa.alignedAlloc(u8, .fromByteUnits(16), game_config.main_memory_bytes());
     defer init.gpa.free(memory);
+    boot_stage(init.io, "arena.alloc.done");
 
     var menu_state: MenuState = undefined;
     const state = menu_state.state();
+    boot_stage(init.io, "menu.state.ready");
 
     var engine: ae.Engine = undefined;
-    try engine.init(init.io, init.environ_map, memory, .{
+    boot_stage(init.io, "engine.init.begin");
+    engine.init(init.io, init.environ_map, memory, .{
         .memory = game_config.init_memory(),
         .width = 854,
         .height = 480,
@@ -86,9 +92,31 @@ pub fn main(init: std.process.Init) !void {
         },
         .vsync = true,
         .resizable = true,
-    }, &state);
+    }, &state) catch |err| return fail_stage("engine.init", err);
+    boot_stage(init.io, "engine.init.done");
     defer engine.deinit();
     defer ResourcePack.deinit();
 
-    try engine.run();
+    boot_stage(init.io, "engine.run.begin");
+    engine.run() catch |err| return fail_stage("engine.run", err);
+}
+
+fn boot_stage(io: std.Io, comptime stage: []const u8) void {
+    if (comptime ae.platform != .nintendo_3ds) return;
+
+    const file = std.Io.Dir.cwd().createFile(io, "sdmc:/crosscraft_boot_stage.txt", .{ .truncate = true }) catch
+        return;
+    defer file.close(io);
+    file.writeStreamingAll(io, stage ++ "\n") catch {};
+}
+
+fn fail_stage(comptime stage: []const u8, err: anyerror) anyerror {
+    if (comptime ae.platform == .nintendo_3ds) {
+        std.log.err("CrossCraft 3DS failed at {s}: {s}", .{ stage, @errorName(err) });
+        if (err == error.Unexpected) {
+            if (comptime std.mem.eql(u8, stage, "engine.init")) return error.CrossCraftEngineInitUnexpected;
+            if (comptime std.mem.eql(u8, stage, "engine.run")) return error.CrossCraftEngineRunUnexpected;
+        }
+    }
+    return err;
 }

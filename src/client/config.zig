@@ -7,6 +7,7 @@ const Profile = @This();
 
 const MB: u32 = 1024 * 1024;
 const KB: u32 = 1024;
+const NINTENDO_3DS_TOTAL_MEMORY_MB: u32 = 32;
 const SWITCH_TOTAL_MEMORY_MB: u32 = 224;
 
 pub const HardwareClass = enum {
@@ -82,14 +83,14 @@ const psp_slim_profile: Profile = .{
 
 const old_3ds_profile: Profile = .{
     .hardware = .old_3ds,
-    .total_memory_mb = 36,
+    .total_memory_mb = NINTENDO_3DS_TOTAL_MEMORY_MB,
     .chunk_radius = 6,
     .lod_near_radius_blocks = 28,
     .init_render = 4 * MB,
     .init_audio = 2 * MB,
     .init_game = 2 * MB,
     .init_user = 12 * MB,
-    .rt_render = 29 * MB + 768 * KB,
+    .rt_render = 26 * MB + 512 * KB,
     .rt_audio = 0 * KB,
     .rt_game = 1 * MB,
     .rt_user = 4 * MB + 512 * KB,

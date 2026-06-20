@@ -148,9 +148,9 @@ pub fn init(
     } else if (saver.needs_format_upgrade) {
         // Loaded an older on-disk format; rewrite it now under the
         // configured save format so subsequent boots take the fast path.
-        // For classic_cw the job sits on the compress_worker LIFO until
-        // the host (GameState / ServerState) spawns the worker thread
-        // shortly after Server.init returns -- do not wait here.
+        // The job sits on the compress_worker LIFO until the host
+        // (GameState / ServerState) spawns the worker thread shortly after
+        // Server.init returns -- do not wait here.
         saver.save(&data);
     }
     finalize_loaded();

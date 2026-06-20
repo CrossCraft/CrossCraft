@@ -265,7 +265,7 @@ fn migrate_legacy_save(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
         return;
     };
 
-    data_dir.copyFile(legacy_save_file_name, data_dir, wcfg.save_location, io, .{ .replace = false }) catch |err| {
+    copy_file_direct(data_dir, legacy_save_file_name, wcfg.save_location) catch |err| {
         log.warn("legacy save migration failed: {}", .{err});
         return;
     };
@@ -290,6 +290,28 @@ fn choose_legacy_backup_name(data_dir: std.Io.Dir, out: *[32]u8) ?[]const u8 {
         if (!file_exists(data_dir, name)) return name;
     }
     return null;
+}
+
+fn copy_file_direct(dir: std.Io.Dir, src_path: []const u8, dst_path: []const u8) !void {
+    const src = try dir.openFile(io, src_path, .{});
+    defer src.close(io);
+
+    const dst = try dir.createFile(io, dst_path, .{ .exclusive = true });
+    var dst_closed = false;
+    errdefer dir.deleteFile(io, dst_path) catch {};
+    defer if (!dst_closed) dst.close(io);
+
+    var buf: [8192]u8 = undefined;
+    var offset: u64 = 0;
+    while (true) {
+        const n = try src.readPositionalAll(io, &buf, offset);
+        if (n == 0) break;
+        try dst.writeStreamingAll(io, buf[0..n]);
+        offset += n;
+    }
+
+    dst.close(io);
+    dst_closed = true;
 }
 
 fn file_exists(dir: std.Io.Dir, path: []const u8) bool {

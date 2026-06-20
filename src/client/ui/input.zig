@@ -79,7 +79,7 @@ const Runtime = struct {
 var runtime: Runtime = .{};
 
 pub fn default_profile() InputProfile {
-    return if (ae.gfx == .headless or ae.platform == .psp)
+    return if (ae.gfx == .headless or ae.platform == .psp or ae.platform == .nintendo_3ds)
         .pad_only
     else
         .pointer_and_pad;
@@ -94,6 +94,10 @@ pub fn set_profile(profile: InputProfile) void {
 
 pub fn profile_uses_pointer() bool {
     return runtime.profile == .pointer_and_pad;
+}
+
+pub fn seed_focus_on_open() bool {
+    return !profile_uses_pointer() or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
 }
 
 /// Idempotent: registers and installs the menu ActionSet on first call.

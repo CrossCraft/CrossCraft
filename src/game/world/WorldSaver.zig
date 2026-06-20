@@ -49,7 +49,6 @@ owned_locally: bool,
 autosave_enabled: bool,
 
 save_counter: u32,
-save_group: std.Io.Group,
 save_in_flight: std.atomic.Value(bool),
 
 /// Explicit user-triggered save target used for multiplayer world dumps.
@@ -70,10 +69,10 @@ needs_format_upgrade: bool,
 // caller (the World aggregate field) for the worker's lifetime.
 data_for_worker: *const WorldData,
 
-// classic_cw saves run on the shared compressor thread instead of an
-// std.Io.concurrent task -- the deflate finish path overflows the 64 KB
-// per-task stack on PSP. One slot per saver matches the single-flight
-// `save_in_flight` guard.
+// Saves run on the shared compressor worker instead of std.Io.concurrent:
+// some platforms do not expose std.Io task spawning, and compression needs
+// more stack than small per-task IO stacks provide. One slot per saver
+// matches the single-flight `save_in_flight` guard.
 cw_job: compress_worker.Job,
 
 pub fn init(io: std.Io, save_dir: std.Io.Dir, save_file_name: []const u8, format: SaveFormat) WorldSaver {
@@ -86,7 +85,6 @@ pub fn init(io: std.Io, save_dir: std.Io.Dir, save_file_name: []const u8, format
         .owned_locally = false,
         .autosave_enabled = true,
         .save_counter = 0,
-        .save_group = .init,
         .save_in_flight = .init(false),
         .save_override_active = false,
         .save_override_file_name = undefined,
@@ -104,8 +102,7 @@ pub fn deinit(self: *WorldSaver) void {
 }
 
 /// Dispatch an async world save. Returns immediately; the worker runs on
-/// an io-managed task (classic_dat) or the shared compressor thread
-/// (classic_cw, which can't fit deflate in the per-task stack on PSP).
+/// the shared compressor thread.
 /// Logs its own errors. Single-flight: a second call while a save is
 /// still running logs a warn and is dropped. Callers needing the save
 /// to finish (e.g. shutdown) must follow with `wait_for_save()`.
@@ -164,37 +161,23 @@ fn dispatch_save(self: *WorldSaver, data: *const WorldData, format: SaveFormat) 
         save_worker(self);
         return;
     }
-    switch (format) {
-        .classic_dat => {
-            self.save_group.concurrent(self.io, save_worker, .{self}) catch |err| {
-                self.save_override_active = false;
-                self.save_in_flight.store(false, .release);
-                return err;
-            };
-        },
-        .classic_cw => {
-            self.cw_job = .{ .run = cw_save_run };
-            compress_worker.submit(&self.cw_job);
-        },
-    }
+    self.cw_job = .{ .run = cw_save_run };
+    compress_worker.submit(&self.cw_job);
 }
 
 /// Block until any in-flight save finishes. Idempotent. Must run before
 /// `data.raw_blocks` is freed -- the worker reads it directly.
 pub fn wait_for_save(self: *WorldSaver) void {
-    self.save_group.await(self.io) catch {};
     // Keep the embedded job storage alive until the compressor worker has
-    // returned from `run` and published `done`. For classic_dat saves the
-    // job is already done, so this is a cheap no-op.
+    // returned from `run` and published `done`.
     while (!self.cw_job.done.load(.acquire)) {
         std.Io.sleep(self.io, common.time.ms(20), .real) catch break;
     }
 }
 
-/// Drop a queued classic_cw save before the compressor thread exists. This is
+/// Drop a queued save before the compressor thread exists. This is
 /// only for init error unwind; normal shutdown must call `wait_for_save`.
 pub fn cancel_pending_before_compressor(self: *WorldSaver) void {
-    self.save_group.await(self.io) catch {};
     if (self.cw_job.done.load(.acquire)) return;
 
     if (compress_worker.cancel_pending_before_worker(&self.cw_job)) {

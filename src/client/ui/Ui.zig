@@ -2,6 +2,7 @@ const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 const input_api = ae.Core.input;
+const log = std.log.scoped(.ui);
 
 const common = @import("common");
 const layout_mod = @import("layout.zig");
@@ -445,7 +446,11 @@ pub fn text_field(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) Text
         self.state.focus_source = .mouse;
         self.state.captured = null;
         self.state.captured_via_click = false;
-        self.set_active_text(id, buf, opts);
+        if (uses_modal_text_input()) {
+            if (self.fire_modal_text_input(id, buf, opts)) event = .changed;
+        } else {
+            self.set_active_text(id, buf, opts);
+        }
     }
     if (self.state_active_text_eq(id) and self.state.text_session_started and self.text_submit_edge() and !self.claimed_confirm) {
         self.claimed_confirm = true;
@@ -453,8 +458,8 @@ pub fn text_field(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) Text
     } else if (self.input.confirm_edge and self.state_focused_eq(id) and !self.claimed_confirm and !self.state_active_text_eq(id)) {
         self.claimed_confirm = true;
         self.state.focus_source = .pad;
-        if (ae.platform == .psp) {
-            if (self.fire_psp_osk(id, buf, opts)) event = .changed;
+        if (uses_modal_text_input()) {
+            if (self.fire_modal_text_input(id, buf, opts)) event = .changed;
         } else {
             self.set_active_text(id, buf, opts);
         }
@@ -1163,7 +1168,7 @@ fn set_active_text(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) voi
     self.state.cancel_active_text();
     self.state.active_text = id;
     self.state.text_session_started = false;
-    if (ae.platform == .psp) return;
+    if (uses_modal_text_input()) return;
 
     const target: input_api.TextInputTarget = .{ .id = opts.session_id };
     const input_opts: input_api.TextInputOptions = .{
@@ -1177,7 +1182,14 @@ fn set_active_text(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) voi
     self.state.text_session_started = true;
 }
 
-fn fire_psp_osk(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {
+fn uses_modal_text_input() bool {
+    return switch (ae.platform) {
+        .psp, .nintendo_3ds, .nintendo_switch => true,
+        else => false,
+    };
+}
+
+fn fire_modal_text_input(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {
     if (input_api.current_text_session()) |s| {
         if (!s.is_terminal()) input_api.cancel_text() catch {};
     }
@@ -1186,11 +1198,21 @@ fn fire_psp_osk(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {
         .max_bytes = buf.max,
         .initial = if (buf.len.* > 0) buf.bytes[0..buf.len.*] else null,
     };
-    _ = input_api.begin_text_input(target, input_opts) catch return false;
+    _ = input_api.begin_text_input(target, input_opts) catch |err| {
+        log.warn("modal text input '{s}' failed to open: {}", .{ opts.session_id, err });
+        return false;
+    };
     self.state.active_text = id;
     self.state.text_session_started = false;
-    const session = input_api.current_text_session() orelse return false;
+    const session = input_api.current_text_session() orelse {
+        log.warn("modal text input '{s}' produced no session", .{opts.session_id});
+        self.finish_active_text();
+        return false;
+    };
     if (session.status != .submitted) {
+        if (session.status != .cancelled) {
+            log.warn("modal text input '{s}' returned non-terminal status {s}", .{ opts.session_id, @tagName(session.status) });
+        }
         if (!session.is_terminal()) input_api.cancel_text() catch {};
         self.finish_active_text();
         return false;

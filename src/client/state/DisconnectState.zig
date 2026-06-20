@@ -56,7 +56,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     });
 
     self.dirt = ResourcePack.get_tex(.dirt);
-    self.ui_state.open(!ui_input.profile_uses_pointer());
+    self.ui_state.open(ui_input.seed_focus_on_open());
     self.inited = true;
     engine.report();
 }

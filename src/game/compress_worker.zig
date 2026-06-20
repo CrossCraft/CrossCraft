@@ -1,10 +1,9 @@
 // --- Shared gzip compression worker ---
 //
 // One process-wide worker thread runs gzip jobs out of a lock-free LIFO
-// queue. Both world-send (network) and world-save (disk, classic_cw) submit
-// here so the deep `flate.Compress` call frames stay out of the per-task
-// IO async stacks (64 KB on PSP -- not enough for the 32 KB sliding window
-// plus the deflate finish path).
+// queue. Both world-send (network) and world-save (disk, any format) submit
+// here so save dispatch does not depend on std.Io task spawning, and so the
+// deep `flate.Compress` call frames stay out of small per-task IO stacks.
 //
 // This module owns the static state and the loop body. Spawning the OS
 // thread is the consumer's job (server's `ServerState`, client's

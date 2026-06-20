@@ -184,8 +184,8 @@ pub fn build(b: *std.Build) void {
         .output_dir = if (is_psp) psp_client_dir else if (is_3ds) nintendo_3ds_client_dir else if (is_switch) nintendo_switch_client_dir else null,
         .bundle_id = "com.iridescentrose.crosscraft-classic",
         .resources = mac_resources,
-        .smdh_long_description = if (is_3ds) "Clean-room Minecraft Classic" else "",
-        .smdh_author = if (is_3ds) "CrossCraft" else "",
+        .nintendo_3ds_description = if (is_3ds) "Clean-room Minecraft Classic" else "",
+        .nintendo_3ds_publisher = if (is_3ds) "CrossCraft" else "",
         .switch_author = if (is_switch) "CrossCraft" else "",
         .switch_version = if (is_switch) "0.0.0" else "",
         // Reusing the Vita icon as a placeholder. 128×128 upscales for

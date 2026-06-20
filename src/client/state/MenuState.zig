@@ -45,6 +45,11 @@ const embedded_pack: []const u8 =
 var menu_state: @This() = undefined;
 var menu_state_inst: State = undefined;
 
+pub fn initial_state() State {
+    menu_state_inst = menu_state.state();
+    return menu_state_inst;
+}
+
 pub fn transition_here(engine: *Engine) !void {
     menu_state_inst = menu_state.state();
     try ae.Core.state_machine.transition(engine, &menu_state_inst);
@@ -88,6 +93,7 @@ cw_name: [CreateWorld.NAME_MAX]u8,
 cw_name_len: u8,
 cw_seed: [CreateWorld.SEED_MAX]u8,
 cw_seed_len: u8,
+cw_create_enabled: bool,
 
 dirt: *const Rendering.Texture,
 logo: *const Rendering.Texture,
@@ -113,11 +119,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     migrate_default_saves(engine.allocator(.user), engine.io, engine.dirs.data);
     if (build_options.embed_pack) {
         engine.dirs.data.access(engine.io, "pack.zip", .{}) catch {
-            const file = try engine.dirs.data.createFile(engine.io, "pack.zip", .{});
+            const file = engine.dirs.data.createFile(engine.io, "pack.zip", .{}) catch |err|
+                return menu_init_error(.extract_pack_create, err);
             defer file.close(engine.io);
             file.writeStreamingAll(engine.io, embedded_pack) catch |err| {
                 log.err("failed to extract pack.zip to data dir: {}", .{err});
-                return err;
+                return menu_init_error(.extract_pack_write, err);
             };
         };
     }
@@ -130,13 +137,18 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         engine.dirs.data
     else
         engine.dirs.resources;
-    try ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, default_pack_dir, "pack.zip");
+    ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, default_pack_dir, "pack.zip") catch |err|
+        return menu_init_error(.default_pack_open, err);
     errdefer ResourcePack.deinit();
-    try ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui, .glyphs });
+    ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui, .glyphs }) catch |err|
+        return menu_init_error(.default_textures, err);
 
-    self.batcher = try SpriteBatcher.init(render_alloc);
-    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
-    self.splash_mesh = try self.font_batcher.build_mesh("Classic!", .splash_front, .splash_back, 0, 1);
+    self.batcher = SpriteBatcher.init(render_alloc) catch |err|
+        return menu_init_error(.sprite_batcher, err);
+    self.font_batcher = FontBatcher.init(render_alloc, ResourcePack.get_tex(.font)) catch |err|
+        return menu_init_error(.font_batcher, err);
+    self.splash_mesh = self.font_batcher.build_mesh("Classic!", .splash_front, .splash_back, 0, 1) catch |err|
+        return menu_init_error(.splash_mesh, err);
     self.time = 0;
     self.ui_repeat = .{};
     self.main_ui_state = .{};
@@ -157,26 +169,56 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.sw_delete_mode = false;
     self.cw_name_len = 0;
     self.cw_seed_len = 0;
+    self.cw_create_enabled = false;
 
-    try ui_input.ensure_registered();
+    ui_input.ensure_registered() catch |err|
+        return menu_init_error(.input_register, err);
     ui_input.set_profile(ui_input.default_profile());
-    try ae.Core.input.push_context(.{
+    ae.Core.input.push_context(.{
         .name = "menu",
         .cursor_mode = .visible,
         .actions = ui_input.menu_set(),
         .consumes_text = true,
-    });
+    }) catch |err| return menu_init_error(.input_context, err);
 
     self.dirt = ResourcePack.get_tex(.dirt);
     self.logo = ResourcePack.get_tex(.logo);
     self.active_screen = .main;
-    self.main_ui_state.open(!ui_input.profile_uses_pointer());
+    self.main_ui_state.open(ui_input.seed_focus_on_open());
 
     const saved_pack = Options.current.active_texturepack();
     if (saved_pack.len > 0) self.apply_pack(engine.dirs.data, saved_pack);
 
     self.inited = true;
     engine.report();
+}
+
+const MenuInitStage = enum {
+    extract_pack_create,
+    extract_pack_write,
+    default_pack_open,
+    default_textures,
+    sprite_batcher,
+    font_batcher,
+    splash_mesh,
+    input_register,
+    input_context,
+};
+
+fn menu_init_error(comptime stage: MenuInitStage, err: anyerror) anyerror {
+    if (err != error.Unexpected) return err;
+
+    return switch (stage) {
+        .extract_pack_create => error.MenuInitExtractPackCreateUnexpected,
+        .extract_pack_write => error.MenuInitExtractPackWriteUnexpected,
+        .default_pack_open => error.MenuInitDefaultPackOpenUnexpected,
+        .default_textures => error.MenuInitDefaultTexturesUnexpected,
+        .sprite_batcher => error.MenuInitSpriteBatcherUnexpected,
+        .font_batcher => error.MenuInitFontBatcherUnexpected,
+        .splash_mesh => error.MenuInitSplashMeshUnexpected,
+        .input_register => error.MenuInitInputRegisterUnexpected,
+        .input_context => error.MenuInitInputContextUnexpected,
+    };
 }
 
 fn migrate_default_saves(alloc: std.mem.Allocator, io: std.Io, data_dir: std.Io.Dir) void {
@@ -398,7 +440,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
     try prepare_batches(self, engine);
 }
 
-fn prepare_batches(self: *@This(), engine: *Engine) !void {
+fn prepare_batches(self: *@This(), _: *Engine) !void {
     self.batcher.clear();
     self.font_batcher.clear();
     draw_dirt_tiles(self);
@@ -447,7 +489,7 @@ fn prepare_batches(self: *@This(), engine: *Engine) !void {
                 .name_len = &self.cw_name_len,
                 .seed = &self.cw_seed,
                 .seed_len = &self.cw_seed_len,
-                .create_enabled = self.create_world_available(engine),
+                .create_enabled = self.cw_create_enabled,
             };
             _ = CreateWorld.run(&ui, &cw);
             ui.end();
@@ -543,15 +585,20 @@ fn update_select_world(self: *@This(), engine: *Engine, in: *const ui_input.UiIn
 fn update_create_world(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
     var list: UiDrawList = .{};
     var ui = self.begin_ui(&list, &self.cw_ui_state, in, 0);
+    const old_name_len = self.cw_name_len;
+    const old_name = self.cw_name;
     var cw: CreateWorld.Ctx = .{
         .name = &self.cw_name,
         .name_len = &self.cw_name_len,
         .seed = &self.cw_seed,
         .seed_len = &self.cw_seed_len,
-        .create_enabled = self.create_world_available(engine),
+        .create_enabled = self.cw_create_enabled,
     };
     const action = CreateWorld.run(&ui, &cw);
     ui.end();
+    if (old_name_len != self.cw_name_len or !std.mem.eql(u8, old_name[0..old_name_len], self.cw_name[0..self.cw_name_len])) {
+        self.refresh_create_world_available(engine);
+    }
     switch (action) {
         .none => {},
         .create => create_world(self, engine),
@@ -579,6 +626,10 @@ fn sw_select_row(self: *@This(), engine: *Engine, row: u8) void {
 
 fn create_world_available(self: *const @This(), engine: *Engine) bool {
     return create_world_name_available(engine, self.create_world_name_slice());
+}
+
+fn refresh_create_world_available(self: *@This(), engine: *Engine) void {
+    self.cw_create_enabled = self.create_world_available(engine);
 }
 
 fn create_world_name_available(engine: *Engine, name: []const u8) bool {
@@ -656,7 +707,7 @@ fn update_controls(self: *@This(), engine: *Engine, in: *const ui_input.UiInput)
 
 fn enter_main(self: *@This()) void {
     self.active_screen = .main;
-    self.main_ui_state.open(!ui_input.profile_uses_pointer());
+    self.main_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn main_menu_options() MainMenu.Options {
@@ -668,7 +719,7 @@ fn main_menu_options() MainMenu.Options {
 
 fn enter_direct_connect(self: *@This()) void {
     self.active_screen = .direct_connect;
-    self.dc_ui_state.open(!ui_input.profile_uses_pointer());
+    self.dc_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn enter_texture_packs(self: *@This(), engine: *Engine) void {
@@ -676,7 +727,7 @@ fn enter_texture_packs(self: *@This(), engine: *Engine) void {
     self.tp_entry_count = TexturePacks.scan(engine.io, default_pack_dir, engine.dirs.data, &self.tp_entries);
     self.tp_selected_index = TexturePacks.find_active_index(self.tp_entries[0..self.tp_entry_count]);
     self.active_screen = .texture_packs;
-    self.tp_ui_state.open(!ui_input.profile_uses_pointer());
+    self.tp_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn enter_select_world(self: *@This(), engine: *Engine) void {
@@ -684,15 +735,16 @@ fn enter_select_world(self: *@This(), engine: *Engine) void {
     self.sw_delete_mode = false;
     Session.clear_singleplayer_seed_override();
     self.active_screen = .select_world;
-    self.sw_ui_state.open(!ui_input.profile_uses_pointer());
+    self.sw_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn enter_create_world(self: *@This(), engine: *Engine) void {
     seed_create_world_name(self, engine);
     self.cw_seed_len = 0;
     self.sw_delete_mode = false;
+    self.refresh_create_world_available(engine);
     self.active_screen = .create_world;
-    self.cw_ui_state.open(!ui_input.profile_uses_pointer());
+    self.cw_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn seed_create_world_name(self: *@This(), engine: *Engine) void {
@@ -724,14 +776,14 @@ fn set_create_world_name(self: *@This(), name: []const u8) void {
 fn enter_options(self: *@This()) void {
     self.options_rd_view = @floatFromInt(Options.capped_render_distance());
     self.active_screen = .options;
-    self.options_ui_state.open(!ui_input.profile_uses_pointer());
+    self.options_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn enter_controls(self: *@This()) void {
     ControlsScreen.cancel_capture(controls_ctx(self));
     self.controls_status = .none;
     self.active_screen = .controls;
-    self.controls_ui_state.open(!ui_input.profile_uses_pointer());
+    self.controls_ui_state.open(ui_input.seed_focus_on_open());
 }
 
 fn controls_ctx(self: *@This()) ControlsScreen.Ctx {
