@@ -240,9 +240,10 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
             self.build_estimator.end(self.io);
         } else |_| {
             self.build_estimator.end(self.io);
-            // OOM - evict the farthest built section to free GPU memory,
-            // then stop for this frame. The cursor stays at i so this
-            // section is retried first next frame rather than rebuilding it
+            // Mesh allocation/indexing failure - evict the farthest built
+            // section to free GPU memory, then stop for this frame. The
+            // cursor stays at i so this section is retried first next frame
+            // rather than rebuilding it
             // twice in one frame.
             _ = self.try_evict_farthest(camera);
             self.build_cursor = @intCast(i);

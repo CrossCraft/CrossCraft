@@ -52,7 +52,8 @@ const WALK_FULL_SPEED: f32 = 4.3;
 // How fast walk_blend tracks the measured velocity (1/s, exponential smoothing).
 const WALK_BLEND_SPEED: f32 = 10.0;
 
-const LIMB_VERTS: usize = 36;
+const LIMB_QUADS: usize = 6;
+const LIMB_VERTS: usize = LIMB_QUADS * 6;
 
 // Name tag billboard above the head.
 const TAG_HEIGHT: f32 = 0.3; // world-space height of text (blocks)
@@ -101,16 +102,17 @@ pub fn init(allocator: std.mem.Allocator) !Self {
         &self.right_leg, &self.left_leg,
     };
     for (meshes) |m| {
-        try m.vertices.ensureTotalCapacity(allocator, LIMB_VERTS);
+        try m.ensure_quad_capacity(allocator, LIMB_QUADS);
     }
-    build_torso(&self.torso.vertices);
-    build_head(&self.head.vertices);
-    build_right_arm(&self.right_arm.vertices);
-    build_left_arm(&self.left_arm.vertices);
-    build_right_leg(&self.right_leg.vertices);
-    build_left_leg(&self.left_leg.vertices);
+    build_torso(&self.torso);
+    build_head(&self.head);
+    build_right_arm(&self.right_arm);
+    build_left_arm(&self.left_arm);
+    build_right_leg(&self.right_leg);
+    build_left_leg(&self.left_leg);
     for (meshes) |m| {
-        std.debug.assert(m.vertices.items.len == LIMB_VERTS);
+        const expected_verts: usize = if (Rendering.mesh.indexing_enabled) LIMB_QUADS * 4 else LIMB_VERTS;
+        std.debug.assert(m.vertices.items.len == expected_verts);
         m.update();
     }
     return self;
@@ -384,13 +386,8 @@ fn mirror_uvs(uvs: FaceUVs) FaceUVs {
     return m;
 }
 
-fn emit_quad(verts: *std.ArrayList(Vertex), q: [4]Vertex) void {
-    verts.appendAssumeCapacity(q[0]);
-    verts.appendAssumeCapacity(q[2]);
-    verts.appendAssumeCapacity(q[1]);
-    verts.appendAssumeCapacity(q[0]);
-    verts.appendAssumeCapacity(q[3]);
-    verts.appendAssumeCapacity(q[2]);
+fn emit_quad(mesh: *BatchMesh, q: [4]Vertex) void {
+    mesh.add_quad_assume_capacity(q[0], q[3], q[2], q[1]);
 }
 
 fn make_quad(face: Face, px: i16, px1: i16, py: i16, py1: i16, pz: i16, pz1: i16, uv: UVRect, color: u32) [4]Vertex {
@@ -435,7 +432,7 @@ fn make_quad(face: Face, px: i16, px1: i16, py: i16, py1: i16, pz: i16, pz1: i16
 }
 
 fn emit_box(
-    verts: *std.ArrayList(Vertex),
+    mesh: *BatchMesh,
     x0: i32,
     y0: i32,
     z0: i32,
@@ -453,7 +450,7 @@ fn emit_box(
 
     const faces = [_]Face{ .y_pos, .y_neg, .z_pos, .z_neg, .x_neg, .x_pos };
     for (faces, 0..) |face, i| {
-        emit_quad(verts, make_quad(face, px, px1, py, py1, pz, pz1, uvs[i], face_color(face)));
+        emit_quad(mesh, make_quad(face, px, px1, py, py1, pz, pz1, uvs[i], face_color(face)));
     }
 }
 
@@ -461,32 +458,32 @@ fn emit_box(
 // All limbs are built relative to their rotation pivot so that rotations
 // in the model matrix produce natural joint movement.
 
-fn build_torso(verts: *std.ArrayList(Vertex)) void {
+fn build_torso(mesh: *BatchMesh) void {
     // 0.5 wide, 0.75 tall, 0.25 deep. Positioned at model origin (feet).
-    emit_box(verts, -64, 192, -32, 64, 384, 32, &torso_uvs);
+    emit_box(mesh, -64, 192, -32, 64, 384, 32, &torso_uvs);
 }
 
-fn build_head(verts: *std.ArrayList(Vertex)) void {
+fn build_head(mesh: *BatchMesh) void {
     // Pivot at bottom-center (neck). Y [0, 0.5] relative to pivot.
-    emit_box(verts, -64, 0, -64, 64, 128, 64, &head_uvs);
+    emit_box(mesh, -64, 0, -64, 64, 128, 64, &head_uvs);
 }
 
-fn build_right_arm(verts: *std.ArrayList(Vertex)) void {
+fn build_right_arm(mesh: *BatchMesh) void {
     // Pivot at shoulder (top-center). Y [-0.75, 0] relative to pivot.
-    emit_box(verts, -32, -192, -32, 32, 0, 32, &arm_uvs);
+    emit_box(mesh, -32, -192, -32, 32, 0, 32, &arm_uvs);
 }
 
-fn build_left_arm(verts: *std.ArrayList(Vertex)) void {
+fn build_left_arm(mesh: *BatchMesh) void {
     const left_arm_uvs = comptime mirror_uvs(arm_uvs);
-    emit_box(verts, -32, -192, -32, 32, 0, 32, &left_arm_uvs);
+    emit_box(mesh, -32, -192, -32, 32, 0, 32, &left_arm_uvs);
 }
 
-fn build_right_leg(verts: *std.ArrayList(Vertex)) void {
+fn build_right_leg(mesh: *BatchMesh) void {
     // Pivot at hip (top-center). Y [-0.75, 0] relative to pivot.
-    emit_box(verts, -32, -192, -32, 32, 0, 32, &leg_uvs);
+    emit_box(mesh, -32, -192, -32, 32, 0, 32, &leg_uvs);
 }
 
-fn build_left_leg(verts: *std.ArrayList(Vertex)) void {
+fn build_left_leg(mesh: *BatchMesh) void {
     const left_leg_uvs = comptime mirror_uvs(leg_uvs);
-    emit_box(verts, -32, -192, -32, 32, 0, 32, &left_leg_uvs);
+    emit_box(mesh, -32, -192, -32, 32, 0, 32, &left_leg_uvs);
 }

@@ -63,7 +63,8 @@ const DIG_PITCH_RAD: f32 = -20.0 * std.math.pi / 180.0;
 
 // Cube path: 6 faces * 6 verts per triangle-pair quad. Cross-plant path
 // emits 2 double-sided quads (24 verts), so the cube case is the worst.
-const VERT_CAPACITY: usize = 36;
+const QUAD_CAPACITY: usize = 6;
+const VERT_CAPACITY: usize = QUAD_CAPACITY * 6;
 // Sentinel distinct from any real block id. Classic block ids occupy 0..49;
 // 50..255 are unused, so 0xFF is safely outside the assigned range.
 const SENTINEL: Block = .{ .id = @enumFromInt(0xFF) };
@@ -101,7 +102,7 @@ pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
     };
     // Reserve once at init so rebuild() stays infallible and never touches
     // the allocator on subsequent slot changes.
-    try self.mesh.vertices.ensureTotalCapacity(allocator, VERT_CAPACITY);
+    try self.mesh.ensure_quad_capacity(allocator, QUAD_CAPACITY);
     return self;
 }
 
@@ -213,7 +214,7 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
 // --- Mesh build ---
 
 fn rebuild(self: *Self, block: Block, shadowed: bool) void {
-    self.mesh.vertices.clearRetainingCapacity();
+    self.mesh.clear_retaining_capacity();
     if (block.is_air()) {
         self.mesh.update();
         return;
@@ -231,16 +232,16 @@ fn rebuild(self: *Self, block: Block, shadowed: bool) void {
         // All faces of a cross-plant share one tile (registered via `all`),
         // so the face argument is arbitrary.
         const tile = block.face_tile(.y_pos);
-        face_mod.emit_cross(&self.mesh.vertices, 0, 0, 0, tile, &self.atlas, shade);
+        face_mod.emit_cross(&self.mesh, 0, 0, 0, tile, &self.atlas, shade);
     } else {
         const is_slab = p.slab;
         const faces = [_]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
         for (faces) |face| {
             const tile = block.face_tile(face);
             if (is_slab) {
-                face_mod.emit_slab_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
+                face_mod.emit_slab_face(&self.mesh, face, 0, 0, 0, tile, &self.atlas, shade);
             } else {
-                face_mod.emit_face(&self.mesh.vertices, face, 0, 0, 0, tile, &self.atlas, shade);
+                face_mod.emit_face(&self.mesh, face, 0, 0, 0, tile, &self.atlas, shade);
             }
         }
     }

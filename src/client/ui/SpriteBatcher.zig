@@ -43,7 +43,7 @@ const TextureBatch = struct {
 };
 
 const MAX_SPRITES: u16 = if (ae.platform == .psp) 256 else 1024;
-const VERTS_PER_SPRITE: u16 = 6;
+const QUADS_PER_SPRITE: u16 = 1;
 
 sprites: [2][MAX_SPRITES]Sprite,
 count: u16,
@@ -193,10 +193,10 @@ fn rebuild_batches(self: *Self, screen_w: u32, screen_h: u32) !void {
 
         var batch = &self.batches.items[batch_idx];
         batch.texture = tex;
-        batch.mesh.vertices.clearRetainingCapacity();
-        try batch.mesh.vertices.ensureTotalCapacity(
+        batch.mesh.clear_retaining_capacity();
+        try batch.mesh.ensure_quad_capacity(
             self.allocator,
-            @as(usize, group_count) * VERTS_PER_SPRITE,
+            @as(usize, group_count) * QUADS_PER_SPRITE,
         );
 
         for (sprites[group_start..i]) |sprite| {
@@ -251,14 +251,12 @@ fn emit_sprite_vertices(mesh: *BatchMesh, sprite: *const Sprite, screen_w: u32, 
 
     const color: u32 = @bitCast(sprite.color);
 
-    mesh.vertices.appendSliceAssumeCapacity(&.{
-        Vertex{ .pos = .{ sx0, sy0, z }, .uv = .{ uv_l, uv_t }, .color = color },
-        Vertex{ .pos = .{ sx1, sy1, z }, .uv = .{ uv_r, uv_b }, .color = color },
-        Vertex{ .pos = .{ sx1, sy0, z }, .uv = .{ uv_r, uv_t }, .color = color },
-        Vertex{ .pos = .{ sx0, sy0, z }, .uv = .{ uv_l, uv_t }, .color = color },
-        Vertex{ .pos = .{ sx0, sy1, z }, .uv = .{ uv_l, uv_b }, .color = color },
-        Vertex{ .pos = .{ sx1, sy1, z }, .uv = .{ uv_r, uv_b }, .color = color },
-    });
+    mesh.add_quad_assume_capacity(
+        .{ .pos = .{ sx0, sy0, z }, .uv = .{ uv_l, uv_t }, .color = color },
+        .{ .pos = .{ sx0, sy1, z }, .uv = .{ uv_l, uv_b }, .color = color },
+        .{ .pos = .{ sx1, sy1, z }, .uv = .{ uv_r, uv_b }, .color = color },
+        .{ .pos = .{ sx1, sy0, z }, .uv = .{ uv_r, uv_t }, .color = color },
+    );
 }
 
 fn anchor_point(anchor: Anchor, ex: i16, ey: i16) Sprite.Range {

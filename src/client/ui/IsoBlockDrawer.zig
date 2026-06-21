@@ -56,13 +56,13 @@ const PROJ_HALF: f32 = 0.7071068; // cos(45)
 pub const ISO_LAYER: u8 = 250;
 const ISO_Z: i16 = 32766 - @as(i16, ISO_LAYER);
 
-// 3 faces * 6 verts per face. Cross/flat blocks emit only 6 verts so we size
+// 3 faces per block. Cross/flat blocks emit only 1 quad so we size
 // by the cube worst case.
-const VERTS_PER_BLOCK: usize = 18;
+const QUADS_PER_BLOCK: usize = 3;
 // Worst case: 9 hotbar slots + 45 inventory grid slots queued in the same
 // frame. Reserving up front keeps the per-frame path alloc-free.
 const MAX_BLOCKS: usize = 9 + 45;
-const VERT_CAPACITY: usize = MAX_BLOCKS * VERTS_PER_BLOCK;
+const QUAD_CAPACITY: usize = MAX_BLOCKS * QUADS_PER_BLOCK;
 
 terrain: *const Rendering.Texture,
 atlas: TextureAtlas,
@@ -85,7 +85,7 @@ pub fn init(
         .iso_xform = iso,
         .allocator = allocator,
     };
-    try self.mesh.vertices.ensureTotalCapacity(allocator, VERT_CAPACITY);
+    try self.mesh.ensure_quad_capacity(allocator, QUAD_CAPACITY);
     return self;
 }
 
@@ -95,7 +95,7 @@ pub fn deinit(self: *Self) void {
 
 /// Begin a new frame's worth of blocks. Drops everything queued so far.
 pub fn begin(self: *Self) void {
-    self.mesh.vertices.clearRetainingCapacity();
+    self.mesh.clear_retaining_capacity();
 }
 
 /// Queue an isometric block at logical-pixel center (cx, cy).
@@ -323,14 +323,8 @@ fn emit_quad(self: *Self, verts: *const [4]Vertex) void {
     const ccw = ax * by - ay * bx > 0;
 
     if (ccw) {
-        self.mesh.vertices.appendSliceAssumeCapacity(&.{
-            verts[0], verts[1], verts[2],
-            verts[0], verts[2], verts[3],
-        });
+        self.mesh.add_quad_assume_capacity(verts[0], verts[1], verts[2], verts[3]);
     } else {
-        self.mesh.vertices.appendSliceAssumeCapacity(&.{
-            verts[0], verts[2], verts[1],
-            verts[0], verts[3], verts[2],
-        });
+        self.mesh.add_quad_assume_capacity(verts[0], verts[3], verts[2], verts[1]);
     }
 }

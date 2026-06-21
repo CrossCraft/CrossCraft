@@ -155,7 +155,7 @@ fn cloud_tile_uv(tile: u32) [2]i16 {
 }
 
 fn build_plane(allocator: std.mem.Allocator, mesh: *BatchMesh) !void {
-    try mesh.vertices.ensureTotalCapacity(allocator, PLANE_GRID * PLANE_GRID * 6);
+    try mesh.ensure_quad_capacity(allocator, PLANE_GRID * PLANE_GRID);
     const color: u32 = @bitCast(Color.game_daytime_zenith);
 
     var zi: u32 = 0;
@@ -169,7 +169,7 @@ fn build_plane(allocator: std.mem.Allocator, mesh: *BatchMesh) !void {
 }
 
 fn build_clouds(allocator: std.mem.Allocator, mesh: *BatchMesh) !void {
-    try mesh.vertices.ensureTotalCapacity(allocator, CLOUD_GRID * CLOUD_GRID * 6);
+    try mesh.ensure_quad_capacity(allocator, CLOUD_GRID * CLOUD_GRID);
     const color: u32 = 0xFFFFFFFF;
 
     var zi: u32 = 0;
@@ -198,10 +198,10 @@ fn emit_down_quad(
     tv1: i16,
 ) void {
     // v0=(x0,z1) v1=(x1,z1) v2=(x1,z0) v3=(x0,z0); emit 0,2,1 then 0,3,2
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x0, 0, z1 }, .uv = .{ tu0, tv1 }, .color = color });
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x1, 0, z0 }, .uv = .{ tu1, tv0 }, .color = color });
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x1, 0, z1 }, .uv = .{ tu1, tv1 }, .color = color });
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x0, 0, z1 }, .uv = .{ tu0, tv1 }, .color = color });
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x0, 0, z0 }, .uv = .{ tu0, tv0 }, .color = color });
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x1, 0, z0 }, .uv = .{ tu1, tv0 }, .color = color });
+    mesh.add_quad_assume_capacity(
+        .{ .pos = .{ x0, 0, z1 }, .uv = .{ tu0, tv1 }, .color = color },
+        .{ .pos = .{ x0, 0, z0 }, .uv = .{ tu0, tv0 }, .color = color },
+        .{ .pos = .{ x1, 0, z0 }, .uv = .{ tu1, tv0 }, .color = color },
+        .{ .pos = .{ x1, 0, z1 }, .uv = .{ tu1, tv1 }, .color = color },
+    );
 }

@@ -90,7 +90,6 @@ const DROP_TILE_ROW: u32 = 1;
 const POS_SCALE: f32 = 128.0;
 const MODEL_SCALE: f32 = 256.0;
 
-const VERTS_PER_QUAD: u32 = 6;
 const QUADS_PER_SECTION: u32 = 2; // crossed X-plane + Z-plane per section
 const COLUMNS_DIAM: u32 = 2 * EXTENT_U + 1;
 const MAX_COLUMNS: u32 = COLUMNS_DIAM * COLUMNS_DIAM;
@@ -99,8 +98,8 @@ const MAX_COLUMNS: u32 = COLUMNS_DIAM * COLUMNS_DIAM;
 /// world-height count.
 const MAX_SECTIONS_BASE: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(c.WorldHeight)) / SECTION_HEIGHT));
 const MAX_SECTIONS_PER_COLUMN: u32 = MAX_SECTIONS_BASE * 2;
-const STREAK_MAX_VERTS: u32 = MAX_COLUMNS * MAX_SECTIONS_PER_COLUMN * QUADS_PER_SECTION * VERTS_PER_QUAD;
-const SPLASH_MAX_VERTS: u32 = @as(u32, SPLASH_MAX) * 6;
+const STREAK_MAX_QUADS: u32 = MAX_COLUMNS * MAX_SECTIONS_PER_COLUMN * QUADS_PER_SECTION;
+const SPLASH_MAX_QUADS: u32 = @as(u32, SPLASH_MAX);
 
 // --- Types ---
 
@@ -146,8 +145,8 @@ pub fn init(allocator: std.mem.Allocator) !Self {
         .rng = std.Random.DefaultPrng.init(0xDA1ADA1ADA1ADA1A),
         .allocator = allocator,
     };
-    try self.streak_mesh.vertices.ensureTotalCapacity(allocator, STREAK_MAX_VERTS);
-    try self.splash_mesh.vertices.ensureTotalCapacity(allocator, SPLASH_MAX_VERTS);
+    try self.streak_mesh.ensure_quad_capacity(allocator, STREAK_MAX_QUADS);
+    try self.splash_mesh.ensure_quad_capacity(allocator, SPLASH_MAX_QUADS);
     return self;
 }
 
@@ -298,7 +297,7 @@ fn rebuild_streak_mesh(self: *Self, camera: *const Camera) void {
         return;
     }
 
-    self.streak_mesh.vertices.clearRetainingCapacity();
+    self.streak_mesh.clear_retaining_capacity();
     build_streaks(&self.streak_mesh, cam_tile_x_i, cam_tile_z_i);
     self.streak_mesh.update();
     self.streak_cam_tile_x = cam_tile_x_i;
@@ -307,7 +306,7 @@ fn rebuild_streak_mesh(self: *Self, camera: *const Camera) void {
 }
 
 fn rebuild_splash_mesh(self: *Self, camera: *const Camera) void {
-    self.splash_mesh.vertices.clearRetainingCapacity();
+    self.splash_mesh.clear_retaining_capacity();
     if (self.splash_count == 0) return;
 
     // Same billboard basis as ParticleSystem: right is yaw-only (no roll),
@@ -568,13 +567,7 @@ fn emit_quad(
     const tr: Vertex = .{ .pos = .{ x2, y2, z2 }, .uv = .{ tu2, tv2 }, .color = color };
     const tl: Vertex = .{ .pos = .{ x3, y3, z3 }, .uv = .{ tu3, tv3 }, .color = color };
 
-    // Front: bl -> br -> tr, bl -> tr -> tl
-    mesh.vertices.appendAssumeCapacity(bl);
-    mesh.vertices.appendAssumeCapacity(br);
-    mesh.vertices.appendAssumeCapacity(tr);
-    mesh.vertices.appendAssumeCapacity(bl);
-    mesh.vertices.appendAssumeCapacity(tr);
-    mesh.vertices.appendAssumeCapacity(tl);
+    mesh.add_quad_assume_capacity(bl, br, tr, tl);
 }
 
 // --- Splash mesh build ---
@@ -597,12 +590,7 @@ fn emit_splash(
     const br: Vertex = .{ .pos = .{ encode(p.px + rx - upx), encode(p.py - upy), encode(p.pz + rz - upz) }, .uv = .{ tu1, tv1 }, .color = color };
     const tr: Vertex = .{ .pos = .{ encode(p.px + rx + upx), encode(p.py + upy), encode(p.pz + rz + upz) }, .uv = .{ tu1, tv0 }, .color = color };
     const tl: Vertex = .{ .pos = .{ encode(p.px - rx + upx), encode(p.py + upy), encode(p.pz - rz + upz) }, .uv = .{ tu0, tv0 }, .color = color };
-    mesh.vertices.appendAssumeCapacity(bl);
-    mesh.vertices.appendAssumeCapacity(br);
-    mesh.vertices.appendAssumeCapacity(tr);
-    mesh.vertices.appendAssumeCapacity(bl);
-    mesh.vertices.appendAssumeCapacity(tr);
-    mesh.vertices.appendAssumeCapacity(tl);
+    mesh.add_quad_assume_capacity(bl, br, tr, tl);
 }
 
 // --- Utility ---

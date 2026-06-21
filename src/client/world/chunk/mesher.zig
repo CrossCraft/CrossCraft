@@ -4,7 +4,9 @@ const c = common.consts;
 const prefetch = common.prefetch;
 const World = @import("game").World;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
-const Vertex = @import("aether").Rendering.Vertex;
+const Rendering = @import("aether").Rendering;
+const Vertex = Rendering.Vertex;
+const BatchMesh = Rendering.Mesh(Vertex);
 const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 
@@ -541,8 +543,14 @@ pub fn count_section(buf: *const SectionBuf) SectionCounts {
 
 // --- Emit ---
 
-fn assert_has_room(verts: *const std.ArrayList(Vertex), n: u32) void {
-    std.debug.assert(verts.items.len + n <= verts.capacity);
+fn assert_has_room(mesh: *const BatchMesh, quad_count: u32) void {
+    const quads: usize = quad_count;
+    if (Rendering.mesh.indexing_enabled) {
+        std.debug.assert(mesh.vertices.items.len + quads * 4 <= mesh.vertices.capacity);
+        std.debug.assert(mesh.indices.items.len + quads * 6 <= mesh.indices.capacity);
+    } else {
+        std.debug.assert(mesh.vertices.items.len + quads * 6 <= mesh.vertices.capacity);
+    }
 }
 
 // --- Ambient Occlusion ---
@@ -635,9 +643,9 @@ fn compute_ao_colors(buf: *const SectionBuf, by: u32, bz: u32, bit: u5, face: Fa
 }
 
 pub const Meshes = struct {
-    @"opaque": *std.ArrayList(Vertex),
-    transparent: *std.ArrayList(Vertex),
-    fluid: *std.ArrayList(Vertex),
+    @"opaque": *BatchMesh,
+    transparent: *BatchMesh,
+    fluid: *BatchMesh,
 };
 
 fn emit_mask(
@@ -680,24 +688,24 @@ fn emit_mask(
         const shadowed = !face_sunlit(wx, y, wz, face) and !p.emits_light;
 
         if (face == .y_pos and is_fluid) {
-            assert_has_room(mesh, 12);
+            assert_has_room(mesh, 2);
             face_mod.emit_fluid_top(mesh, lx, local_y, lz, tile, atlas, shadowed);
         } else if (is_fluid and face != .y_neg) {
             // Horizontal side of a fluid: match the top plane's inset height
             // when this block's top is exposed, else span the full block so
             // stacked fluid columns look continuous.
-            assert_has_room(mesh, 6);
+            assert_has_room(mesh, 1);
             const above_is_fluid = ((buf[by + 1][bz].flu >> bit_pos) & 1) != 0;
             face_mod.emit_fluid_side_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed, above_is_fluid);
         } else if (is_slab) {
-            assert_has_room(mesh, 6);
+            assert_has_room(mesh, 1);
             face_mod.emit_slab_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);
         } else if (ao and !is_fluid) {
-            assert_has_room(mesh, 6);
+            assert_has_room(mesh, 1);
             const colors = compute_ao_colors(buf, by, bz, bit_pos, face, shadowed);
             face_mod.emit_face_colors(mesh, face, lx, local_y, lz, tile, atlas, colors);
         } else {
-            assert_has_room(mesh, 6);
+            assert_has_room(mesh, 1);
             face_mod.emit_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);
         }
     }
@@ -711,7 +719,7 @@ fn emit_opaque_leaf_mask(
     cx: u32,
     cz: u32,
     face: Face,
-    opaque_mesh: *std.ArrayList(Vertex),
+    opaque_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
     chunk_row: *const [c.ChunkSize]Block,
     buf: *const SectionBuf,
@@ -724,7 +732,7 @@ fn emit_opaque_leaf_mask(
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
         bits &= bits - 1;
-        assert_has_room(opaque_mesh, 6);
+        assert_has_room(opaque_mesh, 1);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
         const wx: u16 = @intCast(cx * 16 + lx);
@@ -747,7 +755,7 @@ fn emit_cross_mask(
     lz: u32,
     cx: u32,
     cz: u32,
-    transparent_mesh: *std.ArrayList(Vertex),
+    transparent_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
     chunk_row: *const [c.ChunkSize]Block,
 ) void {
@@ -756,7 +764,7 @@ fn emit_cross_mask(
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
         bits &= bits - 1;
-        assert_has_room(transparent_mesh, 24);
+        assert_has_room(transparent_mesh, 4);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
         const wx: u16 = @intCast(cx * 16 + lx);
@@ -777,7 +785,7 @@ fn emit_fluid_overlay_mask(
     cx: u32,
     cz: u32,
     face: Face,
-    fluid_mesh: *std.ArrayList(Vertex),
+    fluid_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
 ) void {
     const local_y: u32 = y % SECTION_H;
@@ -800,7 +808,7 @@ fn emit_fluid_overlay_mask(
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
         bits &= bits - 1;
-        assert_has_room(fluid_mesh, 6);
+        assert_has_room(fluid_mesh, 1);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
         const wx: u16 = @intCast(cx * 16 + lx);
@@ -818,7 +826,7 @@ fn emit_fluid_overlay_mask(
 
 /// Walks the SectionBuf and emits faces. Caller pre-allocates the three
 /// meshes from the SectionCounts pack_section returned, so emit can use
-/// appendAssumeCapacity without any per-row growth checks. Recomputes face
+/// assume-capacity mesh helpers without any per-row growth checks. Recomputes face
 /// masks per cell (cheaper than caching them on PSP -- see pack_section).
 pub fn emit_section(
     buf: *const SectionBuf,

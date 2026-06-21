@@ -74,39 +74,39 @@ pub fn deinit(self: *Self) void {
 /// Release vertex data but keep GPU handles alive for reuse.
 pub fn clear(self: *Self) void {
     const a = self.allocator;
-    self.@"opaque".vertices.clearAndFree(a);
-    self.trans.vertices.clearAndFree(a);
-    self.fluid.vertices.clearAndFree(a);
+    self.@"opaque".clear_and_free(a);
+    self.trans.clear_and_free(a);
+    self.fluid.clear_and_free(a);
 }
 
-pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void {
+pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{ OutOfMemory, IndexOverflow }!void {
     // All-air chunks have no visible faces -- skip pack/count/emit entirely.
     if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) {
-        self.@"opaque".vertices.clearRetainingCapacity();
-        self.trans.vertices.clearRetainingCapacity();
-        self.fluid.vertices.clearRetainingCapacity();
+        self.@"opaque".clear_retaining_capacity();
+        self.trans.clear_retaining_capacity();
+        self.fluid.clear_retaining_capacity();
         return;
     }
 
     var buf: mesher.SectionBuf = undefined;
     // pack_section bundles the count phase and returns per-mesh totals so
-    // we can pre-allocate exact capacity before emit. emit_section then
-    // sticks to appendAssumeCapacity -- no per-row growth, no realloc thrash.
+    // we can pre-allocate exact capacity before emit. emit_section then uses
+    // assume-capacity mesh helpers -- no per-row growth, no realloc thrash.
     const counts = mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
 
     const a = self.allocator;
-    self.@"opaque".vertices.clearRetainingCapacity();
-    self.trans.vertices.clearRetainingCapacity();
-    self.fluid.vertices.clearRetainingCapacity();
+    self.@"opaque".clear_retaining_capacity();
+    self.trans.clear_retaining_capacity();
+    self.fluid.clear_retaining_capacity();
 
-    try self.@"opaque".vertices.ensureTotalCapacity(a, counts.opaque_verts);
-    try self.trans.vertices.ensureTotalCapacity(a, counts.transparent_verts);
-    try self.fluid.vertices.ensureTotalCapacity(a, counts.fluid_verts);
+    try self.@"opaque".ensure_quad_capacity(a, counts.opaque_verts / 6);
+    try self.trans.ensure_quad_capacity(a, counts.transparent_verts / 6);
+    try self.fluid.ensure_quad_capacity(a, counts.fluid_verts / 6);
 
     mesher.emit_section(&buf, self.cx, self.sy, self.cz, .{
-        .@"opaque" = &self.@"opaque".vertices,
-        .transparent = &self.trans.vertices,
-        .fluid = &self.fluid.vertices,
+        .@"opaque" = &self.@"opaque",
+        .transparent = &self.trans,
+        .fluid = &self.fluid,
     }, atlas, self.ao_enabled);
 
     inline for (&.{ &self.@"opaque", &self.trans, &self.fluid }) |mesh| {

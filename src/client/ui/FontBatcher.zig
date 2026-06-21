@@ -22,7 +22,7 @@ const GLYPH_COUNT: u32 = 256;
 const GLYPH_SIZE: u32 = 8;
 const SPACE_WIDTH: u8 = 4;
 const DEFAULT_SPACING: i8 = 1;
-const VERTS_PER_CHAR: u32 = 6;
+const QUADS_PER_CHAR: u32 = 1;
 const MAX_ENTRIES: u16 = 1024;
 const MAX_TEXT_BYTES: u16 = 8192;
 const COLOR_PREFIX: u8 = '&';
@@ -268,9 +268,9 @@ pub fn build_mesh(
     const has_shadow = shadow_color.a > 0;
     const n_chars: u32 = @intCast(str.len);
     const mult: u32 = if (has_shadow) 2 else 1;
-    try mesh.vertices.ensureTotalCapacity(
+    try mesh.ensure_quad_capacity(
         self.allocator,
-        @as(usize, n_chars * VERTS_PER_CHAR * mult),
+        @as(usize, n_chars * QUADS_PER_CHAR * mult),
     );
 
     const s: i32 = text_scale;
@@ -369,14 +369,14 @@ fn rebuild(self: *Self, screen_w: u32, screen_h: u32) !void {
     const scale = Scaling.compute(screen_w, screen_h);
     const entries = self.entries[self.current][0..self.count];
 
-    var total_verts: u32 = 0;
+    var total_quads: u32 = 0;
     for (entries) |*e| {
         const mult: u32 = if (e.shadow_color.a > 0) 2 else 1;
-        total_verts += @as(u32, @intCast(e.str.len)) * VERTS_PER_CHAR * mult;
+        total_quads += @as(u32, @intCast(e.str.len)) * QUADS_PER_CHAR * mult;
     }
 
-    self.mesh.vertices.clearRetainingCapacity();
-    try self.mesh.vertices.ensureTotalCapacity(self.allocator, @as(usize, total_verts));
+    self.mesh.clear_retaining_capacity();
+    try self.mesh.ensure_quad_capacity(self.allocator, @as(usize, total_quads));
 
     for (entries) |*e| {
         emit_text(self, &self.mesh, e, screen_w, screen_h, scale);
@@ -554,14 +554,12 @@ fn emit_quad(
     uv_b: i16,
     color: u32,
 ) void {
-    mesh.vertices.appendSliceAssumeCapacity(&.{
-        Vertex{ .pos = .{ sx0, sy0, z }, .uv = .{ uv_l, uv_t }, .color = color },
-        Vertex{ .pos = .{ sx1, sy1, z }, .uv = .{ uv_r, uv_b }, .color = color },
-        Vertex{ .pos = .{ sx1, sy0, z }, .uv = .{ uv_r, uv_t }, .color = color },
-        Vertex{ .pos = .{ sx0, sy0, z }, .uv = .{ uv_l, uv_t }, .color = color },
-        Vertex{ .pos = .{ sx0, sy1, z }, .uv = .{ uv_l, uv_b }, .color = color },
-        Vertex{ .pos = .{ sx1, sy1, z }, .uv = .{ uv_r, uv_b }, .color = color },
-    });
+    mesh.add_quad_assume_capacity(
+        .{ .pos = .{ sx0, sy0, z }, .uv = .{ uv_l, uv_t }, .color = color },
+        .{ .pos = .{ sx0, sy1, z }, .uv = .{ uv_l, uv_b }, .color = color },
+        .{ .pos = .{ sx1, sy1, z }, .uv = .{ uv_r, uv_b }, .color = color },
+        .{ .pos = .{ sx1, sy0, z }, .uv = .{ uv_r, uv_t }, .color = color },
+    );
 }
 
 /// Scans each glyph tile in the font texture to find the rightmost column

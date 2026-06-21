@@ -33,7 +33,6 @@ const HALF_SIZE: f32 = 0.06;
 const SUBTILE_DIV: i16 = 4;
 /// Verts per particle: two triangles (the gfx backend only supports
 /// triangles/lines, so quads are expanded just like face.zig:emit_quad).
-const VERTS_PER_PARTICLE: u16 = 6;
 
 // --- Vertex/model space ---
 //
@@ -99,10 +98,7 @@ pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
         .allocator = allocator,
     };
     // Pre-reserve the CPU vertex buffer so per-frame rebuilds don't allocate.
-    try self.mesh.vertices.ensureTotalCapacity(
-        allocator,
-        MAX_PARTICLES * VERTS_PER_PARTICLE,
-    );
+    try self.mesh.ensure_quad_capacity(allocator, MAX_PARTICLES);
     return self;
 }
 
@@ -307,7 +303,7 @@ pub fn draw(self: *Self) void {
 }
 
 fn rebuild_mesh(self: *Self, camera: *const Camera) void {
-    self.mesh.vertices.clearRetainingCapacity();
+    self.mesh.clear_retaining_capacity();
     if (self.count == 0) return;
 
     // Camera basis for billboarding. Right is yaw-only so the quad never
@@ -361,12 +357,7 @@ fn emit_particle(
     const v2 = make_vertex(p.px + rx + upx, p.py + upy, p.pz + rz + upz, p.u1, p.v0, color);
     const v3 = make_vertex(p.px - rx + upx, p.py + upy, p.pz - rz + upz, p.u0, p.v0, color);
 
-    mesh.vertices.appendAssumeCapacity(v0);
-    mesh.vertices.appendAssumeCapacity(v1);
-    mesh.vertices.appendAssumeCapacity(v2);
-    mesh.vertices.appendAssumeCapacity(v0);
-    mesh.vertices.appendAssumeCapacity(v2);
-    mesh.vertices.appendAssumeCapacity(v3);
+    mesh.add_quad_assume_capacity(v0, v1, v2, v3);
 }
 
 fn make_vertex(wx: f32, wy: f32, wz: f32, u: i16, v: i16, color: u32) Vertex {
