@@ -103,8 +103,8 @@ pub const Options = struct {
     /// Cap frames to the display refresh rate.  Applied via
     /// `engine.set_vsync` on load and whenever the options menu is dismissed.
     /// PSP defaults to off; the 60 Hz cap costs more than it's worth given the
-    /// platform's frame-time budget.  3DS forces this on.
-    vsync: bool = @import("aether").platform != .psp,
+    /// platform's frame-time budget.
+    vsync: bool = @import("aether").platform != .psp and @import("aether").platform != .nintendo_3ds,
 
     /// In-game controller prompt style.  `auto` picks glyphs from the
     /// connected controller on desktop, or the fixed platform layout on
@@ -197,9 +197,8 @@ pub fn fancy_leaves_supported() bool {
 }
 
 /// True when VSync can be changed by the options UI.
-/// 3DS requires VSync on, so persisted false values are ignored there.
 pub fn vsync_toggle_supported() bool {
-    return ae.platform != .nintendo_3ds;
+    return true;
 }
 
 pub fn effective_vsync(vsync: bool) bool {
