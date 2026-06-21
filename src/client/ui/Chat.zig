@@ -10,8 +10,8 @@
 // the session returns in terminal state, which Chat services on the same
 // frame the overlay opens. There is no PSP branch in the text path itself.
 //
-// T opens a blank input field. / opens with '/' pre-typed as a command
-// prefix. Enter (chat_send) submits, Escape (chat_cancel) discards.
+// T opens a blank input field. / opens with '/' inserted into the input.
+// Enter (chat_send) submits, Escape (chat_cancel) discards.
 
 const std = @import("std");
 const ae = @import("aether");
@@ -106,9 +106,6 @@ open: bool,
 /// Distinct from `open` so controller social mode can show the panel without
 /// yet having armed text entry.
 session_active: bool,
-/// Optional command prefix prepended to outgoing messages, displayed
-/// ahead of the typed text. Zero = no prefix.
-prefix: u8,
 prev_send: input.ButtonState,
 prev_cancel: input.ButtonState,
 /// Suppresses a ghost rising edge on the frame chat activates with
@@ -126,7 +123,6 @@ pub fn init() Self {
         .msg_count = 0,
         .open = false,
         .session_active = false,
-        .prefix = 0,
         .prev_send = .released,
         .prev_cancel = .released,
         .chat_was_active = false,
@@ -164,12 +160,10 @@ pub fn receive(self: *Self, raw: []const u8) void {
 /// cancelled). On desktop the session is left active for the user to type
 /// into; chat_send / chat_cancel are polled in `update`.
 ///
-/// `slash_prefix = true` prepends '/' as a command marker; the prefix is
-/// rendered separately and added back when the message is dispatched.
+/// `slash_prefix = true` starts the editable input with '/'.
 pub fn open_overlay(self: *Self, player: *Player, slash_prefix: bool) void {
     if (self.open) return;
     self.open = true;
-    self.prefix = if (slash_prefix) '/' else 0;
     self.prev_send = .released;
     self.prev_cancel = .released;
     self.chat_was_active = false;
@@ -187,7 +181,7 @@ pub fn open_overlay(self: *Self, player: *Player, slash_prefix: bool) void {
         self.open = false;
         return;
     };
-    self.begin_session();
+    self.begin_session(slash_prefix);
 
     // PSP returns synchronously with a terminal session; service it now.
     handle_terminal_if_done(self, player);
@@ -198,7 +192,6 @@ pub fn open_overlay(self: *Self, player: *Player, slash_prefix: bool) void {
 pub fn open_overlay_social(self: *Self, _: *Player) void {
     if (self.open) return;
     self.open = true;
-    self.prefix = 0;
     self.prev_send = .released;
     self.prev_cancel = .released;
     self.chat_was_active = false;
@@ -220,14 +213,12 @@ pub fn open_overlay_social(self: *Self, _: *Player) void {
     // text entry.
 }
 
-fn begin_session(self: *Self) void {
+fn begin_session(self: *Self, slash_prefix: bool) void {
     const target: input.TextInputTarget = .{ .id = "chat" };
-    const prefix_buf = [_]u8{self.prefix};
+    const slash_buf = [_]u8{'/'};
     const opts: input.TextInputOptions = .{
         .max_bytes = INPUT_MAX_LEN,
-        // Seed PSP's modal OSK (and the desktop session buffer) with the
-        // slash so command-style chat opens with the prefix already typed.
-        .initial = if (self.prefix != 0) prefix_buf[0..1] else null,
+        .initial = if (slash_prefix) slash_buf[0..1] else null,
     };
     _ = input.begin_text_input(target, opts) catch return;
     self.session_active = true;
@@ -236,7 +227,7 @@ fn begin_session(self: *Self) void {
 fn handle_terminal_if_done(self: *Self, player: *Player) void {
     const session = input.current_text_session() orelse return;
     if (session.status == .submitted) {
-        send_session(self, player);
+        send_session(player);
         self.close_overlay(player);
     } else if (session.status == .cancelled) {
         self.close_overlay(player);
@@ -303,13 +294,13 @@ pub fn update(self: *Self, player: *Player) void {
     if (send_edge) {
         if (self.session_active) {
             input.submit_text() catch {};
-            send_session(self, player);
+            send_session(player);
             self.close_overlay(player);
         } else {
             // Controller social mode: the panel is open without an active
             // session. Confirm starts text entry; modal OSK platforms return
             // synchronously and desktop keeps the session active.
-            self.begin_session();
+            self.begin_session(false);
             handle_terminal_if_done(self, player);
         }
         return;
@@ -328,22 +319,12 @@ fn is_chat_set_active() bool {
 
 // --- Wire send ---
 
-fn send_session(self: *Self, player: *Player) void {
+fn send_session(player: *Player) void {
     const session = input.current_text_session() orelse return;
     const body = session.buffer.items;
-    if (body.len == 0 and self.prefix == 0) return;
+    if (body.len == 0) return;
 
-    var combined: [INPUT_MAX_LEN + 1]u8 = undefined;
-    var n: usize = 0;
-    if (self.prefix != 0 and n < combined.len) {
-        combined[n] = self.prefix;
-        n += 1;
-    }
-    const take = @min(body.len, combined.len - n);
-    if (take > 0) std.mem.copyForwards(u8, combined[n..][0..take], body[0..take]);
-    n += take;
-
-    proto.send_message(player.writer, -1, combined[0..n]) catch {};
+    proto.send_message(player.writer, -1, body) catch {};
     player.writer.flush() catch {};
 }
 

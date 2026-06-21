@@ -291,7 +291,7 @@ hud_toggle_pending: bool,
 rain_toggle_pending: bool,
 
 /// Edge flags set by the chat triggers; GameState polls and clears them
-/// each frame.  chat_open: blank field; chat_cmd: '/' prefix field.
+/// each frame. chat_open: blank field; chat_cmd: field seeded with '/'.
 chat_open_pending: bool,
 chat_cmd_pending: bool,
 fly_tap_event: ?FlyTapEvent,
