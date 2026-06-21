@@ -176,6 +176,13 @@ fn bind_move(set: ActionSetHandle) !void {
     try input.bind_action(set, "move", .{ .source = .{ .key = Options.current.key_back }, .component = .y, .multiplier = -1.0 });
     try input.bind_action(set, "move", .{ .source = .{ .key = Options.current.key_left }, .component = .x, .multiplier = -1.0 });
     try input.bind_action(set, "move", .{ .source = .{ .key = Options.current.key_right }, .component = .x, .multiplier = 1.0 });
+
+    if (ae.platform == .nintendo_3ds) {
+        try input.bind_action(set, "move", .{ .source = .{ .gamepad_axis = .LeftY }, .component = .x, .multiplier = -1.0 });
+        try input.bind_action(set, "move", .{ .source = .{ .gamepad_axis = .LeftX }, .component = .y, .multiplier = 1.0 });
+        return;
+    }
+
     // Desktop: left analog stick drives movement. LeftY is +1 when pushed
     // down, so invert to make forward = +y.
     try input.bind_action(set, "move", .{ .source = .{ .gamepad_axis = .LeftX }, .component = .x, .multiplier = 1.0 });
