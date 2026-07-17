@@ -36,7 +36,6 @@ jobs:
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: server, extra: "" }
     runs-on: ${{ matrix.os }}
     name: dev ${{ matrix.kind }} (${{ matrix.name }})
     steps:
@@ -87,7 +86,6 @@ jobs:
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: server, extra: "" }
     runs-on: ${{ matrix.os }}
     name: rel ${{ matrix.kind }} (${{ matrix.name }})
     steps:
@@ -110,7 +108,7 @@ jobs:
         if: matrix.name == 'mac' && matrix.kind == 'game'
         run: brew install glfw molten-vk
 
-      # Server never packs resources — same command for every platform.
+      # Server never packs resources and only ships for PC targets.
       - name: Build server
         if: matrix.kind == 'server'
         run: zig build server -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} -Dskip-pack=true
@@ -173,13 +171,6 @@ jobs:
           size=$(wc -c <"$pack")
           test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
           echo "PSP game OK (EBOOT.PBP + pack.zip $size bytes)"
-
-      - name: Verify PSP server artifact
-        if: matrix.kind == 'server' && matrix.name == 'psp'
-        run: |
-          eboot="zig-out/bin/CrossCraft-Server-PSP/EBOOT.PBP"
-          test -s "$eboot" || { echo "missing or empty $eboot"; exit 1; }
-          echo "PSP server OK"
 
       - name: Upload macOS .app
         if: matrix.kind == 'game' && matrix.name == 'mac'

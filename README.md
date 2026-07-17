@@ -73,7 +73,7 @@ The full style rules live in `STYLE.MD`. They are inspired by NASA's Power of Te
 
 - Desktop: high frame rates at full view distance.
 - PSP: 60-70 FPS in normal terrain, dipping into the mid-50s only in the densest forest. Achieved through aggressive section LODs, fixed-point worldgen and rendering, and careful meshing. The PSP build detects PSP-1000 vs PSP-2000+ at startup and selects the matching memory profile automatically.
-- Server: zero allocations after init. Builds for desktop and PSP.
+- Server: zero allocations after init. Builds for Linux, macOS, and Windows.
 
 ## Building
 
@@ -91,7 +91,6 @@ zig build test                                                        # unit tes
 
 ```
 zig build game   -Dtarget=mipsel-psp                # PSP client
-zig build server -Dtarget=mipsel-psp                # PSP server
 ```
 
 PSP builds produce a full `EBOOT.PBP`. The client adapts its memory budgets at startup for PSP-1000 or PSP-2000+ hardware. The Aether engine handles the ELF -> PRX -> EBOOT pipeline.
@@ -114,7 +113,7 @@ Four Zig modules, wired together in `build.zig`:
 - `common` (`src/common/`) - shared primitives: fixed-point math, noise, RNG, allocators (`counting_allocator`, `static_allocator`, `fa_buffer`), constants, protocol re-export. No graphics, no platform.
 - `game` (`src/game/`) - shared gameplay and world logic used by both client and server (`world.zig`, `worldgen.zig`, `server.zig`, `client.zig`). Phase-specific behavior branches inside this module.
 - Client (`src/client/main.zig`) - built via `Aether.addGame`. Subdirs cover `world/` (chunks, blocks, sky, particles, selection outline), `state/` (menu, load, game), `connection/` (real `ClientConn` and an in-process `FakeConn` for singleplayer), `player/`, `graphics/`, `ui/`, and `util/`.
-- Server (`src/server/main.zig`) - a plain executable on most targets; on PSP it goes through `Aether.addGame` to pick up `pspsdk` and the linker script.
+- Server (`src/server/main.zig`) - a standalone executable for Linux, macOS, and Windows.
 
 The client always speaks the protocol. Singleplayer is just an in-process server behind a `FakeConn`, not a parallel code path.
 

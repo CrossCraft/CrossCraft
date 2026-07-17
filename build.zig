@@ -67,6 +67,10 @@ pub fn build(b: *std.Build) void {
         .windows, .linux => true,
         else => false,
     };
+    const is_pc_server = switch (config.platform) {
+        .windows, .linux, .macos => true,
+        else => false,
+    };
 
     // Resource packing: ZIP the default resource pack at build time.
     // Skipped via -Dskip-pack on CI where the LFS-backed resources submodule
@@ -198,51 +202,44 @@ pub fn build(b: *std.Build) void {
         .pic1 = if (is_psp) b.path("assets/psp/PIC1.png") else null,
     });
 
-    const server_overrides: Aether.config.Config.Overrides = .{
-        .nintendo_switch = overrides.nintendo_switch,
-        .use_cwd = true,
-    };
-    const server_exe = Aether.modules.addHeadless(ae_dep.builder, b, .{
-        .name = "CrossCraft-Classic-Server",
-        .root_source_file = b.path("src/server/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .overrides = server_overrides,
-    });
-    const server_root = Aether.modules.userRootModule(server_exe);
-    server_root.addImport("game", game);
-    server_root.addImport("common", common);
-
-    if (is_psp) {
-        Aether.packaging.exportArtifact(ae_dep.builder, b, server_exe, config, .{
-            .title = "CrossCraft Classic Server",
-            .output_dir = "CrossCraft-Server-PSP",
-            .icon0 = b.path("assets/psp/ICON0_Server.png"),
-            .pic1 = b.path("assets/psp/PIC1.png"),
+    if (is_pc_server) {
+        const server_overrides: Aether.config.Config.Overrides = .{
+            .use_cwd = true,
+        };
+        const server_exe = Aether.modules.addHeadless(ae_dep.builder, b, .{
+            .name = "CrossCraft-Classic-Server",
+            .root_source_file = b.path("src/server/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .overrides = server_overrides,
         });
-    }
+        const server_root = Aether.modules.userRootModule(server_exe);
+        server_root.addImport("game", game);
+        server_root.addImport("common", common);
 
-    const build_server_step = b.step("server", "Build the server");
-    build_server_step.dependOn(&b.addInstallArtifact(server_exe, .{}).step);
-    if (is_psp) {
-        // exportArtifact wires the PRX -> SFO -> PBP pipeline onto
-        // b.getInstallStep(); without this dep `zig build server` produces
-        // only the raw ELF and CrossCraft-Server-PSP/EBOOT.PBP never
-        // materialises. Mirrors the game step's PSP/macOS handling below.
-        build_server_step.dependOn(b.getInstallStep());
-    }
+        const build_server_step = b.step("server", "Build the server");
+        build_server_step.dependOn(&b.addInstallArtifact(server_exe, .{}).step);
 
-    const run_server_step = b.step("run-server", "Run the server");
-    const run_server_cmd = b.addRunArtifact(server_exe);
-    // Run from zig-out/bin/ so server.zig's cwd-rooted data files
-    // (world.dat, server.properties) land in the install dir instead of
-    // polluting the source tree.
-    run_server_cmd.setCwd(.{ .cwd_relative = b.getInstallPath(.bin, "") });
-    run_server_cmd.step.dependOn(build_server_step);
-    run_server_step.dependOn(&run_server_cmd.step);
+        const run_server_step = b.step("run-server", "Run the server");
+        const run_server_cmd = b.addRunArtifact(server_exe);
+        // Run from zig-out/bin/ so server.zig's cwd-rooted data files
+        // (world.dat, server.properties) land in the install dir instead of
+        // polluting the source tree.
+        run_server_cmd.setCwd(.{ .cwd_relative = b.getInstallPath(.bin, "") });
+        run_server_cmd.step.dependOn(build_server_step);
+        run_server_step.dependOn(&run_server_cmd.step);
 
-    if (b.args) |args| {
-        run_server_cmd.addArgs(args);
+        if (b.args) |args| {
+            run_server_cmd.addArgs(args);
+        }
+    } else {
+        const unsupported_server = b.addFail("Standalone server builds are supported only on PC targets (Linux, macOS, Windows).");
+
+        const build_server_step = b.step("server", "Build the server");
+        build_server_step.dependOn(&unsupported_server.step);
+
+        const run_server_step = b.step("run-server", "Run the server");
+        run_server_step.dependOn(&unsupported_server.step);
     }
 
     const build_game_step = b.step("game", "Build the game");

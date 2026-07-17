@@ -8,11 +8,12 @@
             .url = "git+https://github.com/IridescentRose/ZeeBuffer#8e1b2d03a905c2a70d4b0430f9a651e31027b181",
             .hash = "ZeeBuffer-0.2.0-RVIQu-7-AQC_98ycQNuJ4hxVxLDGMQkPAvLVvP4DsHz2",
         },
-        .engine = .{
-            .path = "git+https://github.com/AetherEngine/Aether#a91565e8e891496630f5b407c14b0ec9d62a4737",
-        },
         .resources = .{
             .path = "resources",
+        },
+        .engine = .{
+            .url = "git+https://github.com/AetherEngine/Aether#ef417716644f3c5d7ac3e8740488fe3188e97c76",
+            .hash = "Aether-0.0.0-cjG28rAGFwBarYoQ3pZyZk97n0O7eaFSrrcCU2BHz1jA",
         },
     },
     .paths = .{
