@@ -435,12 +435,12 @@ pub fn set_fly(self: *Self, enabled: bool) void {
 }
 
 /// Apply one frame of player movement.
-pub fn update(self: *Self, dt: f32) void {
+pub fn update(self: *Self, sys: *input.InputSystem, dt: f32) void {
     std.debug.assert(dt >= 0);
 
-    self.mouse_captured = input.effective_cursor_mode() == .captured;
+    self.mouse_captured = sys.effective_cursor_mode() == .captured;
 
-    self.poll_inputs(dt);
+    self.poll_inputs(sys, dt);
 
     // Process deferred gamepad shoulder actions. The one-frame delay lets
     // a same-frame L+R chord cancel the pending break/place before it fires.
@@ -1310,52 +1310,53 @@ fn draw_hotbar_blocks(self: *const Self, list: *UiDrawList, hud_y_shift: i16) vo
 
 // --- Per-frame poll ---
 
-fn poll_inputs(self: *Self, dt: f32) void {
-    const active_now = is_gameplay_active();
+fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
+    const actions = bindings.actions();
+    const active_now = is_gameplay_active(sys);
     const fresh_activation = active_now and !self.gameplay_was_active;
     self.gameplay_was_active = active_now;
     self.age_jump_taps(dt);
 
-    self.move_dir = input.get_action_vector2("move");
+    self.move_dir = sys.vector2(actions.move).current;
 
-    const look_raw = input.get_action_vector2("look");
+    const look_raw = sys.vector2(actions.look).current;
     const sens = Options.current.sensitivity * LOOK_PIXEL_TO_RAD;
     self.look_delta = .{ look_raw[0] * sens, look_raw[1] * sens };
 
-    self.look_rate = input.get_action_vector2("look_stick");
-    const jump = input.get_action_button("jump");
+    self.look_rate = sys.vector2(actions.look_stick).current;
+    const jump = sys.button(actions.jump).current;
     self.jumping = jump == .pressed;
-    self.sneaking = input.get_action_button("sneak") == .pressed;
+    self.sneaking = sys.button(actions.sneak).current == .pressed;
 
-    self.break_held = input.get_action_button("break") == .pressed;
-    self.place_held = input.get_action_button("place") == .pressed;
-    self.shoulder_r_held = input.get_action_button("shoulder_r") == .pressed;
-    self.shoulder_l_held = input.get_action_button("shoulder_l") == .pressed;
-    self.playerlist_held = input.get_action_button("playerlist") == .pressed;
+    self.break_held = sys.button(actions.break_).current == .pressed;
+    self.place_held = sys.button(actions.place).current == .pressed;
+    self.shoulder_r_held = sys.button(actions.shoulder_r).current == .pressed;
+    self.shoulder_l_held = sys.button(actions.shoulder_l).current == .pressed;
+    self.playerlist_held = sys.button(actions.playerlist).current == .pressed;
 
     if (fresh_activation) {
         // Snap prev to current so next frame's edges are relative to
         // today's state, not the masked .released values from the overlay.
-        self.prev_inputs.inventory_toggle = input.get_action_button("inventory_toggle");
+        self.prev_inputs.inventory_toggle = sys.button(actions.inventory_toggle).current;
         if (comptime builtin.mode == .Debug and ae.platform != .psp) {
-            self.prev_inputs.noclip = input.get_action_button("noclip");
+            self.prev_inputs.noclip = sys.button(actions.noclip).current;
         }
         self.prev_inputs.jump = jump;
-        self.prev_inputs.break_ = input.get_action_button("break");
-        self.prev_inputs.place = input.get_action_button("place");
-        self.prev_inputs.shoulder_r = input.get_action_button("shoulder_r");
-        self.prev_inputs.shoulder_l = input.get_action_button("shoulder_l");
-        self.prev_inputs.playerlist = input.get_action_button("playerlist");
+        self.prev_inputs.break_ = sys.button(actions.break_).current;
+        self.prev_inputs.place = sys.button(actions.place).current;
+        self.prev_inputs.shoulder_r = sys.button(actions.shoulder_r).current;
+        self.prev_inputs.shoulder_l = sys.button(actions.shoulder_l).current;
+        self.prev_inputs.playerlist = sys.button(actions.playerlist).current;
         if (ae.platform != .psp) {
-            self.prev_inputs.hud_toggle = input.get_action_button("hud_toggle");
-            self.prev_inputs.rain_toggle = input.get_action_button("rain_toggle");
+            self.prev_inputs.hud_toggle = sys.button(actions.hud_toggle).current;
+            self.prev_inputs.rain_toggle = sys.button(actions.rain_toggle).current;
         }
-        self.prev_inputs.chat_open = input.get_action_button("chat_open");
-        self.prev_inputs.chat_cmd = input.get_action_button("chat_cmd");
-        self.prev_inputs.hotbar_left = input.get_action_button("hotbar_left");
-        self.prev_inputs.hotbar_right = input.get_action_button("hotbar_right");
+        self.prev_inputs.chat_open = sys.button(actions.chat_open).current;
+        self.prev_inputs.chat_cmd = sys.button(actions.chat_cmd).current;
+        self.prev_inputs.hotbar_left = sys.button(actions.hotbar_left).current;
+        self.prev_inputs.hotbar_right = sys.button(actions.hotbar_right).current;
         inline for (0..9) |i| {
-            self.prev_inputs.hotbar_slot[i] = input.get_action_button(comptime hotbar_slot_name(i));
+            self.prev_inputs.hotbar_slot[i] = sys.button(actions.hotbar_slot[i]).current;
         }
         self.reset_jump_taps();
         return;
@@ -1364,14 +1365,14 @@ fn poll_inputs(self: *Self, dt: f32) void {
     if (rising_edge(self.prev_inputs.jump, jump)) self.record_jump_tap();
     self.prev_inputs.jump = jump;
 
-    const inv = input.get_action_button("inventory_toggle");
+    const inv = sys.button(actions.inventory_toggle).current;
     if (rising_edge(self.prev_inputs.inventory_toggle, inv)) {
         self.inventory_toggle_pending = true;
     }
     self.prev_inputs.inventory_toggle = inv;
 
     if (comptime builtin.mode == .Debug and ae.platform != .psp) {
-        const nc = input.get_action_button("noclip");
+        const nc = sys.button(actions.noclip).current;
         if (rising_edge(self.prev_inputs.noclip, nc)) {
             self.noclip = !self.noclip;
             if (self.noclip) {
@@ -1385,7 +1386,7 @@ fn poll_inputs(self: *Self, dt: f32) void {
         self.prev_inputs.noclip = nc;
     }
 
-    const br = input.get_action_button("break");
+    const br = sys.button(actions.break_).current;
     self.break_held = br == .pressed;
     if (rising_edge(self.prev_inputs.break_, br)) {
         self.break_repeat_timer = 0;
@@ -1393,7 +1394,7 @@ fn poll_inputs(self: *Self, dt: f32) void {
     }
     self.prev_inputs.break_ = br;
 
-    const pl = input.get_action_button("place");
+    const pl = sys.button(actions.place).current;
     self.place_held = pl == .pressed;
     if (rising_edge(self.prev_inputs.place, pl)) {
         self.place_repeat_timer = 0;
@@ -1403,7 +1404,7 @@ fn poll_inputs(self: *Self, dt: f32) void {
 
     // L+R chord = inventory toggle; otherwise rising edge defers a
     // break/place that update() can cancel if the chord completes.
-    const sr = input.get_action_button("shoulder_r");
+    const sr = sys.button(actions.shoulder_r).current;
     self.shoulder_r_held = sr == .pressed;
     if (rising_edge(self.prev_inputs.shoulder_r, sr)) {
         if (self.shoulder_l_held) {
@@ -1416,7 +1417,7 @@ fn poll_inputs(self: *Self, dt: f32) void {
     }
     self.prev_inputs.shoulder_r = sr;
 
-    const sl = input.get_action_button("shoulder_l");
+    const sl = sys.button(actions.shoulder_l).current;
     self.shoulder_l_held = sl == .pressed;
     if (rising_edge(self.prev_inputs.shoulder_l, sl)) {
         if (self.shoulder_r_held) {
@@ -1429,54 +1430,53 @@ fn poll_inputs(self: *Self, dt: f32) void {
     }
     self.prev_inputs.shoulder_l = sl;
 
-    const pll = input.get_action_button("playerlist");
+    const pll = sys.button(actions.playerlist).current;
     self.playerlist_held = pll == .pressed;
     if (rising_edge(self.prev_inputs.playerlist, pll)) {
         self.playerlist_edge = true;
-        self.playerlist_edge_controller = playerlist_controller_pressed_this_frame();
+        self.playerlist_edge_controller = playerlist_controller_pressed_this_frame(sys);
     }
     self.prev_inputs.playerlist = pll;
 
     if (ae.platform != .psp) {
-        const hud = input.get_action_button("hud_toggle");
+        const hud = sys.button(actions.hud_toggle).current;
         if (rising_edge(self.prev_inputs.hud_toggle, hud)) self.hud_toggle_pending = true;
         self.prev_inputs.hud_toggle = hud;
 
-        const rain = input.get_action_button("rain_toggle");
+        const rain = sys.button(actions.rain_toggle).current;
         if (rising_edge(self.prev_inputs.rain_toggle, rain)) self.rain_toggle_pending = true;
         self.prev_inputs.rain_toggle = rain;
     }
 
-    const co = input.get_action_button("chat_open");
+    const co = sys.button(actions.chat_open).current;
     if (rising_edge(self.prev_inputs.chat_open, co)) self.chat_open_pending = true;
     self.prev_inputs.chat_open = co;
 
-    const cc = input.get_action_button("chat_cmd");
+    const cc = sys.button(actions.chat_cmd).current;
     if (rising_edge(self.prev_inputs.chat_cmd, cc)) self.chat_cmd_pending = true;
     self.prev_inputs.chat_cmd = cc;
 
-    const hl = input.get_action_button("hotbar_left");
+    const hl = sys.button(actions.hotbar_left).current;
     if (rising_edge(self.prev_inputs.hotbar_left, hl)) {
         self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
     }
     self.prev_inputs.hotbar_left = hl;
 
-    const hr = input.get_action_button("hotbar_right");
+    const hr = sys.button(actions.hotbar_right).current;
     if (rising_edge(self.prev_inputs.hotbar_right, hr)) {
         self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
     }
     self.prev_inputs.hotbar_right = hr;
 
     inline for (0..9) |i| {
-        const name = comptime hotbar_slot_name(i);
-        const cur = input.get_action_button(name);
+        const cur = sys.button(actions.hotbar_slot[i]).current;
         if (rising_edge(self.prev_inputs.hotbar_slot[i], cur)) {
             self.selected_slot = @intCast(i);
         }
         self.prev_inputs.hotbar_slot[i] = cur;
     }
 
-    const scroll = input.get_action_axis("hotbar_scroll");
+    const scroll = sys.axis(actions.hotbar_scroll).current;
     if (scroll > HOTBAR_SCROLL_DEADBAND) {
         self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
     } else if (scroll < -HOTBAR_SCROLL_DEADBAND) {
@@ -1512,8 +1512,8 @@ fn reset_jump_taps(self: *Self) void {
     self.jump_tap_elapsed = 0;
 }
 
-fn is_gameplay_active() bool {
-    const top = input.stack_top() orelse return false;
+fn is_gameplay_active(sys: *input.InputSystem) bool {
+    const top = sys.stack_top() orelse return false;
     const set = bindings.handle() orelse return false;
     return @intFromEnum(top.actions) == @intFromEnum(set);
 }
@@ -1528,30 +1528,15 @@ fn playerlist_controller_button() input.Button {
     return .Back;
 }
 
-fn playerlist_controller_pressed_this_frame() bool {
+fn playerlist_controller_pressed_this_frame(sys: *input.InputSystem) bool {
     const button = playerlist_controller_button();
-    for (input.frame_events()) |ev| {
+    for (sys.frame_events()) |ev| {
         switch (ev.kind) {
             .gamepad_button_down => |b| if (b.button == button) return true,
             else => {},
         }
     }
     return false;
-}
-
-fn hotbar_slot_name(comptime i: usize) []const u8 {
-    return switch (i) {
-        0 => "hotbar_slot_1",
-        1 => "hotbar_slot_2",
-        2 => "hotbar_slot_3",
-        3 => "hotbar_slot_4",
-        4 => "hotbar_slot_5",
-        5 => "hotbar_slot_6",
-        6 => "hotbar_slot_7",
-        7 => "hotbar_slot_8",
-        8 => "hotbar_slot_9",
-        else => @compileError("hotbar slot out of range"),
-    };
 }
 
 fn do_break(self: *Self) void {

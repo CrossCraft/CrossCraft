@@ -66,6 +66,7 @@ const QUAD_CAPACITY: usize = MAX_BLOCKS * QUADS_PER_BLOCK;
 
 terrain: *const Rendering.Texture,
 atlas: TextureAtlas,
+mesh_data: Rendering.MeshData(Vertex),
 mesh: Rendering.Mesh(Vertex),
 iso_xform: Math.Mat4,
 allocator: std.mem.Allocator,
@@ -81,21 +82,23 @@ pub fn init(
     var self: Self = .{
         .terrain = terrain,
         .atlas = atlas,
-        .mesh = try Rendering.Mesh(Vertex).new(allocator),
+        .mesh_data = try Rendering.MeshData(Vertex).init(allocator),
+        .mesh = try Rendering.Mesh(Vertex).init(&.{}),
         .iso_xform = iso,
         .allocator = allocator,
     };
-    try self.mesh.ensure_quad_capacity(allocator, QUAD_CAPACITY);
+    try self.mesh_data.ensure_quad_capacity(allocator, QUAD_CAPACITY);
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.mesh.deinit(self.allocator);
+    self.mesh.deinit();
+    self.mesh_data.deinit(self.allocator);
 }
 
 /// Begin a new frame's worth of blocks. Drops everything queued so far.
 pub fn begin(self: *Self) void {
-    self.mesh.clear_retaining_capacity();
+    self.mesh_data.clear_retaining_capacity();
 }
 
 /// Queue an isometric block at logical-pixel center (cx, cy).
@@ -136,18 +139,18 @@ pub fn add_block(
 
 /// Upload the queued mesh. Call before the active draw frame.
 pub fn update(self: *Self) void {
-    if (self.mesh.vertices.items.len == 0) return;
-    self.mesh.update();
+    if (self.mesh_data.vertices.items.len == 0) return;
+    self.mesh.update(&self.mesh_data);
 }
 
 /// Render the queued mesh. Sets identity proj/view (matching SpriteBatcher)
 /// and binds the terrain texture before drawing.
 pub fn draw(self: *Self) void {
-    if (self.mesh.vertices.items.len == 0) return;
+    if (self.mesh_data.vertices.items.len == 0) return;
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
     Rendering.gfx.api.set_view_matrix(&Math.Mat4.identity());
-    self.terrain.bind();
+    Rendering.set_state(&.{ .texture = self.terrain.handle });
 
     const ident = Math.Mat4.identity();
     self.mesh.draw(&ident);
@@ -323,8 +326,8 @@ fn emit_quad(self: *Self, verts: *const [4]Vertex) void {
     const ccw = ax * by - ay * bx > 0;
 
     if (ccw) {
-        self.mesh.add_quad_assume_capacity(verts[0], verts[1], verts[2], verts[3]);
+        self.mesh_data.add_quad_assume_capacity(verts[0], verts[1], verts[2], verts[3]);
     } else {
-        self.mesh.add_quad_assume_capacity(verts[0], verts[3], verts[2], verts[1]);
+        self.mesh_data.add_quad_assume_capacity(verts[0], verts[3], verts[2], verts[1]);
     }
 }

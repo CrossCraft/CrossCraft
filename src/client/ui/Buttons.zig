@@ -21,6 +21,7 @@
 
 const ae = @import("aether");
 const Options = @import("../Options.zig");
+const input = ae.Core.input;
 
 pub const Rect = struct {
     /// Source rect in the glyph sheet.
@@ -96,13 +97,19 @@ pub fn glyph_y_offset() i16 {
     return if (resolve_style() == .kbm) 1 else 0;
 }
 
+var last_mode: input.InputMode = .keyboard_mouse;
+
+pub fn note_input_mode(mode: input.InputMode) void {
+    last_mode = mode;
+}
+
 pub fn resolve_style() Style {
     if (ae.platform == .psp) return .psp;
     if ((ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) and Options.current.controller_tooltips != .off) return .nintendo;
     return switch (Options.current.controller_tooltips) {
         // Auto follows whatever device produced input most recently; the
         // Xbox sheet stands in for any gamepad since we don't probe vendor.
-        .auto => switch (ae.Core.input.last_input_mode()) {
+        .auto => switch (last_mode) {
             .keyboard_mouse => .kbm,
             .gamepad => .xbox,
         },

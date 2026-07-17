@@ -10,6 +10,7 @@ const texture_region = @import("texture_region.zig");
 pub const Color = @import("../graphics/Color.zig").Color;
 pub const Vertex = @import("aether").Rendering.Vertex;
 pub const BatchMesh = Rendering.Mesh(Vertex);
+pub const BatchMeshData = Rendering.MeshData(Vertex);
 
 const Self = @This();
 
@@ -39,6 +40,7 @@ pub const Sprite = extern struct {
 
 const TextureBatch = struct {
     texture: *const Rendering.Texture,
+    mesh_data: BatchMeshData,
     mesh: BatchMesh,
 };
 
@@ -69,7 +71,8 @@ pub fn init(allocator: std.mem.Allocator) !Self {
 
 pub fn deinit(self: *Self) void {
     for (self.batches.items) |*batch| {
-        batch.mesh.deinit(self.allocator);
+        batch.mesh.deinit();
+        batch.mesh_data.deinit(self.allocator);
     }
     self.batches.deinit(self.allocator);
 }
@@ -164,7 +167,7 @@ pub fn draw(self: *Self) void {
 
     const ident = Math.Mat4.identity();
     for (self.batches.items) |*batch| {
-        batch.texture.bind();
+        Rendering.set_state(&.{ .texture = batch.texture.handle });
         batch.mesh.draw(&ident);
     }
 }
@@ -187,33 +190,36 @@ fn rebuild_batches(self: *Self, screen_w: u32, screen_h: u32) !void {
         const group_count: u16 = i - group_start;
 
         if (batch_idx >= self.batches.items.len) {
-            const mesh = try BatchMesh.new(self.allocator);
-            try self.batches.append(self.allocator, .{ .texture = tex, .mesh = mesh });
+            var mesh_data = try BatchMeshData.init(self.allocator);
+            errdefer mesh_data.deinit(self.allocator);
+            const mesh = try BatchMesh.init(&.{});
+            try self.batches.append(self.allocator, .{ .texture = tex, .mesh_data = mesh_data, .mesh = mesh });
         }
 
         var batch = &self.batches.items[batch_idx];
         batch.texture = tex;
-        batch.mesh.clear_retaining_capacity();
-        try batch.mesh.ensure_quad_capacity(
+        batch.mesh_data.clear_retaining_capacity();
+        try batch.mesh_data.ensure_quad_capacity(
             self.allocator,
             @as(usize, group_count) * QUADS_PER_SPRITE,
         );
 
         for (sprites[group_start..i]) |sprite| {
-            emit_sprite_vertices(&batch.mesh, &sprite, screen_w, screen_h, scale);
+            emit_sprite_vertices(&batch.mesh_data, &sprite, screen_w, screen_h, scale);
         }
 
-        batch.mesh.update();
+        batch.mesh.update(&batch.mesh_data);
         batch_idx += 1;
     }
 
     while (self.batches.items.len > batch_idx) {
         var old = self.batches.pop().?;
-        old.mesh.deinit(self.allocator);
+        old.mesh.deinit();
+        old.mesh_data.deinit(self.allocator);
     }
 }
 
-fn emit_sprite_vertices(mesh: *BatchMesh, sprite: *const Sprite, screen_w: u32, screen_h: u32, scale: u32) void {
+fn emit_sprite_vertices(mesh: *BatchMeshData, sprite: *const Sprite, screen_w: u32, screen_h: u32, scale: u32) void {
     const max_lx: i16 = @intCast(layout.logical_width(screen_w, scale));
     const max_ly: i16 = @intCast(layout.logical_height(screen_h, scale));
 

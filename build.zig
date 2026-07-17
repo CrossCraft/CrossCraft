@@ -7,10 +7,10 @@ pub fn build(b: *std.Build) void {
     const web_host = b.option([]const u8, "web-host", "serve-web: bind host (default: 127.0.0.1)") orelse "127.0.0.1";
     const web_port = b.option(u16, "web-port", "serve-web: bind port (default: 8080)") orelse 8080;
 
-    const overrides: Aether.Config.Overrides = .{
-        .gfx = b.option(Aether.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
-        .audio = b.option(Aether.Audio, "audio", "Audio backend override (default: auto-detect from target)"),
-        .psp_display_mode = b.option(Aether.PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
+    const overrides: Aether.config.Config.Overrides = .{
+        .gfx = b.option(Aether.config.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
+        .audio = b.option(Aether.config.Audio, "audio", "Audio backend override (default: auto-detect from target)"),
+        .psp_display_mode = b.option(Aether.config.PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
         .nintendo_switch = b.option(bool, "nintendo-switch", "Build for Nintendo Switch (requires -Dtarget=aarch64-freestanding-none and devkitA64/libnx)"),
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
 
     const skip_pack = b.option(bool, "skip-pack", "Skip zipping resources into pack.zip (for CI builds without LFS assets)") orelse false;
 
-    const config = Aether.Config.resolve(target, overrides);
+    const config = Aether.config.Config.resolve(target, overrides);
 
     const zbc = b.dependency("ZeeBuffer", .{});
 
@@ -149,14 +149,14 @@ pub fn build(b: *std.Build) void {
         else => "CrossCraft-Classic",
     };
 
-    const client_exe = Aether.addGame(ae_dep.builder, b, .{
+    const client_exe = Aether.modules.addGame(ae_dep.builder, b, .{
         .name = client_name,
         .root_source_file = b.path("src/client/main.zig"),
         .target = target,
         .optimize = optimize,
         .overrides = overrides,
     });
-    const client_root = Aether.userRootModule(client_exe);
+    const client_root = Aether.modules.userRootModule(client_exe);
     client_root.addImport("game", game);
     client_root.addImport("common", common);
     client_root.addImport("protocol", protocol);
@@ -177,11 +177,11 @@ pub fn build(b: *std.Build) void {
     // On macOS we pipe pack.zip through exportArtifact so it lands in
     // Contents/Resources/ inside the .app bundle. On PSP/3DS/desktop the
     // install_pack branch above handles placement.
-    const mac_resources: []const Aether.ExportOptions.Resource = if (is_macos and pack_zip_path != null)
+    const mac_resources: []const Aether.packaging.Resource = if (is_macos and pack_zip_path != null)
         &.{.{ .path = pack_zip_path.?, .name = "pack.zip" }}
     else
         &.{};
-    Aether.exportArtifact(ae_dep.builder, b, client_exe, config, .{
+    Aether.packaging.exportArtifact(ae_dep.builder, b, client_exe, config, .{
         .title = "CrossCraft Classic",
         .output_dir = if (is_psp) psp_client_dir else if (is_3ds) nintendo_3ds_client_dir else if (is_switch) nintendo_switch_client_dir else null,
         .bundle_id = "com.iridescentrose.crosscraft-classic",
@@ -198,23 +198,23 @@ pub fn build(b: *std.Build) void {
         .pic1 = if (is_psp) b.path("assets/psp/PIC1.png") else null,
     });
 
-    const server_overrides: Aether.Config.Overrides = .{
+    const server_overrides: Aether.config.Config.Overrides = .{
         .nintendo_switch = overrides.nintendo_switch,
         .use_cwd = true,
     };
-    const server_exe = Aether.addHeadless(ae_dep.builder, b, .{
+    const server_exe = Aether.modules.addHeadless(ae_dep.builder, b, .{
         .name = "CrossCraft-Classic-Server",
         .root_source_file = b.path("src/server/main.zig"),
         .target = target,
         .optimize = optimize,
         .overrides = server_overrides,
     });
-    const server_root = Aether.userRootModule(server_exe);
+    const server_root = Aether.modules.userRootModule(server_exe);
     server_root.addImport("game", game);
     server_root.addImport("common", common);
 
     if (is_psp) {
-        Aether.exportArtifact(ae_dep.builder, b, server_exe, config, .{
+        Aether.packaging.exportArtifact(ae_dep.builder, b, server_exe, config, .{
             .title = "CrossCraft Classic Server",
             .output_dir = "CrossCraft-Server-PSP",
             .icon0 = b.path("assets/psp/ICON0_Server.png"),
@@ -267,7 +267,7 @@ pub fn build(b: *std.Build) void {
             .bin,
             b.fmt("{s}/{s}.3dsx", .{ nintendo_3ds_client_dir, client_name }),
         );
-        const link_cmd = Aether.add3dslink(b, threedsx_path);
+        const link_cmd = Aether.packaging.add3dslink(b, threedsx_path);
         link_cmd.step.dependOn(build_game_step);
         run_client_step.dependOn(&link_cmd.step);
 
@@ -344,19 +344,19 @@ pub fn build(b: *std.Build) void {
     });
     pack_tool_step.dependOn(&b.addInstallArtifact(pack_tool_exe, .{}).step);
 
-    const web_target = Aether.webTarget(b);
-    const web_overrides: Aether.Config.Overrides = .{
+    const web_target = Aether.config.webTarget(b);
+    const web_overrides: Aether.config.Config.Overrides = .{
         .gfx = .webgl,
         .use_cwd = true,
     };
-    const web_exe = Aether.addGame(ae_dep.builder, b, .{
+    const web_exe = Aether.modules.addGame(ae_dep.builder, b, .{
         .name = "CrossCraft-Classic",
         .root_source_file = b.path("src/client/web_main.zig"),
         .target = web_target,
         .optimize = optimize,
         .overrides = web_overrides,
     });
-    const web_root = Aether.userRootModule(web_exe);
+    const web_root = Aether.modules.userRootModule(web_exe);
     web_root.addImport("game", game);
     web_root.addImport("common", common);
     web_root.addImport("protocol", protocol);
@@ -365,11 +365,11 @@ pub fn build(b: *std.Build) void {
     web_build_options.addOption(bool, "embed_pack", false);
     web_root.addImport("build_options", web_build_options.createModule());
 
-    const web_resource_files: []const Aether.ExportOptions.Resource = if (pack_zip_path) |pack_zip|
+    const web_resource_files: []const Aether.packaging.Resource = if (pack_zip_path) |pack_zip|
         &.{.{ .path = pack_zip, .name = "pack.zip" }}
     else
         &.{};
-    const web_install = Aether.addWebBundle(ae_dep.builder, b, web_exe, .{
+    const web_install = Aether.packaging.addWebBundle(ae_dep.builder, b, web_exe, .{
         .web_resource_files = web_resource_files,
         .web_resource_manifest = if (pack_zip_path != null) "pack.zip\n" else "",
     });
@@ -377,7 +377,7 @@ pub fn build(b: *std.Build) void {
     const web_step = b.step("web", "Build the browser-playable WASM site in zig-out/web");
     web_step.dependOn(&web_install.step);
 
-    const serve_web_cmd = Aether.addServeWebStep(
+    const serve_web_cmd = Aether.packaging.addServeWebStep(
         ae_dep.builder,
         b,
         "crosscraft-serve-web",

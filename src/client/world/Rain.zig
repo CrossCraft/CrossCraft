@@ -115,7 +115,9 @@ const Splash = struct {
 
 const Self = @This();
 
+streak_data: Rendering.MeshData(Vertex),
 streak_mesh: Rendering.Mesh(Vertex),
+splash_data: Rendering.MeshData(Vertex),
 splash_mesh: Rendering.Mesh(Vertex),
 particle_atlas: TextureAtlas,
 scroll_v: i32,
@@ -132,8 +134,10 @@ allocator: std.mem.Allocator,
 
 pub fn init(allocator: std.mem.Allocator) !Self {
     var self: Self = .{
-        .streak_mesh = try Rendering.Mesh(Vertex).new(allocator),
-        .splash_mesh = try Rendering.Mesh(Vertex).new(allocator),
+        .streak_data = try Rendering.MeshData(Vertex).init(allocator),
+        .streak_mesh = try Rendering.Mesh(Vertex).init(&.{}),
+        .splash_data = try Rendering.MeshData(Vertex).init(allocator),
+        .splash_mesh = try Rendering.Mesh(Vertex).init(&.{}),
         .particle_atlas = TextureAtlas.init(PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_TILES, PARTICLE_ATLAS_TILES),
         .scroll_v = 0,
         .streak_mesh_dirty = true,
@@ -145,14 +149,16 @@ pub fn init(allocator: std.mem.Allocator) !Self {
         .rng = std.Random.DefaultPrng.init(0xDA1ADA1ADA1ADA1A),
         .allocator = allocator,
     };
-    try self.streak_mesh.ensure_quad_capacity(allocator, STREAK_MAX_QUADS);
-    try self.splash_mesh.ensure_quad_capacity(allocator, SPLASH_MAX_QUADS);
+    try self.streak_data.ensure_quad_capacity(allocator, STREAK_MAX_QUADS);
+    try self.splash_data.ensure_quad_capacity(allocator, SPLASH_MAX_QUADS);
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.streak_mesh.deinit(self.allocator);
-    self.splash_mesh.deinit(self.allocator);
+    self.streak_mesh.deinit();
+    self.streak_data.deinit(self.allocator);
+    self.splash_mesh.deinit();
+    self.splash_data.deinit(self.allocator);
 }
 
 pub fn mark_dirty(self: *Self) void {
@@ -250,7 +256,7 @@ pub fn draw_streaks(self: *Self, camera: *const Camera) void {
     if (!Options.current.rain) return;
     const cam_tile_x_i: i32 = @intFromFloat(@floor(camera.x));
     const cam_tile_z_i: i32 = @intFromFloat(@floor(camera.z));
-    if (self.streak_mesh.vertices.items.len == 0) return;
+    if (self.streak_data.vertices.items.len == 0) return;
 
     const cam_tile_x: f32 = @floatFromInt(cam_tile_x_i);
     const cam_tile_z: f32 = @floatFromInt(cam_tile_z_i);
@@ -283,6 +289,10 @@ pub fn draw_splashes(self: *Self) void {
     // Splashes use absolute-world encoding (no translation) so we can share
     // MODEL_SCALE with ParticleSystem and use a plain scaling matrix.
     Rendering.gfx.api.set_alpha_blend(true);
+    Rendering.gfx.api.set_depth_write(true);
+    Rendering.gfx.api.set_culling(false);
+    defer Rendering.gfx.api.set_culling(true);
+    Rendering.gfx.api.set_uv_offset(0.0, 0.0);
     const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
     self.splash_mesh.draw(&m);
 }
@@ -297,16 +307,16 @@ fn rebuild_streak_mesh(self: *Self, camera: *const Camera) void {
         return;
     }
 
-    self.streak_mesh.clear_retaining_capacity();
-    build_streaks(&self.streak_mesh, cam_tile_x_i, cam_tile_z_i);
-    self.streak_mesh.update();
+    self.streak_data.clear_retaining_capacity();
+    build_streaks(&self.streak_data, cam_tile_x_i, cam_tile_z_i);
+    self.streak_mesh.update(&self.streak_data);
     self.streak_cam_tile_x = cam_tile_x_i;
     self.streak_cam_tile_z = cam_tile_z_i;
     self.streak_mesh_dirty = false;
 }
 
 fn rebuild_splash_mesh(self: *Self, camera: *const Camera) void {
-    self.splash_mesh.clear_retaining_capacity();
+    self.splash_data.clear_retaining_capacity();
     if (self.splash_count == 0) return;
 
     // Same billboard basis as ParticleSystem: right is yaw-only (no roll),
@@ -329,9 +339,9 @@ fn rebuild_splash_mesh(self: *Self, camera: *const Camera) void {
 
     var i: u16 = 0;
     while (i < self.splash_count) : (i += 1) {
-        emit_splash(&self.splash_mesh, &self.splashes[i], rx, rz, upx, upy, upz, tu0, tv0, tu1, tv1, color);
+        emit_splash(&self.splash_data, &self.splashes[i], rx, rz, upx, upy, upz, tu0, tv0, tu1, tv1, color);
     }
-    self.splash_mesh.update();
+    self.splash_mesh.update(&self.splash_data);
 }
 
 fn streak_v_offset(scroll_v: i32) f32 {
@@ -340,7 +350,7 @@ fn streak_v_offset(scroll_v: i32) f32 {
 
 // --- Streak mesh build ---
 
-fn build_streaks(mesh: *Rendering.Mesh(Vertex), cam_tile_x: i32, cam_tile_z: i32) void {
+fn build_streaks(mesh: *Rendering.MeshData(Vertex), cam_tile_x: i32, cam_tile_z: i32) void {
     const world_ceiling: f32 = @as(f32, @floatFromInt(c.WorldHeight));
 
     var dz: i32 = -EXTENT;
@@ -378,7 +388,7 @@ fn build_streaks(mesh: *Rendering.Mesh(Vertex), cam_tile_x: i32, cam_tile_z: i32
 /// so their @mod(32768) SNORM16s tile seamlessly across the seam.  When a
 /// section crosses the SNORM16 wrap, split it so UVs stay monotonic.
 fn emit_column_quads(
-    mesh: *Rendering.Mesh(Vertex),
+    mesh: *Rendering.MeshData(Vertex),
     dx: i32,
     dz: i32,
     bottom_y: f32,
@@ -455,7 +465,7 @@ fn emit_column_quads(
 /// sub-section after a wrap split).  v_bot/v_top must both be non-negative
 /// so PSP hardware interpolates a monotonically increasing UV.
 fn emit_section_geom(
-    mesh: *Rendering.Mesh(Vertex),
+    mesh: *Rendering.MeshData(Vertex),
     x_ctr: f32,
     z_ctr: f32,
     y_bot: f32,
@@ -535,7 +545,7 @@ fn emit_section_geom(
 }
 
 fn emit_quad(
-    mesh: *Rendering.Mesh(Vertex),
+    mesh: *Rendering.MeshData(Vertex),
     // bottom-left
     x0: i16,
     y0: i16,
@@ -573,7 +583,7 @@ fn emit_quad(
 // --- Splash mesh build ---
 
 fn emit_splash(
-    mesh: *Rendering.Mesh(Vertex),
+    mesh: *Rendering.MeshData(Vertex),
     p: *const Splash,
     rx: f32,
     rz: f32,

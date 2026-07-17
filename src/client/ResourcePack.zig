@@ -353,7 +353,7 @@ pub fn tick_animations() void {
 
     blit_frame(water, step % water_frames, water_tile_col, water_tile_row);
     blit_frame(lava, ping_pong_frame(step, lava_frames), lava_tile_col, lava_tile_row);
-    textures[@intFromEnum(Tex.terrain)].update();
+    textures[@intFromEnum(Tex.terrain)].update() catch {};
 }
 
 // Ping-pong sequence: 0,1,...,N-1,N-2,...,1,0,1,... with period 2*(N-1).
@@ -378,7 +378,7 @@ fn blit_frame(
         var x: u32 = 0;
         while (x < tile_size) : (x += 1) {
             const px = image_pixel(src, x, src_y0 + y);
-            textures[@intFromEnum(Tex.terrain)].set_pixel(dst_x0 + x, dst_y0 + y, px);
+            textures[@intFromEnum(Tex.terrain)].set_pixel(dst_x0 + x, dst_y0 + y, px) catch {};
         }
     }
 }
@@ -405,7 +405,7 @@ fn load_texture_from_zip(id: Tex) !Rendering.Texture {
     const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{tex_path(id)});
     var stream = try pack.open(path);
     defer pack.close_stream(&stream);
-    return try Rendering.Texture.load_from_reader(alloc, stream.reader);
+    return try Rendering.Texture.load_from_reader(alloc, stream.reader, &.{ .cpu_access = .read_write });
 }
 
 fn load_image_from_zip(id: Tex) !Image.Image {

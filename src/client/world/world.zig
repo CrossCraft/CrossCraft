@@ -270,12 +270,12 @@ fn mark_first_built(sec: *ChunkMesh) void {
 pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     const submerged = collision.liquid_at_point(camera.x, camera.y, camera.z);
 
-    Rendering.Texture.Default.bind();
+    Rendering.gfx.api.bind_texture(Rendering.Texture.Default.handle);
     Sky.clear(submerged);
     self.sky.draw_plane(camera, submerged);
 
     set_terrain_fog(submerged);
-    self.terrain.bind();
+    Rendering.gfx.api.bind_texture(self.terrain.handle);
 
     self.frame_visible_count = 0;
     for (0..WORLD_CX) |cx| {
@@ -315,13 +315,13 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     // Clouds are a physical layer at Y=72. Draw after opaque (so terrain
     // occludes them) but before transparent/fluid (so leaves, glass, and
     // water alpha-blend against the cloud layer behind them).
-    self.clouds.bind();
+    Rendering.gfx.api.bind_texture(self.clouds.handle);
     self.sky.draw_clouds(camera, submerged);
 
     // Transparent pass (back-to-front): non-fluid (leaves, glass, cross-plants).
     // Depth writes stay on so leaves properly occlude geometry behind them.
     set_terrain_fog(submerged);
-    self.terrain.bind();
+    Rendering.gfx.api.bind_texture(self.terrain.handle);
     Rendering.gfx.api.set_alpha_blend(true);
     var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
@@ -347,9 +347,9 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
 /// blend over particles.  No-op when the rain option is off.
 pub fn draw_rain_pass(self: *Self, camera: *const Camera) void {
     if (!Options.current.rain) return;
-    self.rain_tex.bind();
+    Rendering.gfx.api.bind_texture(self.rain_tex.handle);
     self.rain.draw_streaks(camera);
-    self.particles_tex.bind();
+    Rendering.gfx.api.bind_texture(self.particles_tex.handle);
     self.rain.draw_splashes();
 }
 
@@ -361,7 +361,7 @@ pub fn draw_fluid_pass(self: *Self) void {
     const visible = self.frame_visible[0..self.frame_visible_count];
     const clip_count = self.frame_clip_count;
 
-    self.terrain.bind();
+    Rendering.gfx.api.bind_texture(self.terrain.handle);
     Rendering.gfx.api.set_alpha_blend(true);
 
     // Fluid pass (back-to-front): water/lava drawn with depth writes off so

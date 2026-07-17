@@ -50,16 +50,16 @@ pub fn initial_state() State {
     return menu_state_inst;
 }
 
-pub fn transition_here(engine: *Engine) !void {
+pub fn transition_here(engine: *Engine) void {
     menu_state_inst = menu_state.state();
-    try ae.Core.state_machine.transition(engine, &menu_state_inst);
+    engine.transition(&menu_state_inst);
 }
 
 pub const ScreenId = enum { main, direct_connect, texture_packs, select_world, create_world, options, controls };
 
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
-splash_mesh: FontBatcher.BatchMesh,
+splash_mesh: FontBatcher.TextMesh,
 time: f32,
 active_screen: ScreenId,
 
@@ -171,10 +171,10 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.cw_seed_len = 0;
     self.cw_create_enabled = false;
 
-    ui_input.ensure_registered() catch |err|
+    ui_input.ensure_registered(&engine.input) catch |err|
         return menu_init_error(.input_register, err);
     ui_input.set_profile(ui_input.default_profile());
-    ae.Core.input.push_context(.{
+    engine.input.push_context(&.{
         .name = "menu",
         .cursor_mode = .visible,
         .actions = ui_input.menu_set(),
@@ -408,14 +408,14 @@ fn file_exists(io: std.Io, dir: std.Io.Dir, path: []const u8) bool {
     return true;
 }
 
-fn deinit(ctx: *anyopaque, _: *Engine) void {
+fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
-    ControlsScreen.cancel_capture(controls_ctx(self));
+    ControlsScreen.cancel_capture(&engine.input, controls_ctx(self));
     self.splash_mesh.deinit(self.render_alloc);
     self.font_batcher.deinit();
     self.batcher.deinit();
-    _ = ae.Core.input.pop_context() catch {};
+    _ = engine.input.pop_context() catch {};
     self.inited = false;
 }
 
@@ -425,7 +425,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
     SoundManager.update(dt, 0, 0, 0, 0, 0);
-    const in = ui_input.build_frame(dt, &self.ui_repeat);
+    const in = ui_input.build_frame(&engine.input, dt, &self.ui_repeat);
 
     switch (self.active_screen) {
         .main => try update_main(self, engine, &in),
@@ -553,7 +553,7 @@ fn dc_join(self: *@This(), engine: *Engine) !void {
     const net_ready = if (ae.platform == .psp) ae.Psp.showNetDialog() else true;
     if (!net_ready) return;
     Session.mode = .multiplayer;
-    LoadState.transition_here(engine) catch |err| log.err("transition to LoadState failed: {}", .{err});
+    LoadState.transition_here(engine);
 }
 
 fn update_texture_packs(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
@@ -621,7 +621,7 @@ fn sw_select_row(self: *@This(), engine: *Engine, row: u8) void {
     Session.set_username("Player");
     Session.set_singleplayer_save(entry.path());
     Session.clear_singleplayer_seed_override();
-    LoadState.transition_here(engine) catch |err| log.err("transition to LoadState failed: {}", .{err});
+    LoadState.transition_here(engine);
 }
 
 fn create_world_available(self: *const @This(), engine: *Engine) bool {
@@ -655,7 +655,7 @@ fn create_world(self: *@This(), engine: *Engine) void {
     Session.set_username("Player");
     Session.set_singleplayer_save(result.path);
     Session.set_singleplayer_seed_override(Session.seed_from_text(self.create_world_seed_slice()));
-    LoadState.transition_here(engine) catch |err| log.err("transition to LoadState failed: {}", .{err});
+    LoadState.transition_here(engine);
 }
 
 fn create_world_name_slice(self: *const @This()) []const u8 {
@@ -684,7 +684,7 @@ fn update_options(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) 
     ui.end();
     switch (action) {
         .none => {},
-        .controls => if (Options.controls_rebinding_supported()) enter_controls(self),
+        .controls => if (Options.controls_rebinding_supported()) enter_controls(self, engine),
         .close => {
             Options.save(engine.io, engine.dirs.data);
             engine.set_vsync(Options.current.vsync);
@@ -698,7 +698,7 @@ fn update_controls(self: *@This(), engine: *Engine, in: *const ui_input.UiInput)
     var ui = self.begin_ui(&list, &self.controls_ui_state, in, 0);
     const result = ControlsScreen.run(&ui, &Options.current, controls_ctx(self));
     ui.end();
-    if (result.changed) apply_control_options();
+    if (result.changed) apply_control_options(engine);
     if (result.back) {
         Options.save(engine.io, engine.dirs.data);
         enter_options(self);
@@ -779,8 +779,8 @@ fn enter_options(self: *@This()) void {
     self.options_ui_state.open(ui_input.seed_focus_on_open());
 }
 
-fn enter_controls(self: *@This()) void {
-    ControlsScreen.cancel_capture(controls_ctx(self));
+fn enter_controls(self: *@This(), engine: *Engine) void {
+    ControlsScreen.cancel_capture(&engine.input, controls_ctx(self));
     self.controls_status = .none;
     self.active_screen = .controls;
     self.controls_ui_state.open(ui_input.seed_focus_on_open());
@@ -793,9 +793,9 @@ fn controls_ctx(self: *@This()) ControlsScreen.Ctx {
     };
 }
 
-fn apply_control_options() void {
-    ui_input.apply_options() catch |err| log.warn("failed to apply UI control bindings: {}", .{err});
-    GameplayBindings.apply_options() catch |err| log.warn("failed to apply gameplay control bindings: {}", .{err});
+fn apply_control_options(engine: *Engine) void {
+    ui_input.apply_options(&engine.input) catch |err| log.warn("failed to apply UI control bindings: {}", .{err});
+    GameplayBindings.apply_options(&engine.input) catch |err| log.warn("failed to apply gameplay control bindings: {}", .{err});
 }
 
 fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
@@ -807,7 +807,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (self.active_screen == .main) {
         const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;
         const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 72, .top_center, .top_center, 22, pulse, 2);
-        ResourcePack.get_tex(.font).bind();
+        Rendering.set_state(&.{ .texture = ResourcePack.get_tex(.font).handle });
         self.splash_mesh.draw(&model);
     }
 }
@@ -839,6 +839,7 @@ fn current_screen_rect() Ui.LogicalRect {
 
 fn empty_input() ui_input.UiInput {
     return .{
+        .input_system = null,
         .cursor_x = 0,
         .cursor_y = 0,
         .cursor_available = false,

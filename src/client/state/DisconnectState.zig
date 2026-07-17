@@ -21,9 +21,9 @@ const MenuState = @import("MenuState.zig");
 var disconnect_state: @This() = undefined;
 var disconnect_state_inst: State = undefined;
 
-pub fn transition_here(engine: *Engine) !void {
+pub fn transition_here(engine: *Engine) void {
     disconnect_state_inst = disconnect_state.state();
-    try ae.Core.state_machine.transition(engine, &disconnect_state_inst);
+    engine.transition(&disconnect_state_inst);
 }
 
 batcher: SpriteBatcher,
@@ -47,8 +47,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.ui_repeat = .{};
     self.ui_state = .{};
 
-    try ui_input.ensure_registered();
-    try ae.Core.input.push_context(.{
+    try ui_input.ensure_registered(&engine.input);
+    try engine.input.push_context(&.{
         .name = "disconnect",
         .cursor_mode = .visible,
         .actions = ui_input.menu_set(),
@@ -61,10 +61,10 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     engine.report();
 }
 
-fn deinit(ctx: *anyopaque, _: *Engine) void {
+fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
-    _ = ae.Core.input.pop_context() catch {};
+    _ = engine.input.pop_context() catch {};
     self.font_batcher.deinit();
     self.batcher.deinit();
     self.inited = false;
@@ -74,14 +74,14 @@ fn tick(_: *anyopaque, _: *Engine) anyerror!void {}
 
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    const in = ui_input.build_frame(dt, &self.ui_repeat);
+    const in = ui_input.build_frame(&engine.input, dt, &self.ui_repeat);
     var list: UiDrawList = .{};
     var ui = self.begin_ui(&list, &in);
     const go_back = DisconnectScreen.run(&ui, Session.disconnect_reason());
     ui.end();
     if (go_back) {
         Session.clear_disconnect_reason();
-        try MenuState.transition_here(engine);
+        MenuState.transition_here(engine);
         return;
     }
     try prepare_batches(self);
@@ -135,6 +135,7 @@ fn current_screen_rect() Ui.LogicalRect {
 
 fn empty_input() ui_input.UiInput {
     return .{
+        .input_system = null,
         .cursor_x = 0,
         .cursor_y = 0,
         .cursor_available = false,

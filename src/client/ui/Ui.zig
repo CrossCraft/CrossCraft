@@ -203,6 +203,10 @@ pub fn begin(args: InitArgs) Self {
     return self;
 }
 
+fn input_system(self: *const Self) ?*input_api.InputSystem {
+    return self.input.input_system;
+}
+
 pub fn end(self: *Self) void {
     std.debug.assert(self.depth == 1);
 
@@ -454,7 +458,7 @@ pub fn text_field(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) Text
     }
     if (self.state_active_text_eq(id) and self.state.text_session_started and self.text_submit_edge() and !self.claimed_confirm) {
         self.claimed_confirm = true;
-        input_api.submit_text() catch {};
+        if (self.input_system()) |sys| sys.submit_text() catch {};
     } else if (self.input.confirm_edge and self.state_focused_eq(id) and !self.claimed_confirm and !self.state_active_text_eq(id)) {
         self.claimed_confirm = true;
         self.state.focus_source = .pad;
@@ -1175,7 +1179,11 @@ fn set_active_text(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) voi
         .max_bytes = buf.max,
         .initial = if (buf.len.* > 0) buf.bytes[0..buf.len.*] else null,
     };
-    _ = input_api.begin_text_input(target, input_opts) catch {
+    const sys = self.input_system() orelse {
+        self.finish_active_text();
+        return;
+    };
+    _ = sys.begin_text_input(&target, &input_opts) catch {
         self.finish_active_text();
         return;
     };
@@ -1190,21 +1198,22 @@ fn uses_modal_text_input() bool {
 }
 
 fn fire_modal_text_input(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {
-    if (input_api.current_text_session()) |s| {
-        if (!s.is_terminal()) input_api.cancel_text() catch {};
+    const sys = self.input_system() orelse return false;
+    if (sys.current_text_session()) |s| {
+        if (!s.is_terminal()) sys.cancel_text() catch {};
     }
     const target: input_api.TextInputTarget = .{ .id = opts.session_id };
     const input_opts: input_api.TextInputOptions = .{
         .max_bytes = buf.max,
         .initial = if (buf.len.* > 0) buf.bytes[0..buf.len.*] else null,
     };
-    _ = input_api.begin_text_input(target, input_opts) catch |err| {
+    _ = sys.begin_text_input(&target, &input_opts) catch |err| {
         log.warn("modal text input '{s}' failed to open: {}", .{ opts.session_id, err });
         return false;
     };
     self.state.active_text = id;
     self.state.text_session_started = false;
-    const session = input_api.current_text_session() orelse {
+    const session = sys.current_text_session() orelse {
         log.warn("modal text input '{s}' produced no session", .{opts.session_id});
         self.finish_active_text();
         return false;
@@ -1213,7 +1222,7 @@ fn fire_modal_text_input(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpt
         if (session.status != .cancelled) {
             log.warn("modal text input '{s}' returned non-terminal status {s}", .{ opts.session_id, @tagName(session.status) });
         }
-        if (!session.is_terminal()) input_api.cancel_text() catch {};
+        if (!session.is_terminal()) sys.cancel_text() catch {};
         self.finish_active_text();
         return false;
     }
@@ -1224,7 +1233,8 @@ fn fire_modal_text_input(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpt
 
 fn sync_session_to_field(self: *Self, id: WidgetId, buf: *TextBuf) TextEvent {
     if (self.state.active_text == null or self.state.active_text.? != id or !self.state.text_session_started) return .none;
-    const session = input_api.current_text_session() orelse return .none;
+    const sys = self.input_system() orelse return .none;
+    const session = sys.current_text_session() orelse return .none;
     self.apply_text_session_events(session);
     if (session.status == .submitted) {
         _ = copy_session_to_buf(session.buffer.items, buf);
@@ -1240,8 +1250,9 @@ fn sync_session_to_field(self: *Self, id: WidgetId, buf: *TextBuf) TextEvent {
 
 fn apply_text_session_events(self: *Self, session_const: *const input_api.TextInputSession) void {
     if (!self.input.text_events or session_const.status != .active) return;
+    const sys = self.input_system() orelse return;
     const session: *input_api.TextInputSession = @constCast(session_const);
-    for (input_api.frame_events()) |ev| {
+    for (sys.frame_events()) |ev| {
         switch (ev.kind) {
             .key_down => |k| {
                 if (k.key == .Backspace) pop_text_codepoint(session);
@@ -1253,7 +1264,8 @@ fn apply_text_session_events(self: *Self, session_const: *const input_api.TextIn
 
 fn text_submit_edge(self: *const Self) bool {
     if (!self.input.text_events) return false;
-    for (input_api.frame_events()) |ev| {
+    const sys = self.input_system() orelse return false;
+    for (sys.frame_events()) |ev| {
         switch (ev.kind) {
             .key_down => |k| {
                 if (k.key == .Enter) return true;

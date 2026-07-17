@@ -180,16 +180,17 @@ pub fn init_memory() Util.MemoryConfig {
         .render = profile.init_render,
         .audio = profile.init_audio,
         .game = profile.init_game,
+        .frame = 0,
         .user = profile.init_user,
     };
 }
 
 pub fn apply_runtime_budgets(engine: *Engine) void {
     const profile = current();
-    engine.set_budget(.render, profile.rt_render);
-    engine.set_budget(.audio, profile.rt_audio);
-    engine.set_budget(.game, profile.rt_game);
-    engine.set_budget(.user, profile.rt_user);
+    engine.set_budget(.render, profile.rt_render) catch unreachable;
+    engine.set_budget(.audio, profile.rt_audio) catch unreachable;
+    engine.set_budget(.game, profile.rt_game) catch unreachable;
+    engine.set_budget(.user, profile.rt_user) catch unreachable;
 }
 
 /// Restore the startup pool layout. Called on entry to MenuState so the next
@@ -198,10 +199,10 @@ pub fn apply_runtime_budgets(engine: *Engine) void {
 /// for the MP connect path's 2 MiB scratch + 4 MiB world allocation.
 pub fn apply_init_budgets(engine: *Engine) void {
     const profile = current();
-    engine.set_budget(.render, profile.init_render);
-    engine.set_budget(.audio, profile.init_audio);
-    engine.set_budget(.game, profile.init_game);
-    engine.set_budget(.user, profile.init_user);
+    engine.set_budget(.render, profile.init_render) catch unreachable;
+    engine.set_budget(.audio, profile.init_audio) catch unreachable;
+    engine.set_budget(.game, profile.init_game) catch unreachable;
+    engine.set_budget(.user, profile.init_user) catch unreachable;
 }
 
 fn render_remainder(

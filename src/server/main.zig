@@ -55,7 +55,8 @@ pub fn main(init: std.process.Init) !void {
     const total_bytes = total_mb * 1024 * 1024;
     const render_budget = 4 * 1024;
     const game_budget = 512 * 1024;
-    const user_budget = total_bytes - render_budget - game_budget;
+    const frame_budget = 0;
+    const user_budget = total_bytes - render_budget - game_budget - frame_budget;
     const memory = try init.gpa.alloc(u8, total_mb * 1024 * 1024);
     defer init.gpa.free(memory);
 
@@ -63,11 +64,12 @@ pub fn main(init: std.process.Init) !void {
     const state = server_state.state();
 
     var engine: ae.Engine = undefined;
-    try engine.init(init.io, init.environ_map, memory, .{
+    try engine.init(init.io, init.environ_map, memory, &.{
         .memory = .{
             .render = render_budget,
             .audio = 0,
             .game = game_budget,
+            .frame = frame_budget,
             .user = user_budget,
         },
         .title = "CrossCraft Classic Server",

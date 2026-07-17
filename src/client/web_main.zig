@@ -33,7 +33,7 @@ export fn aether_wasm_init(width: u32, height: u32) bool {
     };
 
     const state = menu_state.state();
-    engine.init(std.Io.Threaded.global_single_threaded.io(), &env_map, memory, .{
+    engine.init(std.Io.Threaded.global_single_threaded.io(), &env_map, memory, &.{
         .memory = game_config.init_memory(),
         .width = width,
         .height = height,

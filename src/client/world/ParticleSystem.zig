@@ -78,6 +78,7 @@ fn gravity_for(block_id: c.Block) f32 {
 
 const Self = @This();
 
+mesh_data: Rendering.MeshData(Vertex),
 mesh: Rendering.Mesh(Vertex),
 atlas: TextureAtlas,
 particles: [MAX_PARTICLES]Particle,
@@ -89,7 +90,8 @@ allocator: std.mem.Allocator,
 
 pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
     var self: Self = .{
-        .mesh = try Rendering.Mesh(Vertex).new(allocator),
+        .mesh_data = try Rendering.MeshData(Vertex).init(allocator),
+        .mesh = try Rendering.Mesh(Vertex).init(&.{}),
         .atlas = atlas,
         .particles = undefined,
         .count = 0,
@@ -98,12 +100,13 @@ pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
         .allocator = allocator,
     };
     // Pre-reserve the CPU vertex buffer so per-frame rebuilds don't allocate.
-    try self.mesh.ensure_quad_capacity(allocator, MAX_PARTICLES);
+    try self.mesh_data.ensure_quad_capacity(allocator, MAX_PARTICLES);
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.mesh.deinit(self.allocator);
+    self.mesh.deinit();
+    self.mesh_data.deinit(self.allocator);
 }
 
 // --- Spawn ---
@@ -303,7 +306,7 @@ pub fn draw(self: *Self) void {
 }
 
 fn rebuild_mesh(self: *Self, camera: *const Camera) void {
-    self.mesh.clear_retaining_capacity();
+    self.mesh_data.clear_retaining_capacity();
     if (self.count == 0) return;
 
     // Camera basis for billboarding. Right is yaw-only so the quad never
@@ -325,16 +328,16 @@ fn rebuild_mesh(self: *Self, camera: *const Camera) void {
 
     var i: u16 = 0;
     while (i < self.count) : (i += 1) {
-        emit_particle(&self.mesh, &self.particles[i], rx, rz, upx, upy, upz);
+        emit_particle(&self.mesh_data, &self.particles[i], rx, rz, upx, upy, upz);
     }
-    self.mesh.update();
+    self.mesh.update(&self.mesh_data);
 }
 
 /// Append the 6 verts (two triangles) of one billboarded particle quad.
 /// `rx`/`rz` is the camera-right vector (XZ only, pre-scaled by HALF_SIZE);
 /// `(upx,upy,upz)` is camera-up (pre-scaled). Capacity is reserved in init.
 fn emit_particle(
-    mesh: *Rendering.Mesh(Vertex),
+    mesh: *Rendering.MeshData(Vertex),
     p: *const Particle,
     rx: f32,
     rz: f32,

@@ -63,23 +63,25 @@ const INPUT_TEXT_LAYER: u8 = 244;
 // --- Action set ---
 
 var chat_set: ?input.ActionSetHandle = null;
+var chat_send: input.ActionHandle = .none;
+var chat_cancel: input.ActionHandle = .none;
 
-fn ensure_chat_set() !input.ActionSetHandle {
+fn ensure_chat_set(sys: *input.InputSystem) !input.ActionSetHandle {
     if (chat_set) |h| return h;
-    const set = try input.register_action_set("chat");
+    const set = try sys.register_action_set("chat");
 
-    try input.add_action(set, "chat_send", .button);
-    try input.bind_action(set, "chat_send", .{ .source = .{ .key = .Enter } });
-    try input.bind_action(set, "chat_send", .{ .source = .{ .gamepad_button = .A } });
+    chat_send = try sys.add_action(set, "chat_send", .button);
+    try sys.bind_action(chat_send, &.{ .source = .{ .key = .Enter } });
+    try sys.bind_action(chat_send, &.{ .source = .{ .gamepad_button = .A } });
 
-    try input.add_action(set, "chat_cancel", .button);
-    try input.bind_action(set, "chat_cancel", .{ .source = .{ .key = .Escape } });
-    try input.bind_action(set, "chat_cancel", .{ .source = .{ .gamepad_button = .B } });
+    chat_cancel = try sys.add_action(set, "chat_cancel", .button);
+    try sys.bind_action(chat_cancel, &.{ .source = .{ .key = .Escape } });
+    try sys.bind_action(chat_cancel, &.{ .source = .{ .gamepad_button = .B } });
     // Controller Select/Back toggles social mode -- pressing it again with
     // chat already open exits without sending.
-    try input.bind_action(set, "chat_cancel", .{ .source = .{ .gamepad_button = .Back } });
+    try sys.bind_action(chat_cancel, &.{ .source = .{ .gamepad_button = .Back } });
 
-    try input.install_action_set(set);
+    try sys.install_action_set(set);
     chat_set = set;
     return set;
 }
@@ -161,18 +163,18 @@ pub fn receive(self: *Self, raw: []const u8) void {
 /// into; chat_send / chat_cancel are polled in `update`.
 ///
 /// `slash_prefix = true` starts the editable input with '/'.
-pub fn open_overlay(self: *Self, player: *Player, slash_prefix: bool) void {
+pub fn open_overlay(self: *Self, sys: *input.InputSystem, player: *Player, slash_prefix: bool) void {
     if (self.open) return;
     self.open = true;
     self.prev_send = .released;
     self.prev_cancel = .released;
     self.chat_was_active = false;
 
-    const set = ensure_chat_set() catch {
+    const set = ensure_chat_set(sys) catch {
         self.open = false;
         return;
     };
-    input.push_context(.{
+    sys.push_context(&.{
         .name = "chat",
         .cursor_mode = .visible,
         .actions = set,
@@ -181,26 +183,26 @@ pub fn open_overlay(self: *Self, player: *Player, slash_prefix: bool) void {
         self.open = false;
         return;
     };
-    self.begin_session(slash_prefix);
+    self.begin_session(sys, slash_prefix);
 
     // PSP returns synchronously with a terminal session; service it now.
-    handle_terminal_if_done(self, player);
+    handle_terminal_if_done(self, sys, player);
 }
 
 /// Controller social mode: show the chat panel without arming text entry, so
 /// the player list can sit alongside it. Confirm starts text entry later.
-pub fn open_overlay_social(self: *Self, _: *Player) void {
+pub fn open_overlay_social(self: *Self, sys: *input.InputSystem, _: *Player) void {
     if (self.open) return;
     self.open = true;
     self.prev_send = .released;
     self.prev_cancel = .released;
     self.chat_was_active = false;
 
-    const set = ensure_chat_set() catch {
+    const set = ensure_chat_set(sys) catch {
         self.open = false;
         return;
     };
-    input.push_context(.{
+    sys.push_context(&.{
         .name = "chat",
         .cursor_mode = .visible,
         .actions = set,
@@ -213,36 +215,36 @@ pub fn open_overlay_social(self: *Self, _: *Player) void {
     // text entry.
 }
 
-fn begin_session(self: *Self, slash_prefix: bool) void {
+fn begin_session(self: *Self, sys: *input.InputSystem, slash_prefix: bool) void {
     const target: input.TextInputTarget = .{ .id = "chat" };
     const slash_buf = [_]u8{'/'};
     const opts: input.TextInputOptions = .{
         .max_bytes = INPUT_MAX_LEN,
         .initial = if (slash_prefix) slash_buf[0..1] else null,
     };
-    _ = input.begin_text_input(target, opts) catch return;
+    _ = sys.begin_text_input(&target, &opts) catch return;
     self.session_active = true;
 }
 
-fn handle_terminal_if_done(self: *Self, player: *Player) void {
-    const session = input.current_text_session() orelse return;
+fn handle_terminal_if_done(self: *Self, sys: *input.InputSystem, player: *Player) void {
+    const session = sys.current_text_session() orelse return;
     if (session.status == .submitted) {
-        send_session(player);
-        self.close_overlay(player);
+        send_session(sys, player);
+        self.close_overlay(sys, player);
     } else if (session.status == .cancelled) {
-        self.close_overlay(player);
+        self.close_overlay(sys, player);
     }
 }
 
-pub fn close_overlay(self: *Self, player: *Player) void {
+pub fn close_overlay(self: *Self, sys: *input.InputSystem, player: *Player) void {
     if (!self.open) return;
     self.open = false;
     if (self.session_active) {
         // cancel_text errors if the session is already terminal; ignore.
-        input.cancel_text() catch {};
+        sys.cancel_text() catch {};
         self.session_active = false;
     }
-    _ = input.pop_context() catch {};
+    _ = sys.pop_context() catch {};
     player.look_delta = .{ 0, 0 };
 }
 
@@ -258,16 +260,16 @@ pub fn tick(self: *Self, dt: f32) void {
 
 // --- Update (called every frame while open) ---
 
-pub fn update(self: *Self, player: *Player) void {
+pub fn update(self: *Self, sys: *input.InputSystem, player: *Player) void {
     std.debug.assert(self.open);
 
     // Walk frame events for Backspace; trim the session buffer in place.
     if (self.session_active) {
-        const session_const = input.current_text_session() orelse return;
+        const session_const = sys.current_text_session() orelse return;
         // Cast away const for the in-place shrink; the session pointer is
         // stable storage and Aether exposes no pop-byte helper.
         const session: *input.TextInputSession = @constCast(session_const);
-        for (input.frame_events()) |ev| {
+        for (sys.frame_events()) |ev| {
             switch (ev.kind) {
                 .key_down => |k| {
                     if (k.key == .Backspace and session.buffer.items.len > 0) {
@@ -279,10 +281,10 @@ pub fn update(self: *Self, player: *Player) void {
         }
     }
 
-    const send = input.get_action_button("chat_send");
-    const cancel = input.get_action_button("chat_cancel");
+    const send = sys.button(chat_send).current;
+    const cancel = sys.button(chat_cancel).current;
 
-    const active_now = is_chat_set_active();
+    const active_now = is_chat_set_active(sys);
     const fresh_activation = active_now and !self.chat_was_active;
     self.chat_was_active = active_now;
 
@@ -293,34 +295,34 @@ pub fn update(self: *Self, player: *Player) void {
 
     if (send_edge) {
         if (self.session_active) {
-            input.submit_text() catch {};
-            send_session(player);
-            self.close_overlay(player);
+            sys.submit_text() catch {};
+            send_session(sys, player);
+            self.close_overlay(sys, player);
         } else {
             // Controller social mode: the panel is open without an active
             // session. Confirm starts text entry; modal OSK platforms return
             // synchronously and desktop keeps the session active.
-            self.begin_session(false);
-            handle_terminal_if_done(self, player);
+            self.begin_session(sys, false);
+            handle_terminal_if_done(self, sys, player);
         }
         return;
     }
 
     if (cancel_edge) {
-        self.close_overlay(player);
+        self.close_overlay(sys, player);
     }
 }
 
-fn is_chat_set_active() bool {
-    const top = input.stack_top() orelse return false;
+fn is_chat_set_active(sys: *input.InputSystem) bool {
+    const top = sys.stack_top() orelse return false;
     const set = chat_set orelse return false;
     return @intFromEnum(top.actions) == @intFromEnum(set);
 }
 
 // --- Wire send ---
 
-fn send_session(player: *Player) void {
-    const session = input.current_text_session() orelse return;
+fn send_session(sys: *input.InputSystem, player: *Player) void {
+    const session = sys.current_text_session() orelse return;
     const body = session.buffer.items;
     if (body.len == 0) return;
 
@@ -330,7 +332,7 @@ fn send_session(player: *Player) void {
 
 // --- Draw ---
 
-pub fn draw_into(self: *Self, list: *UiDrawList, fonts: *const FontBatcher, y_shift: i16) void {
+pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts: *const FontBatcher, y_shift: i16) void {
     self.render_line_count = 0;
 
     const base: i16 = BOTTOM_PAD + y_shift;
@@ -343,7 +345,7 @@ pub fn draw_into(self: *Self, list: *UiDrawList, fonts: *const FontBatcher, y_sh
     // Read the live session buffer; in social mode the session may not yet
     // be active -- show only the prompt in that state.
     const body: []const u8 = if (self.open)
-        if (input.current_text_session()) |s| s.buffer.items else &.{}
+        if (sys.current_text_session()) |s| s.buffer.items else &.{}
     else
         &.{};
 

@@ -94,9 +94,6 @@ pub fn set_scroll_y(self: *Self, id: WidgetId, y: i16) void {
 }
 
 pub fn cancel_active_text(self: *Self) void {
-    if (self.active_text != null and self.text_session_started) {
-        ae.Core.input.cancel_text() catch {};
-    }
     self.active_text = null;
     self.text_session_started = false;
 }

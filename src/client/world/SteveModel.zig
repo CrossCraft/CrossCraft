@@ -59,6 +59,7 @@ const LIMB_VERTS: usize = LIMB_QUADS * 6;
 const TAG_HEIGHT: f32 = 0.3; // world-space height of text (blocks)
 const TAG_Y_OFFSET: f32 = 2.2; // above feet (head top is 2.0)
 const BatchMesh = Rendering.Mesh(Vertex);
+const BatchMeshData = Rendering.MeshData(Vertex);
 
 const PlayerState = struct {
     active: bool,
@@ -70,50 +71,67 @@ const PlayerState = struct {
     walk_blend: f32,
 };
 
-torso: Rendering.Mesh(Vertex),
-head: Rendering.Mesh(Vertex),
-right_arm: Rendering.Mesh(Vertex),
-left_arm: Rendering.Mesh(Vertex),
-right_leg: Rendering.Mesh(Vertex),
-left_leg: Rendering.Mesh(Vertex),
+torso_data: BatchMeshData,
+torso: BatchMesh,
+head_data: BatchMeshData,
+head: BatchMesh,
+right_arm_data: BatchMeshData,
+right_arm: BatchMesh,
+left_arm_data: BatchMeshData,
+left_arm: BatchMesh,
+right_leg_data: BatchMeshData,
+right_leg: BatchMesh,
+left_leg_data: BatchMeshData,
+left_leg: BatchMesh,
 states: [c.MAX_PLAYERS]PlayerState,
-name_tags: [c.MAX_PLAYERS]?BatchMesh,
+name_tags: [c.MAX_PLAYERS]?FontBatcher.TextMesh,
 name_aspects: [c.MAX_PLAYERS]f32,
 anim_time: f32,
 allocator: std.mem.Allocator,
 
 pub fn init(allocator: std.mem.Allocator) !Self {
     var self: Self = .{
-        .torso = try Rendering.Mesh(Vertex).new(allocator),
-        .head = try Rendering.Mesh(Vertex).new(allocator),
-        .right_arm = try Rendering.Mesh(Vertex).new(allocator),
-        .left_arm = try Rendering.Mesh(Vertex).new(allocator),
-        .right_leg = try Rendering.Mesh(Vertex).new(allocator),
-        .left_leg = try Rendering.Mesh(Vertex).new(allocator),
+        .torso_data = try BatchMeshData.init(allocator),
+        .torso = try BatchMesh.init(&.{}),
+        .head_data = try BatchMeshData.init(allocator),
+        .head = try BatchMesh.init(&.{}),
+        .right_arm_data = try BatchMeshData.init(allocator),
+        .right_arm = try BatchMesh.init(&.{}),
+        .left_arm_data = try BatchMeshData.init(allocator),
+        .left_arm = try BatchMesh.init(&.{}),
+        .right_leg_data = try BatchMeshData.init(allocator),
+        .right_leg = try BatchMesh.init(&.{}),
+        .left_leg_data = try BatchMeshData.init(allocator),
+        .left_leg = try BatchMesh.init(&.{}),
         .states = std.mem.zeroes([c.MAX_PLAYERS]PlayerState),
         .name_tags = .{null} ** c.MAX_PLAYERS,
         .name_aspects = .{1.0} ** c.MAX_PLAYERS,
         .anim_time = 0,
         .allocator = allocator,
     };
-    const meshes = [_]*Rendering.Mesh(Vertex){
+    const data_meshes = [_]*BatchMeshData{
+        &self.torso_data,     &self.head_data,
+        &self.right_arm_data, &self.left_arm_data,
+        &self.right_leg_data, &self.left_leg_data,
+    };
+    const render_meshes = [_]*BatchMesh{
         &self.torso,     &self.head,
         &self.right_arm, &self.left_arm,
         &self.right_leg, &self.left_leg,
     };
-    for (meshes) |m| {
+    for (data_meshes) |m| {
         try m.ensure_quad_capacity(allocator, LIMB_QUADS);
     }
-    build_torso(&self.torso);
-    build_head(&self.head);
-    build_right_arm(&self.right_arm);
-    build_left_arm(&self.left_arm);
-    build_right_leg(&self.right_leg);
-    build_left_leg(&self.left_leg);
-    for (meshes) |m| {
+    build_torso(&self.torso_data);
+    build_head(&self.head_data);
+    build_right_arm(&self.right_arm_data);
+    build_left_arm(&self.left_arm_data);
+    build_right_leg(&self.right_leg_data);
+    build_left_leg(&self.left_leg_data);
+    for (data_meshes, render_meshes) |data, mesh| {
         const expected_verts: usize = if (Rendering.mesh.indexing_enabled) LIMB_QUADS * 4 else LIMB_VERTS;
-        std.debug.assert(m.vertices.items.len == expected_verts);
-        m.update();
+        std.debug.assert(data.vertices.items.len == expected_verts);
+        mesh.update(data);
     }
     return self;
 }
@@ -125,12 +143,18 @@ pub fn deinit(self: *Self) void {
             nt.* = null;
         }
     }
-    const meshes = [_]*Rendering.Mesh(Vertex){
+    const render_meshes = [_]*BatchMesh{
         &self.torso,     &self.head,
         &self.right_arm, &self.left_arm,
         &self.right_leg, &self.left_leg,
     };
-    for (meshes) |m| m.deinit(self.allocator);
+    const data_meshes = [_]*BatchMeshData{
+        &self.torso_data,     &self.head_data,
+        &self.right_arm_data, &self.left_arm_data,
+        &self.right_leg_data, &self.left_leg_data,
+    };
+    for (render_meshes) |m| m.deinit();
+    for (data_meshes) |m| m.deinit(self.allocator);
 }
 
 // --- Per-frame update (call from GameState.update) ---
@@ -217,7 +241,7 @@ pub fn draw(self: *Self, local: *const Player) void {
     const local_y = local.pos_y;
     const local_z = local.pos_z;
 
-    ResourcePack.get_tex(.char).bind();
+    Rendering.gfx.api.bind_texture(ResourcePack.get_tex(.char).handle);
 
     // Idle sway (Z-axis, outward only, always active).
     const idle_swing = (@sin(self.anim_time * std.math.tau * IDLE_SPEED) * 0.5 + 0.5) * IDLE_AMPLITUDE;
@@ -284,7 +308,7 @@ pub fn draw(self: *Self, local: *const Player) void {
 // --- Name tags (call from GameState.draw after draw()) ---
 
 pub fn draw_nametags(self: *Self, local: *const Player, fonts: *const FontBatcher) void {
-    fonts.texture.bind();
+    Rendering.gfx.api.bind_texture(fonts.texture.handle);
 
     for (&self.states, &self.name_tags, &self.name_aspects) |*st, *nt, aspect| {
         if (!st.active) continue;
@@ -386,7 +410,7 @@ fn mirror_uvs(uvs: FaceUVs) FaceUVs {
     return m;
 }
 
-fn emit_quad(mesh: *BatchMesh, q: [4]Vertex) void {
+fn emit_quad(mesh: *BatchMeshData, q: [4]Vertex) void {
     mesh.add_quad_assume_capacity(q[0], q[3], q[2], q[1]);
 }
 
@@ -432,7 +456,7 @@ fn make_quad(face: Face, px: i16, px1: i16, py: i16, py1: i16, pz: i16, pz1: i16
 }
 
 fn emit_box(
-    mesh: *BatchMesh,
+    mesh: *BatchMeshData,
     x0: i32,
     y0: i32,
     z0: i32,
@@ -458,32 +482,32 @@ fn emit_box(
 // All limbs are built relative to their rotation pivot so that rotations
 // in the model matrix produce natural joint movement.
 
-fn build_torso(mesh: *BatchMesh) void {
+fn build_torso(mesh: *BatchMeshData) void {
     // 0.5 wide, 0.75 tall, 0.25 deep. Positioned at model origin (feet).
     emit_box(mesh, -64, 192, -32, 64, 384, 32, &torso_uvs);
 }
 
-fn build_head(mesh: *BatchMesh) void {
+fn build_head(mesh: *BatchMeshData) void {
     // Pivot at bottom-center (neck). Y [0, 0.5] relative to pivot.
     emit_box(mesh, -64, 0, -64, 64, 128, 64, &head_uvs);
 }
 
-fn build_right_arm(mesh: *BatchMesh) void {
+fn build_right_arm(mesh: *BatchMeshData) void {
     // Pivot at shoulder (top-center). Y [-0.75, 0] relative to pivot.
     emit_box(mesh, -32, -192, -32, 32, 0, 32, &arm_uvs);
 }
 
-fn build_left_arm(mesh: *BatchMesh) void {
+fn build_left_arm(mesh: *BatchMeshData) void {
     const left_arm_uvs = comptime mirror_uvs(arm_uvs);
     emit_box(mesh, -32, -192, -32, 32, 0, 32, &left_arm_uvs);
 }
 
-fn build_right_leg(mesh: *BatchMesh) void {
+fn build_right_leg(mesh: *BatchMeshData) void {
     // Pivot at hip (top-center). Y [-0.75, 0] relative to pivot.
     emit_box(mesh, -32, -192, -32, 32, 0, 32, &leg_uvs);
 }
 
-fn build_left_leg(mesh: *BatchMesh) void {
+fn build_left_leg(mesh: *BatchMeshData) void {
     const left_leg_uvs = comptime mirror_uvs(leg_uvs);
     emit_box(mesh, -32, -192, -32, 32, 0, 32, &left_leg_uvs);
 }

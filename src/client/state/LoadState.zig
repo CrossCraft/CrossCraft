@@ -97,10 +97,10 @@ fn start_connect_task(
     } };
 }
 
-fn ensure_loading_set() !ae.Core.input.ActionSetHandle {
+fn ensure_loading_set(engine: *Engine) !ae.Core.input.ActionSetHandle {
     if (loading_set) |h| return h;
-    const set = try ae.Core.input.register_action_set("loading");
-    try ae.Core.input.install_action_set(set);
+    const set = try engine.input.register_action_set("loading");
+    try engine.input.install_action_set(set);
     loading_set = set;
     return set;
 }
@@ -303,17 +303,17 @@ var state_inst: State = undefined;
 var load_state: @This() = undefined;
 var load_state_inst: State = undefined;
 
-pub fn transition_here(engine: *Engine) !void {
+pub fn transition_here(engine: *Engine) void {
     load_state_inst = load_state.state();
-    try ae.Core.state_machine.transition(engine, &load_state_inst);
+    engine.transition(&load_state_inst);
 }
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
 
-    const set = try ensure_loading_set();
-    try ae.Core.input.push_context(.{
+    const set = try ensure_loading_set(engine);
+    try engine.input.push_context(&.{
         .name = "loading",
         .cursor_mode = .visible,
         .actions = set,
@@ -357,14 +357,14 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     engine.report();
 }
 
-fn deinit(ctx: *anyopaque, _: *Engine) void {
+fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
     self.server_task.await();
     self.font_batcher.deinit();
     self.batcher.deinit();
 
-    _ = ae.Core.input.pop_context() catch {};
+    _ = engine.input.pop_context() catch {};
 
     self.inited = false;
 }
@@ -381,11 +381,11 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
                 .multiplayer => std.fmt.bufPrint(&reason_buf, "Failed to connect: {s}", .{@errorName(err)}) catch "Failed to connect to server",
             };
             Session.set_disconnect_reason_if_empty(reason);
-            try DisconnectState.transition_here(engine);
+            DisconnectState.transition_here(engine);
             return;
         }
         state_inst = game_state.state();
-        try ae.Core.state_machine.transition(engine, &state_inst);
+        engine.transition(&state_inst);
     }
 }
 

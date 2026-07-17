@@ -11,6 +11,20 @@ pub const Anchor = layout.Anchor;
 pub const Color = @import("../graphics/Color.zig").Color;
 pub const Vertex = @import("aether").Rendering.Vertex;
 pub const BatchMesh = Rendering.Mesh(Vertex);
+pub const BatchMeshData = Rendering.MeshData(Vertex);
+pub const TextMesh = struct {
+    data: BatchMeshData,
+    mesh: BatchMesh,
+
+    pub fn deinit(self: *TextMesh, allocator: std.mem.Allocator) void {
+        self.mesh.deinit();
+        self.data.deinit(allocator);
+    }
+
+    pub fn draw(self: *TextMesh, model: *const Math.Mat4) void {
+        self.mesh.draw(model);
+    }
+};
 
 const Self = @This();
 
@@ -88,6 +102,7 @@ prev_count: u16,
 current: u1,
 last_screen_w: u32,
 last_screen_h: u32,
+mesh_data: BatchMeshData,
 mesh: BatchMesh,
 allocator: std.mem.Allocator,
 
@@ -96,6 +111,8 @@ allocator: std.mem.Allocator,
 pub fn init(allocator: std.mem.Allocator, texture: *const Rendering.Texture) !Self {
     std.debug.assert(texture.width == 128);
     std.debug.assert(texture.height == 128);
+    var mesh_data = try BatchMeshData.init(allocator);
+    errdefer mesh_data.deinit(allocator);
     return .{
         .glyph_widths = compute_glyph_widths(texture),
         .atlas = TextureAtlas.init(128, 128, GLYPH_ROWS, GLYPH_COLS),
@@ -108,13 +125,15 @@ pub fn init(allocator: std.mem.Allocator, texture: *const Rendering.Texture) !Se
         .current = 0,
         .last_screen_w = 0,
         .last_screen_h = 0,
-        .mesh = try BatchMesh.new(allocator),
+        .mesh_data = mesh_data,
+        .mesh = try BatchMesh.init(&.{}),
         .allocator = allocator,
     };
 }
 
 pub fn deinit(self: *Self) void {
-    self.mesh.deinit(self.allocator);
+    self.mesh.deinit();
+    self.mesh_data.deinit(self.allocator);
 }
 
 /// Recompute glyph widths from the current `texture` pixel data.
@@ -185,7 +204,7 @@ pub fn draw(self: *Self) void {
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
     Rendering.gfx.api.set_view_matrix(&Math.Mat4.identity());
-    self.texture.bind();
+    Rendering.set_state(&.{ .texture = self.texture.handle });
     self.mesh.draw(&Math.Mat4.identity());
 }
 
@@ -259,16 +278,18 @@ pub fn build_mesh(
     shadow_color: Color,
     spacing: i8,
     text_scale: u8,
-) !BatchMesh {
+) !TextMesh {
     std.debug.assert(str.len > 0);
     std.debug.assert(text_scale > 0);
-    var mesh = try BatchMesh.new(self.allocator);
-    errdefer mesh.deinit(self.allocator);
+    var data = try BatchMeshData.init(self.allocator);
+    errdefer data.deinit(self.allocator);
+    var mesh = try BatchMesh.init(&.{});
+    errdefer mesh.deinit();
 
     const has_shadow = shadow_color.a > 0;
     const n_chars: u32 = @intCast(str.len);
     const mult: u32 = if (has_shadow) 2 else 1;
-    try mesh.ensure_quad_capacity(
+    try data.ensure_quad_capacity(
         self.allocator,
         @as(usize, n_chars * QUADS_PER_CHAR * mult),
     );
@@ -284,12 +305,12 @@ pub fn build_mesh(
     const ext_h = text_h + pad;
 
     if (has_shadow) {
-        emit_string_local(self, &mesh, str, spacing, s, s, 32766, shadow_color, true, ext_w, ext_h, text_scale);
+        emit_string_local(self, &data, str, spacing, s, s, 32766, shadow_color, true, ext_w, ext_h, text_scale);
     }
-    emit_string_local(self, &mesh, str, spacing, 0, 0, 32765, color, false, ext_w, ext_h, text_scale);
+    emit_string_local(self, &data, str, spacing, 0, 0, 32765, color, false, ext_w, ext_h, text_scale);
 
-    mesh.update();
-    return mesh;
+    mesh.update(&data);
+    return .{ .data = data, .mesh = mesh };
 }
 
 /// Computes a model matrix that positions and scales an exported mesh using
@@ -375,18 +396,18 @@ fn rebuild(self: *Self, screen_w: u32, screen_h: u32) !void {
         total_quads += @as(u32, @intCast(e.str.len)) * QUADS_PER_CHAR * mult;
     }
 
-    self.mesh.clear_retaining_capacity();
-    try self.mesh.ensure_quad_capacity(self.allocator, @as(usize, total_quads));
+    self.mesh_data.clear_retaining_capacity();
+    try self.mesh_data.ensure_quad_capacity(self.allocator, @as(usize, total_quads));
 
     for (entries) |*e| {
-        emit_text(self, &self.mesh, e, screen_w, screen_h, scale);
+        emit_text(self, &self.mesh_data, e, screen_w, screen_h, scale);
     }
-    self.mesh.update();
+    self.mesh.update(&self.mesh_data);
 }
 
 fn emit_text(
     self: *const Self,
-    mesh: *BatchMesh,
+    mesh: *BatchMeshData,
     entry: *const TextEntry,
     screen_w: u32,
     screen_h: u32,
@@ -418,7 +439,7 @@ fn emit_text(
 
 fn emit_string_screen(
     self: *const Self,
-    mesh: *BatchMesh,
+    mesh: *BatchMeshData,
     str: []const u8,
     spacing: i8,
     start_x: i32,
@@ -483,7 +504,7 @@ fn emit_string_screen(
 
 fn emit_string_local(
     self: *const Self,
-    mesh: *BatchMesh,
+    mesh: *BatchMeshData,
     str: []const u8,
     spacing: i8,
     offset_x: i32,
@@ -542,7 +563,7 @@ fn glyph_uvs(self: *const Self, byte: u8, gw: u8) [4]i16 {
 }
 
 fn emit_quad(
-    mesh: *BatchMesh,
+    mesh: *BatchMeshData,
     sx0: i16,
     sy0: i16,
     sx1: i16,
@@ -588,7 +609,7 @@ fn compute_glyph_widths(texture: *const Rendering.Texture) [GLYPH_COUNT]u8 {
             col -= 1;
             var row: u32 = 0;
             while (row < GLYPH_SIZE) : (row += 1) {
-                const rgba = texture.get_pixel(bx + col, by + row);
+                const rgba = texture.get_pixel(bx + col, by + row) catch .{ 0, 0, 0, 0 };
                 if (rgba[3] > 0) {
                     max_col = @intCast(col + 1);
                     break;

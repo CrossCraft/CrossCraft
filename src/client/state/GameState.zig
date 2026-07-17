@@ -128,8 +128,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.trace_first_draw = true;
     // Push the gameplay context up front so any later init failure is
     // matched by the deinit pop below.
-    const gameplay_set = try bindings.init();
-    try ae_input.push_context(.{
+    const gameplay_set = try bindings.init(&engine.input);
+    try engine.input.push_context(&.{
         .name = "gameplay",
         .cursor_mode = .captured,
         .actions = gameplay_set,
@@ -260,7 +260,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     // ensure_registered is idempotent; call it so the inventory overlay
     // has the menu actions even if MenuState was skipped.
-    try ui_input.ensure_registered();
+    try ui_input.ensure_registered(&engine.input);
     ui_input.set_profile(ui_input.default_profile());
     self.inventory_open = false;
     self.inventory_slot = 0;
@@ -336,19 +336,19 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
 
     // Aether allows only one non-terminal text session at a time; cancel
     // any leftover so the next state can begin its own.
-    if (ae_input.current_text_session()) |s| {
-        if (s.status == .active or s.status == .suspended) ae_input.cancel_text() catch {};
+    if (engine.input.current_text_session()) |s| {
+        if (s.status == .active or s.status == .suspended) engine.input.cancel_text() catch {};
     }
-    ControlsScreen.cancel_capture(pause_controls_ctx(self));
+    ControlsScreen.cancel_capture(&engine.input, pause_controls_ctx(self));
 
     // Pop gameplay and any overlays still stacked on top of it.
-    while (ae_input.stack_top()) |top| {
+    while (engine.input.stack_top()) |top| {
         if (std.mem.eql(u8, top.name, "gameplay")) {
-            _ = ae_input.pop_context() catch {};
+            _ = engine.input.pop_context() catch {};
             break;
         }
         if (std.mem.eql(u8, top.name, "menu") or std.mem.eql(u8, top.name, "loading")) break;
-        _ = ae_input.pop_context() catch break;
+        _ = engine.input.pop_context() catch break;
     }
 
     // Stop the read-loop task before freeing any resources it may still
@@ -496,8 +496,8 @@ fn angle_to_classic_u8(angle: f32) u8 {
     return @intFromFloat(scaled);
 }
 
-fn focus_lost_this_frame() bool {
-    for (ae_input.frame_events()) |ev| {
+fn focus_lost_this_frame(sys: *ae_input.InputSystem) bool {
+    for (sys.frame_events()) |ev| {
         switch (ev.kind) {
             .focus_lost => return true,
             else => {},
@@ -514,7 +514,7 @@ fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInpu
 
     switch (action) {
         .none => {},
-        .back => close_pause(self),
+        .back => close_pause(self, engine),
         .options => enter_pause_options(self),
         .save => World.save(),
         .dump_world => enter_pause_dump_world(self),
@@ -526,8 +526,8 @@ fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInpu
             self.pause_options_ui_state.cancel_active_text();
             self.pause_controls_ui_state.cancel_active_text();
             self.pause_dump_ui_state.cancel_active_text();
-            ControlsScreen.cancel_capture(pause_controls_ctx(self));
-            try MenuState.transition_here(engine);
+            ControlsScreen.cancel_capture(&engine.input, pause_controls_ctx(self));
+            MenuState.transition_here(engine);
             return true;
         },
     }
@@ -542,7 +542,7 @@ fn update_pause_options(self: *@This(), engine: *Engine, in: *const ui_input.UiI
     self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
     switch (action) {
         .none => {},
-        .controls => enter_pause_controls(self),
+        .controls => enter_pause_controls(self, engine),
         .close => {
             Options.save(engine.io, engine.dirs.data);
             engine.set_vsync(Options.current.vsync);
@@ -556,7 +556,7 @@ fn update_pause_controls(self: *@This(), engine: *Engine, in: *const ui_input.Ui
     var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, in, OptionsScreen.LAYER_BASE);
     const result = ControlsScreen.run(&ui, &Options.current, pause_controls_ctx(self));
     ui.end();
-    if (result.changed) apply_control_options();
+    if (result.changed) apply_control_options(engine);
     if (result.back) {
         Options.save(engine.io, engine.dirs.data);
         enter_pause_options(self);
@@ -574,8 +574,8 @@ fn leave_pause_options(self: *@This()) void {
     self.pause_ui_state.open(ui_input.seed_focus_on_open());
 }
 
-fn enter_pause_controls(self: *@This()) void {
-    ControlsScreen.cancel_capture(pause_controls_ctx(self));
+fn enter_pause_controls(self: *@This(), engine: *Engine) void {
+    ControlsScreen.cancel_capture(&engine.input, pause_controls_ctx(self));
     self.pause_controls_status = .none;
     self.pause_screen = .controls;
     self.pause_controls_ui_state.open(ui_input.seed_focus_on_open());
@@ -588,9 +588,9 @@ fn pause_controls_ctx(self: *@This()) ControlsScreen.Ctx {
     };
 }
 
-fn apply_control_options() void {
-    ui_input.apply_options() catch |err| log.warn("failed to apply UI control bindings: {}", .{err});
-    bindings.apply_options() catch |err| log.warn("failed to apply gameplay control bindings: {}", .{err});
+fn apply_control_options(engine: *Engine) void {
+    ui_input.apply_options(&engine.input) catch |err| log.warn("failed to apply UI control bindings: {}", .{err});
+    bindings.apply_options(&engine.input) catch |err| log.warn("failed to apply gameplay control bindings: {}", .{err});
 }
 
 fn update_pause_dump_world(self: *@This(), in: *const ui_input.UiInput) !void {
@@ -664,13 +664,13 @@ fn try_dump_world(self: *@This()) bool {
     return true;
 }
 
-fn open_pause(self: *@This()) void {
+fn open_pause(self: *@This(), engine: *Engine) void {
     if (self.paused) return;
     self.paused = true;
     self.pause_screen = .main;
     self.pause_ui_repeat = .{};
     self.pause_ui_state.open(ui_input.seed_focus_on_open());
-    ae_input.push_context(.{
+    engine.input.push_context(&.{
         .name = "pause",
         .cursor_mode = .visible,
         .actions = ui_input.menu_set(),
@@ -678,21 +678,21 @@ fn open_pause(self: *@This()) void {
     }) catch {};
 }
 
-fn close_pause(self: *@This()) void {
+fn close_pause(self: *@This(), engine: *Engine) void {
     if (!self.paused) return;
     self.paused = false;
     self.pause_screen = .main;
-    _ = ae_input.pop_context() catch {};
-    bindings.refresh_active_context() catch |err| log.warn("failed to refresh gameplay controls: {}", .{err});
+    _ = engine.input.pop_context() catch {};
+    bindings.refresh_active_context(&engine.input) catch |err| log.warn("failed to refresh gameplay controls: {}", .{err});
     self.player.look_delta = .{ 0, 0 };
     self.pause_ui_state.cancel_active_text();
     self.pause_options_ui_state.cancel_active_text();
     self.pause_controls_ui_state.cancel_active_text();
     self.pause_dump_ui_state.cancel_active_text();
-    ControlsScreen.cancel_capture(pause_controls_ctx(self));
+    ControlsScreen.cancel_capture(&engine.input, pause_controls_ctx(self));
 }
 
-fn open_inventory(self: *@This()) void {
+fn open_inventory(self: *@This(), engine: *Engine) void {
     if (self.inventory_open) return;
     self.inventory_open = true;
     // Seed the cursor from the player's current hotbar pick when it
@@ -705,7 +705,7 @@ fn open_inventory(self: *@This()) void {
     self.inventory_repeat = .{};
     self.inventory_ui_state.open(ui_input.seed_focus_on_open());
     self.inventory_ui_state.focused = InventoryUi.wid(.grid);
-    ae_input.push_context(.{
+    engine.input.push_context(&.{
         .name = "inventory",
         .cursor_mode = .visible,
         .actions = ui_input.menu_set(),
@@ -713,17 +713,17 @@ fn open_inventory(self: *@This()) void {
     }) catch {};
 }
 
-fn close_inventory(self: *@This()) void {
+fn close_inventory(self: *@This(), engine: *Engine) void {
     if (!self.inventory_open) return;
     self.inventory_open = false;
-    _ = ae_input.pop_context() catch {};
-    bindings.refresh_active_context() catch |err| log.warn("failed to refresh gameplay controls: {}", .{err});
+    _ = engine.input.pop_context() catch {};
+    bindings.refresh_active_context(&engine.input) catch |err| log.warn("failed to refresh gameplay controls: {}", .{err});
     // Discard the spurious look delta produced by the cursor-mode swap.
     self.player.look_delta = .{ 0, 0 };
     self.inventory_ui_state.cancel_active_text();
 }
 
-fn update_inventory_tree(self: *@This(), in: *const ui_input.UiInput) void {
+fn update_inventory_tree(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) void {
     var list: UiDrawList = .{};
     var ui = begin_game_ui(self, &list, &self.inventory_ui_state, in, InventoryUi.LAYER_BASE);
     const action = InventoryUi.run(&ui, self.inventory_blocks[0..], &self.inventory_slot);
@@ -733,9 +733,9 @@ fn update_inventory_tree(self: *@This(), in: *const ui_input.UiInput) void {
         .select => {
             std.debug.assert(self.player.selected_slot < Player.HOTBAR_SLOTS);
             self.player.hotbar[self.player.selected_slot] = BlockRegistry.inventory_block(self.inventory_slot);
-            close_inventory(self);
+            close_inventory(self, engine);
         },
-        .back => close_inventory(self),
+        .back => close_inventory(self, engine),
     }
 }
 
@@ -779,6 +779,7 @@ fn current_screen_rect() Ui.LogicalRect {
 
 fn empty_input() ui_input.UiInput {
     return .{
+        .input_system = null,
         .cursor_x = 0,
         .cursor_y = 0,
         .cursor_available = false,
@@ -809,10 +810,10 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         if (controller_edge) {
             if (self.social_mode) {
                 self.social_mode = false;
-                self.chat.close_overlay(&self.player);
+                self.chat.close_overlay(&engine.input, &self.player);
             } else if (Session.mode == .multiplayer and !self.inventory_open) {
                 self.social_mode = true;
-                self.chat.open_overlay_social(&self.player);
+                self.chat.open_overlay_social(&engine.input, &self.player);
             }
         }
     }
@@ -822,19 +823,23 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         &self.pause_ui_repeat
     else
         &self.inventory_repeat;
-    const ui_in = ui_input.build_frame(dt, active_repeat);
+    const ui_in = ui_input.build_frame(&engine.input, dt, active_repeat);
 
     // Pause menu open/close. Focus loss only auto-pauses when nothing else is
     // already grabbing input -- otherwise the chat or inventory overlay would
     // sit awkwardly behind the pause panel.
     const can_open_pause = !self.paused and !self.chat.open and !self.inventory_open;
     var just_opened_pause = false;
-    if (focus_lost_this_frame() and can_open_pause) {
-        open_pause(self);
+    if (focus_lost_this_frame(&engine.input) and can_open_pause) {
+        open_pause(self, engine);
         just_opened_pause = true;
     }
-    if (ui_in.pause_edge and can_open_pause) {
-        open_pause(self);
+    const gameplay_pause = if (can_open_pause)
+        engine.input.button(bindings.actions().ui_pause).pressed()
+    else
+        false;
+    if ((ui_in.pause_edge or gameplay_pause) and can_open_pause) {
+        open_pause(self, engine);
         just_opened_pause = true;
     }
     if (self.paused) {
@@ -875,9 +880,9 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         if (self.player.inventory_toggle_pending) {
             self.player.inventory_toggle_pending = false;
             if (self.inventory_open) {
-                close_inventory(self);
+                close_inventory(self, engine);
             } else if (!self.chat.open) {
-                open_inventory(self);
+                open_inventory(self, engine);
             }
         }
 
@@ -886,26 +891,26 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         if (self.player.chat_open_pending) {
             self.player.chat_open_pending = false;
             if (!self.chat.open and !self.inventory_open) {
-                self.chat.open_overlay(&self.player, false);
+                self.chat.open_overlay(&engine.input, &self.player, false);
             }
         }
         if (self.player.chat_cmd_pending) {
             self.player.chat_cmd_pending = false;
             if (!self.chat.open and !self.inventory_open) {
-                self.chat.open_overlay(&self.player, true);
+                self.chat.open_overlay(&engine.input, &self.player, true);
             }
         }
 
-        if (self.inventory_open) update_inventory_tree(self, &ui_in);
+        if (self.inventory_open) update_inventory_tree(self, engine, &ui_in);
 
-        if (self.chat.open) self.chat.update(&self.player);
+        if (self.chat.open) self.chat.update(&engine.input, &self.player);
         if (self.social_mode and !self.chat.open) self.social_mode = false;
 
         self.chat.tick(dt);
 
         // Player physics keep ticking with overlays open (matching
         // Classic); the masked ActionSet zeroes input.
-        self.player.update(dt);
+        self.player.update(&engine.input, dt);
         if (self.player.selected) |hit| {
             const block_id = World.data.get_block(hit.x, hit.y, hit.z);
             if (!block_id.is_air()) try self.selection.update(block_id.bounds());
@@ -934,7 +939,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
     }
 
     if (self.paused) {
-        try prepare_ui_batches(self);
+        try prepare_ui_batches(self, engine);
         return;
     }
 
@@ -949,7 +954,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         self.hotbar_tooltip_timer -= dt;
         if (self.hotbar_tooltip_timer < 0) self.hotbar_tooltip_timer = 0;
     }
-    try prepare_ui_batches(self);
+    try prepare_ui_batches(self, engine);
     if (trace) {
         log.info("trace: first update end", .{});
         self.trace_first_update = false;
@@ -999,7 +1004,7 @@ fn player_in_shadow(player: *const Player) bool {
     return !World.is_sunlit(@intCast(bx_i), @intCast(by_i), @intCast(bz_i));
 }
 
-fn prepare_ui_batches(self: *@This()) !void {
+fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
     self.ui_batcher.clear();
     self.font_batcher.clear();
     self.iso_blocks.begin();
@@ -1041,7 +1046,7 @@ fn prepare_ui_batches(self: *@This()) !void {
     if (show_playerlist) {
         self.player_list.draw_into(&hud_list, Session.username());
     }
-    self.chat.draw_into(&hud_list, &self.font_batcher, hud_y_shift);
+    self.chat.draw_into(&engine.input, &hud_list, &self.font_batcher, hud_y_shift);
 
     if (self.hotbar_tooltip_timer > 0 and !self.inventory_open and !self.hud_hidden) {
         const block = self.player.hotbar[self.player.selected_slot];
@@ -1139,11 +1144,11 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         self.conn.drain_packets();
         if (trace) log.info("trace: first draw drained packets", .{});
     } else if (!Session.mp_connected.load(.acquire)) {
-        try DisconnectState.transition_here(engine);
+        DisconnectState.transition_here(engine);
         return;
     }
     if (self.conn.quit_requested) {
-        try DisconnectState.transition_here(engine);
+        DisconnectState.transition_here(engine);
         return;
     }
     self.player.camera.apply();
@@ -1177,7 +1182,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         const block_id = World.data.get_block(hit.x, hit.y, hit.z);
         if (block_id.is_air()) break :blk;
         const bounds = block_id.bounds();
-        Rendering.Texture.Default.bind();
+        Rendering.gfx.api.bind_texture(Rendering.Texture.Default.handle);
         var t = Rendering.Transform.new();
         const cp = @cos(self.player.camera.pitch);
         const toward_camera = .{

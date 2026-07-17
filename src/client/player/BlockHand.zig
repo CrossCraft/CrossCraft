@@ -74,6 +74,7 @@ const SwingKind = enum { idle, place, dig };
 const Self = @This();
 
 atlas: TextureAtlas,
+mesh_data: Rendering.MeshData(Vertex),
 mesh: Rendering.Mesh(Vertex),
 cached_block: Block,
 pending_block: Block,
@@ -90,7 +91,8 @@ allocator: std.mem.Allocator,
 pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
     var self: Self = .{
         .atlas = atlas,
-        .mesh = try Rendering.Mesh(Vertex).new(allocator),
+        .mesh_data = try Rendering.MeshData(Vertex).init(allocator),
+        .mesh = try Rendering.Mesh(Vertex).init(&.{}),
         .cached_block = SENTINEL,
         .pending_block = SENTINEL,
         .cached_shadowed = false,
@@ -102,12 +104,13 @@ pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
     };
     // Reserve once at init so rebuild() stays infallible and never touches
     // the allocator on subsequent slot changes.
-    try self.mesh.ensure_quad_capacity(allocator, QUAD_CAPACITY);
+    try self.mesh_data.ensure_quad_capacity(allocator, QUAD_CAPACITY);
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.mesh.deinit(self.allocator);
+    self.mesh.deinit();
+    self.mesh_data.deinit(self.allocator);
 }
 
 // --- Input hooks ---
@@ -214,9 +217,9 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
 // --- Mesh build ---
 
 fn rebuild(self: *Self, block: Block, shadowed: bool) void {
-    self.mesh.clear_retaining_capacity();
+    self.mesh_data.clear_retaining_capacity();
     if (block.is_air()) {
-        self.mesh.update();
+        self.mesh.update(&self.mesh_data);
         return;
     }
     const p = block.mesh_props();
@@ -232,16 +235,16 @@ fn rebuild(self: *Self, block: Block, shadowed: bool) void {
         // All faces of a cross-plant share one tile (registered via `all`),
         // so the face argument is arbitrary.
         const tile = block.face_tile(.y_pos);
-        face_mod.emit_cross(&self.mesh, 0, 0, 0, tile, &self.atlas, shade);
+        face_mod.emit_cross(&self.mesh_data, 0, 0, 0, tile, &self.atlas, shade);
     } else {
         const is_slab = p.slab;
         const faces = [_]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
         for (faces) |face| {
             const tile = block.face_tile(face);
             if (is_slab) {
-                face_mod.emit_slab_face(&self.mesh, face, 0, 0, 0, tile, &self.atlas, shade);
+                face_mod.emit_slab_face(&self.mesh_data, face, 0, 0, 0, tile, &self.atlas, shade);
             } else {
-                face_mod.emit_face(&self.mesh, face, 0, 0, 0, tile, &self.atlas, shade);
+                face_mod.emit_face(&self.mesh_data, face, 0, 0, 0, tile, &self.atlas, shade);
             }
         }
     }
@@ -250,18 +253,18 @@ fn rebuild(self: *Self, block: Block, shadowed: bool) void {
     // shading) so it reads as a solid 3D object rather than a flat white
     // decal against the bright sky.
     const uniform: u32 = if (shade) face_mod.apply_shadow(0xFFCCCCCC) else 0xFFCCCCCC;
-    for (self.mesh.vertices.items) |*v| {
+    for (self.mesh_data.vertices.items) |*v| {
         v.color = uniform;
     }
 
-    std.debug.assert(self.mesh.vertices.items.len <= VERT_CAPACITY);
-    self.mesh.update();
+    std.debug.assert(self.mesh_data.vertices.items.len <= VERT_CAPACITY);
+    self.mesh.update(&self.mesh_data);
 }
 
 // --- Draw ---
 
 pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camera) void {
-    if (self.cached_block.is_air() or self.mesh.vertices.items.len == 0) return;
+    if (self.cached_block.is_air() or self.mesh_data.vertices.items.len == 0) return;
 
     // Clear depth so the cube is never clipped by nearby world geometry.
     // The existing clear_depth before the UI pass isolates the next layer.
@@ -278,7 +281,7 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
         Rendering.gfx.api.set_proj_matrix(&proj);
     }
 
-    terrain.bind();
+    Rendering.gfx.api.bind_texture(terrain.handle);
 
     const anim = self.compute_anim();
     const held_p = self.cached_block.mesh_props();
