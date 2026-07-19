@@ -52,6 +52,10 @@ const ae_input = ae.Core.input;
 
 const log = std.log.scoped(.game);
 
+const wasm_host = if (ae.platform == .wasm) struct {
+    extern "aether_host" fn aether_crosscraft_download_file(path_ptr: [*]const u8, path_len: usize) bool;
+} else struct {};
+
 const selection_depth_nudge: f32 = 1.0 / 320.0;
 const MP_READ_STACK_SIZE = 512 * 1024;
 const MP_FLY_WARNING = "&cUsing fly in multiplayer may get you banned! Know what you're doing! Triple tap to enable.";
@@ -516,7 +520,7 @@ fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInpu
         .none => {},
         .back => close_pause(self, engine),
         .options => enter_pause_options(self),
-        .save => World.save(),
+        .save => save_pause_world(),
         .dump_world => enter_pause_dump_world(self),
         .quit => {
             self.paused = false;
@@ -662,6 +666,18 @@ fn try_dump_world(self: *@This()) bool {
     };
     log.info("world dump queued: {s}", .{result.path});
     return true;
+}
+
+fn save_pause_world() void {
+    World.save();
+    if (comptime ae.platform == .wasm) {
+        World.wait_for_save();
+        const session_save = Session.singleplayer_save();
+        const save_path = if (session_save.len > 0) session_save else Server.default_save_location;
+        if (!wasm_host.aether_crosscraft_download_file(save_path.ptr, save_path.len)) {
+            log.warn("failed to download save file '{s}'", .{save_path});
+        }
+    }
 }
 
 fn open_pause(self: *@This(), engine: *Engine) void {

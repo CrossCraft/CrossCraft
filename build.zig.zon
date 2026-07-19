@@ -12,8 +12,8 @@
             .path = "resources",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#2fad4d88bbed82367715aab9f300ba448356c79b",
-            .hash = "Aether-0.0.0-cjG28n8eFwDbP7qhukPNVLh1UQDfIAImCGDGbmZPmqF7",
+            .url = "git+https://github.com/AetherEngine/Aether#28af95bf19525d0e5f7a9023b0737bd826a0a262",
+            .hash = "Aether-0.0.0-cjG28nMwFwAa3JHubbeCvJnfDxzO3-nWWtp6H4dZICQ4",
         },
     },
     .paths = .{
@@ -21,6 +21,7 @@
         "build.zig.zon",
         "src",
         "tools",
+        "web",
         "LICENSE",
         "README.md",
     },

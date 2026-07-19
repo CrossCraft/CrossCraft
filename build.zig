@@ -369,6 +369,7 @@ pub fn build(b: *std.Build) void {
     const web_install = Aether.packaging.addWebBundle(ae_dep.builder, b, web_exe, .{
         .web_resource_files = web_resource_files,
         .web_resource_manifest = if (pack_zip_path != null) "pack.zip\n" else "",
+        .web_app_module = b.path("web/crosscraft.js"),
     });
 
     const web_step = b.step("web", "Build the browser-playable WASM site in zig-out/web");
