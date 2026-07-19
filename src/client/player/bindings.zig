@@ -24,6 +24,7 @@ pub const Actions = struct {
     look_stick: input.ActionHandle,
     break_: input.ActionHandle,
     place: input.ActionHandle,
+    pick_block: input.ActionHandle = .none,
     shoulder_r: input.ActionHandle,
     shoulder_l: input.ActionHandle,
     playerlist: input.ActionHandle,
@@ -112,9 +113,12 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
     try sys.bind_action(break_, &.{ .source = .{ .mouse_button = .Left } });
     const place = try sys.add_action(set, "place", .button);
     try sys.bind_action(place, &.{ .source = .{ .mouse_button = .Right } });
+    var pick_block: input.ActionHandle = .none;
     if (ae.platform != .psp) {
         try sys.bind_action(break_, &.{ .source = .{ .gamepad_axis = .RightTrigger } });
         try sys.bind_action(place, &.{ .source = .{ .gamepad_axis = .LeftTrigger } });
+        pick_block = try sys.add_action(set, "pick_block", .button);
+        try sys.bind_action(pick_block, &.{ .source = .{ .mouse_button = .Middle } });
     }
 
     // --- gamepad shoulder buttons (L/R) ---
@@ -173,6 +177,7 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
         .look_stick = look_stick,
         .break_ = break_,
         .place = place,
+        .pick_block = pick_block,
         .shoulder_r = shoulder_r,
         .shoulder_l = shoulder_l,
         .playerlist = playerlist,

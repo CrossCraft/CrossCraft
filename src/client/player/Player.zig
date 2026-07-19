@@ -42,6 +42,7 @@ const PrevInputs = struct {
     jump: input.ButtonState = .released,
     break_: input.ButtonState = .released,
     place: input.ButtonState = .released,
+    pick_block: input.ButtonState = .released,
     shoulder_r: input.ButtonState = .released,
     shoulder_l: input.ButtonState = .released,
     playerlist: input.ButtonState = .released,
@@ -1344,6 +1345,7 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
         self.prev_inputs.jump = jump;
         self.prev_inputs.break_ = sys.button(actions.break_).current;
         self.prev_inputs.place = sys.button(actions.place).current;
+        self.prev_inputs.pick_block = sys.button(actions.pick_block).current;
         self.prev_inputs.shoulder_r = sys.button(actions.shoulder_r).current;
         self.prev_inputs.shoulder_l = sys.button(actions.shoulder_l).current;
         self.prev_inputs.playerlist = sys.button(actions.playerlist).current;
@@ -1401,6 +1403,12 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
         self.do_place();
     }
     self.prev_inputs.place = pl;
+
+    const pb = sys.button(actions.pick_block).current;
+    if (rising_edge(self.prev_inputs.pick_block, pb)) {
+        self.do_pick_block();
+    }
+    self.prev_inputs.pick_block = pb;
 
     // L+R chord = inventory toggle; otherwise rising edge defers a
     // break/place that update() can cancel if the chord completes.
@@ -1574,6 +1582,26 @@ fn derive_break_face(hit: RaycastHit) Face {
     if (dx < 0) return .x_neg;
     if (dz > 0) return .z_pos;
     return .z_neg;
+}
+
+fn do_pick_block(self: *Self) void {
+    if (!self.mouse_captured) return;
+    const hit = self.selected orelse return;
+    const block = World.data.get_block(hit.x, hit.y, hit.z);
+    if (!block.in_inventory()) return;
+
+    std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
+    if (self.hotbar[self.selected_slot].id == block.id) return;
+
+    var i: u8 = 0;
+    while (i < HOTBAR_SLOTS) : (i += 1) {
+        if (self.hotbar[i].id == block.id) {
+            self.selected_slot = i;
+            return;
+        }
+    }
+
+    self.hotbar[self.selected_slot] = block;
 }
 
 fn do_place(self: *Self) void {
