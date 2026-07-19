@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
     const state = menu_state.state();
 
     var engine: ae.Engine = undefined;
-    engine.init(init.io, init.environ_map, memory, &.{
+    try engine.init(init.io, init.environ_map, memory, &.{
         .memory = game_config.init_memory(),
         .width = 854,
         .height = 480,
@@ -40,20 +40,9 @@ pub fn main(init: std.process.Init) !void {
         .app_name = ae.AppOptions.resolveAppName(aether_options),
         .vsync = true,
         .resizable = true,
-    }, &state) catch |err| return fail_stage("engine.init", err);
+    }, &state);
     defer engine.deinit();
     defer ResourcePack.deinit();
 
-    engine.run() catch |err| return fail_stage("engine.run", err);
-}
-
-fn fail_stage(comptime stage: []const u8, err: anyerror) anyerror {
-    if (comptime ae.platform == .nintendo_3ds) {
-        std.log.err("CrossCraft 3DS failed at {s}: {s}", .{ stage, @errorName(err) });
-        if (err == error.Unexpected) {
-            if (comptime std.mem.eql(u8, stage, "engine.init")) return error.CrossCraftEngineInitUnexpected;
-            if (comptime std.mem.eql(u8, stage, "engine.run")) return error.CrossCraftEngineRunUnexpected;
-        }
-    }
-    return err;
+    try engine.run();
 }
