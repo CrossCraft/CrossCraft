@@ -1,27 +1,18 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ae = @import("aether");
-const Util = ae.Util;
-
-pub const std_options = Util.std_options;
 
 const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
-comptime {
-    if (sdk != void)
-        asm (sdk.extra.module.module_info("CrossCraft Classic Server", .{ .mode = .User }, 1, 0));
-}
 
-pub const psp_stack_size: u32 = 256 * 1024;
-pub const psp_async_stack_size: u32 = 64 * 1024;
-pub const psp_heap_reserve_kb_size: u32 = 2048;
-
-pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
-pub const std_options_debug_threaded_io = if (ae.platform == .psp) null else std.Io.Threaded.global_single_threaded;
-pub const std_options_debug_io = if (ae.platform == .psp) sdk.extra.Io.psp_io else std.Io.Threaded.global_single_threaded.io();
-pub const std_options_cwd = if (ae.platform == .psp) psp_cwd else null;
-fn psp_cwd() std.Io.Dir {
-    return .{ .handle = -1 };
-}
+pub const aether_options: ae.Options = .{
+    .title = "CrossCraft Classic Server",
+    .psp = .{
+        .module_name = "CrossCraft Classic Server",
+        .stack_size = 256 * 1024,
+        .async_stack_size = 64 * 1024,
+        .heap_reserve_kb_size = 2048,
+    },
+};
 
 const ServerState = @import("ServerState.zig");
 
@@ -72,7 +63,8 @@ pub fn main(init: std.process.Init) !void {
             .frame = frame_budget,
             .user = user_budget,
         },
-        .title = "CrossCraft Classic Server",
+        .title = aether_options.title,
+        .app_name = ae.AppOptions.resolveAppName(aether_options),
         .vsync = false,
         .resizable = false,
     }, &state);

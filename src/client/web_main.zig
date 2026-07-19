@@ -6,7 +6,8 @@ const game_config = @import("config.zig");
 const MenuState = @import("state/MenuState.zig");
 const ResourcePack = @import("ResourcePack.zig");
 
-pub const std_options = client_main.std_options;
+pub const aether_options = client_main.aether_options;
+pub const std_options = aether_options.std_options;
 pub const std_options_debug_threaded_io = std.Io.Threaded.global_single_threaded;
 pub const std_options_debug_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
@@ -37,7 +38,8 @@ export fn aether_wasm_init(width: u32, height: u32) bool {
         .memory = game_config.init_memory(),
         .width = width,
         .height = height,
-        .title = "CrossCraft Classic",
+        .title = aether_options.title,
+        .app_name = ae.AppOptions.resolveAppName(aether_options),
         .vsync = true,
         .resizable = true,
     }, &state) catch {
