@@ -12,8 +12,9 @@ const Rendering = ae.Rendering;
 const c = @import("common").consts;
 
 const UiDrawList = @import("UiDrawList.zig");
-const Scaling = @import("Scaling.zig");
-const Color = @import("../graphics/Color.zig").Color;
+const Scaling = ae.UI.Scaling;
+const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 
 const Self = @This();
 
@@ -147,8 +148,8 @@ pub fn draw_into(self: *const Self, list: *UiDrawList, local_name: []const u8) v
         .str = "Players",
         .pos_x = 0,
         .pos_y = PANEL_TOP + PAD,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
+        .color = Colors.white_fg,
+        .shadow_color = Colors.menu_gray,
         .spacing = 0,
         .layer = TEXT_LAYER,
         .reference = .top_center,
@@ -180,8 +181,8 @@ pub fn draw_into(self: *const Self, list: *UiDrawList, local_name: []const u8) v
             .str = e.name[0..e.name_len],
             .pos_x = 0,
             .pos_y = row_y,
-            .color = .white_fg,
-            .shadow_color = .menu_gray,
+            .color = Colors.white_fg,
+            .shadow_color = Colors.menu_gray,
             .spacing = 0,
             .layer = TEXT_LAYER,
             .reference = .top_center,

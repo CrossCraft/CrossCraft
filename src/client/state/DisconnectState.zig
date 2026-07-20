@@ -6,12 +6,13 @@ const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
-const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
-const FontBatcher = @import("../ui/FontBatcher.zig");
+const SpriteBatcher = ae.UI.SpriteBatcher;
+const FontBatcher = ae.UI.FontBatcher;
 const UiDrawList = @import("../ui/UiDrawList.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
-const Scaling = @import("../ui/Scaling.zig");
+const Scaling = ae.UI.Scaling;
+const Colors = @import("../graphics/Color.zig");
 const ResourcePack = @import("../ResourcePack.zig");
 const ui_input = @import("../ui/input.zig");
 const DisconnectScreen = @import("../ui/screens/Disconnect.zig");
@@ -171,7 +172,7 @@ fn add_dirt_tile(self: *@This(), x: i16, y: i16, tile_size: i16) void {
         .pos_extent = .{ .x = tile_size, .y = tile_size },
         .tex_offset = .{ .x = 0, .y = 0 },
         .tex_extent = .{ .x = @intCast(self.dirt.width), .y = @intCast(self.dirt.height) },
-        .color = .menu_tiles,
+        .color = Colors.menu_tiles,
         .layer = 0,
     });
 }

@@ -27,6 +27,7 @@
 
 const std = @import("std");
 const ae = @import("aether");
+const UI = ae.UI;
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
@@ -36,8 +37,7 @@ const Block = c.Block;
 const Vertex = @import("aether").Rendering.Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Face = @import("../world/chunk/face.zig").Face;
-const Scaling = @import("Scaling.zig");
-const layout = @import("layout.zig");
+const Scaling = UI.Scaling;
 
 const Self = @This();
 
@@ -63,6 +63,15 @@ const QUADS_PER_BLOCK: usize = 3;
 // frame. Reserving up front keeps the per-frame path alloc-free.
 const MAX_BLOCKS: usize = 9 + 45;
 const QUAD_CAPACITY: usize = MAX_BLOCKS * QUADS_PER_BLOCK;
+
+pub const CustomRendererId: UI.CustomRenderable.RendererId = .app0;
+
+pub const Payload = struct {
+    block: Block,
+    cx: f32,
+    cy: f32,
+    half_extent_px: f32,
+};
 
 terrain: *const Rendering.Texture,
 atlas: TextureAtlas,
@@ -99,6 +108,10 @@ pub fn deinit(self: *Self) void {
 /// Begin a new frame's worth of blocks. Drops everything queued so far.
 pub fn begin(self: *Self) void {
     self.mesh_data.clear_retaining_capacity();
+}
+
+pub fn add_payload(self: *Self, payload: Payload) void {
+    self.add_block(payload.block, payload.cx, payload.cy, payload.half_extent_px);
 }
 
 /// Queue an isometric block at logical-pixel center (cx, cy).
@@ -161,7 +174,37 @@ pub fn flush(self: *Self) void {
     self.draw();
 }
 
+pub fn custom_renderer(self: *Self) UI.CustomRenderable.Renderer {
+    return .{
+        .ctx = self,
+        .reset = custom_reset,
+        .prepare = custom_prepare,
+        .draw = custom_draw,
+    };
+}
+
+pub fn custom_command(payload: Payload, bounds: UI.LogicalRect, layer: u8, sequence: u16) UI.CustomRenderable.Command {
+    return UI.CustomRenderable.Command.init(CustomRendererId, bounds, layer, .inherit, sequence, payload);
+}
+
 // --- Internals ---
+
+fn custom_reset(ctx: *anyopaque) void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.begin();
+}
+
+fn custom_prepare(ctx: *anyopaque, commands: []const UI.CustomRenderable.Command) anyerror!void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    for (commands) |*cmd| self.add_payload(cmd.read(Payload));
+    self.update();
+}
+
+fn custom_draw(ctx: *anyopaque, commands: []const UI.CustomRenderable.Command) void {
+    _ = commands;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.draw();
+}
 
 /// Same per-direction shading the world mesher uses, so the cube's three
 /// visible faces read at three distinct brightness levels.

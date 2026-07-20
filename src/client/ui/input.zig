@@ -8,7 +8,7 @@ const Rendering = ae.Rendering;
 const input = ae.Core.input;
 
 const Options = @import("../Options.zig");
-const Scaling = @import("Scaling.zig");
+const Scaling = ae.UI.Scaling;
 const Buttons = @import("Buttons.zig");
 
 pub const NavDir = enum(u8) { none, up, down, left, right };

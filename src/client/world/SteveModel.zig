@@ -19,10 +19,11 @@ const Rendering = ae.Rendering;
 const c = @import("common").consts;
 const collision = @import("../player/collision.zig");
 const Vertex = @import("aether").Rendering.Vertex;
-const Color = @import("../graphics/Color.zig").Color;
+const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 const Player = @import("../player/Player.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
-const FontBatcher = @import("../ui/FontBatcher.zig");
+const FontBatcher = ae.UI.FontBatcher;
 const ResourcePack = @import("../ResourcePack.zig");
 
 const Self = @This();
@@ -184,7 +185,7 @@ pub fn update(self: *Self, dt: f32, player_list: *const PlayerList, fonts: *cons
             const tw = fonts.string_width(name, 0, 1);
             if (tw > 0) {
                 aspect.* = @as(f32, @floatFromInt(tw)) / 8.0;
-                nt.* = fonts.build_mesh(name, .white_fg, .none, 0, 1) catch null;
+                nt.* = fonts.build_mesh(name, Colors.white_fg, Colors.none, 0, 1) catch null;
             }
         }
 

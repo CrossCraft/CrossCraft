@@ -4,7 +4,8 @@ const Math = ae.Math;
 const Rendering = ae.Rendering;
 
 const Vertex = @import("aether").Rendering.Vertex;
-const Color = @import("../../graphics/Color.zig").Color;
+const Colors = @import("../../graphics/Color.zig");
+const Color = Colors.Color;
 const Camera = @import("../../player/Camera.zig");
 
 const BatchMesh = Rendering.Mesh(Vertex);
@@ -124,9 +125,9 @@ fn set_sky_fog(submerged: ?collision.Liquid) void {
 }
 
 fn fog_color(submerged: ?collision.Liquid) Color {
-    return switch (submerged orelse return Color.game_daytime) {
-        .water => Color.game_underwater,
-        .lava => Color.game_underlava,
+    return switch (submerged orelse return Colors.game_daytime) {
+        .water => Colors.game_underwater,
+        .lava => Colors.game_underlava,
     };
 }
 
@@ -165,7 +166,7 @@ fn cloud_tile_uv(tile: u32) [2]i16 {
 
 fn build_plane(allocator: std.mem.Allocator, mesh: *BatchMeshData) !void {
     try mesh.ensure_quad_capacity(allocator, PLANE_GRID * PLANE_GRID);
-    const color: u32 = @bitCast(Color.game_daytime_zenith);
+    const color: u32 = @bitCast(Colors.game_daytime_zenith);
 
     var zi: u32 = 0;
     while (zi < PLANE_GRID) : (zi += 1) {

@@ -10,10 +10,11 @@ const ae = @import("aether");
 const Rendering = ae.Rendering;
 
 const Buttons = @import("Buttons.zig");
-const FontBatcher = @import("FontBatcher.zig");
+const FontBatcher = ae.UI.FontBatcher;
 const UiDrawList = @import("UiDrawList.zig");
-const layout = @import("layout.zig");
+const layout = ae.UI.layout;
 const Options = @import("../Options.zig");
+const Colors = @import("../graphics/Color.zig");
 
 pub const Anchor = layout.Anchor;
 
@@ -124,7 +125,7 @@ fn draw_one_into(
             .pos_extent = .{ .x = rect.render_w, .y = rect.render_h },
             .tex_offset = .{ .x = rect.tex_x, .y = rect.tex_y },
             .tex_extent = .{ .x = rect.tex_w, .y = rect.tex_h },
-            .color = .white_fg,
+            .color = Colors.white_fg,
             .layer = sprite_layer,
             .reference = anchor,
             .origin = .bottom_left,
@@ -134,8 +135,8 @@ fn draw_one_into(
                 .str = overlay,
                 .pos_x = cursor_x.* + @divTrunc(rect.render_w, 2),
                 .pos_y = -(glyph_y + @divTrunc(rect.render_h, 2) - 1),
-                .color = .white_fg,
-                .shadow_color = .menu_gray,
+                .color = Colors.white_fg,
+                .shadow_color = Colors.menu_gray,
                 .spacing = 0,
                 .layer = text_layer,
                 .reference = anchor,
@@ -152,8 +153,8 @@ fn draw_one_into(
         .str = prompt.label,
         .pos_x = cursor_x.*,
         .pos_y = -label_y_center,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
+        .color = Colors.white_fg,
+        .shadow_color = Colors.menu_gray,
         .spacing = 0,
         .layer = text_layer,
         .reference = anchor,

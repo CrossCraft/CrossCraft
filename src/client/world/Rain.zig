@@ -7,7 +7,8 @@ const World = @import("game").World;
 const c = @import("common").consts;
 
 const Vertex = @import("aether").Rendering.Vertex;
-const Color = @import("../graphics/Color.zig").Color;
+const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Options = @import("../Options.zig");

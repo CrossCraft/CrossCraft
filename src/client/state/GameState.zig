@@ -28,8 +28,8 @@ const SelectionOutline = @import("../world/SelectionOutline.zig");
 const SteveModel = @import("../world/SteveModel.zig");
 const Player = @import("../player/Player.zig");
 const BlockHand = @import("../player/BlockHand.zig");
-const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
-const FontBatcher = @import("../ui/FontBatcher.zig");
+const SpriteBatcher = ae.UI.SpriteBatcher;
+const FontBatcher = ae.UI.FontBatcher;
 const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
 const BlockRegistry = @import("common").BlockRegistry;
 const PlayerList = @import("../ui/PlayerList.zig");
@@ -40,7 +40,8 @@ const Prompts = @import("../ui/Prompts.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
 const UiDrawList = @import("../ui/UiDrawList.zig");
-const Color = @import("../graphics/Color.zig").Color;
+const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 const ui_input = @import("../ui/input.zig");
 const InventoryUi = @import("../ui/screens/Inventory.zig");
 const PauseMenu = @import("../ui/screens/PauseMenu.zig");
@@ -784,7 +785,7 @@ fn begin_pause_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *co
 fn current_screen_rect() Ui.LogicalRect {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
-    const scale = @import("../ui/Scaling.zig").compute(screen_w, screen_h);
+    const scale = ae.UI.Scaling.compute(screen_w, screen_h);
     return .{
         .x0 = 0,
         .y0 = 0,
@@ -1032,8 +1033,8 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
             .str = "0.30",
             .pos_x = 2,
             .pos_y = 2,
-            .color = .white_fg,
-            .shadow_color = .menu_gray,
+            .color = Colors.white_fg,
+            .shadow_color = Colors.menu_gray,
             .spacing = 0,
             .layer = 252,
             .reference = .top_left,
@@ -1278,7 +1279,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
 fn draw_pause_dim(self: *@This()) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
-    const scale = @import("../ui/Scaling.zig").compute(screen_w, screen_h);
+    const scale = ae.UI.Scaling.compute(screen_w, screen_h);
     const extent_x: i16 = @intCast((screen_w + scale - 1) / scale);
     const extent_y: i16 = @intCast((screen_h + scale - 1) / scale);
 

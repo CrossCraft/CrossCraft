@@ -6,9 +6,10 @@ const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
-const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
-const FontBatcher = @import("../ui/FontBatcher.zig");
-const Scaling = @import("../ui/Scaling.zig");
+const SpriteBatcher = ae.UI.SpriteBatcher;
+const FontBatcher = ae.UI.FontBatcher;
+const Scaling = ae.UI.Scaling;
+const Colors = @import("../graphics/Color.zig");
 const ResourcePack = @import("../ResourcePack.zig");
 const Server = @import("game").Server;
 const World = @import("game").World;
@@ -432,7 +433,7 @@ fn prepare_batches(self: *@This()) !void {
         .pos_extent = .{ .x = bar_width, .y = bar_height },
         .tex_offset = .{ .x = 0, .y = 0 },
         .tex_extent = .{ .x = @intCast(default_tex.width), .y = @intCast(default_tex.height) },
-        .color = .progress_bg,
+        .color = Colors.progress_bg,
         .layer = 1,
         .reference = .middle_center,
         .origin = .middle_center,
@@ -446,7 +447,7 @@ fn prepare_batches(self: *@This()) !void {
             .pos_extent = .{ .x = progress_w, .y = bar_height },
             .tex_offset = .{ .x = 0, .y = 0 },
             .tex_extent = .{ .x = @intCast(default_tex.width), .y = @intCast(default_tex.height) },
-            .color = .progress_bar,
+            .color = Colors.progress_bar,
             .layer = 2,
             .reference = .middle_center,
             .origin = .middle_left,
@@ -473,8 +474,8 @@ fn prepare_batches(self: *@This()) !void {
         .str = loading,
         .pos_x = 0,
         .pos_y = -16,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
+        .color = Colors.white_fg,
+        .shadow_color = Colors.menu_gray,
         .spacing = 0,
         .layer = 2,
         .reference = .middle_center,
@@ -509,8 +510,8 @@ fn prepare_batches(self: *@This()) !void {
         .str = status,
         .pos_x = 0,
         .pos_y = 7,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
+        .color = Colors.white_fg,
+        .shadow_color = Colors.menu_gray,
         .spacing = 0,
         .layer = 2,
         .reference = .middle_center,
@@ -543,7 +544,7 @@ fn add_dirt_tile(self: *@This(), dirt: *const Rendering.Texture, x: i16, y: i16,
         .pos_extent = .{ .x = tile_size, .y = tile_size },
         .tex_offset = .{ .x = 0, .y = 0 },
         .tex_extent = .{ .x = @intCast(dirt.width), .y = @intCast(dirt.height) },
-        .color = .menu_tiles,
+        .color = Colors.menu_tiles,
         .layer = 0,
     });
 }

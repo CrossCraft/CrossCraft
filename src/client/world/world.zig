@@ -4,7 +4,8 @@ const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
-const Color = @import("../graphics/Color.zig").Color;
+const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 const Camera = @import("../player/Camera.zig");
 const collision = @import("../player/collision.zig");
 const config = @import("../config.zig");
@@ -762,8 +763,8 @@ fn camera_chunk(pos: f32) i32 {
 
 fn set_terrain_fog(submerged: ?collision.Liquid) void {
     const c = switch (submerged orelse .water) {
-        .water => if (submerged != null) Color.game_underwater else Color.game_daytime,
-        .lava => Color.game_underlava,
+        .water => if (submerged != null) Colors.game_underwater else Colors.game_daytime,
+        .lava => Colors.game_underlava,
     };
     const fog_end: f32 = switch (submerged orelse .water) {
         .water => if (submerged != null) 16.0 else blk: {

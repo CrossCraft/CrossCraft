@@ -1,7 +1,8 @@
 //! Visual style for sliders. Mirrors `ButtonStyle` / `TextFieldStyle`.
 
-const texture_region = @import("texture_region.zig");
-const Color = @import("../graphics/Color.zig").Color;
+const texture_region = @import("aether").UI.texture_region;
+const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 
 pub const TextureRegion = texture_region.TextureRegion;
 pub const TextureSizing = texture_region.TextureSizing;
@@ -16,13 +17,13 @@ pub const SliderStyle = struct {
     /// Knob slides along the track between `rect.x0` and `rect.x1 - knob_w`.
     knob_w: i16 = 8,
 
-    label_color: Color = Color.white_fg,
-    label_color_hover: Color = Color.select_front,
-    label_color_disabled: Color = Color.silver_fg,
-    shadow_color_normal: Color = Color.menu_gray,
-    shadow_color_hover: Color = Color.select_back,
-    focus_outline_color: Color = Color.white_fg,
-    active_outline_color: Color = Color.select_front,
+    label_color: Color = Colors.white_fg,
+    label_color_hover: Color = Colors.select_front,
+    label_color_disabled: Color = Colors.silver_fg,
+    shadow_color_normal: Color = Colors.menu_gray,
+    shadow_color_hover: Color = Colors.select_back,
+    focus_outline_color: Color = Colors.white_fg,
+    active_outline_color: Color = Colors.select_front,
     focus_outline_thickness: i16 = 1,
     active_outline_thickness: i16 = 2,
     text_padding_x: i16 = 4,

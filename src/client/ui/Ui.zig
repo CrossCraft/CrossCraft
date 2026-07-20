@@ -5,8 +5,8 @@ const input_api = ae.Core.input;
 const log = std.log.scoped(.ui);
 
 const common = @import("common");
-const layout_mod = @import("layout.zig");
-const texture_region = @import("texture_region.zig");
+const layout_mod = ae.UI.layout;
+const texture_region = ae.UI.texture_region;
 const button_style_mod = @import("ButtonStyle.zig");
 const slider_style_mod = @import("SliderStyle.zig");
 const text_field_style_mod = @import("TextFieldStyle.zig");
@@ -14,15 +14,16 @@ const prompt_strip = @import("PromptStrip.zig");
 const prompts_mod = @import("Prompts.zig");
 const ui_input = @import("input.zig");
 const widget_id = @import("widget_id.zig");
-const FontBatcher = @import("FontBatcher.zig");
+const FontBatcher = ae.UI.FontBatcher;
 const UiDrawList = @import("UiDrawList.zig");
 const UiState = @import("UiState.zig");
+const Colors = @import("../graphics/Color.zig");
 
 pub const LogicalRect = layout_mod.LogicalRect;
 pub const Point = layout_mod.Point;
 pub const Anchor = layout_mod.Anchor;
 pub const TextureRegion = texture_region.TextureRegion;
-pub const Color = @import("../graphics/Color.zig").Color;
+pub const Color = Colors.Color;
 pub const WidgetId = widget_id.WidgetId;
 pub const ButtonStyle = button_style_mod.ButtonStyle;
 pub const SliderStyle = slider_style_mod.SliderStyle;
@@ -289,8 +290,8 @@ pub fn label(self: *Self, text: []const u8) void {
             .str = self.persist(text),
             .pos_x = rect.x0,
             .pos_y = rect.y0,
-            .color = .white_fg,
-            .shadow_color = .menu_gray,
+            .color = Colors.white_fg,
+            .shadow_color = Colors.menu_gray,
             .spacing = 0,
             .layer = self.layer_base + 3,
             .reference = .top_left,
@@ -312,7 +313,7 @@ pub const ImageOpts = struct {
     texture: *const Rendering.Texture,
     width: i16,
     height: i16,
-    color: Color = .white_fg,
+    color: Color = Colors.white_fg,
 };
 
 pub fn image(self: *Self, region: TextureRegion, opts: ImageOpts) void {
@@ -1375,7 +1376,7 @@ fn draw_button(ui: *Self, rect: LogicalRect, text: []const u8, focused: bool, op
         .pos_offset = .{ .x = rect.x0, .y = rect.y0 },
         .dst_w = rect.width(),
         .dst_h = rect.height(),
-        .color = .white_fg,
+        .color = Colors.white_fg,
         .layer = ui.layer_base + 2,
         .reference = .top_left,
         .origin = .top_left,
@@ -1449,7 +1450,7 @@ fn draw_slider(ui: *Self, rect: LogicalRect, id: WidgetId, value: f32, opts: Sli
         .pos_offset = .{ .x = rect.x0, .y = rect.y0 },
         .dst_w = rect.width(),
         .dst_h = rect.height(),
-        .color = .white_fg,
+        .color = Colors.white_fg,
         .layer = ui.layer_base + 2,
         .reference = .top_left,
         .origin = .top_left,
@@ -1467,7 +1468,7 @@ fn draw_slider(ui: *Self, rect: LogicalRect, id: WidgetId, value: f32, opts: Sli
         .pos_offset = .{ .x = knob_x, .y = rect.y0 },
         .dst_w = style.knob_w,
         .dst_h = rect.height(),
-        .color = .white_fg,
+        .color = Colors.white_fg,
         .layer = ui.layer_base + 3,
         .reference = .top_left,
         .origin = .top_left,
@@ -1634,8 +1635,8 @@ fn draw_slot_grid(ui: *Self, rect: LogicalRect, opts: SlotGridOpts) void {
         .str = name,
         .pos_x = rect.x0 + @divTrunc(rect.width(), 2),
         .pos_y = rect.y0 + opts.padding.top,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
+        .color = Colors.white_fg,
+        .shadow_color = Colors.menu_gray,
         .spacing = 0,
         .layer = ui.layer_base + 5,
         .reference = .top_left,

@@ -6,12 +6,13 @@ const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
-const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
-const FontBatcher = @import("../ui/FontBatcher.zig");
+const SpriteBatcher = ae.UI.SpriteBatcher;
+const FontBatcher = ae.UI.FontBatcher;
 const UiDrawList = @import("../ui/UiDrawList.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
-const Scaling = @import("../ui/Scaling.zig");
+const Scaling = ae.UI.Scaling;
+const Colors = @import("../graphics/Color.zig");
 const Options = @import("../Options.zig");
 const ResourcePack = @import("../ResourcePack.zig");
 const SoundManager = @import("../SoundManager.zig");
@@ -147,7 +148,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         return menu_init_error(.sprite_batcher, err);
     self.font_batcher = FontBatcher.init(render_alloc, ResourcePack.get_tex(.font)) catch |err|
         return menu_init_error(.font_batcher, err);
-    self.splash_mesh = self.font_batcher.build_mesh("Classic!", .splash_front, .splash_back, 0, 1) catch |err|
+    self.splash_mesh = self.font_batcher.build_mesh("Classic!", Colors.splash_front, Colors.splash_back, 0, 1) catch |err|
         return menu_init_error(.splash_mesh, err);
     self.time = 0;
     self.ui_repeat = .{};
@@ -861,8 +862,8 @@ fn draw_corner_labels(self: *@This()) void {
         .str = "CrossCraft Classic v1.1-RC2",
         .pos_x = 2,
         .pos_y = 2,
-        .color = .gray_fg,
-        .shadow_color = .menu_version,
+        .color = Colors.gray_fg,
+        .shadow_color = Colors.menu_version,
         .spacing = 0,
         .layer = 2,
         .reference = .top_left,
@@ -872,8 +873,8 @@ fn draw_corner_labels(self: *@This()) void {
         .str = "Copyleft CrossCraft Team. Distribute!",
         .pos_x = -2,
         .pos_y = -2,
-        .color = .white_fg,
-        .shadow_color = .menu_copyright,
+        .color = Colors.white_fg,
+        .shadow_color = Colors.menu_copyright,
         .spacing = 0,
         .layer = 2,
         .reference = .bottom_right,
@@ -900,7 +901,7 @@ fn add_dirt_tile(self: *@This(), x: i16, y: i16, tile_size: i16) void {
         .pos_extent = .{ .x = tile_size, .y = tile_size },
         .tex_offset = .{ .x = 0, .y = 0 },
         .tex_extent = .{ .x = @intCast(self.dirt.width), .y = @intCast(self.dirt.height) },
-        .color = .menu_tiles,
+        .color = Colors.menu_tiles,
         .layer = 0,
     });
 }
@@ -912,7 +913,7 @@ fn draw_logo(self: *@This()) void {
         .pos_extent = .{ .x = 512, .y = 64 },
         .tex_offset = .{ .x = 0, .y = 0 },
         .tex_extent = .{ .x = @intCast(self.logo.width), .y = @intCast(self.logo.height) },
-        .color = .white_fg,
+        .color = Colors.white_fg,
         .layer = 1,
         .reference = .top_center,
         .origin = .top_center,
@@ -926,7 +927,7 @@ fn apply_pack(self: *@This(), dir: std.Io.Dir, path: []const u8) void {
     };
     self.font_batcher.refresh();
     self.splash_mesh.deinit(self.render_alloc);
-    self.splash_mesh = self.font_batcher.build_mesh("Classic!", .splash_front, .splash_back, 0, 1) catch |err| {
+    self.splash_mesh = self.font_batcher.build_mesh("Classic!", Colors.splash_front, Colors.splash_back, 0, 1) catch |err| {
         log.err("rebuild splash mesh failed: {}", .{err});
         return;
     };

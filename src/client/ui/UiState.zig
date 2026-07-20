@@ -2,7 +2,7 @@
 
 const ae = @import("aether");
 const widget_id = @import("widget_id.zig");
-const layout = @import("layout.zig");
+const layout = ae.UI.layout;
 
 pub const WidgetId = widget_id.WidgetId;
 

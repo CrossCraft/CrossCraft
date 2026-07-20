@@ -19,10 +19,11 @@ const input = ae.Core.input;
 const proto = @import("common").protocol;
 
 const Player = @import("../player/Player.zig");
-const FontBatcher = @import("FontBatcher.zig");
+const FontBatcher = ae.UI.FontBatcher;
 const UiDrawList = @import("UiDrawList.zig");
-const Scaling = @import("Scaling.zig");
-const Color = @import("../graphics/Color.zig").Color;
+const Scaling = ae.UI.Scaling;
+const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 const TextWrap = @import("TextWrap.zig");
 const ui_input = @import("input.zig");
 
@@ -450,8 +451,8 @@ pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts:
                 .str = line,
                 .pos_x = text_x,
                 .pos_y = row_y,
-                .color = .white_fg,
-                .shadow_color = .menu_gray,
+                .color = Colors.white_fg,
+                .shadow_color = Colors.menu_gray,
                 .spacing = 0,
                 .layer = INPUT_TEXT_LAYER,
                 .reference = .bottom_left,
@@ -464,8 +465,8 @@ pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts:
             .str = INPUT_PROMPT,
             .pos_x = text_x,
             .pos_y = -base,
-            .color = .white_fg,
-            .shadow_color = .menu_gray,
+            .color = Colors.white_fg,
+            .shadow_color = Colors.menu_gray,
             .spacing = 0,
             .layer = INPUT_TEXT_LAYER,
             .reference = .bottom_left,
@@ -478,8 +479,8 @@ pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts:
         .str = "_",
         .pos_x = text_x + typed_w + 1,
         .pos_y = -base,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
+        .color = Colors.white_fg,
+        .shadow_color = Colors.menu_gray,
         .spacing = 0,
         .layer = INPUT_TEXT_LAYER,
         .reference = .bottom_left,

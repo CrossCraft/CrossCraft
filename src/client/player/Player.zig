@@ -26,8 +26,9 @@ const Camera = @import("Camera.zig");
 const bindings = @import("bindings.zig");
 const collision = @import("collision.zig");
 const UiDrawList = @import("../ui/UiDrawList.zig");
-const Scaling = @import("../ui/Scaling.zig");
-const layout = @import("../ui/layout.zig");
+const Scaling = ae.UI.Scaling;
+const layout = ae.UI.layout;
+const Colors = @import("../graphics/Color.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
 const BlockRegistry = @import("common").BlockRegistry;
@@ -1233,7 +1234,7 @@ pub fn draw_ui_into(
             .pos_extent = .{ .x = 16, .y = 16 },
             .tex_offset = .{ .x = 240, .y = 0 },
             .tex_extent = .{ .x = 16, .y = 16 },
-            .color = .white_fg,
+            .color = Colors.white_fg,
             .layer = 255,
             .reference = .middle_center,
             .origin = .middle_center,
@@ -1250,7 +1251,7 @@ pub fn draw_ui_into(
         .pos_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
         .tex_offset = .{ .x = HOTBAR_TEX_X, .y = HOTBAR_TEX_Y },
         .tex_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
-        .color = .white_fg,
+        .color = Colors.white_fg,
         .layer = HOTBAR_BG_LAYER,
         .reference = .bottom_center,
         .origin = .bottom_center,
@@ -1266,7 +1267,7 @@ pub fn draw_ui_into(
         .pos_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
         .tex_offset = .{ .x = SELECTOR_TEX_X, .y = SELECTOR_TEX_Y },
         .tex_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
-        .color = .white_fg,
+        .color = Colors.white_fg,
         .layer = SELECTOR_LAYER,
         .reference = .bottom_center,
         .origin = .bottom_center,
