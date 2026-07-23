@@ -2,6 +2,7 @@ const ae = @import("aether");
 const Util = ae.Util;
 const Engine = ae.Engine;
 const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
+const chunk_limits = @import("world/chunk/ChunkCoord.zig");
 
 const Profile = @This();
 
@@ -167,11 +168,14 @@ pub fn main_memory_bytes() usize {
     return @as(usize, profile.total_memory_mb) * MB;
 }
 
-/// Max chunks that fit within the radius (circular, clamped to 16x16 world).
-/// Uses the bounding square (2r+1)^2 as upper bound for array sizing.
-pub fn max_sections() u32 {
+/// Max resident chunks for slot/queue sizing: the bounding square (2r+1)^2
+/// of the platform's max render radius times the design-limit chunk height,
+/// capped at the ChunkCoord index space. Not tied to the current world's
+/// chunk height.
+pub fn max_active_chunks() u32 {
     const diameter = max_chunk_radius() * 2 + 1;
-    return diameter * diameter * 4; // * SECTIONS_Y
+    const area = diameter * diameter;
+    return @min(area * chunk_limits.MAX_CHUNKS_Y, chunk_limits.MAX_CHUNK_COUNT);
 }
 
 pub fn init_memory() Util.MemoryConfig {

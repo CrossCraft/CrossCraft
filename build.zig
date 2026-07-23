@@ -323,6 +323,9 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             });
             root.addImport("aether", client_root.import_table.get("aether").?);
+            root.addImport("common", common);
+            root.addImport("game", game);
+            root.addImport("nbt", nbt);
             break :unit_tests_root root;
         },
     });

@@ -122,7 +122,7 @@ splash_data: Rendering.MeshData(Vertex),
 splash_mesh: Rendering.Mesh(Vertex),
 particle_atlas: TextureAtlas,
 scroll_v: i32,
-streak_mesh_dirty: bool,
+streak_mesh_dirty: std.atomic.Value(bool),
 streak_cam_tile_x: i32,
 streak_cam_tile_z: i32,
 spawn_accum: f32,
@@ -141,7 +141,7 @@ pub fn init(allocator: std.mem.Allocator) !Self {
         .splash_mesh = try Rendering.Mesh(Vertex).init(&.{}),
         .particle_atlas = TextureAtlas.init(PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_TILES, PARTICLE_ATLAS_TILES),
         .scroll_v = 0,
-        .streak_mesh_dirty = true,
+        .streak_mesh_dirty = std.atomic.Value(bool).init(true),
         .streak_cam_tile_x = 0,
         .streak_cam_tile_z = 0,
         .spawn_accum = 0,
@@ -163,7 +163,7 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn mark_dirty(self: *Self) void {
-    self.streak_mesh_dirty = true;
+    self.streak_mesh_dirty.store(true, .release);
 }
 
 // --- Update ---
@@ -301,7 +301,10 @@ pub fn draw_splashes(self: *Self) void {
 fn rebuild_streak_mesh(self: *Self, camera: *const Camera) void {
     const cam_tile_x_i: i32 = @intFromFloat(@floor(camera.x));
     const cam_tile_z_i: i32 = @intFromFloat(@floor(camera.z));
-    if (!self.streak_mesh_dirty and
+    // Clear before rebuilding so a packet invalidation arriving during the
+    // rebuild remains set for the next frame instead of being lost.
+    const explicitly_dirty = self.streak_mesh_dirty.swap(false, .acquire);
+    if (!explicitly_dirty and
         cam_tile_x_i == self.streak_cam_tile_x and
         cam_tile_z_i == self.streak_cam_tile_z)
     {
@@ -313,7 +316,6 @@ fn rebuild_streak_mesh(self: *Self, camera: *const Camera) void {
     self.streak_mesh.update(&self.streak_data);
     self.streak_cam_tile_x = cam_tile_x_i;
     self.streak_cam_tile_z = cam_tile_z_i;
-    self.streak_mesh_dirty = false;
 }
 
 fn rebuild_splash_mesh(self: *Self, camera: *const Camera) void {

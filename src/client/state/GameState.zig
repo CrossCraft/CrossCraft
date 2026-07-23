@@ -232,6 +232,11 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     try ResourcePack.apply_tex_set(&.{ .font, .gui, .terrain, .clouds, .water_still, .lava_still, .char, .glyphs, .rain, .particles });
 
+    // Initial residency classifies chunks before the first draw. Derive the
+    // frustum now so the scheduler never snapshots Camera.init's undefined
+    // placeholder planes.
+    self.player.camera.apply();
+
     try self.world.init_in_place(
         render_alloc,
         engine.io,
