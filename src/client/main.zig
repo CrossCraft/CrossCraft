@@ -12,7 +12,7 @@ pub const aether_options: ae.Options = .{
         .module_name = "CrossCraft",
         .stack_size = 512 * 1024,
         .async_stack_size = 64 * 1024,
-        .heap_reserve_kb_size = 2048 + 512,
+        .heap_reserve_kb_size = 2048,
     },
 };
 
