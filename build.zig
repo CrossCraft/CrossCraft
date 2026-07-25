@@ -344,6 +344,24 @@ pub fn build(b: *std.Build) void {
     });
     pack_tool_step.dependOn(&b.addInstallArtifact(pack_tool_exe, .{}).step);
 
+    // Standalone save conversion/editing tool.
+    // Usage: zig build savetool
+    // Produces zig-out/bin/savetool (host-native binary).
+    const savetool_step = b.step("savetool", "Build the save conversion/editing tool");
+    const savetool_exe = b.addExecutable(.{
+        .name = "savetool",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/savetool.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "common", .module = common },
+                .{ .name = "game", .module = game },
+            },
+        }),
+    });
+    savetool_step.dependOn(&b.addInstallArtifact(savetool_exe, .{}).step);
+
     const web_target = Aether.config.webTarget(b);
     const web_overrides: Aether.config.Config.Overrides = .{
         .gfx = .webgl,
