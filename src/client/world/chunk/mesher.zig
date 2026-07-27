@@ -1,7 +1,6 @@
 const std = @import("std");
 const common = @import("common");
 const c = common.consts;
-const prefetch = common.prefetch;
 const World = @import("game").World;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Rendering = @import("aether").Rendering;
@@ -80,21 +79,6 @@ const BufRows = struct {
         return &self.buf[plane];
     }
 };
-
-// --- Prefetch ---
-
-/// 256 bytes (one chunk Y-slice: 16 z-rows x 16 x-blocks) = 4 cache lines.
-const Y_SLICE_BYTES: u32 = c.ChunkSize * c.ChunkSize;
-
-/// Streaming prefetch for one Y-level's worth of central-chunk data.
-/// Caller must ensure y_local is in [0, ChunkSize). No-op for callers
-/// whose pack path doesn't read this data (all-opaque chunks hit the
-/// boundary-only fast path).
-inline fn prefetch_y_slice(chunk_ptr: *const [c.ChunkVolume]c.Block, y_local: u32) void {
-    const offset: u32 = y_local * Y_SLICE_BYTES;
-    const slice = chunk_ptr[offset..][0..Y_SLICE_BYTES];
-    prefetch.prefetch_slice(c.Block, slice);
-}
 
 // --- Pack ---
 
@@ -196,21 +180,8 @@ pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf)
     const all_opaque = World.data.is_chunk_all_opaque(cx, sy, cz);
     const base_y: i32 = @as(i32, @intCast(sy)) * 16 - 1;
 
-    const chunk_ptr: ?*const [c.ChunkVolume]c.Block = if (all_opaque)
-        null
-    else
-        World.data.get_chunk_ptr(cx, sy, cz);
-
-    if (chunk_ptr) |ptr| prefetch_y_slice(ptr, 0);
-
     for (0..BUF_Y) |by| {
         const wy: i32 = base_y + @as(i32, @intCast(by));
-
-        if (chunk_ptr) |ptr| {
-            if (by >= 1 and by <= 15) {
-                prefetch_y_slice(ptr, @intCast(by));
-            }
-        }
 
         for (0..BUF_Z) |bz| {
             const wz_raw: i32 = @as(i32, @intCast(cz)) * 16 + @as(i32, @intCast(bz)) - 1;
@@ -987,11 +958,6 @@ fn stream_begin(s: *Stream, cx: u32, sy: u32, cz: u32, near_lod: bool) void {
 /// the next plane's central-chunk slice so misses overlap with the current
 /// plane's classification.
 fn stream_load_plane(s: *Stream, plane: u32) void {
-    if (s.chunk_ptr) |ptr| {
-        // Plane p covers chunk-local y = p - 1, so loading plane p warms
-        // plane p+1's slice (local y = p), valid for p in 0..15.
-        if (plane < SECTION_H) prefetch_y_slice(ptr, plane);
-    }
     const wy: i32 = s.base_y + @as(i32, @intCast(plane));
     const slot = plane % STREAM_PLANES;
     for (0..BUF_Z) |bz| {
