@@ -300,7 +300,19 @@ pub fn build(b: *std.Build) void {
         const link_step = b.step("nxlink", "Push the nro to a networked Switch via nxlink");
         link_step.dependOn(&link_cmd.step);
     } else {
-        const run_client_cmd = b.addRunArtifact(client_exe);
+        // macOS must run the binary from inside the .app bundle: pack.zip
+        // is installed into <Bundle>.app/Contents/Resources/ by
+        // exportArtifact, and the engine resolves the resources dir from
+        // the exe path (only bundle-laid-out exes look in Contents/).
+        // Running the raw cache artifact would leave it looking for
+        // pack.zip beside the cache binary and fail with FileNotFound.
+        const run_client_cmd = if (is_macos)
+            b.addSystemCommand(&.{b.getInstallPath(
+                .bin,
+                b.fmt("{s}.app/Contents/MacOS/{s}", .{ client_name, client_name }),
+            )})
+        else
+            b.addRunArtifact(client_exe);
         // Same cwd reasoning as run-server: under -Duse-cwd=true the binary
         // finds the installed pack.zip here, and any data it writes
         // (options.json, texturepacks/) lands alongside it.

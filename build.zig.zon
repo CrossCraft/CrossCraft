@@ -12,8 +12,8 @@
             .path = "resources",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#4ad5a6976fe98509d74cab15ea6a56a8f69544a9",
-            .hash = "Aether-0.0.0-cjG28g_6FwBCNx2clPt_OKOl2gCahonZyue7F3Wp9W6X",
+            .url = "git+https://github.com/AetherEngine/Aether#03a3dc4bc59ab7bbccc296aa37c2d6b108c425d4",
+            .hash = "Aether-0.0.0-cjG28sMBGACCD2EWwFUmTTR5l_hTGxU3RZc0Jmx5BQoA",
         },
     },
     .paths = .{
