@@ -18,9 +18,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # PR smoke test. Builds every (target, kind) with -Dskip-pack=true so we
-  # never have to pull the LFS-backed resources submodule. No artifacts are
-  # uploaded — the build exit code is the signal.
+  # Builds every (target, kind) with -Dskip-pack=true so we never have to
+  # pull the LFS-backed resources submodule. No artifacts are uploaded.
   dev:
     if: github.event_name == 'pull_request'
     strategy:
@@ -57,7 +56,7 @@ jobs:
         if: matrix.name == 'mac' && matrix.kind == 'game'
         run: brew install glfw molten-vk
 
-      - name: Build (smoke)
+      - name: Build
         run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} -Dskip-pack=true
 
       - name: Upload artifact
