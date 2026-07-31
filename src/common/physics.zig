@@ -4,7 +4,7 @@
 //   src/EntityComponents.c.
 // See THIRD-PARTY-NOTICES.md for the full BSD 3-Clause license text.
 //
-// Ported to Zig for CrossCraft (LGPLv3; uses separate Aether-Engine).
+// Ported to Zig for CrossCraft (GPLv2; uses separate Aether-Engine).
 // Modifications Copyright (c) 2026 CrossCraft
 
 //! Swept-AABB entity/world collision.
