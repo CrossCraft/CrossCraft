@@ -1,31 +1,41 @@
-# CrossCraft
+<h1 align="center">CrossCraft</h1>
+<p align="center">An open-source Minecraft implementation</p>
 
-CrossCraft is a monorepo of clean-room Minecraft reimplementations written in Zig on top of the custom Aether engine. It is developed in phases, one classic-era version at a time.
+## What is CrossCraft?
+
+CrossCraft is a monorepo containing clean-room Minecraft reimplementations written in Zig on top of the custom Aether engine. It is developed in phases, one era at a time.
+
+We choose specific versions deemed important within an era:
+
+* Classic (0.30)
+* Survival Test (0.30)
+* Indev (0.31)
+* Infdev (TBD)
+* Alpha (1.1.2 and 1.2.6)
+* Beta (1.7.3 and 1.8.1)
+* Official (1.0 - TBD)
+
+## Where are we?
 
 The current phase is **Classic (0.30)**, now at **v1.0**. Each completed phase stays in the tree as a first-class build. Shared code lives in shared modules; version-specific behavior lives behind branching code paths so that improvements made while developing a newer phase flow back into older ones automatically.
 
-Concretely:
+For example:
+- General engine optimizations or new platforms are available to all versions
+- Bug fixes in shared systems (worldgen, networking, rendering, etc.) propagate to all in-repo versions
 
-- An audio optimization made while working on Survival Test is immediately available to Classic. Cut a new Classic build and players get it.
-- A new Aether target plus minimal integration work brings every existing phase to that platform at once.
-- Bug fixes in shared systems (worldgen primitives, networking, rendering, allocators) benefit every phase in the repo.
+## Classic Client & Server
 
-This is the point of the monorepo: keep every implementation alive and improving as the project moves forward, instead of forking and abandoning.
-
-## Classic v1.0
-
-Classic v1.0 is a feature-complete, clean-room reimplementation of Minecraft Classic 0.30.
+Classic Client v1.0 is a feature-complete, clean-room reimplementation of Minecraft Classic 0.30.
 
 - **Classic 0.30 protocol** - full client and server implementation, compatible with the public Classic protocol.
-- **Singleplayer and multiplayer** - singleplayer runs an in-process server behind a `FakeConn`; there is no second code path.
-- **Desktop + PSP** - Linux, macOS, Windows, and PSP (both PSP-1000 and PSP-2000+ memory profiles) ship from the same tree.
-- **Fixed-point worldgen and rendering** - deterministic across targets, fast on hardware without an FPU.
+- **Singleplayer and multiplayer** - singleplayer runs an in-process server, no code bifurcation.
+- **Desktop + PSP** - Linux, macOS, Windows, and PSP (32 & 64 MB) ship from the same tree.
+- **Fixed-point worldgen and rendering** - deterministic across targets, fast on all hardware.
 - **Zero post-init allocation on the server.** Minimal hot-path allocation on the client.
 - **Full in-game settings UI** - options persist in a JSON file and are wired into every system.
+- **Accessible UI** - controller & item tooltips available
 
-## Classic Server v1.1
-
-v1.1 is the smallest set of administrative tooling that lets the server stand up to the open internet without immediately being cooked. The headline is the persistent player database and the console; the rest is plumbing that had to land alongside it.
+Classic Server v1.1 is a feature-complete Minecraft Classic 0.30 server and can stand up to the open internet without immediately being cooked. 
 
 **Administrative controls.** A persistent player database tracks ops, bans, IP bans, and a whitelist. All operator actions are IP-keyed so a renamed account does not reset enforcement.
 
@@ -37,9 +47,7 @@ v1.1 is the smallest set of administrative tooling that lets the server stand up
 
 **Console mode.** The standalone server uses stdio as a real operator console: `stdin` accepts commands, `stdout` carries chat, `stderr` carries logs. Pipe each one separately if you want to.
 
-**Persistence.** World saving is fully async. The default save format is now ClassicWorld; existing worlds migrate on first save. Save path and world seed are command-line arguments and `server.properties` keys.
-
-**Networking and threading.** TCP_NODELAY on PSP cuts a noticeable chunk of latency on real hardware. The threading model and `std.Io` integration were overhauled, with the chunk compressor moved to a proper worker. Connections that arrive over the player limit now receive a clean disconnect message instead of being dropped silently. Various accuracy fixes from Classic v1.0 / v1.0.1 are also rolled in.
+**Persistence.** World saving is fully async. The default save format is now ClassicWorld; existing worlds migrate on first save. Save path and world seed are command-line arguments and `server.properties` keys. 
 
 ## Status
 
@@ -53,21 +61,9 @@ v1.1 is the smallest set of administrative tooling that lets the server stand up
 
 The near-term plan, in order:
 
-1. **Classic v1.1** - next up. Client release built on top of the v1.1 server work.
+1. **Classic v1.1** - next up. Client release built on top of the v1.1 server work. Includes 3DS, Nintendo Switch, and Web builds.
+2. **Classic v1.2** - plugin support, world streaming, bigger worlds and better multiplayer connectivity features
 2. **Survival Test** - the next phase. Shares the engine, common primitives, and most of the game module with Classic.
-
-No firm dates or feature promises on any of the above yet; specifics land in release notes as each ships.
-
-Additional platforms (3DS, Nintendo Switch) are under consideration. Adding them is mostly an Aether targeting exercise plus minimal per-platform integration; once that lands, every existing phase in the repo gains support at once.
-
-## Design Goals
-
-1. Strong performance on real hardware, including PSP-class targets (333 MHz, ~32-64 MB).
-2. No runtime allocation on the server after init. The client follows the same rule on hot paths as much as possible.
-3. Fixed-point worldgen and rendering. Floating point is reserved for a few simulation paths. This keeps results identical across targets and keeps the math cheap on platforms without fast FPUs.
-4. Shared code by default; branching only where versions actually differ.
-
-The full style rules live in `STYLE.MD`. They are inspired by NASA's Power of Ten and TigerBeetle's Tiger Style: assertions on in release builds, bounded loops, sized buffers, explicit-sized integer types, no recursion, narrow platform boundaries, and server-first allocation discipline.
 
 ## Performance Notes
 
@@ -77,62 +73,35 @@ The full style rules live in `STYLE.MD`. They are inspired by NASA's Power of Te
 
 ## Building
 
-A recent Zig (matching `build.zig.zon`'s `minimum_zig_version`) is required. On macOS, install `glfw` and `vulkan-loader` first.
+A recent Zig (matching `build.zig.zon`'s `minimum_zig_version`) is required.
 
 ```
-zig build game     -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe   # desktop client
-zig build server   -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe   # standalone server
-zig build run-game                                                    # run client locally
-zig build run-server                                                  # run server locally
-zig build test                                                        # unit tests
+zig build game       # desktop client
+zig build server     # standalone server
+zig build run-game   # run client locally
+zig build run-server # run server locally
+zig build test       # unit tests
 ```
 
-### PSP
+### Consoles
 
 ```
-zig build game   -Dtarget=mipsel-psp                # PSP client
+zig build game -Dtarget=mipsel-psp
+zig build game -Dtarget=arm-3ds
+zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch
 ```
 
-PSP builds produce a full `EBOOT.PBP`. The client adapts its memory budgets at startup for PSP-1000 or PSP-2000+ hardware. The Aether engine handles the ELF -> PRX -> EBOOT pipeline.
+### Web
 
-### Build options
+```
+zig build serve-web
+```
 
-| Flag                     | Description                                                  |
-|--------------------------|--------------------------------------------------------------|
-| `-Dgfx=...`              | Override the graphics backend (default: auto from target).   |
-| `-Dpsp-display=rgba8888` | PSP 32-bit display (default).                                |
-| `-Dpsp-display=rgb565`   | PSP 16-bit display.                                          |
-
-CI builds Linux, macOS, Windows, and PSP on every change.
-
-## Architecture
-
-Four Zig modules, wired together in `build.zig`:
-
-- `protocol` - generated at build time from `protocol.zb` by the ZeeBuffer compiler. Edit the schema, not the generated file.
-- `common` (`src/common/`) - shared primitives: fixed-point math, noise, RNG, allocators (`counting_allocator`, `static_allocator`, `fa_buffer`), constants, protocol re-export. No graphics, no platform.
-- `game` (`src/game/`) - shared gameplay and world logic used by both client and server (`world.zig`, `worldgen.zig`, `server.zig`, `client.zig`). Phase-specific behavior branches inside this module.
-- Client (`src/client/main.zig`) - built via `Aether.addGame`. Subdirs cover `world/` (chunks, blocks, sky, particles, selection outline), `state/` (menu, load, game), `connection/` (real `ClientConn` and an in-process `FakeConn` for singleplayer), `player/`, `graphics/`, `ui/`, and `util/`.
-- Server (`src/server/main.zig`) - a standalone executable for Linux, macOS, and Windows.
-
-The client always speaks the protocol. Singleplayer is just an in-process server behind a `FakeConn`, not a parallel code path.
-
-Resource pack: `tools/pack_zip.zig` zips the `resources` dependency's `default/` directory into `pack.zip` at build time, installed next to the client binary.
+Opens on `localhost:8000`, needs WASM & WebGL2 support in browser.
 
 ## Contributing
 
 Read `STYLE.MD` first. Run `zig fmt` before submitting. Add tests inline with `test "..."` blocks. When touching protocol, world, or rendering code, build the affected target plus `zig build test` before opening a PR.
-
-A short summary of the style rules:
-
-- snake_case for ordinary functions and variables; PascalCase for types, type-centric files, and module aliases (`Player.zig`, `GameState.zig`).
-- Explicit-sized integer types; never `usize` / `isize` for domain values.
-- Assertions on in release builds. Bound loops, size buffers so overflow is impossible.
-- No recursion. Avoid `std.os` / `std.c` / `std.posix` outside narrow platform-boundary code.
-- No runtime allocation on the server after init. Avoid unexpected hot-path allocation on the client.
-- One responsibility per file. Functions stay readable (~70 lines as a soft ceiling).
-- ASCII-only source. Comments explain why, not how.
-- No external dependencies beyond the Zig standard library, the Aether / Iridescence ecosystem, and a small set of platform APIs (GLFW, miniaudio, OpenGL, pspsdk).
 
 ## Legal Notice
 
