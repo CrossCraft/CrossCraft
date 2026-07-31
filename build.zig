@@ -321,6 +321,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
 
+    const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &.{};
     const unit_tests = b.addTest(.{
         .root_module = unit_tests_root: {
             const root = b.createModule(.{
@@ -333,6 +334,7 @@ pub fn build(b: *std.Build) void {
             root.addImport("game", game);
             break :unit_tests_root root;
         },
+        .filters = test_filters,
     });
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
