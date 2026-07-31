@@ -29,8 +29,8 @@ jobs:
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux_gl,   kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: game,   extra: "" }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: server, extra: "" }
+          - { os: macos-latest,   name: mac,        kind: game }
+          - { os: macos-latest,   name: mac,        kind: server }
           - { os: windows-latest, target: x86_64-windows-msvc, name: windows,    kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
           - { os: windows-latest, target: x86_64-windows-msvc, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
           - { os: windows-latest, target: x86_64-windows-msvc, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
@@ -46,18 +46,25 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
 
-      - name: Setup macOS SDK
-        if: matrix.name == 'mac'
-        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
-
-      # macOS game links MoltenVK and system glfw3 directly; both get bundled
-      # into the .app by Aether.exportArtifact. Other targets vendor everything.
+      # macOS game: SDL3 is vendored and statically linked; the only system
+      # dependency is MoltenVK, which Aether.exportArtifact bundles into the
+      # .app. Other targets vendor everything.
       - name: Install macOS dependencies
         if: matrix.name == 'mac' && matrix.kind == 'game'
-        run: brew install glfw molten-vk
+        run: brew install molten-vk
 
       - name: Build
+        if: matrix.name != 'mac'
         run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} -Dskip-pack=true
+
+      # macOS builds natively. SDL's build demands --sysroot for any explicit
+      # (non-native) -Dtarget, and --sysroot in turn breaks the absolute
+      # Homebrew / vendored system_sdk paths Aether links against. The runner
+      # is already Apple Silicon, so a native build IS the aarch64-macos
+      # artifact.
+      - name: Build (macOS)
+        if: matrix.name == 'mac'
+        run: zig build ${{ matrix.kind }} -Doptimize=ReleaseSafe -Dskip-pack=true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -79,8 +86,8 @@ jobs:
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: game,   extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux_gl,   kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: game,   extra: "" }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: server, extra: "" }
+          - { os: macos-latest,   name: mac,        kind: game }
+          - { os: macos-latest,   name: mac,        kind: server }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: game,   extra: -Dcpu=x86_64_v3 }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
@@ -99,18 +106,22 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
 
-      - name: Setup macOS SDK
-        if: matrix.name == 'mac'
-        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
-
       - name: Install macOS dependencies
         if: matrix.name == 'mac' && matrix.kind == 'game'
-        run: brew install glfw molten-vk
+        run: brew install molten-vk
 
       # Server never packs resources and only ships for PC targets.
       - name: Build server
-        if: matrix.kind == 'server'
+        if: matrix.kind == 'server' && matrix.name != 'mac'
         run: zig build server -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} -Dskip-pack=true
+
+      # macOS (game + server) builds natively: SDL's build requires --sysroot
+      # for any explicit (non-native) -Dtarget, and --sysroot breaks the
+      # absolute Homebrew / vendored system_sdk paths Aether links. The runner
+      # is Apple Silicon, so native == aarch64-macos.
+      - name: Build server (macOS)
+        if: matrix.kind == 'server' && matrix.name == 'mac'
+        run: zig build server -Doptimize=ReleaseSafe -Dskip-pack=true
 
       # Desktop game (linux/windows): -Duse-cwd=true so pack.zip ships as a
       # loose file in zig-out/bin/ next to the binary.
@@ -120,9 +131,10 @@ jobs:
 
       # macOS game: Aether.exportArtifact routes pack.zip into
       # CrossCraft-Classic.app/Contents/Resources/pack.zip — no -Duse-cwd.
+      # Built natively (see "Build server (macOS)" above).
       - name: Build game (macOS)
         if: matrix.kind == 'game' && matrix.name == 'mac'
-        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+        run: zig build game -Doptimize=ReleaseSafe
 
       # PSP game: build.zig installs pack.zip into the PSP
       # bundle dir alongside EBOOT.PBP / app.prx.
