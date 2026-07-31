@@ -41,18 +41,12 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const nbt = b.addModule("nbt", .{
-        .root_source_file = b.path("src/nbt/nbt.zig"),
-        .optimize = optimize,
-    });
-
     const game = b.addModule("game", .{
         .root_source_file = b.path("src/game/root.zig"),
         .optimize = optimize,
         .imports = &.{
             .{ .name = "protocol", .module = protocol },
             .{ .name = "common", .module = common },
-            .{ .name = "nbt", .module = nbt },
         },
     });
 
@@ -337,7 +331,6 @@ pub fn build(b: *std.Build) void {
             root.addImport("aether", client_root.import_table.get("aether").?);
             root.addImport("common", common);
             root.addImport("game", game);
-            root.addImport("nbt", nbt);
             break :unit_tests_root root;
         },
     });
