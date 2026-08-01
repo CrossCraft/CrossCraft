@@ -364,6 +364,9 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
         if (Options.current.sound_volume == 0.0) {
             release_voice(v);
         } else if (!Audio.is_playing(v.handle)) {
+            Audio.destroy_stream(v.stream);
+            v.handle = .none;
+            v.stream = .none;
             release_deflate(v);
             v.active = false;
         }
@@ -379,6 +382,9 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
                 music_state = .delay;
                 music_delay_timer = 1.0;
             } else if (!Audio.is_playing(voices[music_slot].handle)) {
+                Audio.destroy_stream(voices[music_slot].stream);
+                voices[music_slot].handle = .none;
+                voices[music_slot].stream = .none;
                 release_deflate(&voices[music_slot]);
                 voices[music_slot].active = false;
                 music_state = .delay;
