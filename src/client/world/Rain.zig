@@ -17,9 +17,9 @@ const collision = @import("../player/collision.zig");
 // --- Tunables ---
 
 /// Half-extent of the rain column grid in blocks.  Grid is (2*EXTENT+1)^2.
-/// PSP halves the grid radius to drop the streak column count from 81 to 25
-/// (5x5 vs 9x9), keeping the streak mesh build + fill in budget.
-const EXTENT: i32 = if (ae.platform == .psp) 2 else 4;
+/// Keep the falling streak grid at 9x9 on every platform; the separate splash
+/// particle budget remains platform-specific below.
+const EXTENT: i32 = 4;
 const EXTENT_U: u32 = @intCast(EXTENT);
 const EXTENT_F: f32 = @floatFromInt(EXTENT);
 
