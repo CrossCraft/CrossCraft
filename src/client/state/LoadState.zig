@@ -30,6 +30,12 @@ var session_error: ?anyerror = null;
 var mp_server_name: [64]u8 = @splat(' ');
 var mp_server_motd: [64]u8 = @splat(' ');
 
+// Do not capture std.Io in a PSP Util.Thread closure. The PSP thread
+// trampoline has historically lost this value when it is passed through the
+// argument tuple, leaving the copied vtable pointer null in the worker. Keep
+// it in module storage and publish it before spawning the one load task.
+var task_io: std.Io = undefined;
+
 /// Empty action set; exists only so push_context has a valid installed
 /// set during the loading screen.
 var loading_set: ?ae.Core.input.ActionSetHandle = null;
@@ -48,7 +54,6 @@ const TaskHandle = union(enum) {
 };
 
 fn start_server_task(
-    io: std.Io,
     alloc: std.mem.Allocator,
     scratch: std.mem.Allocator,
     seed: u64,
@@ -56,7 +61,7 @@ fn start_server_task(
     save_location: []const u8,
 ) TaskHandle {
     if (comptime ae.platform == .wasm) {
-        serverTask(alloc, scratch, seed, io, data_dir, save_location);
+        serverTask(alloc, scratch, seed, data_dir, save_location);
         return .none;
     }
 
@@ -65,7 +70,7 @@ fn start_server_task(
         .stack_size = 512 * 1024,
         .priority = .normal,
         .allocator = alloc,
-    }, serverTask, .{ alloc, scratch, seed, io, data_dir, save_location }) catch |err| {
+    }, serverTask, .{ alloc, scratch, seed, data_dir, save_location }) catch |err| {
         log.err("server task thread unavailable: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
@@ -74,7 +79,6 @@ fn start_server_task(
 }
 
 fn start_connect_task(
-    io: std.Io,
     alloc: std.mem.Allocator,
     seed: u64,
     data_dir: std.Io.Dir,
@@ -90,7 +94,7 @@ fn start_connect_task(
         .stack_size = 512 * 1024,
         .priority = .normal,
         .allocator = alloc,
-    }, connectTask, .{ alloc, seed, io, data_dir }) catch |err| {
+    }, connectTask, .{ alloc, seed, data_dir }) catch |err| {
         log.err("connect task thread unavailable: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
@@ -110,7 +114,6 @@ fn serverTask(
     alloc: std.mem.Allocator,
     scratch: std.mem.Allocator,
     seed: u64,
-    io: std.Io,
     data_dir: std.Io.Dir,
     save_location: []const u8,
 ) void {
@@ -121,7 +124,7 @@ fn serverTask(
             .world = .{ .seed = seed, .save_location = selected_save },
         },
     };
-    Server.init(alloc, scratch, io, data_dir, config) catch |err| {
+    Server.init(alloc, scratch, task_io, data_dir, config) catch |err| {
         log.err("server init failed: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
@@ -131,11 +134,11 @@ fn serverTask(
     server_ready.store(true, .release);
 }
 
-fn connectTask(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) void {
-    connect_inner(alloc, seed, io, data_dir) catch |err| {
+fn connectTask(alloc: std.mem.Allocator, seed: u64, data_dir: std.Io.Dir) void {
+    connect_inner(alloc, seed, task_io, data_dir) catch |err| {
         log.err("multiplayer connect failed: {}", .{err});
         session_error = err;
-        cleanup_failed_multiplayer_connect(io);
+        cleanup_failed_multiplayer_connect(task_io);
     };
     server_ready.store(true, .release);
 }
@@ -330,7 +333,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.time = 0;
     self.server_notified = false;
 
-    const io = engine.io;
+    task_io = engine.io;
+    const io = task_io;
     const random_seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
     const singleplayer_seed = Session.singleplayer_seed(random_seed);
     server_ready.store(false, .monotonic);
@@ -344,14 +348,13 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // TODO: allocator pool budget may need tuning for server + client coexistence
     self.server_task = switch (Session.mode) {
         .singleplayer => start_server_task(
-            io,
             engine.allocator(.user),
             server_scratch,
             singleplayer_seed,
             data_dir,
             Session.singleplayer_save(),
         ),
-        .multiplayer => start_connect_task(io, engine.allocator(.user), random_seed, data_dir),
+        .multiplayer => start_connect_task(engine.allocator(.user), random_seed, data_dir),
     };
 
     self.inited = true;
