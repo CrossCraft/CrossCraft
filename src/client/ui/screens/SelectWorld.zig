@@ -112,7 +112,7 @@ pub fn scan(io: std.Io, data_dir: std.Io.Dir, out: *[max_worlds]Entry) u8 {
         if (entry.kind != .file) continue;
         if (!has_cw_ext(entry.name)) continue;
 
-        const size = stat_file_size(io, dir, entry.name) orelse continue;
+        const size = stat_file_size(io, data_dir, entry.name) orelse continue;
         add_entry(out, &count, entry.name, size);
     }
 
@@ -134,14 +134,17 @@ fn has_cw_ext(name: []const u8) bool {
     return std.ascii.eqlIgnoreCase(name[name.len - 3 ..], ".cw");
 }
 
-fn stat_file_size(io: std.Io, dir: std.Io.Dir, name: []const u8) ?u64 {
-    const file = dir.openFile(io, name, .{}) catch |err| {
-        log.warn("failed to open save '{s}': {}", .{ name, err });
-        return null;
-    };
-    defer file.close(io);
-    const st = file.stat(io) catch |err| {
-        log.warn("failed to stat save '{s}': {}", .{ name, err });
+fn stat_file_size(io: std.Io, data_dir: std.Io.Dir, name: []const u8) ?u64 {
+    var path_buf: [max_path_len]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "saves/{s}", .{name}) catch return null;
+
+    // Do not open the save relative to the temporary iterable directory.
+    // PSP's I/O layer tracks the base path for open directory handles in a
+    // small table; once that is full, iteration still works but relative file
+    // opens fail. Statting through the stable data directory avoids that
+    // handle-pressure failure and does not consume another file handle.
+    const st = data_dir.statFile(io, path, .{}) catch |err| {
+        log.warn("failed to stat save '{s}': {}", .{ path, err });
         return null;
     };
     return st.size;
