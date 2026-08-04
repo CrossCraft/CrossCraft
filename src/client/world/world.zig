@@ -10,35 +10,61 @@ const Camera = @import("../player/Camera.zig");
 const collision = @import("../player/collision.zig");
 const config = @import("../config.zig");
 const Options = @import("../Options.zig");
-const c = @import("common").consts;
 
-const limits = @import("chunk/ChunkCoord.zig");
-const ChunkCoord = limits.ChunkCoord;
-const WorldShape = limits.WorldShape;
-const Chunk = @import("chunk/Chunk.zig");
-const ChunkStore = @import("chunk/ChunkStore.zig");
-const Scheduler = @import("chunk/Scheduler.zig");
-const Compiler = @import("chunk/Compiler.zig");
-const PriorityClass = Scheduler.PriorityClass;
+const ChunkMesh = @import("chunk/ChunkMesh.zig");
 const Sky = @import("sky/sky.zig");
 const ParticleSystem = @import("ParticleSystem.zig");
 const Rain = @import("Rain.zig");
 
-const SlotIndex = ChunkStore.SlotIndex;
+const SECTIONS_Y: u32 = 4;
+const WORLD_CX: u32 = 16;
+const WORLD_CZ: u32 = 16;
+const MAX_ACTIVE: u32 = @import("../config.zig").max_sections();
+
+/// Maximum sections tracked incrementally in dirty_buf before falling back to
+/// a full queue rescan. Sized for 4 simultaneous block changes * 7 neighbors.
+const MAX_DIRTY_BUF: u32 = 32;
 
 const Self = @This();
 
-/// Block/chunk dimensions of the loaded world. Chunk residency is
-/// independent per 16x16x16 chunk; there is no column lifecycle.
-shape: WorldShape,
-store: ChunkStore,
-scheduler: Scheduler,
-compiler: Compiler,
+/// Grid of sections. Only valid where loaded[cx][cz] is true.
+grid: [WORLD_CX][WORLD_CZ][SECTIONS_Y]ChunkMesh,
+/// Per-column: all 4 sections have GPU handles allocated.
+loaded: [WORLD_CX][WORLD_CZ]bool,
+/// Per-section: mesh has been built via rebuild().
+built: [WORLD_CX][WORLD_CZ][SECTIONS_Y]bool,
+/// Per-section: currently present in build_queue[build_cursor..build_end].
+in_queue: [WORLD_CX][WORLD_CZ][SECTIONS_Y]bool,
+/// Sections marked dirty since the last flush, for incremental queue insert.
+/// dirty_overflow is set when the buffer is full; triggers a full rescan.
+dirty_buf: [MAX_DIRTY_BUF]GridRef,
+dirty_buf_len: u32,
+dirty_overflow: bool,
+/// Preserve dirty_buf order and move those sections ahead of background
+/// rebuilds. Used for block changes where edge rebuild order affects flicker.
+dirty_preserve_order: bool,
+/// Camera position at the last LOD check. refresh_lod_states only runs when
+/// the camera has moved at least 1 block since this was recorded.
+lod_check_x: f32,
+lod_check_y: f32,
+lod_check_z: f32,
+/// Last render-affecting option values applied to loaded sections. When one
+/// diverges from Options.current, update() kicks the same paths that normally
+/// run on camera movement so changes made from the options menu show up
+/// immediately.
+applied_render_distance: u8,
+applied_fancy_leaves: bool,
+applied_ao: bool,
+
+build_queue: [MAX_ACTIVE]GridRef,
+build_cursor: u32,
+build_end: u32,
+build_estimator: Util.Estimator,
 
 /// Per-frame visibility list populated by draw_world_pass and consumed by
 /// draw_fluid_pass so the caller can slot overlays (selection outline, steve
 /// models) between the two passes without recomputing visibility.
-frame_visible: []SlotIndex,
+frame_visible: [MAX_ACTIVE]GridRef,
 frame_visible_count: u32,
 frame_clip_count: u32,
 
@@ -52,19 +78,10 @@ particles: ParticleSystem,
 rain: Rain,
 cam_cx: i32,
 cam_cz: i32,
-/// Camera position at the last LOD check. refresh_lod_targets only runs when
-/// the camera has moved at least 1 block since this was recorded.
-lod_check_x: f32,
-lod_check_y: f32,
-lod_check_z: f32,
-/// Last render-affecting option values applied to resident chunks. When one
-/// diverges from Options.current, update() invalidates the affected chunks
-/// through the revision path so changes show up immediately.
-applied_render_distance: u8,
-applied_fancy_leaves: bool,
-applied_ao: bool,
 allocator: std.mem.Allocator,
 io: std.Io,
+
+const GridRef = packed struct { cx: u8, cz: u8, sy: u8 };
 
 pub fn init_in_place(
     self: *Self,
@@ -77,16 +94,28 @@ pub fn init_in_place(
     atlas: TextureAtlas,
     camera: *const Camera,
 ) !void {
-    self.shape = WorldShape.init(c.WorldLength, c.WorldHeight, c.WorldDepth) catch unreachable;
-    const capacity = config.max_active_chunks();
-    self.store = try ChunkStore.init(allocator, capacity);
-    errdefer self.store.deinit();
-    self.scheduler = try Scheduler.init(allocator, capacity);
-    errdefer self.scheduler.deinit(allocator);
-    self.compiler = try Compiler.init(allocator, capacity);
-    errdefer self.compiler.deinit(allocator);
-    self.frame_visible = try allocator.alloc(SlotIndex, capacity);
-    errdefer allocator.free(self.frame_visible);
+    const row_false = [_]bool{false} ** WORLD_CZ;
+    const section_false = [_]bool{false} ** SECTIONS_Y;
+    const col_section_false = [_][SECTIONS_Y]bool{section_false} ** WORLD_CZ;
+    self.grid = undefined;
+    self.loaded = .{row_false} ** WORLD_CX;
+    self.built = .{col_section_false} ** WORLD_CX;
+    self.in_queue = .{col_section_false} ** WORLD_CX;
+    self.dirty_buf = undefined;
+    self.dirty_buf_len = 0;
+    self.dirty_overflow = false;
+    self.dirty_preserve_order = false;
+    self.lod_check_x = camera.x;
+    self.lod_check_y = camera.y;
+    self.lod_check_z = camera.z;
+    self.applied_render_distance = Options.capped_render_distance();
+    self.applied_fancy_leaves = Options.current.fancy_leaves;
+    self.applied_ao = Options.current.ambient_occlusion;
+    self.build_queue = undefined;
+    self.build_cursor = 0;
+    self.build_end = 0;
+    self.build_estimator = Util.Estimator.init();
+    self.frame_visible = undefined;
     self.frame_visible_count = 0;
     self.frame_clip_count = 0;
     self.terrain = terrain;
@@ -96,15 +125,8 @@ pub fn init_in_place(
     self.atlas = atlas;
     self.cam_cx = camera_chunk(camera.x);
     self.cam_cz = camera_chunk(camera.z);
-    self.lod_check_x = camera.x;
-    self.lod_check_y = camera.y;
-    self.lod_check_z = camera.z;
-    self.applied_render_distance = Options.capped_render_distance();
-    self.applied_fancy_leaves = Options.current.fancy_leaves;
-    self.applied_ao = Options.current.ambient_occlusion;
     self.allocator = allocator;
     self.io = io;
-    self.scheduler.set_camera(&self.store, camera);
 
     self.sky = try Sky.init(allocator);
     errdefer self.sky.deinit();
@@ -113,13 +135,18 @@ pub fn init_in_place(
     self.rain = try Rain.init(allocator);
     errdefer self.rain.deinit();
 
-    self.sync_residency(camera);
+    self.recollect(camera);
 
-    // Warm up the phase estimators with real work, budget-free and bounded.
-    var guard: u32 = 4 * self.store.capacity() + 8;
-    while (self.compiler.warming() and guard > 0) : (guard -= 1) {
-        const status = self.compiler.step(&self.drive(), std.math.maxInt(i64));
-        if (status == .idle) break;
+    // Warm up the estimator
+    while (self.build_cursor < self.build_end and self.build_estimator.is_warming_up()) {
+        const ref = self.build_queue[self.build_cursor];
+        self.build_estimator.begin(io);
+        self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch break;
+        self.build_estimator.end(io);
+        mark_first_built(&self.grid[ref.cx][ref.cz][ref.sy]);
+        self.built[ref.cx][ref.cz][ref.sy] = true;
+        self.in_queue[ref.cx][ref.cz][ref.sy] = false;
+        self.build_cursor += 1;
     }
 }
 
@@ -127,20 +154,12 @@ pub fn deinit(self: *Self) void {
     self.rain.deinit();
     self.particles.deinit();
     self.sky.deinit();
-    self.allocator.free(self.frame_visible);
-    self.compiler.deinit(self.allocator);
-    self.scheduler.deinit(self.allocator);
-    self.store.deinit();
-}
-
-fn drive(self: *Self) Compiler.Drive {
-    return .{
-        .store = &self.store,
-        .scheduler = &self.scheduler,
-        .allocator = self.allocator,
-        .atlas = &self.atlas,
-        .io = self.io,
-    };
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz]) continue;
+            self.deinit_column(@intCast(cx), @intCast(cz));
+        }
+    }
 }
 
 pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
@@ -148,78 +167,102 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
     self.particles.update(dt, camera);
     self.rain.update(dt, camera);
 
-    self.compiler.begin_frame();
-    self.scheduler.set_camera(&self.store, camera);
-
-    // Advance the bouncy-rise animation for every resident chunk. Runs
-    // before the compiler drive below so the animation keeps ticking even
-    // when there is no pending work. Chunks at rest short-circuit.
-    for (self.store.slots) |*slot| {
-        if (slot.active) slot.chunk.update_animation(dt);
+    // Advance the bouncy-rise animation for every loaded section. Runs before
+    // the early-return below so the animation keeps ticking even when there
+    // are no pending rebuilds. Sections already at rest short-circuit.
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz]) continue;
+            for (0..SECTIONS_Y) |sy| {
+                self.grid[cx][cz][sy].update_animation(dt);
+            }
+        }
     }
 
     const new_cx = camera_chunk(camera.x);
     const new_cz = camera_chunk(camera.z);
     if (new_cx != self.cam_cx or new_cz != self.cam_cz or Options.capped_render_distance() != self.applied_render_distance) {
-        self.sync_residency(camera);
+        self.recollect(camera);
     }
 
-    // AO toggle: one bool compare per frame; on mismatch, every resident
-    // chunk whose captured state disagrees gets a revision invalidation.
+    // AO toggle: one bool compare per frame; on mismatch, every loaded
+    // section needs a rebuild since AO is global.
     if (Options.current.ambient_occlusion != self.applied_ao) {
         self.apply_ao_toggle();
     }
 
-    // Fancy/fast leaves changes alter the near_lod target globally. Treat
-    // this like an LOD transition now instead of waiting for camera movement.
+    // Fancy/fast leaves changes alter the near_lod target globally. Treat this
+    // like an LOD transition now instead of waiting for camera movement.
     if (Options.current.fancy_leaves != self.applied_fancy_leaves) {
         self.apply_fancy_leaves_toggle(camera);
     }
 
     // Catch LOD transitions mid-chunk only when the camera has moved at
     // least 1 block since the last check. Skipped entirely on stationary
-    // frames, eliminating the previous per-frame distance scan.
+    // frames, eliminating the previous O(1024) per-frame distance scan.
     const lod_dx = camera.x - self.lod_check_x;
     const lod_dy = camera.y - self.lod_check_y;
     const lod_dz = camera.z - self.lod_check_z;
     if (lod_dx * lod_dx + lod_dy * lod_dy + lod_dz * lod_dz >= 1.0) {
-        self.refresh_lod_targets(camera);
+        self.refresh_lod_states(camera);
         self.lod_check_x = camera.x;
         self.lod_check_y = camera.y;
         self.lod_check_z = camera.z;
     }
 
-    // Drive the compiler: one executor, at most one phase per step. During
-    // estimator warmup exactly one phase runs per frame (the old bounded
-    // warmup policy); afterwards a phase starts only when its estimate fits
-    // the remaining frame budget.
-    var remaining = budget.safe_remaining();
-    var steps: u32 = 0;
-    const max_steps: u32 = 4 * self.store.capacity() + 8;
-    while (steps < max_steps) : (steps += 1) {
-        const status = self.compiler.step(&self.drive(), remaining);
-        if (!continue_after_compiler_step(
-            status,
-            self.compiler.warming(),
-            self.compiler.last_phase_ns,
-            &remaining,
-        )) break;
+    // Re-queue dirty sections immediately so a player break/place shows up
+    // this frame even while a heavy LOD rebuild is in flight. When only a
+    // few sections changed, flush_dirty_sections inserts them directly into
+    // the live queue without a full rescan.
+    if (self.dirty_overflow) {
+        self.queue_unbuilt_sections(camera);
+        self.dirty_overflow = false;
+        self.dirty_buf_len = 0;
+        self.dirty_preserve_order = false;
+    } else if (self.dirty_buf_len > 0) {
+        self.flush_dirty_sections(camera);
+        self.dirty_buf_len = 0;
+        self.dirty_preserve_order = false;
     }
+
+    if (self.build_cursor >= self.build_end) return;
+
+    const available = budget.safe_remaining();
+    const n: u32 = if (self.build_estimator.is_warming_up())
+        1
+    else
+        @intCast(@max(1, self.build_estimator.fit_in(available, .p75)));
+    const end = @min(self.build_cursor + n, self.build_end);
+
+    for (self.build_cursor..end) |i| {
+        const ref = self.build_queue[i];
+        self.build_estimator.begin(self.io);
+        if (self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas)) {
+            self.build_estimator.end(self.io);
+        } else |_| {
+            self.build_estimator.end(self.io);
+            // Mesh allocation/indexing failure - evict the farthest built
+            // section to free GPU memory, then stop for this frame. The
+            // cursor stays at i so this section is retried first next frame
+            // rather than rebuilding it
+            // twice in one frame.
+            _ = self.try_evict_farthest(camera);
+            self.build_cursor = @intCast(i);
+            return;
+        }
+        mark_first_built(&self.grid[ref.cx][ref.cz][ref.sy]);
+        self.built[ref.cx][ref.cz][ref.sy] = true;
+        self.in_queue[ref.cx][ref.cz][ref.sy] = false;
+    }
+    self.build_cursor = end;
 }
 
-fn continue_after_compiler_step(
-    status: Compiler.Status,
-    warming: bool,
-    elapsed_ns: i64,
-    remaining_ns: *i64,
-) bool {
-    switch (status) {
-        .idle, .deferred => return false,
-        .oom_blocked, .phase_complete, .built => {
-            remaining_ns.* -= elapsed_ns;
-            return !warming and remaining_ns.* > 0;
-        },
-    }
+/// Clears first_build and, on the first build only, starts the bouncy-rise
+/// animation if the option is enabled. Called after a successful rebuild().
+fn mark_first_built(sec: *ChunkMesh) void {
+    if (!sec.first_build) return;
+    sec.first_build = false;
+    if (Options.current.bouncy_chunks) sec.anim_progress = 0.0;
 }
 
 /// Draw everything up to and including particles; callers are expected to
@@ -236,35 +279,38 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     Rendering.gfx.api.bind_texture(self.terrain.handle);
 
     self.frame_visible_count = 0;
-    for (self.store.slots, 0..) |*slot, i| {
-        if (!slot.active) continue;
-        const coord = slot.chunk.coord;
-        if (!camera.section_visible(coord.x, coord.y, coord.z)) continue;
-        self.frame_visible[self.frame_visible_count] = @intCast(i);
-        self.frame_visible_count += 1;
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz]) continue;
+            for (0..SECTIONS_Y) |sy| {
+                const sec = &self.grid[cx][cz][sy];
+                if (!camera.section_visible(sec.cx, sec.sy, sec.cz)) continue;
+                self.frame_visible[self.frame_visible_count] = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
+                self.frame_visible_count += 1;
+            }
+        }
     }
 
     const visible = self.frame_visible[0..self.frame_visible_count];
-    const sort_ctx: SlotSortCtx = .{ .store = &self.store, .cam = camera };
-    std.sort.pdq(SlotIndex, visible, sort_ctx, slot_less_than);
+    std.sort.pdq(GridRef, visible, camera, grid_ref_less_than);
 
-    // Chunks close to the player need hardware clip planes to prevent
+    // Sections close to the player need hardware clip planes to prevent
     // vertices from overflowing the PSP 4096 virtual viewport.
-    const CLIP_CHUNK_COUNT: u32 = 4;
-    self.frame_clip_count = @min(CLIP_CHUNK_COUNT, self.frame_visible_count);
+    const CLIP_SECTION_COUNT: u32 = 4;
+    self.frame_clip_count = @min(CLIP_SECTION_COUNT, self.frame_visible_count);
     const clip_count = self.frame_clip_count;
 
-    // Opaque pass (front-to-back): clip planes on for closest chunks
+    // Opaque pass (front-to-back): clip planes on for closest sections
     Rendering.gfx.api.set_alpha_blend(false);
     if (clip_count > 0) {
         Rendering.gfx.api.set_clip_planes(true);
-        for (visible[0..clip_count]) |slot| {
-            self.store.chunk(slot).draw_opaque();
+        for (visible[0..clip_count]) |ref| {
+            self.grid[ref.cx][ref.cz][ref.sy].draw_opaque();
         }
         Rendering.gfx.api.set_clip_planes(false);
     }
-    for (visible[clip_count..]) |slot| {
-        self.store.chunk(slot).draw_opaque();
+    for (visible[clip_count..]) |ref| {
+        self.grid[ref.cx][ref.cz][ref.sy].draw_opaque();
     }
 
     // Clouds are a physical layer at Y=72. Draw after opaque (so terrain
@@ -281,13 +327,13 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
         ri -= 1;
-        self.store.chunk(visible[ri]).draw_transparent();
+        self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_transparent();
     }
     if (clip_count > 0) {
         Rendering.gfx.api.set_clip_planes(true);
         while (ri > 0) {
             ri -= 1;
-            self.store.chunk(visible[ri]).draw_transparent();
+            self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_transparent();
         }
         Rendering.gfx.api.set_clip_planes(false);
     }
@@ -320,266 +366,393 @@ pub fn draw_fluid_pass(self: *Self) void {
     Rendering.gfx.api.set_alpha_blend(true);
 
     // Fluid pass (back-to-front): water/lava drawn with depth writes off so
-    // fluid faces never occlude each other across chunk borders.
+    // fluid faces never occlude each other across section borders.
     Rendering.gfx.api.set_depth_write(false);
     var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
         ri -= 1;
-        self.store.chunk(visible[ri]).draw_fluid();
+        self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_fluid();
     }
     if (clip_count > 0) {
         Rendering.gfx.api.set_clip_planes(true);
         while (ri > 0) {
             ri -= 1;
-            self.store.chunk(visible[ri]).draw_fluid();
+            self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_fluid();
         }
         Rendering.gfx.api.set_clip_planes(false);
     }
     Rendering.gfx.api.set_depth_write(true);
 }
 
-// --- Residency ---
-
-/// True when a chunk's XZ center is inside the render-distance circle.
-fn desired(self: *const Self, coord: ChunkCoord, camera: *const Camera, radius_sq: f32) bool {
-    _ = self;
-    const ccx: f32 = @as(f32, @floatFromInt(@as(u32, coord.x) * 16)) + 8.0;
-    const ccz: f32 = @as(f32, @floatFromInt(@as(u32, coord.z) * 16)) + 8.0;
-    const dx = ccx - camera.x;
-    const dz = ccz - camera.z;
-    return dx * dx + dz * dz <= radius_sq;
-}
-
-/// One chunk-residency pass replacing the old column recollect: retire
-/// chunks no longer desired, then give every desired coordinate an
-/// independent slot and an initial job. No column object is created; one
-/// failed Y chunk never rolls back its vertical neighbors.
-fn sync_residency(self: *Self, camera: *const Camera) void {
+fn recollect(self: *Self, camera: *const Camera) void {
     self.cam_cx = camera_chunk(camera.x);
     self.cam_cz = camera_chunk(camera.z);
     self.applied_render_distance = Options.capped_render_distance();
 
+    // Phase 1: compute needed columns
     const rd: u32 = self.applied_render_distance;
     const r: i32 = @intCast(rd);
     const radius_blocks: f32 = @as(f32, @floatFromInt(rd)) * 16.0 + 11.5;
-    const radius_sq = radius_blocks * radius_blocks;
+    const radius_blocks_sq = radius_blocks * radius_blocks;
 
-    // Phase 1: retire active chunks no longer desired.
-    for (self.store.slots, 0..) |*slot, i| {
-        if (!slot.active) continue;
-        if (self.desired(slot.chunk.coord, camera, radius_sq)) continue;
-        self.retire_slot(@intCast(i));
-    }
+    const row_false = [_]bool{false} ** WORLD_CZ;
+    var needed: [WORLD_CX][WORLD_CZ]bool = .{row_false} ** WORLD_CX;
 
-    // Phase 2: ensure every desired coordinate is resident with an initial
-    // job. A full store leaves the coordinate for a later pass; no other
-    // chunk is disturbed.
-    var dx: i32 = -r;
-    while (dx <= r) : (dx += 1) {
-        var dz: i32 = -r;
-        while (dz <= r) : (dz += 1) {
+    var dz: i32 = -r;
+    while (dz <= r) : (dz += 1) {
+        var dx: i32 = -r;
+        while (dx <= r) : (dx += 1) {
             const cx_i = self.cam_cx + dx;
             const cz_i = self.cam_cz + dz;
-            if (cx_i < 0 or cx_i >= @as(i32, @intCast(self.shape.chunks_x)) or
-                cz_i < 0 or cz_i >= @as(i32, @intCast(self.shape.chunks_z))) continue;
-            var y: u32 = 0;
-            while (y < self.shape.chunks_y) : (y += 1) {
-                const coord = ChunkCoord.init(@intCast(cx_i), y, @intCast(cz_i));
-                if (!self.desired(coord, camera, radius_sq)) continue;
-                self.ensure_resident(coord, target_near_lod(coord, camera));
+            if (cx_i < 0 or cx_i > 15 or cz_i < 0 or cz_i > 15) continue;
+            const ccx: f32 = @as(f32, @floatFromInt(cx_i)) * 16.0 + 8.0;
+            const ccz: f32 = @as(f32, @floatFromInt(cz_i)) * 16.0 + 8.0;
+            const dist_sq = (ccx - camera.x) * (ccx - camera.x) +
+                (ccz - camera.z) * (ccz - camera.z);
+            if (dist_sq > radius_blocks_sq) continue;
+            needed[@intCast(cx_i)][@intCast(cz_i)] = true;
+        }
+    }
+
+    // Phase 2: deinit columns leaving radius
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (self.loaded[cx][cz] and !needed[cx][cz]) {
+                self.deinit_column(@intCast(cx), @intCast(cz));
             }
         }
     }
 
-    // Phase 3: resident unbuilt chunks that lost queue membership without
-    // being suppressed or OOM-blocked (e.g. an earlier pass found the store
-    // full) get their initial job now.
-    for (self.store.slots, 0..) |_, i| self.enqueue_unbuilt(@intCast(i));
+    // Phase 3: init columns entering radius
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz] and needed[cx][cz]) {
+                if (self.init_column(@intCast(cx), @intCast(cz), camera)) {
+                    self.loaded[cx][cz] = true;
+                }
+                // If init fails, loaded stays false; will retry next crossing
+            }
+        }
+    }
 
-    // init targets were set up front for the new chunks; sync the check
+    // Phase 4: queue ALL unbuilt sections (not just newly-loaded)
+    self.dirty_buf_len = 0;
+    self.dirty_overflow = false;
+    self.dirty_preserve_order = false;
+    self.queue_unbuilt_sections(camera);
+    // init_column set all LOD states for the new columns; sync the check
     // position so update() does not fire a redundant refresh next frame.
     self.lod_check_x = camera.x;
     self.lod_check_y = camera.y;
     self.lod_check_z = camera.z;
 }
 
-/// Coordinate lookup, slot reuse, initialization, and first enqueue are one
-/// lifecycle transition so a packet invalidator cannot observe a partial
-/// residency or an old generation.
-fn ensure_resident(self: *Self, coord: ChunkCoord, near_lod: bool) void {
-    self.scheduler.lock();
-    defer self.scheduler.unlock();
-    if (self.store.lookup(coord) != null) return;
-    const slot = self.store.ensure(coord) orelse return;
-    const chunk = self.store.chunk(slot);
-    chunk.near_lod = near_lod;
-    chunk.ao_enabled = Options.current.ambient_occlusion;
-    self.scheduler.append_unlocked(&self.store, slot, self.scheduler.classify_snapshot(chunk));
-}
-
-fn enqueue_unbuilt(self: *Self, slot: SlotIndex) void {
-    self.scheduler.lock();
-    defer self.scheduler.unlock();
-    if (!self.store.slots[slot].active) return;
-    const chunk = self.store.chunk(slot);
-    if (chunk.state != .unbuilt) return;
-    if (chunk.queue_index != null or chunk.owner != null) return;
-    if (chunk.blocked_epoch != null) return;
-    if (chunk.suppressed_epoch) |epoch| {
-        // Suppression lasts only while the reclaim epoch that produced it is
-        // current; a later epoch lets the chunk rebuild.
-        if (epoch == self.compiler.reclaim_epoch) return;
-        chunk.suppressed_epoch = null;
+fn init_column(self: *Self, cx: u8, cz: u8, cam: *const Camera) bool {
+    var count: u32 = 0;
+    for (0..SECTIONS_Y) |sy| {
+        self.grid[cx][cz][sy] = ChunkMesh.init(
+            self.allocator,
+            @intCast(cx),
+            @intCast(sy),
+            @intCast(cz),
+        ) catch {
+            // Rollback: deinit already-initialized sections
+            for (0..count) |prev| self.grid[cx][cz][prev].deinit();
+            return false;
+        };
+        // Set the LOD state up front so the first build uses the correct
+        // detail level rather than the default and immediately rebuilding.
+        self.grid[cx][cz][sy].near_lod = target_near_lod(cx, @intCast(sy), cz, cam);
+        self.grid[cx][cz][sy].ao_enabled = Options.current.ambient_occlusion;
+        count += 1;
     }
-    self.scheduler.append_unlocked(&self.store, slot, self.scheduler.classify_snapshot(chunk));
+    return true;
 }
 
-fn retire_slot(self: *Self, slot: SlotIndex) void {
-    // The synchronous one-executor driver never owns a chunk between steps,
-    // so retirement cannot race an in-flight phase.
-    self.scheduler.lock();
-    std.debug.assert(self.store.chunk(slot).owner == null);
-    self.scheduler.cancel_unlocked(&self.store, slot);
-    self.compiler.remove_blocked(&self.store, slot);
-    const had_meshes = self.store.chunk(slot).meshes != null;
-    self.store.retire(slot);
-    self.scheduler.unlock();
-    // A real free: blocked jobs may retry against the new epoch.
-    if (had_meshes) self.compiler.note_external_free(&self.drive());
+fn deinit_column(self: *Self, cx: u8, cz: u8) void {
+    for (0..SECTIONS_Y) |sy| {
+        self.grid[cx][cz][sy].deinit();
+        self.built[cx][cz][sy] = false;
+        self.in_queue[cx][cz][sy] = false;
+    }
+    self.loaded[cx][cz] = false;
 }
 
-// --- Invalidation ---
-
-/// Route one invalidation through the chunk's revision path and perform
-/// the returned queue action. `class` overrides the computed priority
-/// (used for ordered interactive block changes). Caller holds the lifecycle
-/// mutex from lookup through queue mutation.
-fn invalidate_chunk_unlocked(self: *Self, slot: SlotIndex, class: ?PriorityClass) void {
-    const action = self.store.chunk(slot).invalidate();
-    const chunk = self.store.chunk(slot);
-    const priority_class = class orelse self.scheduler.classify_snapshot(chunk);
-    if (action == .unblock_enqueue) self.compiler.remove_blocked(&self.store, slot);
-    // Active owners record a pending replacement priority; queued/resting
-    // chunks are promoted or enqueued immediately.
-    self.scheduler.append_unlocked(&self.store, slot, priority_class);
+fn queue_unbuilt_sections(self: *Self, cam: *const Camera) void {
+    // Reset in-queue tracking before rebuilding the queue from scratch.
+    for (&self.in_queue) |*cx_row| {
+        for (cx_row) |*cz_row| @memset(cz_row, false);
+    }
+    var build_idx: u32 = 0;
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz]) continue;
+            for (0..SECTIONS_Y) |sy| {
+                if (!self.built[cx][cz][sy]) {
+                    std.debug.assert(build_idx < MAX_ACTIVE);
+                    self.build_queue[build_idx] = .{
+                        .cx = @intCast(cx),
+                        .cz = @intCast(cz),
+                        .sy = @intCast(sy),
+                    };
+                    self.in_queue[cx][cz][sy] = true;
+                    build_idx += 1;
+                }
+            }
+        }
+    }
+    if (build_idx > 1) {
+        sort_build_queue(self.build_queue[0..build_idx], cam);
+    }
+    self.build_cursor = 0;
+    self.build_end = build_idx;
 }
 
-fn invalidate_chunk(self: *Self, slot: SlotIndex, class: ?PriorityClass) void {
-    self.scheduler.lock();
-    self.invalidate_chunk_unlocked(slot, class);
-    self.scheduler.unlock();
-    self.rain.mark_dirty();
+/// Insert sections from dirty_buf into the live build queue without a full
+/// rescan. Falls back to queue_unbuilt_sections if the queue would overflow.
+fn flush_dirty_sections(self: *Self, cam: *const Camera) void {
+    if (self.dirty_preserve_order) {
+        self.flush_ordered_dirty_sections(cam);
+        return;
+    }
+
+    var added: u32 = 0;
+    for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
+        if (self.built[ref.cx][ref.cz][ref.sy]) continue; // already rebuilt
+        if (self.in_queue[ref.cx][ref.cz][ref.sy]) continue; // already queued
+        if (self.build_end >= MAX_ACTIVE) {
+            // No room - compact via a full rescan which resets the queue.
+            self.queue_unbuilt_sections(cam);
+            return;
+        }
+        self.build_queue[self.build_end] = ref;
+        self.in_queue[ref.cx][ref.cz][ref.sy] = true;
+        self.build_end += 1;
+        added += 1;
+    }
+    // Re-sort the unprocessed portion so newly-added sections are ordered
+    // closest-first alongside any sections already waiting to be built.
+    if (added > 0 and self.build_end - self.build_cursor > 1) {
+        sort_build_queue(self.build_queue[self.build_cursor..self.build_end], cam);
+    }
 }
 
-/// Mark a chunk for rebuild (e.g. after a lighting change).
+/// Move dirty sections to the front of the unprocessed queue while preserving
+/// dirty_buf order. Sections already queued by background work are removed
+/// from their old position; freshly-dirtied sections are inserted up front.
+fn flush_ordered_dirty_sections(self: *Self, cam: *const Camera) void {
+    var front: [MAX_DIRTY_BUF]GridRef = undefined;
+    var front_len: u32 = 0;
+
+    for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
+        if (self.built[ref.cx][ref.cz][ref.sy]) continue;
+        if (contains_grid_ref(front[0..front_len], ref)) continue;
+        front[front_len] = ref;
+        front_len += 1;
+    }
+    if (front_len == 0) return;
+
+    var reordered: [MAX_ACTIVE]GridRef = undefined;
+    var count: u32 = 0;
+
+    for (front[0..front_len]) |ref| {
+        if (count >= MAX_ACTIVE) {
+            self.queue_unbuilt_sections(cam);
+            return;
+        }
+        reordered[count] = ref;
+        self.in_queue[ref.cx][ref.cz][ref.sy] = true;
+        count += 1;
+    }
+
+    for (self.build_queue[self.build_cursor..self.build_end]) |ref| {
+        if (contains_grid_ref(front[0..front_len], ref)) continue;
+        if (count >= MAX_ACTIVE) {
+            self.queue_unbuilt_sections(cam);
+            return;
+        }
+        reordered[count] = ref;
+        count += 1;
+    }
+
+    for (reordered[0..count], 0..) |ref, i| {
+        self.build_queue[i] = ref;
+    }
+    self.build_cursor = 0;
+    self.build_end = count;
+}
+
+fn try_evict_farthest(self: *Self, cam: *const Camera) bool {
+    var best_dist: f32 = -1.0;
+    var best_cx: u8 = 0;
+    var best_cz: u8 = 0;
+    var best_sy: u8 = 0;
+
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz]) continue;
+            for (0..SECTIONS_Y) |sy| {
+                if (!self.built[cx][cz][sy]) continue;
+                const sec = &self.grid[cx][cz][sy];
+                const d = cam.distance_sq(sec.center_x(), sec.center_y(), sec.center_z());
+                if (d > best_dist) {
+                    best_dist = d;
+                    best_cx = @intCast(cx);
+                    best_cz = @intCast(cz);
+                    best_sy = @intCast(sy);
+                }
+            }
+        }
+    }
+
+    if (best_dist < 0.0) return false;
+
+    self.grid[best_cx][best_cz][best_sy].clear();
+    self.built[best_cx][best_cz][best_sy] = false;
+    return true;
+}
+
+/// Mark a section for rebuild (e.g. after a block change).
 pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
-    self.mark_dirty_impl(cx, sy, cz, null);
+    self.mark_section_dirty_impl(cx, sy, cz, false, false);
 }
 
-fn mark_dirty_impl(self: *Self, cx: u32, sy: u32, cz: u32, class: ?PriorityClass) void {
-    if (cx >= self.shape.chunks_x or sy >= self.shape.chunks_y or cz >= self.shape.chunks_z) return;
-    self.scheduler.lock();
-    const slot = self.store.lookup(ChunkCoord.init(cx, sy, cz));
-    if (slot) |resident| self.invalidate_chunk_unlocked(resident, class);
-    self.scheduler.unlock();
-    if (slot != null) self.rain.mark_dirty();
-}
-
-/// Mark the affected chunks for a single block mutation in an order that
-/// avoids one-frame gaps at chunk edges. Removals rebuild neighbors before
+/// Mark the affected sections for a single block mutation in an order that
+/// avoids one-frame gaps at section edges. Removals rebuild neighbors before
 /// the owner so newly exposed neighbor faces are hidden by the old owner mesh
 /// until the owner rebuild commits. Additions do the inverse.
 pub fn mark_block_change_dirty(self: *Self, cx: u8, sy: u8, cz: u8, lx: u16, ly: u16, lz: u16, removing: bool) void {
-    self.scheduler.lock();
     if (removing) {
-        self.mark_block_neighbor_chunks_dirty_unlocked(cx, sy, cz, lx, ly, lz);
-        self.mark_dirty_unlocked(cx, sy, cz, .interactive);
+        self.mark_block_neighbor_sections_dirty(cx, sy, cz, lx, ly, lz);
+        self.mark_section_dirty_impl(cx, sy, cz, true, true);
     } else {
-        self.mark_dirty_unlocked(cx, sy, cz, .interactive);
-        self.mark_block_neighbor_chunks_dirty_unlocked(cx, sy, cz, lx, ly, lz);
+        self.mark_section_dirty_impl(cx, sy, cz, true, true);
+        self.mark_block_neighbor_sections_dirty(cx, sy, cz, lx, ly, lz);
     }
-    self.scheduler.unlock();
+}
+
+fn mark_block_neighbor_sections_dirty(self: *Self, cx: u8, sy: u8, cz: u8, lx: u16, ly: u16, lz: u16) void {
+    if (lx == 0 and cx > 0) self.mark_section_dirty_impl(cx - 1, sy, cz, true, true);
+    if (lx == 15) self.mark_section_dirty_impl(cx + 1, sy, cz, true, true);
+    if (lz == 0 and cz > 0) self.mark_section_dirty_impl(cx, sy, cz - 1, true, true);
+    if (lz == 15) self.mark_section_dirty_impl(cx, sy, cz + 1, true, true);
+    if (ly == 0 and sy > 0) self.mark_section_dirty_impl(cx, sy - 1, cz, true, true);
+    if (ly == 15) self.mark_section_dirty_impl(cx, sy + 1, cz, true, true);
+}
+
+fn mark_section_dirty_impl(self: *Self, cx: u8, sy: u8, cz: u8, track_queued: bool, preserve_order: bool) void {
+    if (cx >= WORLD_CX or cz >= WORLD_CZ or sy >= SECTIONS_Y) return;
     self.rain.mark_dirty();
+    if (!self.loaded[cx][cz]) return;
+    self.built[cx][cz][sy] = false;
+    // Section already in the build queue; it will be rebuilt when the queue
+    // reaches it - no need to track it again.
+    if (self.in_queue[cx][cz][sy] and !track_queued) return;
+    // Track for incremental insert on the next update(). On overflow, flag a
+    // full rescan so no dirty sections are silently dropped.
+    self.record_dirty_ref(.{ .cx = cx, .cz = cz, .sy = sy }, preserve_order);
 }
 
-fn mark_dirty_unlocked(self: *Self, cx: u32, sy: u32, cz: u32, class: ?PriorityClass) void {
-    if (cx >= self.shape.chunks_x or sy >= self.shape.chunks_y or cz >= self.shape.chunks_z) return;
-    const slot = self.store.lookup(ChunkCoord.init(cx, sy, cz)) orelse return;
-    self.invalidate_chunk_unlocked(slot, class);
+fn record_dirty_ref(self: *Self, ref: GridRef, preserve_order: bool) void {
+    if (!self.dirty_overflow) {
+        if (contains_grid_ref(self.dirty_buf[0..self.dirty_buf_len], ref)) {
+            if (preserve_order) self.dirty_preserve_order = true;
+            return;
+        }
+        if (self.dirty_buf_len < MAX_DIRTY_BUF) {
+            self.dirty_buf[self.dirty_buf_len] = ref;
+            self.dirty_buf_len += 1;
+            if (preserve_order) self.dirty_preserve_order = true;
+        } else {
+            self.dirty_overflow = true;
+            if (preserve_order) self.dirty_preserve_order = true;
+        }
+    }
 }
 
-fn mark_block_neighbor_chunks_dirty_unlocked(self: *Self, cx: u8, sy: u8, cz: u8, lx: u16, ly: u16, lz: u16) void {
-    if (lx == 0 and cx > 0) self.mark_dirty_unlocked(cx - 1, sy, cz, .interactive);
-    if (lx == 15) self.mark_dirty_unlocked(cx + 1, sy, cz, .interactive);
-    if (lz == 0 and cz > 0) self.mark_dirty_unlocked(cx, sy, cz - 1, .interactive);
-    if (lz == 15) self.mark_dirty_unlocked(cx, sy, cz + 1, .interactive);
-    if (ly == 0 and sy > 0) self.mark_dirty_unlocked(cx, sy - 1, cz, .interactive);
-    if (ly == 15) self.mark_dirty_unlocked(cx, sy + 1, cz, .interactive);
+fn contains_grid_ref(haystack: []const GridRef, needle: GridRef) bool {
+    for (haystack) |ref| {
+        if (ref.cx == needle.cx and ref.cz == needle.cz and ref.sy == needle.sy) return true;
+    }
+    return false;
 }
 
-/// Flip the AO target on every resident chunk whose state disagrees with
-/// Options.current.ambient_occlusion, and invalidate through the revision
-/// path so the affected chunks re-mesh with the new AO state. Only called
-/// on the frame the option actually changes.
+/// Flip ao_enabled on every loaded section whose last-built state disagrees
+/// with Options.current.ambient_occlusion, and mark those sections dirty so
+/// they re-mesh with the new AO state. Only called on the frame the option
+/// actually changes.
 fn apply_ao_toggle(self: *Self) void {
     const target = Options.current.ambient_occlusion;
-    for (self.store.slots, 0..) |*slot, i| {
-        if (!slot.active) continue;
-        if (slot.chunk.ao_enabled != target) {
-            slot.chunk.ao_enabled = target;
-            self.invalidate_chunk(@intCast(i), null);
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz]) continue;
+            for (0..SECTIONS_Y) |sy| {
+                const sec = &self.grid[cx][cz][sy];
+                if (sec.ao_enabled != target) {
+                    sec.ao_enabled = target;
+                    self.mark_section_dirty(@intCast(cx), @intCast(sy), @intCast(cz));
+                }
+            }
         }
     }
     self.applied_ao = target;
 }
 
-/// Recompute leaf LOD targets after the Fancy Leaves option changes, and
-/// invalidate only chunks whose effective leaf mesh needs to change.
+/// Recompute leaf LOD state after the Fancy Leaves option changes, and mark
+/// only sections whose effective leaf mesh needs to change.
 fn apply_fancy_leaves_toggle(self: *Self, cam: *const Camera) void {
-    self.refresh_lod_targets(cam);
+    self.refresh_lod_states(cam);
     self.applied_fancy_leaves = Options.current.fancy_leaves;
     self.lod_check_x = cam.x;
     self.lod_check_y = cam.y;
     self.lod_check_z = cam.z;
 }
 
-/// Walk resident chunks and update their LOD targets. Chunks that cross
-/// the configured near-LOD boundary in either direction get invalidated so
-/// they re-mesh with the new detail level.
-fn refresh_lod_targets(self: *Self, cam: *const Camera) void {
-    for (self.store.slots, 0..) |*slot, i| {
-        if (!slot.active) continue;
-        const target = target_near_lod(slot.chunk.coord, cam);
-        if (slot.chunk.near_lod != target) {
-            slot.chunk.near_lod = target;
-            self.invalidate_chunk(@intCast(i), null);
+/// Walk loaded sections and update their LOD state. Sections that cross
+/// the configured near-LOD boundary in either direction get marked
+/// dirty so they re-mesh with the new detail level.
+fn refresh_lod_states(self: *Self, cam: *const Camera) void {
+    for (0..WORLD_CX) |cx| {
+        for (0..WORLD_CZ) |cz| {
+            if (!self.loaded[cx][cz]) continue;
+            for (0..SECTIONS_Y) |sy| {
+                const target = target_near_lod(@intCast(cx), @intCast(sy), @intCast(cz), cam);
+                const sec = &self.grid[cx][cz][sy];
+                if (sec.near_lod != target) {
+                    sec.near_lod = target;
+                    self.mark_section_dirty(@intCast(cx), @intCast(sy), @intCast(cz));
+                }
+            }
         }
     }
 }
 
-const SlotSortCtx = struct {
-    store: *const ChunkStore,
-    cam: *const Camera,
-};
-
-fn slot_less_than(ctx: SlotSortCtx, a: SlotIndex, b: SlotIndex) bool {
-    const ca = &ctx.store.slots[a].chunk;
-    const cb = &ctx.store.slots[b].chunk;
-    return ctx.cam.distance_sq(ca.center_x(), ca.center_y(), ca.center_z()) <
-        ctx.cam.distance_sq(cb.center_x(), cb.center_y(), cb.center_z());
+fn sort_build_queue(queue: []GridRef, cam: *const Camera) void {
+    std.sort.pdq(GridRef, queue, cam, grid_ref_less_than);
 }
 
-/// True when a chunk's center is within the runtime near-LOD radius.
-/// Returns false immediately when fancy leaves are disabled so all chunks
+fn grid_ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
+    const wx: f32 = @as(f32, @floatFromInt(@as(u32, ref.cx) * 16)) + 8.0;
+    const wy: f32 = @as(f32, @floatFromInt(@as(u32, ref.sy) * 16)) + 8.0;
+    const wz: f32 = @as(f32, @floatFromInt(@as(u32, ref.cz) * 16)) + 8.0;
+    return cam.distance_sq(wx, wy, wz);
+}
+
+/// True when a section's center is within the runtime near-LOD radius.
+/// Returns false immediately when fancy leaves are disabled so all sections
 /// get the fast/opaque-leaves mesh regardless of distance.
-fn target_near_lod(coord: ChunkCoord, cam: *const Camera) bool {
+fn target_near_lod(cx: u8, sy: u8, cz: u8, cam: *const Camera) bool {
     if (!Options.current.fancy_leaves) return false;
     const lod_near_radius: f32 = @floatFromInt(config.current().lod_near_radius_blocks);
     const lod_near_radius_sq = lod_near_radius * lod_near_radius;
-    const wx: f32 = @as(f32, @floatFromInt(@as(u32, coord.x) * 16)) + 8.0;
-    const wy: f32 = @as(f32, @floatFromInt(@as(u32, coord.y) * 16)) + 8.0;
-    const wz: f32 = @as(f32, @floatFromInt(@as(u32, coord.z) * 16)) + 8.0;
+    const wx: f32 = @as(f32, @floatFromInt(@as(u32, cx) * 16)) + 8.0;
+    const wy: f32 = @as(f32, @floatFromInt(@as(u32, sy) * 16)) + 8.0;
+    const wz: f32 = @as(f32, @floatFromInt(@as(u32, cz) * 16)) + 8.0;
     return cam.distance_sq(wx, wy, wz) <= lod_near_radius_sq;
+}
+
+fn grid_ref_less_than(cam: *const Camera, a: GridRef, b: GridRef) bool {
+    return grid_ref_dist_sq(a, cam) < grid_ref_dist_sq(b, cam);
 }
 
 fn camera_chunk(pos: f32) i32 {
@@ -589,7 +762,7 @@ fn camera_chunk(pos: f32) i32 {
 }
 
 fn set_terrain_fog(submerged: ?collision.Liquid) void {
-    const col = switch (submerged orelse .water) {
+    const c = switch (submerged orelse .water) {
         .water => if (submerged != null) Colors.game_underwater else Colors.game_daytime,
         .lava => Colors.game_underlava,
     };
@@ -605,25 +778,8 @@ fn set_terrain_fog(submerged: ?collision.Liquid) void {
         Options.current.fog or submerged != null,
         fog_start,
         fog_end,
-        @as(f32, @floatFromInt(col.r)) / 255.0,
-        @as(f32, @floatFromInt(col.g)) / 255.0,
-        @as(f32, @floatFromInt(col.b)) / 255.0,
+        @as(f32, @floatFromInt(c.r)) / 255.0,
+        @as(f32, @floatFromInt(c.g)) / 255.0,
+        @as(f32, @floatFromInt(c.b)) / 255.0,
     );
-}
-
-test "OOM compiler phases consume budget and obey warmup" {
-    var remaining: i64 = 1_000;
-    try std.testing.expect(continue_after_compiler_step(.oom_blocked, false, 400, &remaining));
-    try std.testing.expectEqual(@as(i64, 600), remaining);
-
-    try std.testing.expect(!continue_after_compiler_step(.oom_blocked, true, 200, &remaining));
-    try std.testing.expectEqual(@as(i64, 400), remaining);
-
-    remaining = 300;
-    try std.testing.expect(!continue_after_compiler_step(.oom_blocked, false, 400, &remaining));
-    try std.testing.expectEqual(@as(i64, -100), remaining);
-
-    remaining = 300;
-    try std.testing.expect(!continue_after_compiler_step(.deferred, false, 400, &remaining));
-    try std.testing.expectEqual(@as(i64, 300), remaining);
 }
