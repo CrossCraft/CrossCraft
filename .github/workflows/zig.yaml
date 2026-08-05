@@ -204,6 +204,12 @@ jobs:
           test -d "$bundle" || { echo "missing release bundle $bundle"; exit 1; }
           cp -R saves "$bundle/"
           test -s "$bundle/saves/origins.cw" || { echo "missing bundled saves/origins.cw"; exit 1; }
+          # Aether signs the macOS app during `zig build game`. Adding the
+          # archival save afterwards changes Contents/Resources, so refresh
+          # the outer bundle signature before verification and packaging.
+          if [[ "${{ matrix.kind }}_${{ matrix.name }}" == "game_mac" ]]; then
+            codesign --force --sign - zig-out/bin/CrossCraft-Classic.app
+          fi
 
       # pack.zip size check guards against LFS regressions on every game
       # platform: a pointer stub is ~130 B, a real pack is multi-MB.
