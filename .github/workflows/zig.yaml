@@ -74,6 +74,46 @@ jobs:
           path: zig-out/bin/
           if-no-files-found: error
 
+  # Switch packaging needs devkitA64 and libnx, which the dedicated
+  # devkitPro image provides under /opt/devkitpro. Keep this separate from
+  # the platform matrix: GitHub job containers cannot be used for macOS.
+  switch-dev:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    name: dev game (switch)
+    container:
+      # devkitpro/devkita64:20260219 (linux/amd64), pinned by digest so
+      # toolchain updates are deliberate workflow changes.
+      image: devkitpro/devkita64@sha256:82575ea78651b530b2e232bb3799cfd1fe331514e053d5f724bb4b28191fb79d
+    steps:
+      # Do not fetch LFS: this compile-only check deliberately skips pack.zip.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Build Nintendo Switch game
+        run: zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch -Doptimize=ReleaseSafe -Dskip-pack=true
+
+      - name: Verify Nintendo Switch artifact
+        shell: sh
+        run: |
+          nro="zig-out/bin/CrossCraft-Classic-Switch/CrossCraft-Classic.nro"
+          elf="zig-out/bin/CrossCraft-Classic-Switch/CrossCraft-Classic.elf"
+          test -s "$nro" || { echo "missing or empty $nro"; exit 1; }
+          test -s "$elf" || { echo "missing or empty $elf"; exit 1; }
+          echo "Switch game OK (.nro + .elf)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dev-game_switch
+          path: zig-out/bin/CrossCraft-Classic-Switch/
+          if-no-files-found: error
+
   # Full release-style builds on push to main / v* tags. Pulls LFS for game
   # builds so pack.zip ships with real resources, runs per-platform artifact
   # verification, and uploads each (kind, target) as a separate workflow
@@ -215,6 +255,58 @@ jobs:
         with:
           name: ${{ matrix.kind }}_${{ matrix.name }}
           path: zig-out/bin/
+          if-no-files-found: error
+
+  # Release-style Switch build.  This is separate from rel because devkitA64
+  # and libnx live in the job container rather than on GitHub's runner image.
+  switch-rel:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    name: rel game (switch)
+    container:
+      # devkitpro/devkita64:20260219 (linux/amd64), pinned by digest so
+      # toolchain updates are deliberate workflow changes.
+      image: devkitpro/devkita64@sha256:82575ea78651b530b2e232bb3799cfd1fe331514e053d5f724bb4b28191fb79d
+    steps:
+      # The devkitPro image provides Git but not Git LFS. Install it before
+      # checkout so actions/checkout can hydrate the resource submodule.
+      - name: Install Git LFS
+        run: |
+          apt-get update -qq
+          apt-get install --no-install-recommends -y git-lfs
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+          lfs: true
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Build Nintendo Switch game
+        run: zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch -Doptimize=ReleaseSafe
+
+      # Guard against an LFS pointer being packaged instead of the resource
+      # pack, just as the other console release jobs do.
+      - name: Verify Nintendo Switch artifact
+        shell: sh
+        run: |
+          nro="zig-out/bin/CrossCraft-Classic-Switch/CrossCraft-Classic.nro"
+          elf="zig-out/bin/CrossCraft-Classic-Switch/CrossCraft-Classic.elf"
+          pack="zig-out/bin/CrossCraft-Classic-Switch/pack.zip"
+          test -s "$nro" || { echo "missing or empty $nro"; exit 1; }
+          test -s "$elf" || { echo "missing or empty $elf"; exit 1; }
+          test -f "$pack" || { echo "missing $pack"; exit 1; }
+          size=$(wc -c <"$pack")
+          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
+          echo "Switch game OK (.nro + .elf + pack.zip $size bytes)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: game_switch
+          path: zig-out/bin/CrossCraft-Classic-Switch/
           if-no-files-found: error
 
   # Build the pack_zip host tool for distribution. This is the canonical
