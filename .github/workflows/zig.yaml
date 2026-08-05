@@ -189,6 +189,22 @@ jobs:
         if: matrix.kind == 'game' && matrix.name == '3ds'
         run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
 
+      # Ship the archival world with every release artifact. Console builds
+      # keep their files in platform-specific bundle directories, while
+      # desktop/server artifacts are rooted directly in zig-out/bin/.
+      - name: Bundle archival saves
+        shell: bash
+        run: |
+          case "${{ matrix.kind }}_${{ matrix.name }}" in
+            game_psp) bundle="zig-out/bin/CrossCraft-Classic-PSP" ;;
+            game_3ds) bundle="zig-out/bin/CrossCraft-Classic-3DS" ;;
+            game_mac) bundle="zig-out/bin/CrossCraft-Classic.app/Contents/Resources" ;;
+            *) bundle="zig-out/bin" ;;
+          esac
+          test -d "$bundle" || { echo "missing release bundle $bundle"; exit 1; }
+          cp -R saves "$bundle/"
+          test -s "$bundle/saves/origins.cw" || { echo "missing bundled saves/origins.cw"; exit 1; }
+
       # pack.zip size check guards against LFS regressions on every game
       # platform: a pointer stub is ~130 B, a real pack is multi-MB.
       - name: Verify desktop game artifact
@@ -286,6 +302,14 @@ jobs:
 
       - name: Build Nintendo Switch game
         run: zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch -Doptimize=ReleaseSafe
+
+      - name: Bundle archival saves
+        shell: sh
+        run: |
+          bundle="zig-out/bin/CrossCraft-Classic-Switch"
+          test -d "$bundle" || { echo "missing release bundle $bundle"; exit 1; }
+          cp -R saves "$bundle/"
+          test -s "$bundle/saves/origins.cw" || { echo "missing bundled saves/origins.cw"; exit 1; }
 
       # Guard against an LFS pointer being packaged instead of the resource
       # pack, just as the other console release jobs do.
