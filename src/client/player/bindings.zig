@@ -204,10 +204,55 @@ pub fn refresh_active_context(sys: *input.InputSystem) !void {
     const set = gameplay_set orelse return;
     const top = sys.stack_top() orelse return;
     if (!std.mem.eql(u8, top.name, "gameplay")) return;
-    if (top.actions == set) return;
+    // Replacing even an unchanged context synchronizes its actions with the
+    // currently held physical inputs.  An overlay can be closed by Escape
+    // while that key is still held; without this sync, gameplay would see it
+    // as a fresh ui_pause edge on the following frame.
     var ctx = top.*;
     ctx.actions = set;
     _ = try sys.replace_top(&ctx);
+}
+
+test "refreshing gameplay after an overlay consumes held Escape" {
+    var sys = input.InputSystem{};
+    try sys.init(std.testing.allocator);
+    defer sys.deinit();
+    defer {
+        gameplay_set = null;
+        gameplay_actions = null;
+    }
+
+    const gameplay = try init(&sys);
+    try sys.push_context(&.{
+        .name = "gameplay",
+        .cursor_mode = .captured,
+        .actions = gameplay,
+    });
+
+    const overlay = try sys.register_action_set("test_overlay");
+    try sys.install_action_set(overlay);
+    try sys.push_context(&.{
+        .name = "test_overlay",
+        .cursor_mode = .visible,
+        .actions = overlay,
+    });
+
+    sys.deliver_key_down(.Escape, .{}, false);
+    sys.update();
+    _ = try sys.pop_context();
+    try refresh_active_context(&sys);
+
+    try std.testing.expect(sys.button(actions().ui_pause).down());
+    try std.testing.expect(!sys.button(actions().ui_pause).pressed());
+
+    sys.update();
+    try std.testing.expect(!sys.button(actions().ui_pause).pressed());
+
+    sys.deliver_key_up(.Escape, .{});
+    sys.update();
+    sys.deliver_key_down(.Escape, .{}, false);
+    sys.update();
+    try std.testing.expect(sys.button(actions().ui_pause).pressed());
 }
 
 fn bind_move(sys: *input.InputSystem, action: input.ActionHandle) !void {
