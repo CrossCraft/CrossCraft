@@ -60,16 +60,16 @@ pub fn uniform_colors(c: u32) [4]u32 {
 fn make_quad(face: Face, px: i16, px1: i16, py: i16, py1: i16, pz: i16, pz1: i16, tu0: i16, tv0: i16, tu1: i16, tv1: i16, colors: [4]u32) [4]Vertex {
     return switch (face) {
         .x_pos => .{
-            .{ .pos = .{ px1, py, pz }, .uv = .{ tu1, tv1 }, .color = colors[0] },
-            .{ .pos = .{ px1, py, pz1 }, .uv = .{ tu0, tv1 }, .color = colors[1] },
-            .{ .pos = .{ px1, py1, pz1 }, .uv = .{ tu0, tv0 }, .color = colors[2] },
-            .{ .pos = .{ px1, py1, pz }, .uv = .{ tu1, tv0 }, .color = colors[3] },
+            .{ .pos = .{ px1, py, pz }, .uv = .{ tu0, tv1 }, .color = colors[0] },
+            .{ .pos = .{ px1, py, pz1 }, .uv = .{ tu1, tv1 }, .color = colors[1] },
+            .{ .pos = .{ px1, py1, pz1 }, .uv = .{ tu1, tv0 }, .color = colors[2] },
+            .{ .pos = .{ px1, py1, pz }, .uv = .{ tu0, tv0 }, .color = colors[3] },
         },
         .x_neg => .{
-            .{ .pos = .{ px, py, pz1 }, .uv = .{ tu1, tv1 }, .color = colors[0] },
-            .{ .pos = .{ px, py, pz }, .uv = .{ tu0, tv1 }, .color = colors[1] },
-            .{ .pos = .{ px, py1, pz }, .uv = .{ tu0, tv0 }, .color = colors[2] },
-            .{ .pos = .{ px, py1, pz1 }, .uv = .{ tu1, tv0 }, .color = colors[3] },
+            .{ .pos = .{ px, py, pz1 }, .uv = .{ tu0, tv1 }, .color = colors[0] },
+            .{ .pos = .{ px, py, pz }, .uv = .{ tu1, tv1 }, .color = colors[1] },
+            .{ .pos = .{ px, py1, pz }, .uv = .{ tu1, tv0 }, .color = colors[2] },
+            .{ .pos = .{ px, py1, pz1 }, .uv = .{ tu0, tv0 }, .color = colors[3] },
         },
         .y_pos => .{
             .{ .pos = .{ px, py1, pz }, .uv = .{ tu1, tv0 }, .color = colors[0] },
@@ -84,16 +84,16 @@ fn make_quad(face: Face, px: i16, px1: i16, py: i16, py1: i16, pz: i16, pz1: i16
             .{ .pos = .{ px, py, pz }, .uv = .{ tu1, tv1 }, .color = colors[3] },
         },
         .z_pos => .{
-            .{ .pos = .{ px1, py, pz1 }, .uv = .{ tu1, tv1 }, .color = colors[0] },
-            .{ .pos = .{ px, py, pz1 }, .uv = .{ tu0, tv1 }, .color = colors[1] },
-            .{ .pos = .{ px, py1, pz1 }, .uv = .{ tu0, tv0 }, .color = colors[2] },
-            .{ .pos = .{ px1, py1, pz1 }, .uv = .{ tu1, tv0 }, .color = colors[3] },
+            .{ .pos = .{ px1, py, pz1 }, .uv = .{ tu0, tv1 }, .color = colors[0] },
+            .{ .pos = .{ px, py, pz1 }, .uv = .{ tu1, tv1 }, .color = colors[1] },
+            .{ .pos = .{ px, py1, pz1 }, .uv = .{ tu1, tv0 }, .color = colors[2] },
+            .{ .pos = .{ px1, py1, pz1 }, .uv = .{ tu0, tv0 }, .color = colors[3] },
         },
         .z_neg => .{
-            .{ .pos = .{ px, py, pz }, .uv = .{ tu1, tv1 }, .color = colors[0] },
-            .{ .pos = .{ px1, py, pz }, .uv = .{ tu0, tv1 }, .color = colors[1] },
-            .{ .pos = .{ px1, py1, pz }, .uv = .{ tu0, tv0 }, .color = colors[2] },
-            .{ .pos = .{ px, py1, pz }, .uv = .{ tu1, tv0 }, .color = colors[3] },
+            .{ .pos = .{ px, py, pz }, .uv = .{ tu0, tv1 }, .color = colors[0] },
+            .{ .pos = .{ px1, py, pz }, .uv = .{ tu1, tv1 }, .color = colors[1] },
+            .{ .pos = .{ px1, py1, pz }, .uv = .{ tu1, tv0 }, .color = colors[2] },
+            .{ .pos = .{ px, py1, pz }, .uv = .{ tu0, tv0 }, .color = colors[3] },
         },
     };
 }
@@ -431,4 +431,16 @@ pub fn emit_cross(
         .{ .pos = .{ px, py1, pz1 }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
         .{ .pos = .{ px1, py1, pz }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
     });
+}
+
+test "vertical faces preserve their U orientation" {
+    const faces = [_]Face{ .x_neg, .x_pos, .z_neg, .z_pos };
+    const expected_u = [_]i16{ 20, 10, 10, 20 };
+
+    for (faces) |face| {
+        const verts = make_quad(face, 0, 1, 2, 3, 4, 5, 20, 30, 10, 40, uniform_colors(0));
+        for (expected_u, 0..) |u, i| {
+            try std.testing.expectEqual(u, verts[i].uv[0]);
+        }
+    }
 }
