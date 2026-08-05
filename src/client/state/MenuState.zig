@@ -859,7 +859,7 @@ fn empty_input() ui_input.UiInput {
 
 fn draw_corner_labels(self: *@This()) void {
     self.font_batcher.add_text(&.{
-        .str = "CrossCraft Classic v1.1-RC2",
+        .str = "CrossCraft Classic v1.1",
         .pos_x = 2,
         .pos_y = 2,
         .color = Colors.gray_fg,
