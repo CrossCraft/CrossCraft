@@ -12,11 +12,12 @@
             .path = "resources",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#9678f2a3131b26e40170ca1f74aeda864b755805",
-            .hash = "Aether-0.0.0-cjG28m0MGACV7KlrDvXDj2kkBs4n35L0HmYwicCKCq3z",
+            .url = "git+https://github.com/AetherEngine/Aether#105f6c332131c6d8efbe2fad629a831996ee2ed4",
+            .hash = "Aether-0.0.0-cjG28m0SGABJfdFa1O78btcyC2jbVU7u6T4e8mlVdpgK",
         },
     },
     .paths = .{
+        "assets",
         "build.zig",
         "build.zig.zon",
         "src",

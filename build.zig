@@ -57,6 +57,7 @@ pub fn build(b: *std.Build) void {
     const is_macos = config.platform == .macos;
     const is_3ds = config.platform == .nintendo_3ds;
     const is_switch = config.platform == .nintendo_switch;
+    const is_windows = config.platform == .windows;
     const is_desktop = switch (config.platform) {
         .windows, .linux => true,
         else => false,
@@ -188,12 +189,15 @@ pub fn build(b: *std.Build) void {
         .nintendo_3ds_publisher = if (is_3ds) "CrossCraft" else "",
         .switch_author = if (is_switch) "CrossCraft" else "",
         .switch_version = if (is_switch) "0.0.0" else "",
-        // Reusing the Vita icon as a placeholder. 128×128 upscales for
-        // the larger .icns slots but it's serviceable. Swap in a 1024×1024
-        // PNG later if you want sharper Dock/Finder rendering.
-        .icon_png = if (is_macos) b.path("assets/vita/icon0.png") else null,
-        .icon0 = if (is_psp) b.path("assets/psp/ICON0.png") else null,
-        .pic1 = if (is_psp) b.path("assets/psp/PIC1.png") else null,
+        // Each platform consumes its native icon format: Aether turns the
+        // macOS PNG into an .icns, embeds the Windows .ico in the PE resource
+        // table, and feeds the console artwork to their package builders.
+        .icon_png = if (is_macos) b.path("assets/icon-osx.png") else null,
+        .windows_icon = if (is_windows) b.path("assets/icon-win32.ico") else null,
+        .icon0 = if (is_psp) b.path("assets/icon-psp.png") else null,
+        .pic1 = if (is_psp) b.path("assets/banner-psp-pic1.png") else null,
+        .nintendo_3ds_icon = if (is_3ds) b.path("assets/icon-3ds.png") else null,
+        .switch_icon = if (is_switch) b.path("assets/icon-switch.jpg") else null,
     });
 
     if (is_pc_server) {
