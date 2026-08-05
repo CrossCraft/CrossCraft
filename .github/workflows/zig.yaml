@@ -35,6 +35,7 @@ jobs:
           - { os: windows-latest, target: x86_64-windows-msvc, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
           - { os: windows-latest, target: x86_64-windows-msvc, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
+          - { os: ubuntu-latest,  target: arm-3ds,            name: 3ds,        kind: game,   extra: "" }
     runs-on: ${{ matrix.os }}
     name: dev ${{ matrix.kind }} (${{ matrix.name }})
     steps:
@@ -92,6 +93,7 @@ jobs:
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
           - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
+          - { os: ubuntu-latest,  target: arm-3ds,            name: 3ds,        kind: game,   extra: "" }
     runs-on: ${{ matrix.os }}
     name: rel ${{ matrix.kind }} (${{ matrix.name }})
     steps:
@@ -142,6 +144,11 @@ jobs:
         if: matrix.kind == 'game' && matrix.name == 'psp'
         run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
 
+      # 3DS game: build.zig installs pack.zip beside the .3dsx artifact.
+      - name: Build game (3DS)
+        if: matrix.kind == 'game' && matrix.name == '3ds'
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
+
       # pack.zip size check guards against LFS regressions on every game
       # platform: a pointer stub is ~130 B, a real pack is multi-MB.
       - name: Verify desktop game artifact
@@ -182,6 +189,17 @@ jobs:
           size=$(wc -c <"$pack")
           test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
           echo "PSP game OK (EBOOT.PBP + pack.zip $size bytes)"
+
+      - name: Verify 3DS game artifact
+        if: matrix.kind == 'game' && matrix.name == '3ds'
+        run: |
+          threedsx="zig-out/bin/CrossCraft-Classic-3DS/CrossCraft-Classic.3dsx"
+          pack="zig-out/bin/CrossCraft-Classic-3DS/pack.zip"
+          test -s "$threedsx" || { echo "missing or empty $threedsx"; exit 1; }
+          test -f "$pack" || { echo "missing $pack"; exit 1; }
+          size=$(wc -c <"$pack")
+          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
+          echo "3DS game OK (.3dsx + pack.zip $size bytes)"
 
       - name: Upload macOS .app
         if: matrix.kind == 'game' && matrix.name == 'mac'
