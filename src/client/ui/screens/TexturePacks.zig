@@ -84,9 +84,9 @@ pub fn run(ui: *Ui, entries: []const Entry, selected_index: ?u8) Result {
     return result;
 }
 
-pub fn scan(io: std.Io, resources_dir: std.Io.Dir, data_dir: std.Io.Dir, out: *[max_packs + 1]Entry) u8 {
+pub fn scan(io: std.Io, default_pack_dir: std.Io.Dir, data_dir: std.Io.Dir, out: *[max_packs + 1]Entry) u8 {
     var count: u8 = 0;
-    add_entry(out, &count, "Default", default_path, resources_dir);
+    add_entry(out, &count, "Default", default_path, default_pack_dir);
 
     var dir = data_dir.openDir(io, "texturepacks", .{ .iterate = true }) catch |err| {
         log.warn("texturepacks/ not iterable: {}", .{err});

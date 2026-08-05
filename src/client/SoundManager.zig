@@ -74,6 +74,7 @@ const Voice = struct {
     file_reader: File.Reader,
     limited: Io.Reader.Limited,
     handle: Audio.SoundHandle,
+    stream: Audio.StreamingSoundHandle,
     active: bool,
     deflate: ?*DeflateSlot,
 };
@@ -82,7 +83,8 @@ fn init_voices() [max_voices]Voice {
     var v: [max_voices]Voice = undefined;
     for (&v) |*slot| {
         slot.active = false;
-        slot.handle = 0;
+        slot.handle = .none;
+        slot.stream = .none;
         slot.deflate = null;
     }
     return v;
@@ -189,7 +191,8 @@ pub fn init() void {
 
     for (&voices) |*v| {
         v.active = false;
-        v.handle = 0;
+        v.handle = .none;
+        v.stream = .none;
         v.deflate = null;
     }
     for (&deflate_slots) |*s| s.in_use = false;
@@ -266,20 +269,76 @@ fn scan_music(pack: *Zip) void {
 /// the WAV header parse works regardless of compression method.
 fn resolve_wav(pack: *Zip, path: []const u8) !SoundEntry {
     var stream = try pack.open(path);
-    defer pack.closeStream(&stream);
+    defer pack.close_stream(&stream);
 
-    const wav = try Audio.wav.open(stream.reader);
-    const pcm_size = wav.byte_length orelse return error.UnknownLength;
-    const header_skip = stream.uncompressed_size - pcm_size;
+    const wav = try parse_wav_stream(stream.reader);
 
     return .{
         .data_offset = stream.data_offset,
-        .header_skip = header_skip,
-        .pcm_size = pcm_size,
+        .header_skip = wav.header_skip,
+        .pcm_size = wav.pcm_size,
         .format = wav.format,
         .deflated = stream.compression_method == .deflate,
         .valid = true,
     };
+}
+
+const WavInfo = struct {
+    header_skip: u64,
+    pcm_size: u64,
+    format: Audio.PcmFormat,
+};
+
+fn parse_wav_stream(reader: *Io.Reader) !WavInfo {
+    var header: [12]u8 = undefined;
+    try reader.readSliceAll(&header);
+    if (!std.mem.eql(u8, header[0..4], "RIFF")) return error.InvalidWav;
+    if (!std.mem.eql(u8, header[8..12], "WAVE")) return error.InvalidWav;
+
+    var consumed: u64 = header.len;
+    var format: ?Audio.PcmFormat = null;
+
+    while (true) {
+        var chunk_header: [8]u8 = undefined;
+        try reader.readSliceAll(&chunk_header);
+        consumed += chunk_header.len;
+        const chunk_id = chunk_header[0..4];
+        const chunk_size = std.mem.readInt(u32, chunk_header[4..8], .little);
+
+        if (std.mem.eql(u8, chunk_id, "fmt ")) {
+            if (chunk_size < 16) return error.InvalidWav;
+            var fmt: [16]u8 = undefined;
+            try reader.readSliceAll(&fmt);
+            if (std.mem.readInt(u16, fmt[0..2], .little) != 1) return error.UnsupportedFormat;
+            format = .{
+                .sample_rate = std.mem.readInt(u32, fmt[4..8], .little),
+                .channels = std.mem.readInt(u16, fmt[2..4], .little),
+                .bit_depth = std.mem.readInt(u16, fmt[14..16], .little),
+            };
+            consumed += fmt.len;
+            const rest = chunk_size - fmt.len;
+            if (rest > 0) {
+                try reader.discardAll64(rest);
+                consumed += rest;
+            }
+        } else if (std.mem.eql(u8, chunk_id, "data")) {
+            const fmt = format orelse return error.InvalidWav;
+            if (chunk_size % fmt.frame_size() != 0) return error.InvalidWav;
+            return .{
+                .header_skip = consumed,
+                .pcm_size = chunk_size,
+                .format = fmt,
+            };
+        } else {
+            try reader.discardAll64(chunk_size);
+            consumed += chunk_size;
+        }
+
+        if (chunk_size & 1 != 0) {
+            try reader.discardAll64(1);
+            consumed += 1;
+        }
+    }
 }
 
 // --- per-frame update ---
@@ -305,6 +364,9 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
         if (Options.current.sound_volume == 0.0) {
             release_voice(v);
         } else if (!Audio.is_playing(v.handle)) {
+            Audio.destroy_stream(v.stream);
+            v.handle = .none;
+            v.stream = .none;
             release_deflate(v);
             v.active = false;
         }
@@ -320,6 +382,9 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
                 music_state = .delay;
                 music_delay_timer = 1.0;
             } else if (!Audio.is_playing(voices[music_slot].handle)) {
+                Audio.destroy_stream(voices[music_slot].stream);
+                voices[music_slot].handle = .none;
+                voices[music_slot].stream = .none;
                 release_deflate(&voices[music_slot]);
                 voices[music_slot].active = false;
                 music_state = .delay;
@@ -438,6 +503,9 @@ fn find_free_sfx() ?*Voice {
 
 fn release_voice(v: *Voice) void {
     Audio.stop(v.handle);
+    Audio.destroy_stream(v.stream);
+    v.handle = .none;
+    v.stream = .none;
     release_deflate(v);
     v.active = false;
 }
@@ -483,16 +551,17 @@ fn start_voice(
         );
     }
 
-    const stream: Audio.Stream = .{
+    v.stream = try Audio.create_stream(&.{
         .reader = &v.limited.interface,
         .format = entry.format,
         .byte_length = entry.pcm_size,
-    };
-
-    if (pos) |p| {
-        v.handle = try Audio.play_at(stream, p, opts);
-    } else {
-        v.handle = try Audio.play(stream, opts);
+    });
+    errdefer {
+        Audio.destroy_stream(v.stream);
+        v.stream = .none;
     }
+
+    v.handle = try Audio.play_stream(v.stream, &opts);
+    if (pos) |p| Audio.set_position(v.handle, p);
     v.active = true;
 }

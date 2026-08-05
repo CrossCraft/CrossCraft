@@ -6,26 +6,25 @@ const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
-const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
-const FontBatcher = @import("../ui/FontBatcher.zig");
+const SpriteBatcher = ae.UI.SpriteBatcher;
+const FontBatcher = ae.UI.FontBatcher;
 const UiDrawList = @import("../ui/UiDrawList.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
-const Scaling = @import("../ui/Scaling.zig");
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const Scaling = ae.UI.Scaling;
+const Colors = @import("../graphics/Color.zig");
 const ResourcePack = @import("../ResourcePack.zig");
 const ui_input = @import("../ui/input.zig");
 const DisconnectScreen = @import("../ui/screens/Disconnect.zig");
 const Session = @import("Session.zig");
 const MenuState = @import("MenuState.zig");
 
-var pipeline: Rendering.Pipeline.Handle = undefined;
 var disconnect_state: @This() = undefined;
 var disconnect_state_inst: State = undefined;
 
-pub fn transition_here(engine: *Engine) !void {
+pub fn transition_here(engine: *Engine) void {
     disconnect_state_inst = disconnect_state.state();
-    try ae.Core.state_machine.transition(engine, &disconnect_state_inst);
+    engine.transition(&disconnect_state_inst);
 }
 
 batcher: SpriteBatcher,
@@ -39,21 +38,18 @@ inited: bool,
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
-    const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
-    const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
-    pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
 
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
     try ResourcePack.apply_tex_set(&.{ .dirt, .font, .gui, .glyphs });
 
-    self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
-    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
+    self.batcher = try SpriteBatcher.init(render_alloc);
+    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
     self.ui_repeat = .{};
     self.ui_state = .{};
 
-    try ui_input.ensure_registered();
-    try ae.Core.input.push_context(.{
+    try ui_input.ensure_registered(&engine.input);
+    try engine.input.push_context(&.{
         .name = "disconnect",
         .cursor_mode = .visible,
         .actions = ui_input.menu_set(),
@@ -61,18 +57,17 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     });
 
     self.dirt = ResourcePack.get_tex(.dirt);
-    self.ui_state.open(!ui_input.profile_uses_pointer());
+    self.ui_state.open(ui_input.seed_focus_on_open());
     self.inited = true;
     engine.report();
 }
 
-fn deinit(ctx: *anyopaque, _: *Engine) void {
+fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
-    _ = ae.Core.input.pop_context() catch {};
+    _ = engine.input.pop_context() catch {};
     self.font_batcher.deinit();
     self.batcher.deinit();
-    Rendering.Pipeline.deinit(pipeline);
     self.inited = false;
 }
 
@@ -80,19 +75,20 @@ fn tick(_: *anyopaque, _: *Engine) anyerror!void {}
 
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    const in = ui_input.build_frame(dt, &self.ui_repeat);
+    const in = ui_input.build_frame(&engine.input, dt, &self.ui_repeat);
     var list: UiDrawList = .{};
     var ui = self.begin_ui(&list, &in);
     const go_back = DisconnectScreen.run(&ui, Session.disconnect_reason());
     ui.end();
     if (go_back) {
         Session.clear_disconnect_reason();
-        try MenuState.transition_here(engine);
+        MenuState.transition_here(engine);
+        return;
     }
+    try prepare_batches(self);
 }
 
-fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
-    var self = Util.ctx_to_self(@This(), ctx);
+fn prepare_batches(self: *@This()) !void {
     self.batcher.clear();
     self.font_batcher.clear();
     draw_dirt_tiles(self);
@@ -104,8 +100,14 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
     ui.end();
     list.flush_into(&self.batcher, &self.font_batcher, null);
 
-    try self.batcher.flush();
-    try self.font_batcher.flush();
+    try self.batcher.update();
+    try self.font_batcher.update();
+}
+
+fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
+    var self = Util.ctx_to_self(@This(), ctx);
+    self.batcher.draw();
+    self.font_batcher.draw();
 }
 
 fn begin_ui(self: *@This(), list: *UiDrawList, in: *const ui_input.UiInput) Ui {
@@ -134,6 +136,7 @@ fn current_screen_rect() Ui.LogicalRect {
 
 fn empty_input() ui_input.UiInput {
     return .{
+        .input_system = null,
         .cursor_x = 0,
         .cursor_y = 0,
         .cursor_available = false,
@@ -157,17 +160,21 @@ fn draw_dirt_tiles(self: *@This()) void {
     while (y < rect.y1) : (y += tile_size) {
         var x: i16 = 0;
         while (x < rect.x1) : (x += tile_size) {
-            self.batcher.add_sprite(&.{
-                .texture = self.dirt,
-                .pos_offset = .{ .x = x, .y = y },
-                .pos_extent = .{ .x = tile_size, .y = tile_size },
-                .tex_offset = .{ .x = 0, .y = 0 },
-                .tex_extent = .{ .x = @intCast(self.dirt.width), .y = @intCast(self.dirt.height) },
-                .color = .menu_tiles,
-                .layer = 0,
-            });
+            add_dirt_tile(self, x, y, tile_size);
         }
     }
+}
+
+fn add_dirt_tile(self: *@This(), x: i16, y: i16, tile_size: i16) void {
+    self.batcher.add_sprite(&.{
+        .texture = self.dirt,
+        .pos_offset = .{ .x = x, .y = y },
+        .pos_extent = .{ .x = tile_size, .y = tile_size },
+        .tex_offset = .{ .x = 0, .y = 0 },
+        .tex_extent = .{ .x = @intCast(self.dirt.width), .y = @intCast(self.dirt.height) },
+        .color = Colors.menu_tiles,
+        .layer = 0,
+    });
 }
 
 pub fn state(self: *@This()) State {

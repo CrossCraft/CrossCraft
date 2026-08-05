@@ -2,10 +2,11 @@ const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 const input_api = ae.Core.input;
+const log = std.log.scoped(.ui);
 
 const common = @import("common");
-const layout_mod = @import("layout.zig");
-const texture_region = @import("texture_region.zig");
+const layout_mod = ae.UI.layout;
+const texture_region = ae.UI.texture_region;
 const button_style_mod = @import("ButtonStyle.zig");
 const slider_style_mod = @import("SliderStyle.zig");
 const text_field_style_mod = @import("TextFieldStyle.zig");
@@ -13,15 +14,16 @@ const prompt_strip = @import("PromptStrip.zig");
 const prompts_mod = @import("Prompts.zig");
 const ui_input = @import("input.zig");
 const widget_id = @import("widget_id.zig");
-const FontBatcher = @import("FontBatcher.zig");
+const FontBatcher = ae.UI.FontBatcher;
 const UiDrawList = @import("UiDrawList.zig");
 const UiState = @import("UiState.zig");
+const Colors = @import("../graphics/Color.zig");
 
 pub const LogicalRect = layout_mod.LogicalRect;
 pub const Point = layout_mod.Point;
 pub const Anchor = layout_mod.Anchor;
 pub const TextureRegion = texture_region.TextureRegion;
-pub const Color = @import("../graphics/Color.zig").Color;
+pub const Color = Colors.Color;
 pub const WidgetId = widget_id.WidgetId;
 pub const ButtonStyle = button_style_mod.ButtonStyle;
 pub const SliderStyle = slider_style_mod.SliderStyle;
@@ -202,6 +204,10 @@ pub fn begin(args: InitArgs) Self {
     return self;
 }
 
+fn input_system(self: *const Self) ?*input_api.InputSystem {
+    return self.input.input_system;
+}
+
 pub fn end(self: *Self) void {
     std.debug.assert(self.depth == 1);
 
@@ -214,22 +220,24 @@ pub fn end(self: *Self) void {
     while (i < self.scroll_view_count) : (i += 1) self.state.scroll_views[i] = self.scroll_views[i];
 
     if (self.state.focused) |id| {
-        if (self.find_current_id(id) == null) self.state.focused = null;
+        if (self.find_current_visible_id(id) == null) self.state.focused = null;
     }
     if (self.state.hovered) |id| {
-        if (self.find_current_id(id) == null) self.state.hovered = null;
+        if (self.find_current_visible_id(id) == null) self.state.hovered = null;
     }
     if (self.state.active_text) |id| {
-        if (self.find_current_id(id) == null) self.state.cancel_active_text();
+        if (self.find_current_visible_id(id) == null) self.state.cancel_active_text();
     }
     if (self.state.captured) |id| {
-        if (self.find_current_id(id) == null) {
+        if (self.find_current_visible_id(id) == null) {
             self.state.captured = null;
             self.state.captured_via_click = false;
         }
     }
-    if (self.state.focus_source == .pad and self.state.focused == null and self.focus_count > 0) {
-        self.state.focused = self.focusables[0].id;
+    if (self.state.focus_source == .pad and self.state.focused == null) {
+        if (first_visible_focusable_idx(self.focusables[0..self.focus_count])) |idx| {
+            self.state.focused = self.focusables[idx].id;
+        }
     }
     self.depth = 0;
 }
@@ -282,8 +290,8 @@ pub fn label(self: *Self, text: []const u8) void {
             .str = self.persist(text),
             .pos_x = rect.x0,
             .pos_y = rect.y0,
-            .color = .white_fg,
-            .shadow_color = .menu_gray,
+            .color = Colors.white_fg,
+            .shadow_color = Colors.menu_gray,
             .spacing = 0,
             .layer = self.layer_base + 3,
             .reference = .top_left,
@@ -305,7 +313,7 @@ pub const ImageOpts = struct {
     texture: *const Rendering.Texture,
     width: i16,
     height: i16,
-    color: Color = .white_fg,
+    color: Color = Colors.white_fg,
 };
 
 pub fn image(self: *Self, region: TextureRegion, opts: ImageOpts) void {
@@ -443,16 +451,20 @@ pub fn text_field(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) Text
         self.state.focus_source = .mouse;
         self.state.captured = null;
         self.state.captured_via_click = false;
-        self.set_active_text(id, buf, opts);
+        if (uses_modal_text_input()) {
+            if (self.fire_modal_text_input(id, buf, opts)) event = .changed;
+        } else {
+            self.set_active_text(id, buf, opts);
+        }
     }
     if (self.state_active_text_eq(id) and self.state.text_session_started and self.text_submit_edge() and !self.claimed_confirm) {
         self.claimed_confirm = true;
-        input_api.submit_text() catch {};
+        if (self.input_system()) |sys| sys.submit_text() catch {};
     } else if (self.input.confirm_edge and self.state_focused_eq(id) and !self.claimed_confirm and !self.state_active_text_eq(id)) {
         self.claimed_confirm = true;
         self.state.focus_source = .pad;
-        if (ae.platform == .psp) {
-            if (self.fire_psp_osk(id, buf, opts)) event = .changed;
+        if (uses_modal_text_input()) {
+            if (self.fire_modal_text_input(id, buf, opts)) event = .changed;
         } else {
             self.set_active_text(id, buf, opts);
         }
@@ -820,7 +832,6 @@ fn push_focusable(self: *Self, f_in: UiState.Focusable) void {
     std.debug.assert(self.focus_count < MAX_FOCUSABLES);
     var f = f_in;
     if (f.scroll_clip == null) f.scroll_clip = self.current_scroll_clip();
-    if (!focusable_in_clip(f.rect, f.scroll_clip)) return;
     self.focusables[self.focus_count] = f;
     self.focus_count += 1;
 }
@@ -840,6 +851,15 @@ fn focusable_in_clip(rect: LogicalRect, clip: ?UiState.ScrollClip) bool {
     const c = clip orelse return true;
     const v = c.viewport;
     return !(rect.x1 <= v.x0 or rect.x0 >= v.x1 or rect.y1 <= v.y0 or rect.y0 >= v.y1);
+}
+
+fn first_visible_focusable_idx(focusables: []const UiState.Focusable) ?u8 {
+    var fallback: ?u8 = null;
+    for (focusables, 0..) |f, i| {
+        if (fallback == null) fallback = @intCast(i);
+        if (focusable_in_clip(f.rect, f.scroll_clip)) return @intCast(i);
+    }
+    return fallback;
 }
 
 fn offset_focus_range(self: *Self, start: u8, finish: u8, dx: i16, dy: i16) void {
@@ -915,8 +935,8 @@ fn route_pre_frame(self: *Self) void {
         self.state.focus_source = .pad;
         if (self.focused_previous_idx()) |idx| {
             if (self.state.focusables[idx].kind != .slot_grid) self.spatial_advance(idx, self.input.nav);
-        } else if (self.state.focusable_count > 0) {
-            self.state.focused = self.state.focusables[0].id;
+        } else if (first_visible_focusable_idx(self.state.focusables[0..self.state.focusable_count])) |idx| {
+            self.state.focused = self.state.focusables[idx].id;
         }
         self.autoscroll_to_focus();
     }
@@ -974,6 +994,13 @@ fn find_current_id(self: *const Self, id: WidgetId) ?u8 {
     return null;
 }
 
+fn find_current_visible_id(self: *const Self, id: WidgetId) ?u8 {
+    const idx = self.find_current_id(id) orelse return null;
+    const f = self.focusables[idx];
+    if (!focusable_in_clip(f.rect, f.scroll_clip)) return null;
+    return idx;
+}
+
 fn current_focusable_kind(self: *const Self, id: WidgetId) ?UiState.FocusableKind {
     const idx = self.find_current_id(id) orelse return null;
     return self.focusables[idx].kind;
@@ -981,13 +1008,16 @@ fn current_focusable_kind(self: *const Self, id: WidgetId) ?UiState.FocusableKin
 
 fn prompt_focusable_kind(self: *const Self) ?UiState.FocusableKind {
     if (self.state.focused) |id| return self.current_focusable_kind(id);
-    if (self.state.focus_source == .pad and self.focus_count > 0) return self.focusables[0].kind;
+    if (self.state.focus_source == .pad) {
+        if (first_visible_focusable_idx(self.focusables[0..self.focus_count])) |idx| return self.focusables[idx].kind;
+    }
     return null;
 }
 
 fn spatial_advance(self: *Self, from_idx: u8, dir: ui_input.NavDir) void {
     if (dir == .none) return;
-    const cur = self.state.focusables[from_idx].rect;
+    const cur_focus = &self.state.focusables[from_idx];
+    const cur = cur_focus.rect;
     const cur_cx: i32 = (@as(i32, cur.x0) + @as(i32, cur.x1)) >> 1;
     const cur_cy: i32 = (@as(i32, cur.y0) + @as(i32, cur.y1)) >> 1;
 
@@ -996,6 +1026,7 @@ fn spatial_advance(self: *Self, from_idx: u8, dir: ui_input.NavDir) void {
     var i: u8 = 0;
     while (i < self.state.focusable_count) : (i += 1) {
         if (i == from_idx) continue;
+        if (!nav_candidate_visible(cur_focus, &self.state.focusables[i])) continue;
         const r = self.state.focusables[i].rect;
         const cx: i32 = (@as(i32, r.x0) + @as(i32, r.x1)) >> 1;
         const cy: i32 = (@as(i32, r.y0) + @as(i32, r.y1)) >> 1;
@@ -1030,6 +1061,13 @@ fn spatial_advance(self: *Self, from_idx: u8, dir: ui_input.NavDir) void {
         }
     }
     if (best) |b| self.state.focused = self.state.focusables[b].id;
+}
+
+fn nav_candidate_visible(cur: *const UiState.Focusable, candidate: *const UiState.Focusable) bool {
+    if (focusable_in_clip(candidate.rect, candidate.scroll_clip)) return true;
+    const cur_clip = cur.scroll_clip orelse return false;
+    const candidate_clip = candidate.scroll_clip orelse return false;
+    return cur_clip.list_id == candidate_clip.list_id;
 }
 
 fn autoscroll_to_focus(self: *Self) void {
@@ -1135,35 +1173,57 @@ fn set_active_text(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) voi
     self.state.cancel_active_text();
     self.state.active_text = id;
     self.state.text_session_started = false;
-    if (ae.platform == .psp) return;
+    if (uses_modal_text_input()) return;
 
     const target: input_api.TextInputTarget = .{ .id = opts.session_id };
     const input_opts: input_api.TextInputOptions = .{
         .max_bytes = buf.max,
         .initial = if (buf.len.* > 0) buf.bytes[0..buf.len.*] else null,
     };
-    _ = input_api.begin_text_input(target, input_opts) catch {
+    const sys = self.input_system() orelse {
+        self.finish_active_text();
+        return;
+    };
+    _ = sys.begin_text_input(&target, &input_opts) catch {
         self.finish_active_text();
         return;
     };
     self.state.text_session_started = true;
 }
 
-fn fire_psp_osk(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {
-    if (input_api.current_text_session()) |s| {
-        if (!s.is_terminal()) input_api.cancel_text() catch {};
+fn uses_modal_text_input() bool {
+    return switch (ae.platform) {
+        .psp, .nintendo_3ds, .nintendo_switch => true,
+        else => false,
+    };
+}
+
+fn fire_modal_text_input(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {
+    const sys = self.input_system() orelse return false;
+    if (sys.current_text_session()) |s| {
+        if (!s.is_terminal()) sys.cancel_text() catch {};
     }
     const target: input_api.TextInputTarget = .{ .id = opts.session_id };
     const input_opts: input_api.TextInputOptions = .{
         .max_bytes = buf.max,
         .initial = if (buf.len.* > 0) buf.bytes[0..buf.len.*] else null,
     };
-    _ = input_api.begin_text_input(target, input_opts) catch return false;
+    _ = sys.begin_text_input(&target, &input_opts) catch |err| {
+        log.warn("modal text input '{s}' failed to open: {}", .{ opts.session_id, err });
+        return false;
+    };
     self.state.active_text = id;
     self.state.text_session_started = false;
-    const session = input_api.current_text_session() orelse return false;
+    const session = sys.current_text_session() orelse {
+        log.warn("modal text input '{s}' produced no session", .{opts.session_id});
+        self.finish_active_text();
+        return false;
+    };
     if (session.status != .submitted) {
-        if (!session.is_terminal()) input_api.cancel_text() catch {};
+        if (session.status != .cancelled) {
+            log.warn("modal text input '{s}' returned non-terminal status {s}", .{ opts.session_id, @tagName(session.status) });
+        }
+        if (!session.is_terminal()) sys.cancel_text() catch {};
         self.finish_active_text();
         return false;
     }
@@ -1174,7 +1234,8 @@ fn fire_psp_osk(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {
 
 fn sync_session_to_field(self: *Self, id: WidgetId, buf: *TextBuf) TextEvent {
     if (self.state.active_text == null or self.state.active_text.? != id or !self.state.text_session_started) return .none;
-    const session = input_api.current_text_session() orelse return .none;
+    const sys = self.input_system() orelse return .none;
+    const session = sys.current_text_session() orelse return .none;
     self.apply_text_session_events(session);
     if (session.status == .submitted) {
         _ = copy_session_to_buf(session.buffer.items, buf);
@@ -1190,8 +1251,9 @@ fn sync_session_to_field(self: *Self, id: WidgetId, buf: *TextBuf) TextEvent {
 
 fn apply_text_session_events(self: *Self, session_const: *const input_api.TextInputSession) void {
     if (!self.input.text_events or session_const.status != .active) return;
+    const sys = self.input_system() orelse return;
     const session: *input_api.TextInputSession = @constCast(session_const);
-    for (input_api.frame_events()) |ev| {
+    for (sys.frame_events()) |ev| {
         switch (ev.kind) {
             .key_down => |k| {
                 if (k.key == .Backspace) pop_text_codepoint(session);
@@ -1203,7 +1265,8 @@ fn apply_text_session_events(self: *Self, session_const: *const input_api.TextIn
 
 fn text_submit_edge(self: *const Self) bool {
     if (!self.input.text_events) return false;
-    for (input_api.frame_events()) |ev| {
+    const sys = self.input_system() orelse return false;
+    for (sys.frame_events()) |ev| {
         switch (ev.kind) {
             .key_down => |k| {
                 if (k.key == .Enter) return true;
@@ -1313,7 +1376,7 @@ fn draw_button(ui: *Self, rect: LogicalRect, text: []const u8, focused: bool, op
         .pos_offset = .{ .x = rect.x0, .y = rect.y0 },
         .dst_w = rect.width(),
         .dst_h = rect.height(),
-        .color = .white_fg,
+        .color = Colors.white_fg,
         .layer = ui.layer_base + 2,
         .reference = .top_left,
         .origin = .top_left,
@@ -1387,7 +1450,7 @@ fn draw_slider(ui: *Self, rect: LogicalRect, id: WidgetId, value: f32, opts: Sli
         .pos_offset = .{ .x = rect.x0, .y = rect.y0 },
         .dst_w = rect.width(),
         .dst_h = rect.height(),
-        .color = .white_fg,
+        .color = Colors.white_fg,
         .layer = ui.layer_base + 2,
         .reference = .top_left,
         .origin = .top_left,
@@ -1405,7 +1468,7 @@ fn draw_slider(ui: *Self, rect: LogicalRect, id: WidgetId, value: f32, opts: Sli
         .pos_offset = .{ .x = knob_x, .y = rect.y0 },
         .dst_w = style.knob_w,
         .dst_h = rect.height(),
-        .color = .white_fg,
+        .color = Colors.white_fg,
         .layer = ui.layer_base + 3,
         .reference = .top_left,
         .origin = .top_left,
@@ -1572,8 +1635,8 @@ fn draw_slot_grid(ui: *Self, rect: LogicalRect, opts: SlotGridOpts) void {
         .str = name,
         .pos_x = rect.x0 + @divTrunc(rect.width(), 2),
         .pos_y = rect.y0 + opts.padding.top,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
+        .color = Colors.white_fg,
+        .shadow_color = Colors.menu_gray,
         .spacing = 0,
         .layer = ui.layer_base + 5,
         .reference = .top_left,

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const NAME_MAX: u8 = 16;
+pub const NAME_MAX: u8 = 20;
 pub const PATH_MAX: usize = "saves/".len + NAME_MAX + ".cw".len;
 
 pub const Result = struct {

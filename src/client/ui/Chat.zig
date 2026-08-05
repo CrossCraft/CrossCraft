@@ -10,8 +10,8 @@
 // the session returns in terminal state, which Chat services on the same
 // frame the overlay opens. There is no PSP branch in the text path itself.
 //
-// T opens a blank input field. / opens with '/' pre-typed as a command
-// prefix. Enter (chat_send) submits, Escape (chat_cancel) discards.
+// T opens a blank input field. / opens with '/' inserted into the input.
+// Enter (chat_send) submits, Escape (chat_cancel) discards.
 
 const std = @import("std");
 const ae = @import("aether");
@@ -19,10 +19,11 @@ const input = ae.Core.input;
 const proto = @import("common").protocol;
 
 const Player = @import("../player/Player.zig");
-const FontBatcher = @import("FontBatcher.zig");
+const FontBatcher = ae.UI.FontBatcher;
 const UiDrawList = @import("UiDrawList.zig");
-const Scaling = @import("Scaling.zig");
-const Color = @import("../graphics/Color.zig").Color;
+const Scaling = ae.UI.Scaling;
+const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 const TextWrap = @import("TextWrap.zig");
 const ui_input = @import("input.zig");
 
@@ -63,25 +64,25 @@ const INPUT_TEXT_LAYER: u8 = 244;
 // --- Action set ---
 
 var chat_set: ?input.ActionSetHandle = null;
+var chat_send: input.ActionHandle = .none;
+var chat_cancel: input.ActionHandle = .none;
 
-fn ensure_chat_set() !input.ActionSetHandle {
+fn ensure_chat_set(sys: *input.InputSystem) !input.ActionSetHandle {
     if (chat_set) |h| return h;
-    const set = try input.register_action_set("chat");
+    const set = try sys.register_action_set("chat");
 
-    try input.add_action(set, "chat_send", .button);
-    try input.bind_action(set, "chat_send", .{ .source = .{ .key = .Enter } });
-    try input.bind_action(set, "chat_send", .{ .source = .{ .gamepad_button = .A } });
+    chat_send = try sys.add_action(set, "chat_send", .button);
+    try sys.bind_action(chat_send, &.{ .source = .{ .key = .Enter } });
+    try sys.bind_action(chat_send, &.{ .source = .{ .gamepad_button = .A } });
 
-    try input.add_action(set, "chat_cancel", .button);
-    try input.bind_action(set, "chat_cancel", .{ .source = .{ .key = .Escape } });
-    try input.bind_action(set, "chat_cancel", .{ .source = .{ .gamepad_button = .B } });
-    if (ae.platform == .psp) {
-        // PSP Select (Back) toggles social mode -- pressing it again with
-        // chat already open exits without sending.
-        try input.bind_action(set, "chat_cancel", .{ .source = .{ .gamepad_button = .Back } });
-    }
+    chat_cancel = try sys.add_action(set, "chat_cancel", .button);
+    try sys.bind_action(chat_cancel, &.{ .source = .{ .key = .Escape } });
+    try sys.bind_action(chat_cancel, &.{ .source = .{ .gamepad_button = .B } });
+    // Controller Select/Back toggles social mode -- pressing it again with
+    // chat already open exits without sending.
+    try sys.bind_action(chat_cancel, &.{ .source = .{ .gamepad_button = .Back } });
 
-    try input.install_action_set(set);
+    try sys.install_action_set(set);
     chat_set = set;
     return set;
 }
@@ -101,15 +102,13 @@ msg_head: u8,
 msg_count: u8,
 
 /// True while the chat panel is visible (input field, even if no active
-/// text session yet -- e.g. PSP social mode shows the panel pre-OSK).
+/// text session yet -- e.g. controller social mode shows the panel before
+/// the user starts chat entry).
 open: bool,
 /// Set when the chat overlay is open AND a TextInputSession is in flight.
-/// Distinct from `open` so PSP social mode can show the panel without yet
-/// having armed the OSK.
+/// Distinct from `open` so controller social mode can show the panel without
+/// yet having armed text entry.
 session_active: bool,
-/// Optional command prefix prepended to outgoing messages, displayed
-/// ahead of the typed text. Zero = no prefix.
-prefix: u8,
 prev_send: input.ButtonState,
 prev_cancel: input.ButtonState,
 /// Suppresses a ghost rising edge on the frame chat activates with
@@ -127,7 +126,6 @@ pub fn init() Self {
         .msg_count = 0,
         .open = false,
         .session_active = false,
-        .prefix = 0,
         .prev_send = .released,
         .prev_cancel = .released,
         .chat_was_active = false,
@@ -165,21 +163,19 @@ pub fn receive(self: *Self, raw: []const u8) void {
 /// cancelled). On desktop the session is left active for the user to type
 /// into; chat_send / chat_cancel are polled in `update`.
 ///
-/// `slash_prefix = true` prepends '/' as a command marker; the prefix is
-/// rendered separately and added back when the message is dispatched.
-pub fn open_overlay(self: *Self, player: *Player, slash_prefix: bool) void {
+/// `slash_prefix = true` starts the editable input with '/'.
+pub fn open_overlay(self: *Self, sys: *input.InputSystem, player: *Player, slash_prefix: bool) void {
     if (self.open) return;
     self.open = true;
-    self.prefix = if (slash_prefix) '/' else 0;
     self.prev_send = .released;
     self.prev_cancel = .released;
     self.chat_was_active = false;
 
-    const set = ensure_chat_set() catch {
+    const set = ensure_chat_set(sys) catch {
         self.open = false;
         return;
     };
-    input.push_context(.{
+    sys.push_context(&.{
         .name = "chat",
         .cursor_mode = .visible,
         .actions = set,
@@ -188,28 +184,26 @@ pub fn open_overlay(self: *Self, player: *Player, slash_prefix: bool) void {
         self.open = false;
         return;
     };
-    self.begin_session();
+    self.begin_session(sys, slash_prefix);
 
     // PSP returns synchronously with a terminal session; service it now.
-    handle_terminal_if_done(self, player);
+    handle_terminal_if_done(self, sys, player);
 }
 
-/// PSP social mode: show the chat panel without arming the OSK, so the
-/// player list can sit alongside it. The OSK fires later when X is
-/// pressed and `begin_session_now` is called.
-pub fn open_overlay_social(self: *Self, _: *Player) void {
+/// Controller social mode: show the chat panel without arming text entry, so
+/// the player list can sit alongside it. Confirm starts text entry later.
+pub fn open_overlay_social(self: *Self, sys: *input.InputSystem, _: *Player) void {
     if (self.open) return;
     self.open = true;
-    self.prefix = 0;
     self.prev_send = .released;
     self.prev_cancel = .released;
     self.chat_was_active = false;
 
-    const set = ensure_chat_set() catch {
+    const set = ensure_chat_set(sys) catch {
         self.open = false;
         return;
     };
-    input.push_context(.{
+    sys.push_context(&.{
         .name = "chat",
         .cursor_mode = .visible,
         .actions = set,
@@ -218,50 +212,40 @@ pub fn open_overlay_social(self: *Self, _: *Player) void {
         self.open = false;
         return;
     };
-    // session_active stays false; the panel is empty until X arms the OSK.
+    // session_active stays false; the panel is empty until confirm starts
+    // text entry.
 }
 
-/// PSP: invoked from GameState when X (Cross) is pressed during social
-/// mode. Begins the text session synchronously (OSK shows), services the
-/// terminal result, and closes the overlay if the user submitted.
-pub fn begin_session_now(self: *Self, player: *Player) void {
-    if (!self.open or self.session_active) return;
-    self.begin_session();
-    handle_terminal_if_done(self, player);
-}
-
-fn begin_session(self: *Self) void {
+fn begin_session(self: *Self, sys: *input.InputSystem, slash_prefix: bool) void {
     const target: input.TextInputTarget = .{ .id = "chat" };
-    const prefix_buf = [_]u8{self.prefix};
+    const slash_buf = [_]u8{'/'};
     const opts: input.TextInputOptions = .{
         .max_bytes = INPUT_MAX_LEN,
-        // Seed PSP's modal OSK (and the desktop session buffer) with the
-        // slash so command-style chat opens with the prefix already typed.
-        .initial = if (self.prefix != 0) prefix_buf[0..1] else null,
+        .initial = if (slash_prefix) slash_buf[0..1] else null,
     };
-    _ = input.begin_text_input(target, opts) catch return;
+    _ = sys.begin_text_input(&target, &opts) catch return;
     self.session_active = true;
 }
 
-fn handle_terminal_if_done(self: *Self, player: *Player) void {
-    const session = input.current_text_session() orelse return;
+fn handle_terminal_if_done(self: *Self, sys: *input.InputSystem, player: *Player) void {
+    const session = sys.current_text_session() orelse return;
     if (session.status == .submitted) {
-        send_session(self, player);
-        self.close_overlay(player);
+        send_session(sys, player);
+        self.close_overlay(sys, player);
     } else if (session.status == .cancelled) {
-        self.close_overlay(player);
+        self.close_overlay(sys, player);
     }
 }
 
-pub fn close_overlay(self: *Self, player: *Player) void {
+pub fn close_overlay(self: *Self, sys: *input.InputSystem, player: *Player) void {
     if (!self.open) return;
     self.open = false;
     if (self.session_active) {
         // cancel_text errors if the session is already terminal; ignore.
-        input.cancel_text() catch {};
+        sys.cancel_text() catch {};
         self.session_active = false;
     }
-    _ = input.pop_context() catch {};
+    _ = sys.pop_context() catch {};
     player.look_delta = .{ 0, 0 };
 }
 
@@ -277,16 +261,16 @@ pub fn tick(self: *Self, dt: f32) void {
 
 // --- Update (called every frame while open) ---
 
-pub fn update(self: *Self, player: *Player) void {
+pub fn update(self: *Self, sys: *input.InputSystem, player: *Player) void {
     std.debug.assert(self.open);
 
     // Walk frame events for Backspace; trim the session buffer in place.
     if (self.session_active) {
-        const session_const = input.current_text_session() orelse return;
+        const session_const = sys.current_text_session() orelse return;
         // Cast away const for the in-place shrink; the session pointer is
         // stable storage and Aether exposes no pop-byte helper.
         const session: *input.TextInputSession = @constCast(session_const);
-        for (input.frame_events()) |ev| {
+        for (sys.frame_events()) |ev| {
             switch (ev.kind) {
                 .key_down => |k| {
                     if (k.key == .Backspace and session.buffer.items.len > 0) {
@@ -298,10 +282,10 @@ pub fn update(self: *Self, player: *Player) void {
         }
     }
 
-    const send = input.get_action_button("chat_send");
-    const cancel = input.get_action_button("chat_cancel");
+    const send = sys.button(chat_send).current;
+    const cancel = sys.button(chat_cancel).current;
 
-    const active_now = is_chat_set_active();
+    const active_now = is_chat_set_active(sys);
     const fresh_activation = active_now and !self.chat_was_active;
     self.chat_was_active = active_now;
 
@@ -312,57 +296,44 @@ pub fn update(self: *Self, player: *Player) void {
 
     if (send_edge) {
         if (self.session_active) {
-            input.submit_text() catch {};
-            send_session(self, player);
-            self.close_overlay(player);
-        } else if (ae.platform == .psp) {
-            // PSP social mode: the panel is open without an active session
-            // (waiting for the player to summon the OSK). X arms it; the
-            // backend runs the modal OSK synchronously and returns with a
-            // terminal session for `handle_terminal_if_done` to service.
-            self.begin_session();
-            handle_terminal_if_done(self, player);
+            sys.submit_text() catch {};
+            send_session(sys, player);
+            self.close_overlay(sys, player);
         } else {
-            self.close_overlay(player);
+            // Controller social mode: the panel is open without an active
+            // session. Confirm starts text entry; modal OSK platforms return
+            // synchronously and desktop keeps the session active.
+            self.begin_session(sys, false);
+            handle_terminal_if_done(self, sys, player);
         }
         return;
     }
 
     if (cancel_edge) {
-        self.close_overlay(player);
+        self.close_overlay(sys, player);
     }
 }
 
-fn is_chat_set_active() bool {
-    const top = input.stack_top() orelse return false;
+fn is_chat_set_active(sys: *input.InputSystem) bool {
+    const top = sys.stack_top() orelse return false;
     const set = chat_set orelse return false;
     return @intFromEnum(top.actions) == @intFromEnum(set);
 }
 
 // --- Wire send ---
 
-fn send_session(self: *Self, player: *Player) void {
-    const session = input.current_text_session() orelse return;
+fn send_session(sys: *input.InputSystem, player: *Player) void {
+    const session = sys.current_text_session() orelse return;
     const body = session.buffer.items;
-    if (body.len == 0 and self.prefix == 0) return;
+    if (body.len == 0) return;
 
-    var combined: [INPUT_MAX_LEN + 1]u8 = undefined;
-    var n: usize = 0;
-    if (self.prefix != 0 and n < combined.len) {
-        combined[n] = self.prefix;
-        n += 1;
-    }
-    const take = @min(body.len, combined.len - n);
-    if (take > 0) std.mem.copyForwards(u8, combined[n..][0..take], body[0..take]);
-    n += take;
-
-    proto.send_message(player.writer, -1, combined[0..n]) catch {};
+    proto.send_message(player.writer, -1, body) catch {};
     player.writer.flush() catch {};
 }
 
 // --- Draw ---
 
-pub fn draw_into(self: *Self, list: *UiDrawList, fonts: *const FontBatcher, y_shift: i16) void {
+pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts: *const FontBatcher, y_shift: i16) void {
     self.render_line_count = 0;
 
     const base: i16 = BOTTOM_PAD + y_shift;
@@ -372,11 +343,10 @@ pub fn draw_into(self: *Self, list: *UiDrawList, fonts: *const FontBatcher, y_sh
     var input_lens: [INPUT_WRAP_MAX_LINES]u8 = undefined;
     var input_line_count: u8 = 0;
 
-    // Read the live session buffer; on PSP between OSK opens the session
-    // may not yet be active (social mode's pre-OSK panel) -- show only the
-    // prompt in that state.
+    // Read the live session buffer; in social mode the session may not yet
+    // be active -- show only the prompt in that state.
     const body: []const u8 = if (self.open)
-        if (input.current_text_session()) |s| s.buffer.items else &.{}
+        if (sys.current_text_session()) |s| s.buffer.items else &.{}
     else
         &.{};
 
@@ -481,8 +451,8 @@ pub fn draw_into(self: *Self, list: *UiDrawList, fonts: *const FontBatcher, y_sh
                 .str = line,
                 .pos_x = text_x,
                 .pos_y = row_y,
-                .color = .white_fg,
-                .shadow_color = .menu_gray,
+                .color = Colors.white_fg,
+                .shadow_color = Colors.menu_gray,
                 .spacing = 0,
                 .layer = INPUT_TEXT_LAYER,
                 .reference = .bottom_left,
@@ -495,8 +465,8 @@ pub fn draw_into(self: *Self, list: *UiDrawList, fonts: *const FontBatcher, y_sh
             .str = INPUT_PROMPT,
             .pos_x = text_x,
             .pos_y = -base,
-            .color = .white_fg,
-            .shadow_color = .menu_gray,
+            .color = Colors.white_fg,
+            .shadow_color = Colors.menu_gray,
             .spacing = 0,
             .layer = INPUT_TEXT_LAYER,
             .reference = .bottom_left,
@@ -509,8 +479,8 @@ pub fn draw_into(self: *Self, list: *UiDrawList, fonts: *const FontBatcher, y_sh
         .str = "_",
         .pos_x = text_x + typed_w + 1,
         .pos_y = -base,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
+        .color = Colors.white_fg,
+        .shadow_color = Colors.menu_gray,
         .spacing = 0,
         .layer = INPUT_TEXT_LAYER,
         .reference = .bottom_left,

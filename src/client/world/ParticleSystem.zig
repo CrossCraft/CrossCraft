@@ -6,7 +6,7 @@ const Rendering = ae.Rendering;
 const World = @import("game").World;
 const c = @import("common").consts;
 
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const face_mod = @import("chunk/face.zig");
@@ -33,7 +33,6 @@ const HALF_SIZE: f32 = 0.06;
 const SUBTILE_DIV: i16 = 4;
 /// Verts per particle: two triangles (the gfx backend only supports
 /// triangles/lines, so quads are expanded just like face.zig:emit_quad).
-const VERTS_PER_PARTICLE: u16 = 6;
 
 // --- Vertex/model space ---
 //
@@ -79,6 +78,7 @@ fn gravity_for(block_id: c.Block) f32 {
 
 const Self = @This();
 
+mesh_data: Rendering.MeshData(Vertex),
 mesh: Rendering.Mesh(Vertex),
 atlas: TextureAtlas,
 particles: [MAX_PARTICLES]Particle,
@@ -88,9 +88,10 @@ allocator: std.mem.Allocator,
 
 // --- Lifecycle ---
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, atlas: TextureAtlas) !Self {
+pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
     var self: Self = .{
-        .mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
+        .mesh_data = try Rendering.MeshData(Vertex).init(allocator),
+        .mesh = try Rendering.Mesh(Vertex).init(&.{}),
         .atlas = atlas,
         .particles = undefined,
         .count = 0,
@@ -99,15 +100,13 @@ pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, a
         .allocator = allocator,
     };
     // Pre-reserve the CPU vertex buffer so per-frame rebuilds don't allocate.
-    try self.mesh.vertices.ensureTotalCapacity(
-        allocator,
-        MAX_PARTICLES * VERTS_PER_PARTICLE,
-    );
+    try self.mesh_data.ensure_quad_capacity(allocator, MAX_PARTICLES);
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.mesh.deinit(self.allocator);
+    self.mesh.deinit();
+    self.mesh_data.deinit(self.allocator);
 }
 
 // --- Spawn ---
@@ -173,7 +172,7 @@ pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, _:
 
 // --- Simulation ---
 
-pub fn update(self: *Self, dt: f32) void {
+pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
     std.debug.assert(dt >= 0);
 
     var i: u16 = 0;
@@ -203,6 +202,8 @@ pub fn update(self: *Self, dt: f32) void {
         }
         i += 1;
     }
+
+    self.rebuild_mesh(camera);
 }
 
 // Particles spawn inside the block they came from (the local world isn't
@@ -298,7 +299,14 @@ fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
 
 // --- Rendering ---
 
-pub fn draw(self: *Self, camera: *const Camera) void {
+pub fn draw(self: *Self) void {
+    if (self.count == 0) return;
+    const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
+    self.mesh.draw(&m);
+}
+
+fn rebuild_mesh(self: *Self, camera: *const Camera) void {
+    self.mesh_data.clear_retaining_capacity();
     if (self.count == 0) return;
 
     // Camera basis for billboarding. Right is yaw-only so the quad never
@@ -318,22 +326,18 @@ pub fn draw(self: *Self, camera: *const Camera) void {
     const upy = cp * HALF_SIZE;
     const upz = -cy * sp * HALF_SIZE;
 
-    self.mesh.vertices.clearRetainingCapacity();
     var i: u16 = 0;
     while (i < self.count) : (i += 1) {
-        emit_particle(&self.mesh, &self.particles[i], rx, rz, upx, upy, upz);
+        emit_particle(&self.mesh_data, &self.particles[i], rx, rz, upx, upy, upz);
     }
-    self.mesh.update();
-
-    const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
-    self.mesh.draw(&m);
+    self.mesh.update(&self.mesh_data);
 }
 
 /// Append the 6 verts (two triangles) of one billboarded particle quad.
 /// `rx`/`rz` is the camera-right vector (XZ only, pre-scaled by HALF_SIZE);
 /// `(upx,upy,upz)` is camera-up (pre-scaled). Capacity is reserved in init.
 fn emit_particle(
-    mesh: *Rendering.Mesh(Vertex),
+    mesh: *Rendering.MeshData(Vertex),
     p: *const Particle,
     rx: f32,
     rz: f32,
@@ -356,12 +360,7 @@ fn emit_particle(
     const v2 = make_vertex(p.px + rx + upx, p.py + upy, p.pz + rz + upz, p.u1, p.v0, color);
     const v3 = make_vertex(p.px - rx + upx, p.py + upy, p.pz - rz + upz, p.u0, p.v0, color);
 
-    mesh.vertices.appendAssumeCapacity(v0);
-    mesh.vertices.appendAssumeCapacity(v1);
-    mesh.vertices.appendAssumeCapacity(v2);
-    mesh.vertices.appendAssumeCapacity(v0);
-    mesh.vertices.appendAssumeCapacity(v2);
-    mesh.vertices.appendAssumeCapacity(v3);
+    mesh.add_quad_assume_capacity(v0, v1, v2, v3);
 }
 
 fn make_vertex(wx: f32, wy: f32, wz: f32, u: i16, v: i16, color: u32) Vertex {

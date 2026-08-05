@@ -23,7 +23,7 @@ const SaveContext = fmt_mod.SaveContext;
 const LoadOutcome = fmt_mod.LoadOutcome;
 const WorldData = @import("../WorldData.zig");
 const compress_worker = @import("../../compress_worker.zig");
-const nbt = @import("nbt");
+const nbt = common.nbt;
 
 const log = std.log.scoped(.world);
 

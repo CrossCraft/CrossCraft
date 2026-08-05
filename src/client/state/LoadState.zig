@@ -6,10 +6,10 @@ const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
-const SpriteBatcher = @import("../ui/SpriteBatcher.zig");
-const FontBatcher = @import("../ui/FontBatcher.zig");
-const Scaling = @import("../ui/Scaling.zig");
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const SpriteBatcher = ae.UI.SpriteBatcher;
+const FontBatcher = ae.UI.FontBatcher;
+const Scaling = ae.UI.Scaling;
+const Colors = @import("../graphics/Color.zig");
 const ResourcePack = @import("../ResourcePack.zig");
 const Server = @import("game").Server;
 const World = @import("game").World;
@@ -17,6 +17,7 @@ const GameState = @import("GameState.zig");
 const DisconnectState = @import("DisconnectState.zig");
 const Session = @import("Session.zig");
 const proto = @import("common").protocol;
+const common_time = @import("common").time;
 const flate = std.compress.flate;
 
 const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
@@ -29,14 +30,82 @@ var session_error: ?anyerror = null;
 var mp_server_name: [64]u8 = @splat(' ');
 var mp_server_motd: [64]u8 = @splat(' ');
 
+// Do not capture std.Io in a PSP Util.Thread closure. The PSP thread
+// trampoline has historically lost this value when it is passed through the
+// argument tuple, leaving the copied vtable pointer null in the worker. Keep
+// it in module storage and publish it before spawning the one load task.
+var task_io: std.Io = undefined;
+
 /// Empty action set; exists only so push_context has a valid installed
 /// set during the loading screen.
 var loading_set: ?ae.Core.input.ActionSetHandle = null;
 
-fn ensure_loading_set() !ae.Core.input.ActionSetHandle {
+const TaskHandle = union(enum) {
+    thread: Util.Thread,
+    none,
+
+    fn await(self: *TaskHandle) void {
+        switch (self.*) {
+            .thread => |t| t.join(),
+            .none => {},
+        }
+        self.* = .none;
+    }
+};
+
+fn start_server_task(
+    alloc: std.mem.Allocator,
+    scratch: std.mem.Allocator,
+    seed: u64,
+    data_dir: std.Io.Dir,
+    save_location: []const u8,
+) TaskHandle {
+    if (comptime ae.platform == .wasm) {
+        serverTask(alloc, scratch, seed, data_dir, save_location);
+        return .none;
+    }
+
+    return .{ .thread = Util.Thread.spawn(.{
+        .name = "load_server",
+        .stack_size = 512 * 1024,
+        .priority = .normal,
+        .allocator = alloc,
+    }, serverTask, .{ alloc, scratch, seed, data_dir, save_location }) catch |err| {
+        log.err("server task thread unavailable: {}", .{err});
+        session_error = err;
+        server_ready.store(true, .release);
+        return .none;
+    } };
+}
+
+fn start_connect_task(
+    alloc: std.mem.Allocator,
+    seed: u64,
+    data_dir: std.Io.Dir,
+) TaskHandle {
+    if (comptime ae.platform == .wasm) {
+        session_error = error.UnsupportedPlatform;
+        server_ready.store(true, .release);
+        return .none;
+    }
+
+    return .{ .thread = Util.Thread.spawn(.{
+        .name = "mp_connect",
+        .stack_size = 512 * 1024,
+        .priority = .normal,
+        .allocator = alloc,
+    }, connectTask, .{ alloc, seed, data_dir }) catch |err| {
+        log.err("connect task thread unavailable: {}", .{err});
+        session_error = err;
+        server_ready.store(true, .release);
+        return .none;
+    } };
+}
+
+fn ensure_loading_set(engine: *Engine) !ae.Core.input.ActionSetHandle {
     if (loading_set) |h| return h;
-    const set = try ae.Core.input.register_action_set("loading");
-    try ae.Core.input.install_action_set(set);
+    const set = try engine.input.register_action_set("loading");
+    try engine.input.install_action_set(set);
     loading_set = set;
     return set;
 }
@@ -45,7 +114,6 @@ fn serverTask(
     alloc: std.mem.Allocator,
     scratch: std.mem.Allocator,
     seed: u64,
-    io: std.Io,
     data_dir: std.Io.Dir,
     save_location: []const u8,
 ) void {
@@ -56,20 +124,21 @@ fn serverTask(
             .world = .{ .seed = seed, .save_location = selected_save },
         },
     };
-    Server.init(alloc, scratch, io, data_dir, config) catch |err| {
+    Server.init(alloc, scratch, task_io, data_dir, config) catch |err| {
         log.err("server init failed: {}", .{err});
         session_error = err;
+        server_ready.store(true, .release);
         return;
     };
     World.saver.autosave_enabled = false;
     server_ready.store(true, .release);
 }
 
-fn connectTask(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) void {
-    connect_inner(alloc, seed, io, data_dir) catch |err| {
+fn connectTask(alloc: std.mem.Allocator, seed: u64, data_dir: std.Io.Dir) void {
+    connect_inner(alloc, seed, task_io, data_dir) catch |err| {
         log.err("multiplayer connect failed: {}", .{err});
         session_error = err;
-        cleanup_failed_multiplayer_connect(io);
+        cleanup_failed_multiplayer_connect(task_io);
     };
     server_ready.store(true, .release);
 }
@@ -159,7 +228,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
                 @memcpy(compressed[compressed_end..][0..length], buf[3 .. 3 + @as(usize, length)]);
                 compressed_end += length;
                 const percent = buf[1027];
-                World.load_status = .{ .downloading = percent };
+                World.set_load_status(.{ .downloading = percent });
             },
             0x04 => {
                 reader.toss(len);
@@ -221,14 +290,13 @@ fn capture_disconnect_reason(packet: []const u8) void {
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 time: f32,
-server_future: std.Io.Future(void),
+server_task: TaskHandle,
 server_notified: bool,
 render_alloc: std.mem.Allocator,
 /// True once `init` ran to completion. Guards `deinit` so a partially
 /// initialised state never frees undefined fields.
 inited: bool,
 
-var pipeline: Rendering.Pipeline.Handle = undefined;
 var game_state: GameState = undefined;
 var state_inst: State = undefined;
 
@@ -239,53 +307,54 @@ var state_inst: State = undefined;
 var load_state: @This() = undefined;
 var load_state_inst: State = undefined;
 
-pub fn transition_here(engine: *Engine) !void {
+pub fn transition_here(engine: *Engine) void {
     load_state_inst = load_state.state();
-    try ae.Core.state_machine.transition(engine, &load_state_inst);
+    engine.transition(&load_state_inst);
 }
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
 
-    const set = try ensure_loading_set();
-    try ae.Core.input.push_context(.{
+    const set = try ensure_loading_set(engine);
+    try engine.input.push_context(&.{
         .name = "loading",
         .cursor_mode = .visible,
         .actions = set,
         .consumes_text = false,
     });
 
-    const vert align(@alignOf(u32)) = @embedFile("basic_vert").*;
-    const frag align(@alignOf(u32)) = @embedFile("basic_frag").*;
-    pipeline = try Rendering.Pipeline.new(Vertex.Layout, &vert, &frag);
-
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
     try ResourcePack.apply_tex_set(&.{ .dirt, .font });
 
-    self.batcher = try SpriteBatcher.init(render_alloc, pipeline);
-    self.font_batcher = try FontBatcher.init(render_alloc, pipeline, ResourcePack.get_tex(.font));
+    self.batcher = try SpriteBatcher.init(render_alloc);
+    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
     self.time = 0;
     self.server_notified = false;
 
-    const io = engine.io;
+    task_io = engine.io;
+    const io = task_io;
     const random_seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
     const singleplayer_seed = Session.singleplayer_seed(random_seed);
     server_ready.store(false, .monotonic);
     session_error = null;
     Session.clear_disconnect_reason();
+    const data_dir = engine.dirs.data;
+    const server_scratch = if (comptime ae.platform == .wasm)
+        std.heap.wasm_allocator
+    else
+        engine.allocator(.user);
     // TODO: allocator pool budget may need tuning for server + client coexistence
-    self.server_future = switch (Session.mode) {
-        .singleplayer => io.async(serverTask, .{
+    self.server_task = switch (Session.mode) {
+        .singleplayer => start_server_task(
             engine.allocator(.user),
-            engine.allocator(.user),
+            server_scratch,
             singleplayer_seed,
-            io,
-            engine.dirs.data,
+            data_dir,
             Session.singleplayer_save(),
-        }),
-        .multiplayer => io.async(connectTask, .{ engine.allocator(.user), random_seed, io, engine.dirs.data }),
+        ),
+        .multiplayer => start_connect_task(engine.allocator(.user), random_seed, data_dir),
     };
 
     self.inited = true;
@@ -295,13 +364,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
-    self.server_future.await(engine.io);
+    self.server_task.await();
     self.font_batcher.deinit();
     self.batcher.deinit();
 
-    _ = ae.Core.input.pop_context() catch {};
+    _ = engine.input.pop_context() catch {};
 
-    Rendering.Pipeline.deinit(pipeline);
     self.inited = false;
 }
 
@@ -311,27 +379,27 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
         self.server_notified = true;
         if (session_error) |err| {
             log.err("session start failed: {}", .{err});
+            var reason_buf: [64]u8 = undefined;
             const reason: []const u8 = switch (Session.mode) {
-                .singleplayer => "Failed to start server",
-                .multiplayer => "Failed to connect to server",
+                .singleplayer => std.fmt.bufPrint(&reason_buf, "Failed to start server: {s}", .{@errorName(err)}) catch "Failed to start server",
+                .multiplayer => std.fmt.bufPrint(&reason_buf, "Failed to connect: {s}", .{@errorName(err)}) catch "Failed to connect to server",
             };
             Session.set_disconnect_reason_if_empty(reason);
-            try DisconnectState.transition_here(engine);
+            DisconnectState.transition_here(engine);
             return;
         }
         state_inst = game_state.state();
-        try ae.Core.state_machine.transition(engine, &state_inst);
+        engine.transition(&state_inst);
     }
 }
 
 fn update(ctx: *anyopaque, _: *Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.time += dt;
+    try prepare_batches(self);
 }
 
-fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
-    var self = Util.ctx_to_self(@This(), ctx);
-
+fn prepare_batches(self: *@This()) !void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const scale = Scaling.compute(screen_w, screen_h);
@@ -345,15 +413,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         var x: i16 = 0;
         while (x < extent_x) : (x += tile_size) {
             const dirt = ResourcePack.get_tex(.dirt);
-            self.batcher.add_sprite(&.{
-                .texture = dirt,
-                .pos_offset = .{ .x = x, .y = y },
-                .pos_extent = .{ .x = tile_size, .y = tile_size },
-                .tex_offset = .{ .x = 0, .y = 0 },
-                .tex_extent = .{ .x = @intCast(dirt.width), .y = @intCast(dirt.height) },
-                .color = .menu_tiles,
-                .layer = 0,
-            });
+            add_dirt_tile(self, dirt, x, y, tile_size);
         }
     }
 
@@ -361,7 +421,8 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     const bar_width: i16 = 100;
     const bar_height: i16 = 2;
     const bar_y: i16 = 16;
-    const progress: f32 = switch (World.load_status) {
+    const load_status = World.get_load_status();
+    const progress: f32 = switch (load_status) {
         .loading => @min(self.time / 3.0, 1.0),
         .generating => |phase| @as(f32, @floatFromInt(@intFromEnum(phase))) / 10.0,
         .downloading => |pct| @as(f32, @floatFromInt(pct)) / 100.0,
@@ -375,7 +436,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         .pos_extent = .{ .x = bar_width, .y = bar_height },
         .tex_offset = .{ .x = 0, .y = 0 },
         .tex_extent = .{ .x = @intCast(default_tex.width), .y = @intCast(default_tex.height) },
-        .color = .progress_bg,
+        .color = Colors.progress_bg,
         .layer = 1,
         .reference = .middle_center,
         .origin = .middle_center,
@@ -389,18 +450,17 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
             .pos_extent = .{ .x = progress_w, .y = bar_height },
             .tex_offset = .{ .x = 0, .y = 0 },
             .tex_extent = .{ .x = @intCast(default_tex.width), .y = @intCast(default_tex.height) },
-            .color = .progress_bar,
+            .color = Colors.progress_bar,
             .layer = 2,
             .reference = .middle_center,
             .origin = .middle_left,
         });
     }
 
-    try self.batcher.flush();
+    try self.batcher.update();
 
     self.font_batcher.clear();
 
-    const load_status = World.load_status;
     const loading: []const u8 = blk: {
         if (Session.mode == .multiplayer) {
             const trimmed = std.mem.trimEnd(u8, &mp_server_name, " ");
@@ -417,8 +477,8 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         .str = loading,
         .pos_x = 0,
         .pos_y = -16,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
+        .color = Colors.white_fg,
+        .shadow_color = Colors.menu_gray,
         .spacing = 0,
         .layer = 2,
         .reference = .middle_center,
@@ -453,18 +513,43 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         .str = status,
         .pos_x = 0,
         .pos_y = 7,
-        .color = .white_fg,
-        .shadow_color = .menu_gray,
+        .color = Colors.white_fg,
+        .shadow_color = Colors.menu_gray,
         .spacing = 0,
         .layer = 2,
         .reference = .middle_center,
         .origin = .middle_center,
     });
 
-    try self.font_batcher.flush();
+    try self.font_batcher.update();
+}
+
+fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
+    var self = Util.ctx_to_self(@This(), ctx);
+
+    self.batcher.draw();
+    self.font_batcher.draw();
+
     // Throttle to ~20 FPS while server generates on background thread;
     // avoids burning CPU on draw calls that show a static progress bar.
-    try std.Io.sleep(engine.io, std.Io.Duration.fromMilliseconds(50), .real);
+    // 3DS already blocks on vblank after draw; sleeping here delays the
+    // present itself and can let the worker finish before any phase frame
+    // reaches the screen.
+    if (ae.platform != .nintendo_3ds and ae.platform != .nintendo_switch) {
+        try std.Io.sleep(engine.io, common_time.ms(50), .real);
+    }
+}
+
+fn add_dirt_tile(self: *@This(), dirt: *const Rendering.Texture, x: i16, y: i16, tile_size: i16) void {
+    self.batcher.add_sprite(&.{
+        .texture = dirt,
+        .pos_offset = .{ .x = x, .y = y },
+        .pos_extent = .{ .x = tile_size, .y = tile_size },
+        .tex_offset = .{ .x = 0, .y = 0 },
+        .tex_extent = .{ .x = @intCast(dirt.width), .y = @intCast(dirt.height) },
+        .color = Colors.menu_tiles,
+        .layer = 0,
+    });
 }
 
 pub fn state(self: *@This()) State {

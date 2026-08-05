@@ -7,7 +7,7 @@
 //   (e.g. one-line differences).
 // See THIRD-PARTY-NOTICES.md for the full BSD 3-Clause license text.
 //
-// Ported to Zig for CrossCraft (LGPLv3; uses separate Aether-Engine).
+// Ported to Zig for CrossCraft (GPLv2; uses separate Aether-Engine).
 // Modifications Copyright (c) 2026 CrossCraft
 
 //! Minecraft Classic Worldgen
@@ -724,7 +724,13 @@ pub const GenPhase = enum(u8) {
     plants,
 };
 
-pub fn generate(scratch: std.mem.Allocator, blocks: []Block, seed: u64, io: std.Io, phase: *GenPhase) !void {
+pub fn generate(
+    scratch: std.mem.Allocator,
+    blocks: []Block,
+    seed: u64,
+    io: std.Io,
+    set_phase: *const fn (GenPhase) void,
+) !void {
     assert(blocks.len == MAP_VOL);
     var rng = Xorshift64.init(seed);
 
@@ -742,53 +748,73 @@ pub fn generate(scratch: std.mem.Allocator, blocks: []Block, seed: u64, io: std.
 
     var t = std.Io.Clock.Timestamp.now(io, .boot);
 
-    phase.* = .raising;
+    set_phase(.raising);
     stepRaising(heightmap, &rng);
     t = logStep(io, t, "Raising");
+    yieldAfterPhase(io);
 
-    phase.* = .erosion;
+    set_phase(.erosion);
     stepErosion(heightmap, &rng);
     t = logStep(io, t, "Erosion");
+    yieldAfterPhase(io);
 
-    phase.* = .strata;
+    set_phase(.strata);
     stepStrata(blocks, heightmap, &rng);
     t = logStep(io, t, "Strata");
+    yieldAfterPhase(io);
 
     @memset(cave_mask, 0);
     @memset(ore_mask, 0);
-    phase.* = .caves;
+    set_phase(.caves);
     stepCaves(cave_mask, &rng);
     t = logStep(io, t, "Caves");
+    yieldAfterPhase(io);
 
-    phase.* = .ores;
+    set_phase(.ores);
     stepOres(ore_mask, &rng);
     t = logStep(io, t, "Ores");
+    yieldAfterPhase(io);
 
-    phase.* = .merge;
+    set_phase(.merge);
     stepMerge(blocks, cave_mask, ore_mask);
     t = logStep(io, t, "Merge");
+    yieldAfterPhase(io);
 
-    phase.* = .water;
+    set_phase(.water);
     stepFloodWater(blocks, &rng, flood_queue);
     t = logStep(io, t, "Water");
+    yieldAfterPhase(io);
 
-    phase.* = .lava;
+    set_phase(.lava);
     stepFloodLava(blocks, &rng, flood_queue);
     t = logStep(io, t, "Lava");
+    yieldAfterPhase(io);
 
-    phase.* = .surface;
+    set_phase(.surface);
     stepSurface(blocks, heightmap, &rng);
     t = logStep(io, t, "Surface");
+    yieldAfterPhase(io);
 
-    phase.* = .plants;
+    set_phase(.plants);
     stepPlants(blocks, heightmap, &rng);
     _ = logStep(io, t, "Plants");
 }
 
+fn yieldAfterPhase(io: std.Io) void {
+    std.Io.sleep(io, common.time.ms(1), .real) catch {};
+}
+
 noinline fn logStep(io: std.Io, prev: std.Io.Clock.Timestamp, name: []const u8) std.Io.Clock.Timestamp {
     const now = std.Io.Clock.Timestamp.now(io, .boot);
-    const elapsed_ns: i64 = @truncate(now.raw.nanoseconds - prev.raw.nanoseconds);
-    const elapsed_ms = @divTrunc(elapsed_ns, std.time.ns_per_ms);
+    const elapsed_ms = elapsed_ms_between(prev, now);
     log.info("{s}: {d}ms", .{ name, elapsed_ms });
     return now;
+}
+
+fn elapsed_ms_between(start: std.Io.Clock.Timestamp, end: std.Io.Clock.Timestamp) i64 {
+    const elapsed_ns = end.raw.nanoseconds - start.raw.nanoseconds;
+    const max_reasonable_ns: i96 = 30 * std.time.ns_per_s;
+    if (elapsed_ns < 0 or elapsed_ns > max_reasonable_ns) return 0;
+    const elapsed_ns_i64: i64 = @intCast(elapsed_ns);
+    return @divTrunc(elapsed_ns_i64, std.time.ns_per_ms);
 }

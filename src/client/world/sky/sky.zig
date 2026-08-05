@@ -3,11 +3,13 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const Vertex = @import("../../graphics/Vertex.zig").Vertex;
-const Color = @import("../../graphics/Color.zig").Color;
+const Vertex = @import("aether").Rendering.Vertex;
+const Colors = @import("../../graphics/Color.zig");
+const Color = Colors.Color;
 const Camera = @import("../../player/Camera.zig");
 
 const BatchMesh = Rendering.Mesh(Vertex);
+const BatchMeshData = Rendering.MeshData(Vertex);
 
 /// Sky plane: 64x64 grid of 16-unit tiles (1024x1024 total).
 const PLANE_GRID: u32 = 64;
@@ -28,31 +30,39 @@ const WORLD_CENTER: f32 = 128.0;
 
 const Self = @This();
 
+plane_data: BatchMeshData,
 plane_mesh: BatchMesh,
+cloud_data: BatchMeshData,
 cloud_mesh: BatchMesh,
 scroll: f32,
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
+pub fn init(allocator: std.mem.Allocator) !Self {
     var self: Self = .{
-        .plane_mesh = try BatchMesh.new(allocator, pipeline),
-        .cloud_mesh = try BatchMesh.new(allocator, pipeline),
+        .plane_data = try BatchMeshData.init(allocator),
+        .plane_mesh = try BatchMesh.init(&.{}),
+        .cloud_data = try BatchMeshData.init(allocator),
+        .cloud_mesh = try BatchMesh.init(&.{}),
         .scroll = 0,
         .allocator = allocator,
     };
-    try build_plane(allocator, &self.plane_mesh);
-    try build_clouds(allocator, &self.cloud_mesh);
+    try build_plane(allocator, &self.plane_data);
+    try build_clouds(allocator, &self.cloud_data);
+    self.plane_mesh.update(&self.plane_data);
+    self.cloud_mesh.update(&self.cloud_data);
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.plane_mesh.deinit(self.allocator);
-    self.cloud_mesh.deinit(self.allocator);
+    self.plane_mesh.deinit();
+    self.cloud_mesh.deinit();
+    self.plane_data.deinit(self.allocator);
+    self.cloud_data.deinit(self.allocator);
 }
 
 pub fn update(self: *Self, dt: f32) void {
     self.scroll += dt * CLOUD_SPEED;
-    if (self.scroll >= CLOUD_UV_PERIOD) self.scroll = @mod(self.scroll, CLOUD_UV_PERIOD);
+    while (self.scroll >= CLOUD_UV_PERIOD) self.scroll -= CLOUD_UV_PERIOD;
 }
 
 const collision = @import("../../player/collision.zig");
@@ -115,9 +125,9 @@ fn set_sky_fog(submerged: ?collision.Liquid) void {
 }
 
 fn fog_color(submerged: ?collision.Liquid) Color {
-    return switch (submerged orelse return Color.game_daytime) {
-        .water => Color.game_underwater,
-        .lava => Color.game_underlava,
+    return switch (submerged orelse return Colors.game_daytime) {
+        .water => Colors.game_underwater,
+        .lava => Colors.game_underlava,
     };
 }
 
@@ -154,9 +164,9 @@ fn cloud_tile_uv(tile: u32) [2]i16 {
     };
 }
 
-fn build_plane(allocator: std.mem.Allocator, mesh: *BatchMesh) !void {
-    try mesh.vertices.ensureTotalCapacity(allocator, PLANE_GRID * PLANE_GRID * 6);
-    const color: u32 = @bitCast(Color.game_daytime_zenith);
+fn build_plane(allocator: std.mem.Allocator, mesh: *BatchMeshData) !void {
+    try mesh.ensure_quad_capacity(allocator, PLANE_GRID * PLANE_GRID);
+    const color: u32 = @bitCast(Colors.game_daytime_zenith);
 
     var zi: u32 = 0;
     while (zi < PLANE_GRID) : (zi += 1) {
@@ -165,11 +175,10 @@ fn build_plane(allocator: std.mem.Allocator, mesh: *BatchMesh) !void {
             emit_down_quad(mesh, encode_plane(xi), encode_plane(xi + 1), encode_plane(zi), encode_plane(zi + 1), color, 0, 0, 0, 0);
         }
     }
-    mesh.update();
 }
 
-fn build_clouds(allocator: std.mem.Allocator, mesh: *BatchMesh) !void {
-    try mesh.vertices.ensureTotalCapacity(allocator, CLOUD_GRID * CLOUD_GRID * 6);
+fn build_clouds(allocator: std.mem.Allocator, mesh: *BatchMeshData) !void {
+    try mesh.ensure_quad_capacity(allocator, CLOUD_GRID * CLOUD_GRID);
     const color: u32 = 0xFFFFFFFF;
 
     var zi: u32 = 0;
@@ -181,12 +190,11 @@ fn build_clouds(allocator: std.mem.Allocator, mesh: *BatchMesh) !void {
             emit_down_quad(mesh, encode_cloud_pos(xi), encode_cloud_pos(xi + 1), encode_cloud_pos(zi), encode_cloud_pos(zi + 1), color, tu[0], tu[1], tv[0], tv[1]);
         }
     }
-    mesh.update();
 }
 
 /// Emit a downward-facing quad (y_neg winding from face.zig).
 fn emit_down_quad(
-    mesh: *BatchMesh,
+    mesh: *BatchMeshData,
     x0: i16,
     x1: i16,
     z0: i16,
@@ -198,10 +206,10 @@ fn emit_down_quad(
     tv1: i16,
 ) void {
     // v0=(x0,z1) v1=(x1,z1) v2=(x1,z0) v3=(x0,z0); emit 0,2,1 then 0,3,2
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x0, 0, z1 }, .uv = .{ tu0, tv1 }, .color = color });
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x1, 0, z0 }, .uv = .{ tu1, tv0 }, .color = color });
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x1, 0, z1 }, .uv = .{ tu1, tv1 }, .color = color });
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x0, 0, z1 }, .uv = .{ tu0, tv1 }, .color = color });
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x0, 0, z0 }, .uv = .{ tu0, tv0 }, .color = color });
-    mesh.vertices.appendAssumeCapacity(.{ .pos = .{ x1, 0, z0 }, .uv = .{ tu1, tv0 }, .color = color });
+    mesh.add_quad_assume_capacity(
+        .{ .pos = .{ x0, 0, z1 }, .uv = .{ tu0, tv1 }, .color = color },
+        .{ .pos = .{ x0, 0, z0 }, .uv = .{ tu0, tv0 }, .color = color },
+        .{ .pos = .{ x1, 0, z0 }, .uv = .{ tu1, tv0 }, .color = color },
+        .{ .pos = .{ x1, 0, z1 }, .uv = .{ tu1, tv1 }, .color = color },
+    );
 }

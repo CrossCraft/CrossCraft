@@ -18,9 +18,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # PR smoke test. Builds every (target, kind) with -Dskip-pack=true so we
-  # never have to pull the LFS-backed resources submodule. No artifacts are
-  # uploaded — the build exit code is the signal.
+  # Builds every (target, kind) with -Dskip-pack=true so we never have to
+  # pull the LFS-backed resources submodule. No artifacts are uploaded.
   dev:
     if: github.event_name == 'pull_request'
     strategy:
@@ -30,13 +29,13 @@ jobs:
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux_gl,   kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: game,   extra: "" }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: server, extra: "" }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
+          - { os: macos-latest,   name: mac,        kind: game }
+          - { os: macos-latest,   name: mac,        kind: server }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: server, extra: "" }
+          - { os: ubuntu-latest,  target: arm-3ds,            name: 3ds,        kind: game,   extra: "" }
     runs-on: ${{ matrix.os }}
     name: dev ${{ matrix.kind }} (${{ matrix.name }})
     steps:
@@ -48,24 +47,71 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
 
-      - name: Setup macOS SDK
-        if: matrix.name == 'mac'
-        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
-
-      # macOS game links MoltenVK and system glfw3 directly; both get bundled
-      # into the .app by Aether.exportArtifact. Other targets vendor everything.
+      # macOS game: SDL3 is vendored and statically linked; the only system
+      # dependency is MoltenVK, which Aether.exportArtifact bundles into the
+      # .app. Other targets vendor everything.
       - name: Install macOS dependencies
         if: matrix.name == 'mac' && matrix.kind == 'game'
-        run: brew install glfw molten-vk
+        run: brew install molten-vk
 
-      - name: Build (smoke)
-        run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} -Dskip-pack=true
+      - name: Build
+        if: matrix.name != 'mac'
+        run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=${{ startsWith(matrix.name, 'windows') && 'ReleaseFast' || 'ReleaseSafe' }} ${{ matrix.extra }} -Dskip-pack=true
+
+      # macOS builds natively. SDL's build demands --sysroot for any explicit
+      # (non-native) -Dtarget, and --sysroot in turn breaks the absolute
+      # Homebrew / vendored system_sdk paths Aether links against. The runner
+      # is already Apple Silicon, so a native build IS the aarch64-macos
+      # artifact.
+      - name: Build (macOS)
+        if: matrix.name == 'mac'
+        run: zig build ${{ matrix.kind }} -Doptimize=ReleaseSafe -Dskip-pack=true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: dev-${{ matrix.kind }}_${{ matrix.name }}
           path: zig-out/bin/
+          if-no-files-found: error
+
+  # Switch packaging needs devkitA64 and libnx, which the dedicated
+  # devkitPro image provides under /opt/devkitpro. Keep this separate from
+  # the platform matrix: GitHub job containers cannot be used for macOS.
+  switch-dev:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    name: dev game (switch)
+    container:
+      # devkitpro/devkita64:20260219 (linux/amd64), pinned by digest so
+      # toolchain updates are deliberate workflow changes.
+      image: devkitpro/devkita64@sha256:82575ea78651b530b2e232bb3799cfd1fe331514e053d5f724bb4b28191fb79d
+    steps:
+      # Do not fetch LFS: this compile-only check deliberately skips pack.zip.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Build Nintendo Switch game
+        run: zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch -Doptimize=ReleaseSafe -Dskip-pack=true
+
+      - name: Verify Nintendo Switch artifact
+        shell: sh
+        run: |
+          nro="zig-out/bin/CrossCraft-Classic-Switch/CrossCraft-Classic.nro"
+          elf="zig-out/bin/CrossCraft-Classic-Switch/CrossCraft-Classic.elf"
+          test -s "$nro" || { echo "missing or empty $nro"; exit 1; }
+          test -s "$elf" || { echo "missing or empty $elf"; exit 1; }
+          echo "Switch game OK (.nro + .elf)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dev-game_switch
+          path: zig-out/bin/CrossCraft-Classic-Switch/
           if-no-files-found: error
 
   # Full release-style builds on push to main / v* tags. Pulls LFS for game
@@ -81,13 +127,13 @@ jobs:
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: game,   extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux_gl,   kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: game,   extra: "" }
-          - { os: macos-latest,   target: aarch64-macos,      name: mac,        kind: server, extra: "" }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: game,   extra: -Dcpu=x86_64_v3 }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
-          - { os: windows-latest, target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
+          - { os: macos-latest,   name: mac,        kind: game }
+          - { os: macos-latest,   name: mac,        kind: server }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: game,   extra: -Dcpu=x86_64_v3 }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
-          - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: server, extra: "" }
+          - { os: ubuntu-latest,  target: arm-3ds,            name: 3ds,        kind: game,   extra: "" }
     runs-on: ${{ matrix.os }}
     name: rel ${{ matrix.kind }} (${{ matrix.name }})
     steps:
@@ -102,36 +148,62 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
 
-      - name: Setup macOS SDK
-        if: matrix.name == 'mac'
-        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
-
       - name: Install macOS dependencies
         if: matrix.name == 'mac' && matrix.kind == 'game'
-        run: brew install glfw molten-vk
+        run: brew install molten-vk
 
-      # Server never packs resources — same command for every platform.
+      # Server never packs resources and only ships for PC targets.
       - name: Build server
-        if: matrix.kind == 'server'
-        run: zig build server -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} -Dskip-pack=true
+        if: matrix.kind == 'server' && matrix.name != 'mac'
+        run: zig build server -Dtarget=${{ matrix.target }} -Doptimize=${{ startsWith(matrix.name, 'windows') && 'ReleaseFast' || 'ReleaseSafe' }} ${{ matrix.extra }} -Dskip-pack=true
+
+      # macOS (game + server) builds natively: SDL's build requires --sysroot
+      # for any explicit (non-native) -Dtarget, and --sysroot breaks the
+      # absolute Homebrew / vendored system_sdk paths Aether links. The runner
+      # is Apple Silicon, so native == aarch64-macos.
+      - name: Build server (macOS)
+        if: matrix.kind == 'server' && matrix.name == 'mac'
+        run: zig build server -Doptimize=ReleaseSafe -Dskip-pack=true
 
       # Desktop game (linux/windows): -Duse-cwd=true so pack.zip ships as a
       # loose file in zig-out/bin/ next to the binary.
       - name: Build game (desktop)
         if: matrix.kind == 'game' && (startsWith(matrix.name, 'linux') || startsWith(matrix.name, 'windows'))
-        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }} -Duse-cwd=true
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=${{ startsWith(matrix.name, 'windows') && 'ReleaseFast' || 'ReleaseSafe' }} ${{ matrix.extra }} -Duse-cwd=true
 
       # macOS game: Aether.exportArtifact routes pack.zip into
       # CrossCraft-Classic.app/Contents/Resources/pack.zip — no -Duse-cwd.
+      # Built natively (see "Build server (macOS)" above).
       - name: Build game (macOS)
         if: matrix.kind == 'game' && matrix.name == 'mac'
-        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+        run: zig build game -Doptimize=ReleaseSafe
 
       # PSP game: build.zig installs pack.zip into the PSP
       # bundle dir alongside EBOOT.PBP / app.prx.
       - name: Build game (PSP)
         if: matrix.kind == 'game' && matrix.name == 'psp'
         run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
+
+      # 3DS game: build.zig installs pack.zip beside the .3dsx artifact.
+      - name: Build game (3DS)
+        if: matrix.kind == 'game' && matrix.name == '3ds'
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
+
+      # Ship the archival world with every release artifact. Console builds
+      # keep their files in platform-specific bundle directories, while
+      # desktop/server artifacts are rooted directly in zig-out/bin/.
+      - name: Bundle archival saves
+        shell: bash
+        run: |
+          case "${{ matrix.kind }}_${{ matrix.name }}" in
+            game_psp) bundle="zig-out/bin/CrossCraft-Classic-PSP" ;;
+            game_3ds) bundle="zig-out/bin/CrossCraft-Classic-3DS" ;;
+            game_mac) bundle="zig-out/bin/CrossCraft-Classic.app/Contents/Resources" ;;
+            *) bundle="zig-out/bin" ;;
+          esac
+          test -d "$bundle" || { echo "missing release bundle $bundle"; exit 1; }
+          cp -R saves "$bundle/"
+          test -s "$bundle/saves/origins.cw" || { echo "missing bundled saves/origins.cw"; exit 1; }
 
       # pack.zip size check guards against LFS regressions on every game
       # platform: a pointer stub is ~130 B, a real pack is multi-MB.
@@ -174,12 +246,16 @@ jobs:
           test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
           echo "PSP game OK (EBOOT.PBP + pack.zip $size bytes)"
 
-      - name: Verify PSP server artifact
-        if: matrix.kind == 'server' && matrix.name == 'psp'
+      - name: Verify 3DS game artifact
+        if: matrix.kind == 'game' && matrix.name == '3ds'
         run: |
-          eboot="zig-out/bin/CrossCraft-Server-PSP/EBOOT.PBP"
-          test -s "$eboot" || { echo "missing or empty $eboot"; exit 1; }
-          echo "PSP server OK"
+          threedsx="zig-out/bin/CrossCraft-Classic-3DS/CrossCraft-Classic.3dsx"
+          pack="zig-out/bin/CrossCraft-Classic-3DS/pack.zip"
+          test -s "$threedsx" || { echo "missing or empty $threedsx"; exit 1; }
+          test -f "$pack" || { echo "missing $pack"; exit 1; }
+          size=$(wc -c <"$pack")
+          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
+          echo "3DS game OK (.3dsx + pack.zip $size bytes)"
 
       - name: Upload macOS .app
         if: matrix.kind == 'game' && matrix.name == 'mac'
@@ -195,6 +271,66 @@ jobs:
         with:
           name: ${{ matrix.kind }}_${{ matrix.name }}
           path: zig-out/bin/
+          if-no-files-found: error
+
+  # Release-style Switch build.  This is separate from rel because devkitA64
+  # and libnx live in the job container rather than on GitHub's runner image.
+  switch-rel:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    name: rel game (switch)
+    container:
+      # devkitpro/devkita64:20260219 (linux/amd64), pinned by digest so
+      # toolchain updates are deliberate workflow changes.
+      image: devkitpro/devkita64@sha256:82575ea78651b530b2e232bb3799cfd1fe331514e053d5f724bb4b28191fb79d
+    steps:
+      # The devkitPro image provides Git but not Git LFS. Install it before
+      # checkout so actions/checkout can hydrate the resource submodule.
+      - name: Install Git LFS
+        run: |
+          apt-get update -qq
+          apt-get install --no-install-recommends -y git-lfs
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+          lfs: true
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Build Nintendo Switch game
+        run: zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch -Doptimize=ReleaseSafe
+
+      - name: Bundle archival saves
+        shell: sh
+        run: |
+          bundle="zig-out/bin/CrossCraft-Classic-Switch"
+          test -d "$bundle" || { echo "missing release bundle $bundle"; exit 1; }
+          cp -R saves "$bundle/"
+          test -s "$bundle/saves/origins.cw" || { echo "missing bundled saves/origins.cw"; exit 1; }
+
+      # Guard against an LFS pointer being packaged instead of the resource
+      # pack, just as the other console release jobs do.
+      - name: Verify Nintendo Switch artifact
+        shell: sh
+        run: |
+          nro="zig-out/bin/CrossCraft-Classic-Switch/CrossCraft-Classic.nro"
+          elf="zig-out/bin/CrossCraft-Classic-Switch/CrossCraft-Classic.elf"
+          pack="zig-out/bin/CrossCraft-Classic-Switch/pack.zip"
+          test -s "$nro" || { echo "missing or empty $nro"; exit 1; }
+          test -s "$elf" || { echo "missing or empty $elf"; exit 1; }
+          test -f "$pack" || { echo "missing $pack"; exit 1; }
+          size=$(wc -c <"$pack")
+          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
+          echo "Switch game OK (.nro + .elf + pack.zip $size bytes)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: game_switch
+          path: zig-out/bin/CrossCraft-Classic-Switch/
           if-no-files-found: error
 
   # Build the pack_zip host tool for distribution. This is the canonical

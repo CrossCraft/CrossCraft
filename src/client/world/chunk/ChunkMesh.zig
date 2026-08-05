@@ -3,20 +3,24 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const Vertex = @import("../../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const mesher = @import("mesher.zig");
 const World = @import("game").World;
 
 pub const BatchMesh = Rendering.Mesh(Vertex);
+pub const BatchMeshData = Rendering.MeshData(Vertex);
 
 /// One 16x16x16 section with 3 meshes:
 ///   opaque -- solid blocks + buried (solid) leaf faces
 ///   trans  -- outer leaves + glass/cross
 ///   fluid  -- water/lava (drawn last with depth writes off)
 /// Each mesh owns its vertex storage via the render allocator.
+opaque_data: BatchMeshData,
 @"opaque": BatchMesh,
+trans_data: BatchMeshData,
 trans: BatchMesh,
+fluid_data: BatchMeshData,
 fluid: BatchMesh,
 cx: u32,
 sy: u32,
@@ -42,11 +46,14 @@ allocator: std.mem.Allocator,
 
 const Self = @This();
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle, cx: u32, sy: u32, cz: u32) !Self {
+pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !Self {
     return .{
-        .@"opaque" = try BatchMesh.new(allocator, pipeline),
-        .trans = try BatchMesh.new(allocator, pipeline),
-        .fluid = try BatchMesh.new(allocator, pipeline),
+        .opaque_data = try BatchMeshData.init(allocator),
+        .@"opaque" = try BatchMesh.init(&.{}),
+        .trans_data = try BatchMeshData.init(allocator),
+        .trans = try BatchMesh.init(&.{}),
+        .fluid_data = try BatchMeshData.init(allocator),
+        .fluid = try BatchMesh.init(&.{}),
         .cx = cx,
         .sy = sy,
         .cz = cz,
@@ -66,51 +73,54 @@ pub fn update_animation(self: *Self, dt: f32) void {
 }
 
 pub fn deinit(self: *Self) void {
-    self.@"opaque".deinit(self.allocator);
-    self.trans.deinit(self.allocator);
-    self.fluid.deinit(self.allocator);
+    self.@"opaque".deinit();
+    self.trans.deinit();
+    self.fluid.deinit();
+    self.opaque_data.deinit(self.allocator);
+    self.trans_data.deinit(self.allocator);
+    self.fluid_data.deinit(self.allocator);
 }
 
 /// Release vertex data but keep GPU handles alive for reuse.
 pub fn clear(self: *Self) void {
     const a = self.allocator;
-    self.@"opaque".vertices.clearAndFree(a);
-    self.trans.vertices.clearAndFree(a);
-    self.fluid.vertices.clearAndFree(a);
+    self.opaque_data.clear_and_free(a);
+    self.trans_data.clear_and_free(a);
+    self.fluid_data.clear_and_free(a);
 }
 
-pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{OutOfMemory}!void {
+pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{ OutOfMemory, IndexOverflow }!void {
     // All-air chunks have no visible faces -- skip pack/count/emit entirely.
     if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) {
-        self.@"opaque".vertices.clearRetainingCapacity();
-        self.trans.vertices.clearRetainingCapacity();
-        self.fluid.vertices.clearRetainingCapacity();
+        self.opaque_data.clear_retaining_capacity();
+        self.trans_data.clear_retaining_capacity();
+        self.fluid_data.clear_retaining_capacity();
         return;
     }
 
     var buf: mesher.SectionBuf = undefined;
     // pack_section bundles the count phase and returns per-mesh totals so
-    // we can pre-allocate exact capacity before emit. emit_section then
-    // sticks to appendAssumeCapacity -- no per-row growth, no realloc thrash.
+    // we can pre-allocate exact capacity before emit. emit_section then uses
+    // assume-capacity mesh helpers -- no per-row growth, no realloc thrash.
     const counts = mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
 
     const a = self.allocator;
-    self.@"opaque".vertices.clearRetainingCapacity();
-    self.trans.vertices.clearRetainingCapacity();
-    self.fluid.vertices.clearRetainingCapacity();
+    self.opaque_data.clear_retaining_capacity();
+    self.trans_data.clear_retaining_capacity();
+    self.fluid_data.clear_retaining_capacity();
 
-    try self.@"opaque".vertices.ensureTotalCapacity(a, counts.opaque_verts);
-    try self.trans.vertices.ensureTotalCapacity(a, counts.transparent_verts);
-    try self.fluid.vertices.ensureTotalCapacity(a, counts.fluid_verts);
+    try self.opaque_data.ensure_quad_capacity(a, counts.opaque_verts / 6);
+    try self.trans_data.ensure_quad_capacity(a, counts.transparent_verts / 6);
+    try self.fluid_data.ensure_quad_capacity(a, counts.fluid_verts / 6);
 
     mesher.emit_section(&buf, self.cx, self.sy, self.cz, .{
-        .@"opaque" = &self.@"opaque".vertices,
-        .transparent = &self.trans.vertices,
-        .fluid = &self.fluid.vertices,
+        .@"opaque" = &self.opaque_data,
+        .transparent = &self.trans_data,
+        .fluid = &self.fluid_data,
     }, atlas, self.ao_enabled);
 
-    inline for (&.{ &self.@"opaque", &self.trans, &self.fluid }) |mesh| {
-        if (mesh.vertices.items.len > 0) mesh.update();
+    inline for (&.{ .{ &self.opaque_data, &self.@"opaque" }, .{ &self.trans_data, &self.trans }, .{ &self.fluid_data, &self.fluid } }) |pair| {
+        if (pair[0].vertices.items.len > 0) pair[1].update(pair[0]);
     }
 }
 
@@ -126,21 +136,21 @@ pub fn center_z(self: *const Self) f32 {
 
 /// Draw opaque geometry only. Call front-to-back.
 pub fn draw_opaque(self: *Self) void {
-    if (self.@"opaque".vertices.items.len == 0) return;
+    if (self.opaque_data.vertices.items.len == 0) return;
     const m = model_matrix(self, scale_opaque);
     self.@"opaque".draw(&m);
 }
 
 /// Draw transparent geometry (leaves, glass, cross-plants). Call back-to-front.
 pub fn draw_transparent(self: *Self) void {
-    if (self.trans.vertices.items.len == 0) return;
+    if (self.trans_data.vertices.items.len == 0) return;
     const m = model_matrix(self, scale_trans);
     self.trans.draw(&m);
 }
 
 /// Draw fluid geometry (water, lava). Call back-to-front with depth writes off.
 pub fn draw_fluid(self: *Self) void {
-    if (self.fluid.vertices.items.len == 0) return;
+    if (self.fluid_data.vertices.items.len == 0) return;
     const m = model_matrix(self, scale_trans);
     self.fluid.draw(&m);
 }

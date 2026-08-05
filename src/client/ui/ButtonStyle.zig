@@ -1,8 +1,9 @@
 //! Visual style for buttons. Lifts atlas regions, label colors, and sizing
 //! out of widget code so each button carries a `*const ButtonStyle`.
 
-const texture_region = @import("texture_region.zig");
-const Color = @import("../graphics/Color.zig").Color;
+const texture_region = @import("aether").UI.texture_region;
+const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 
 pub const TextureRegion = texture_region.TextureRegion;
 pub const TextureSizing = texture_region.TextureSizing;
@@ -13,11 +14,11 @@ pub const ButtonStyle = struct {
     disabled: TextureRegion,
     sizing: TextureSizing,
 
-    label_color_normal: Color = Color.white_fg,
-    label_color_hover: Color = Color.select_front,
-    label_color_disabled: Color = Color.silver_fg,
-    shadow_color_normal: Color = Color.menu_gray,
-    shadow_color_hover: Color = Color.select_back,
+    label_color_normal: Color = Colors.white_fg,
+    label_color_hover: Color = Colors.select_front,
+    label_color_disabled: Color = Colors.silver_fg,
+    shadow_color_normal: Color = Colors.menu_gray,
+    shadow_color_hover: Color = Colors.select_back,
 
     /// Inset on each side reserved for the label. Button drawing truncates
     /// to fit `width - 2 * text_padding_x`.

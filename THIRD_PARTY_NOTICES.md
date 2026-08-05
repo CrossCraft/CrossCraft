@@ -1,6 +1,6 @@
 # Third-Party Notices for CrossCraft
 
-CrossCraft is licensed under the GNU Lesser General Public License version 3 (LGPLv3).
+CrossCraft is licensed under the GNU General Public License version 2 (GPLv2).
 See the root `LICENSE` file for the full text.
 
 This file contains licensing information for third-party code, algorithms, and documentation incorporated or adapted in the project.
@@ -49,4 +49,4 @@ The original ClassiCube work is licensed under the **BSD 3-Clause License**:
 > EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 **Modifications:**
-The code was ported to Zig and adapted/integrated for use in CrossCraft (which uses the separate Aether-Engine). All changes, the Zig implementations, and any new code written for these features are licensed under the GNU Lesser General Public License version 3 (LGPLv3), the same license as the rest of CrossCraft.
+The code was ported to Zig and adapted/integrated for use in CrossCraft (which uses the separate Aether-Engine). All changes, the Zig implementations, and any new code written for these features are licensed under the GNU General Public License version 2 (GPLv2), the same license as the rest of CrossCraft.

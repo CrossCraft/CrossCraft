@@ -169,7 +169,7 @@ fn send_world(self: *Self) !void {
     };
     compress_worker.submit(&job.base);
     while (!job.base.done.load(.acquire)) {
-        try Server.io.sleep(.fromMilliseconds(20), .real);
+        try Server.io.sleep(common.time.ms(20), .real);
     }
     if (job.base.err) |e| return e;
 }

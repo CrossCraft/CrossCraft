@@ -7,7 +7,7 @@
 //   (e.g. one-line differences).
 // See THIRD-PARTY-NOTICES.md for the full BSD 3-Clause license text.
 //
-// Ported to Zig for CrossCraft (LGPLv3; uses separate Aether-Engine).
+// Ported to Zig for CrossCraft (GPLv2; uses separate Aether-Engine).
 // Modifications Copyright (c) 2026 CrossCraft
 
 // 2D isometric block drawer for the hotbar (and any future inventory grids).
@@ -23,21 +23,21 @@
 // so the GPU draws them in submission order.
 //
 // Vertex positions are pre-converted to NDC SNORM16 on the CPU and the draw
-// runs with identity proj/view, mirroring SpriteBatcher's pipeline state.
+// runs with identity proj/view, mirroring SpriteBatcher's render state.
 
 const std = @import("std");
 const ae = @import("aether");
+const UI = ae.UI;
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
 const c = @import("common").consts;
 const Block = c.Block;
 
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
+const Vertex = @import("aether").Rendering.Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Face = @import("../world/chunk/face.zig").Face;
-const Scaling = @import("Scaling.zig");
-const layout = @import("layout.zig");
+const Scaling = UI.Scaling;
 
 const Self = @This();
 
@@ -56,24 +56,32 @@ const PROJ_HALF: f32 = 0.7071068; // cos(45)
 pub const ISO_LAYER: u8 = 250;
 const ISO_Z: i16 = 32766 - @as(i16, ISO_LAYER);
 
-// 3 faces * 6 verts per face. Cross/flat blocks emit only 6 verts so we size
+// 3 faces per block. Cross/flat blocks emit only 1 quad so we size
 // by the cube worst case.
-const VERTS_PER_BLOCK: usize = 18;
+const QUADS_PER_BLOCK: usize = 3;
 // Worst case: 9 hotbar slots + 45 inventory grid slots queued in the same
 // frame. Reserving up front keeps the per-frame path alloc-free.
 const MAX_BLOCKS: usize = 9 + 45;
-const VERT_CAPACITY: usize = MAX_BLOCKS * VERTS_PER_BLOCK;
+const QUAD_CAPACITY: usize = MAX_BLOCKS * QUADS_PER_BLOCK;
 
-pipeline: Rendering.Pipeline.Handle,
+pub const CustomRendererId: UI.CustomRenderable.RendererId = .app0;
+
+pub const Payload = struct {
+    block: Block,
+    cx: f32,
+    cy: f32,
+    half_extent_px: f32,
+};
+
 terrain: *const Rendering.Texture,
 atlas: TextureAtlas,
+mesh_data: Rendering.MeshData(Vertex),
 mesh: Rendering.Mesh(Vertex),
 iso_xform: Math.Mat4,
 allocator: std.mem.Allocator,
 
 pub fn init(
     allocator: std.mem.Allocator,
-    pipeline: Rendering.Pipeline.Handle,
     terrain: *const Rendering.Texture,
     atlas: TextureAtlas,
 ) !Self {
@@ -81,25 +89,29 @@ pub fn init(
     // a first, then b" -- matching the rotateY-then-rotateX order.
     const iso = Math.Mat4.rotationY(ROT_Y_RAD).mul(Math.Mat4.rotationX(ROT_X_RAD));
     var self: Self = .{
-        .pipeline = pipeline,
         .terrain = terrain,
         .atlas = atlas,
-        .mesh = try Rendering.Mesh(Vertex).new(allocator, pipeline),
+        .mesh_data = try Rendering.MeshData(Vertex).init(allocator),
+        .mesh = try Rendering.Mesh(Vertex).init(&.{}),
         .iso_xform = iso,
         .allocator = allocator,
     };
-    self.mesh.primitive = .triangles;
-    try self.mesh.vertices.ensureTotalCapacity(allocator, VERT_CAPACITY);
+    try self.mesh_data.ensure_quad_capacity(allocator, QUAD_CAPACITY);
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.mesh.deinit(self.allocator);
+    self.mesh.deinit();
+    self.mesh_data.deinit(self.allocator);
 }
 
 /// Begin a new frame's worth of blocks. Drops everything queued so far.
 pub fn begin(self: *Self) void {
-    self.mesh.vertices.clearRetainingCapacity();
+    self.mesh_data.clear_retaining_capacity();
+}
+
+pub fn add_payload(self: *Self, payload: Payload) void {
+    self.add_block(payload.block, payload.cx, payload.cy, payload.half_extent_px);
 }
 
 /// Queue an isometric block at logical-pixel center (cx, cy).
@@ -138,22 +150,61 @@ pub fn add_block(
     self.emit_iso_face(.y_pos, h, y_bot, y_top, cx, cy, block, is_slab);
 }
 
-/// Upload the queued mesh and render it. Sets identity proj/view (matching
-/// SpriteBatcher) and binds the terrain texture before drawing.
-pub fn flush(self: *Self) void {
-    if (self.mesh.vertices.items.len == 0) return;
-    self.mesh.update();
+/// Upload the queued mesh. Call before the active draw frame.
+pub fn update(self: *Self) void {
+    if (self.mesh_data.vertices.items.len == 0) return;
+    self.mesh.update(&self.mesh_data);
+}
+
+/// Render the queued mesh. Sets identity proj/view (matching SpriteBatcher)
+/// and binds the terrain texture before drawing.
+pub fn draw(self: *Self) void {
+    if (self.mesh_data.vertices.items.len == 0) return;
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
     Rendering.gfx.api.set_view_matrix(&Math.Mat4.identity());
-    Rendering.Pipeline.bind(self.pipeline);
-    self.terrain.bind();
+    Rendering.set_state(&.{ .texture = self.terrain.handle });
 
     const ident = Math.Mat4.identity();
     self.mesh.draw(&ident);
 }
 
+pub fn flush(self: *Self) void {
+    self.update();
+    self.draw();
+}
+
+pub fn custom_renderer(self: *Self) UI.CustomRenderable.Renderer {
+    return .{
+        .ctx = self,
+        .reset = custom_reset,
+        .prepare = custom_prepare,
+        .draw = custom_draw,
+    };
+}
+
+pub fn custom_command(payload: Payload, bounds: UI.LogicalRect, layer: u8, sequence: u16) UI.CustomRenderable.Command {
+    return UI.CustomRenderable.Command.init(CustomRendererId, bounds, layer, .inherit, sequence, payload);
+}
+
 // --- Internals ---
+
+fn custom_reset(ctx: *anyopaque) void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.begin();
+}
+
+fn custom_prepare(ctx: *anyopaque, commands: []const UI.CustomRenderable.Command) anyerror!void {
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    for (commands) |*cmd| self.add_payload(cmd.read(Payload));
+    self.update();
+}
+
+fn custom_draw(ctx: *anyopaque, commands: []const UI.CustomRenderable.Command) void {
+    _ = commands;
+    const self: *Self = @ptrCast(@alignCast(ctx));
+    self.draw();
+}
 
 /// Same per-direction shading the world mesher uses, so the cube's three
 /// visible faces read at three distinct brightness levels.
@@ -318,14 +369,8 @@ fn emit_quad(self: *Self, verts: *const [4]Vertex) void {
     const ccw = ax * by - ay * bx > 0;
 
     if (ccw) {
-        self.mesh.vertices.appendSliceAssumeCapacity(&.{
-            verts[0], verts[1], verts[2],
-            verts[0], verts[2], verts[3],
-        });
+        self.mesh_data.add_quad_assume_capacity(verts[0], verts[1], verts[2], verts[3]);
     } else {
-        self.mesh.vertices.appendSliceAssumeCapacity(&.{
-            verts[0], verts[2], verts[1],
-            verts[0], verts[3], verts[2],
-        });
+        self.mesh_data.add_quad_assume_capacity(verts[0], verts[3], verts[2], verts[1]);
     }
 }

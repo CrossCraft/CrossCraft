@@ -1,10 +1,9 @@
 // --- Shared gzip compression worker ---
 //
 // One process-wide worker thread runs gzip jobs out of a lock-free LIFO
-// queue. Both world-send (network) and world-save (disk, classic_cw) submit
-// here so the deep `flate.Compress` call frames stay out of the per-task
-// IO async stacks (64 KB on PSP -- not enough for the 32 KB sliding window
-// plus the deflate finish path).
+// queue. Both world-send (network) and world-save (disk, any format) submit
+// here so save dispatch does not depend on std.Io task spawning, and so the
+// deep `flate.Compress` call frames stay out of small per-task IO stacks.
 //
 // This module owns the static state and the loop body. Spawning the OS
 // thread is the consumer's job (server's `ServerState`, client's
@@ -16,6 +15,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const common = @import("common");
 const flate = std.compress.flate;
 
 pub const Job = struct {
@@ -99,6 +99,31 @@ pub fn submit(job: *Job) void {
     }
 }
 
+/// Remove a queued job before `worker_main` has been spawned. Used by init
+/// error paths that must free job storage without waiting on a worker thread
+/// that does not exist yet.
+pub fn cancel_pending_before_worker(job: *Job) bool {
+    var node = queue_head.swap(null, .acquire);
+    var restore_head: ?*Job = null;
+    var canceled = false;
+
+    while (node) |current| {
+        const next = current.next;
+        if (current == job) {
+            current.next = null;
+            current.done.store(true, .release);
+            canceled = true;
+        } else {
+            current.next = restore_head;
+            restore_head = current;
+        }
+        node = next;
+    }
+
+    queue_head.store(restore_head, .release);
+    return canceled;
+}
+
 pub fn signal_exit() void {
     worker_exit.store(true, .release);
 }
@@ -147,7 +172,7 @@ pub fn worker_main() void {
 
     while (!should_exit()) {
         if (!drain_once()) {
-            std.Io.sleep(stored_io, .fromMilliseconds(10), .real) catch {};
+            std.Io.sleep(stored_io, common.time.ms(10), .real) catch {};
         }
     }
 }

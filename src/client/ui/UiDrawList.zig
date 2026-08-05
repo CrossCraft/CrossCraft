@@ -6,14 +6,13 @@ const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 
-const consts = @import("common").consts;
-
-const SpriteBatcher = @import("SpriteBatcher.zig");
-const FontBatcher = @import("FontBatcher.zig");
+const SpriteBatcher = ae.UI.SpriteBatcher;
+const FontBatcher = ae.UI.FontBatcher;
 const IsoBlockDrawer = @import("IsoBlockDrawer.zig");
-const layout = @import("layout.zig");
+const layout = ae.UI.layout;
 
-pub const Color = @import("../graphics/Color.zig").Color;
+pub const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 pub const Anchor = layout.Anchor;
 pub const Point = layout.Point;
 
@@ -34,12 +33,7 @@ pub const RectCmd = struct {
     origin: Anchor = .top_left,
 };
 
-pub const IsoBlockCmd = struct {
-    block: consts.Block,
-    cx: f32,
-    cy: f32,
-    half_extent_px: f32,
-};
+pub const IsoBlockCmd = IsoBlockDrawer.Payload;
 
 pub const DrawCmd = union(enum) {
     sprite: SpriteCmd,
@@ -189,7 +183,7 @@ pub fn flush_into(
             // its own pass, with no Z interaction with sprite/text.
             .iso_block => |*b| {
                 const drawer = iso.?;
-                drawer.add_block(b.block, b.cx, b.cy, b.half_extent_px);
+                drawer.add_payload(b.*);
             },
         }
     }

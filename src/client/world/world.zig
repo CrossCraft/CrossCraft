@@ -4,7 +4,8 @@ const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
-const Color = @import("../graphics/Color.zig").Color;
+const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 const Camera = @import("../player/Camera.zig");
 const collision = @import("../player/collision.zig");
 const config = @import("../config.zig");
@@ -72,7 +73,6 @@ clouds: *const Rendering.Texture,
 rain_tex: *const Rendering.Texture,
 particles_tex: *const Rendering.Texture,
 atlas: TextureAtlas,
-pipeline: Rendering.Pipeline.Handle,
 sky: Sky,
 particles: ParticleSystem,
 rain: Rain,
@@ -87,7 +87,6 @@ pub fn init_in_place(
     self: *Self,
     allocator: std.mem.Allocator,
     io: std.Io,
-    pipeline: Rendering.Pipeline.Handle,
     terrain: *const Rendering.Texture,
     clouds: *const Rendering.Texture,
     rain_tex: *const Rendering.Texture,
@@ -124,17 +123,16 @@ pub fn init_in_place(
     self.rain_tex = rain_tex;
     self.particles_tex = particles_tex;
     self.atlas = atlas;
-    self.pipeline = pipeline;
     self.cam_cx = camera_chunk(camera.x);
     self.cam_cz = camera_chunk(camera.z);
     self.allocator = allocator;
     self.io = io;
 
-    self.sky = try Sky.init(allocator, pipeline);
+    self.sky = try Sky.init(allocator);
     errdefer self.sky.deinit();
-    self.particles = try ParticleSystem.init(allocator, pipeline, atlas);
+    self.particles = try ParticleSystem.init(allocator, atlas);
     errdefer self.particles.deinit();
-    self.rain = try Rain.init(allocator, pipeline);
+    self.rain = try Rain.init(allocator);
     errdefer self.rain.deinit();
 
     self.recollect(camera);
@@ -166,7 +164,7 @@ pub fn deinit(self: *Self) void {
 
 pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
     self.sky.update(dt);
-    self.particles.update(dt);
+    self.particles.update(dt, camera);
     self.rain.update(dt, camera);
 
     // Advance the bouncy-rise animation for every loaded section. Runs before
@@ -243,9 +241,10 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
             self.build_estimator.end(self.io);
         } else |_| {
             self.build_estimator.end(self.io);
-            // OOM - evict the farthest built section to free GPU memory,
-            // then stop for this frame. The cursor stays at i so this
-            // section is retried first next frame rather than rebuilding it
+            // Mesh allocation/indexing failure - evict the farthest built
+            // section to free GPU memory, then stop for this frame. The
+            // cursor stays at i so this section is retried first next frame
+            // rather than rebuilding it
             // twice in one frame.
             _ = self.try_evict_farthest(camera);
             self.build_cursor = @intCast(i);
@@ -272,14 +271,12 @@ fn mark_first_built(sec: *ChunkMesh) void {
 pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     const submerged = collision.liquid_at_point(camera.x, camera.y, camera.z);
 
-    Rendering.Pipeline.bind(self.pipeline);
-
-    Rendering.Texture.Default.bind();
+    Rendering.gfx.api.bind_texture(Rendering.Texture.Default.handle);
     Sky.clear(submerged);
     self.sky.draw_plane(camera, submerged);
 
     set_terrain_fog(submerged);
-    self.terrain.bind();
+    Rendering.gfx.api.bind_texture(self.terrain.handle);
 
     self.frame_visible_count = 0;
     for (0..WORLD_CX) |cx| {
@@ -319,13 +316,13 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     // Clouds are a physical layer at Y=72. Draw after opaque (so terrain
     // occludes them) but before transparent/fluid (so leaves, glass, and
     // water alpha-blend against the cloud layer behind them).
-    self.clouds.bind();
+    Rendering.gfx.api.bind_texture(self.clouds.handle);
     self.sky.draw_clouds(camera, submerged);
 
     // Transparent pass (back-to-front): non-fluid (leaves, glass, cross-plants).
     // Depth writes stay on so leaves properly occlude geometry behind them.
     set_terrain_fog(submerged);
-    self.terrain.bind();
+    Rendering.gfx.api.bind_texture(self.terrain.handle);
     Rendering.gfx.api.set_alpha_blend(true);
     var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
@@ -343,7 +340,7 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
 
     // Particles between transparent and fluid so they depth-test against
     // opaque + transparent geometry and blend before water is drawn.
-    self.particles.draw(camera);
+    self.particles.draw();
 }
 
 /// Draw rain streaks + impact splashes.  Slots between draw_world_pass and
@@ -351,11 +348,10 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
 /// blend over particles.  No-op when the rain option is off.
 pub fn draw_rain_pass(self: *Self, camera: *const Camera) void {
     if (!Options.current.rain) return;
-    Rendering.Pipeline.bind(self.pipeline);
-    self.rain_tex.bind();
+    Rendering.gfx.api.bind_texture(self.rain_tex.handle);
     self.rain.draw_streaks(camera);
-    self.particles_tex.bind();
-    self.rain.draw_splashes(camera);
+    Rendering.gfx.api.bind_texture(self.particles_tex.handle);
+    self.rain.draw_splashes();
 }
 
 /// Draw the fluid (water/lava) pass. Must be called after draw_world_pass on
@@ -366,8 +362,7 @@ pub fn draw_fluid_pass(self: *Self) void {
     const visible = self.frame_visible[0..self.frame_visible_count];
     const clip_count = self.frame_clip_count;
 
-    Rendering.Pipeline.bind(self.pipeline);
-    self.terrain.bind();
+    Rendering.gfx.api.bind_texture(self.terrain.handle);
     Rendering.gfx.api.set_alpha_blend(true);
 
     // Fluid pass (back-to-front): water/lava drawn with depth writes off so
@@ -457,7 +452,6 @@ fn init_column(self: *Self, cx: u8, cz: u8, cam: *const Camera) bool {
     for (0..SECTIONS_Y) |sy| {
         self.grid[cx][cz][sy] = ChunkMesh.init(
             self.allocator,
-            self.pipeline,
             @intCast(cx),
             @intCast(sy),
             @intCast(cz),
@@ -769,8 +763,8 @@ fn camera_chunk(pos: f32) i32 {
 
 fn set_terrain_fog(submerged: ?collision.Liquid) void {
     const c = switch (submerged orelse .water) {
-        .water => if (submerged != null) Color.game_underwater else Color.game_daytime,
-        .lava => Color.game_underlava,
+        .water => if (submerged != null) Colors.game_underwater else Colors.game_daytime,
+        .lava => Colors.game_underlava,
     };
     const fog_end: f32 = switch (submerged orelse .water) {
         .water => if (submerged != null) 16.0 else blk: {

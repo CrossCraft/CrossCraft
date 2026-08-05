@@ -18,11 +18,12 @@ const Rendering = ae.Rendering;
 
 const c = @import("common").consts;
 const collision = @import("../player/collision.zig");
-const Vertex = @import("../graphics/Vertex.zig").Vertex;
-const Color = @import("../graphics/Color.zig").Color;
+const Vertex = @import("aether").Rendering.Vertex;
+const Colors = @import("../graphics/Color.zig");
+const Color = Colors.Color;
 const Player = @import("../player/Player.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
-const FontBatcher = @import("../ui/FontBatcher.zig");
+const FontBatcher = ae.UI.FontBatcher;
 const ResourcePack = @import("../ResourcePack.zig");
 
 const Self = @This();
@@ -52,12 +53,14 @@ const WALK_FULL_SPEED: f32 = 4.3;
 // How fast walk_blend tracks the measured velocity (1/s, exponential smoothing).
 const WALK_BLEND_SPEED: f32 = 10.0;
 
-const LIMB_VERTS: usize = 36;
+const LIMB_QUADS: usize = 6;
+const LIMB_VERTS: usize = LIMB_QUADS * 6;
 
 // Name tag billboard above the head.
 const TAG_HEIGHT: f32 = 0.3; // world-space height of text (blocks)
 const TAG_Y_OFFSET: f32 = 2.2; // above feet (head top is 2.0)
 const BatchMesh = Rendering.Mesh(Vertex);
+const BatchMeshData = Rendering.MeshData(Vertex);
 
 const PlayerState = struct {
     active: bool,
@@ -69,52 +72,67 @@ const PlayerState = struct {
     walk_blend: f32,
 };
 
-torso: Rendering.Mesh(Vertex),
-head: Rendering.Mesh(Vertex),
-right_arm: Rendering.Mesh(Vertex),
-left_arm: Rendering.Mesh(Vertex),
-right_leg: Rendering.Mesh(Vertex),
-left_leg: Rendering.Mesh(Vertex),
+torso_data: BatchMeshData,
+torso: BatchMesh,
+head_data: BatchMeshData,
+head: BatchMesh,
+right_arm_data: BatchMeshData,
+right_arm: BatchMesh,
+left_arm_data: BatchMeshData,
+left_arm: BatchMesh,
+right_leg_data: BatchMeshData,
+right_leg: BatchMesh,
+left_leg_data: BatchMeshData,
+left_leg: BatchMesh,
 states: [c.MAX_PLAYERS]PlayerState,
-name_tags: [c.MAX_PLAYERS]?BatchMesh,
+name_tags: [c.MAX_PLAYERS]?FontBatcher.TextMesh,
 name_aspects: [c.MAX_PLAYERS]f32,
 anim_time: f32,
 allocator: std.mem.Allocator,
-pipeline: Rendering.Pipeline.Handle,
 
-pub fn init(allocator: std.mem.Allocator, pipeline: Rendering.Pipeline.Handle) !Self {
+pub fn init(allocator: std.mem.Allocator) !Self {
     var self: Self = .{
-        .torso = try Rendering.Mesh(Vertex).new(allocator, pipeline),
-        .head = try Rendering.Mesh(Vertex).new(allocator, pipeline),
-        .right_arm = try Rendering.Mesh(Vertex).new(allocator, pipeline),
-        .left_arm = try Rendering.Mesh(Vertex).new(allocator, pipeline),
-        .right_leg = try Rendering.Mesh(Vertex).new(allocator, pipeline),
-        .left_leg = try Rendering.Mesh(Vertex).new(allocator, pipeline),
+        .torso_data = try BatchMeshData.init(allocator),
+        .torso = try BatchMesh.init(&.{}),
+        .head_data = try BatchMeshData.init(allocator),
+        .head = try BatchMesh.init(&.{}),
+        .right_arm_data = try BatchMeshData.init(allocator),
+        .right_arm = try BatchMesh.init(&.{}),
+        .left_arm_data = try BatchMeshData.init(allocator),
+        .left_arm = try BatchMesh.init(&.{}),
+        .right_leg_data = try BatchMeshData.init(allocator),
+        .right_leg = try BatchMesh.init(&.{}),
+        .left_leg_data = try BatchMeshData.init(allocator),
+        .left_leg = try BatchMesh.init(&.{}),
         .states = std.mem.zeroes([c.MAX_PLAYERS]PlayerState),
         .name_tags = .{null} ** c.MAX_PLAYERS,
         .name_aspects = .{1.0} ** c.MAX_PLAYERS,
         .anim_time = 0,
         .allocator = allocator,
-        .pipeline = pipeline,
     };
-    const meshes = [_]*Rendering.Mesh(Vertex){
+    const data_meshes = [_]*BatchMeshData{
+        &self.torso_data,     &self.head_data,
+        &self.right_arm_data, &self.left_arm_data,
+        &self.right_leg_data, &self.left_leg_data,
+    };
+    const render_meshes = [_]*BatchMesh{
         &self.torso,     &self.head,
         &self.right_arm, &self.left_arm,
         &self.right_leg, &self.left_leg,
     };
-    for (meshes) |m| {
-        m.primitive = .triangles;
-        try m.vertices.ensureTotalCapacity(allocator, LIMB_VERTS);
+    for (data_meshes) |m| {
+        try m.ensure_quad_capacity(allocator, LIMB_QUADS);
     }
-    build_torso(&self.torso.vertices);
-    build_head(&self.head.vertices);
-    build_right_arm(&self.right_arm.vertices);
-    build_left_arm(&self.left_arm.vertices);
-    build_right_leg(&self.right_leg.vertices);
-    build_left_leg(&self.left_leg.vertices);
-    for (meshes) |m| {
-        std.debug.assert(m.vertices.items.len == LIMB_VERTS);
-        m.update();
+    build_torso(&self.torso_data);
+    build_head(&self.head_data);
+    build_right_arm(&self.right_arm_data);
+    build_left_arm(&self.left_arm_data);
+    build_right_leg(&self.right_leg_data);
+    build_left_leg(&self.left_leg_data);
+    for (data_meshes, render_meshes) |data, mesh| {
+        const expected_verts: usize = if (Rendering.mesh.indexing_enabled) LIMB_QUADS * 4 else LIMB_VERTS;
+        std.debug.assert(data.vertices.items.len == expected_verts);
+        mesh.update(data);
     }
     return self;
 }
@@ -126,12 +144,18 @@ pub fn deinit(self: *Self) void {
             nt.* = null;
         }
     }
-    const meshes = [_]*Rendering.Mesh(Vertex){
+    const render_meshes = [_]*BatchMesh{
         &self.torso,     &self.head,
         &self.right_arm, &self.left_arm,
         &self.right_leg, &self.left_leg,
     };
-    for (meshes) |m| m.deinit(self.allocator);
+    const data_meshes = [_]*BatchMeshData{
+        &self.torso_data,     &self.head_data,
+        &self.right_arm_data, &self.left_arm_data,
+        &self.right_leg_data, &self.left_leg_data,
+    };
+    for (render_meshes) |m| m.deinit();
+    for (data_meshes) |m| m.deinit(self.allocator);
 }
 
 // --- Per-frame update (call from GameState.update) ---
@@ -161,7 +185,7 @@ pub fn update(self: *Self, dt: f32, player_list: *const PlayerList, fonts: *cons
             const tw = fonts.string_width(name, 0, 1);
             if (tw > 0) {
                 aspect.* = @as(f32, @floatFromInt(tw)) / 8.0;
-                nt.* = fonts.build_mesh(name, .white_fg, .none, 0, 1) catch null;
+                nt.* = fonts.build_mesh(name, Colors.white_fg, Colors.none, 0, 1) catch null;
             }
         }
 
@@ -218,8 +242,7 @@ pub fn draw(self: *Self, local: *const Player) void {
     const local_y = local.pos_y;
     const local_z = local.pos_z;
 
-    Rendering.Pipeline.bind(self.pipeline);
-    ResourcePack.get_tex(.char).bind();
+    Rendering.gfx.api.bind_texture(ResourcePack.get_tex(.char).handle);
 
     // Idle sway (Z-axis, outward only, always active).
     const idle_swing = (@sin(self.anim_time * std.math.tau * IDLE_SPEED) * 0.5 + 0.5) * IDLE_AMPLITUDE;
@@ -286,8 +309,7 @@ pub fn draw(self: *Self, local: *const Player) void {
 // --- Name tags (call from GameState.draw after draw()) ---
 
 pub fn draw_nametags(self: *Self, local: *const Player, fonts: *const FontBatcher) void {
-    Rendering.Pipeline.bind(self.pipeline);
-    fonts.texture.bind();
+    Rendering.gfx.api.bind_texture(fonts.texture.handle);
 
     for (&self.states, &self.name_tags, &self.name_aspects) |*st, *nt, aspect| {
         if (!st.active) continue;
@@ -389,13 +411,8 @@ fn mirror_uvs(uvs: FaceUVs) FaceUVs {
     return m;
 }
 
-fn emit_quad(verts: *std.ArrayList(Vertex), q: [4]Vertex) void {
-    verts.appendAssumeCapacity(q[0]);
-    verts.appendAssumeCapacity(q[2]);
-    verts.appendAssumeCapacity(q[1]);
-    verts.appendAssumeCapacity(q[0]);
-    verts.appendAssumeCapacity(q[3]);
-    verts.appendAssumeCapacity(q[2]);
+fn emit_quad(mesh: *BatchMeshData, q: [4]Vertex) void {
+    mesh.add_quad_assume_capacity(q[0], q[3], q[2], q[1]);
 }
 
 fn make_quad(face: Face, px: i16, px1: i16, py: i16, py1: i16, pz: i16, pz1: i16, uv: UVRect, color: u32) [4]Vertex {
@@ -440,7 +457,7 @@ fn make_quad(face: Face, px: i16, px1: i16, py: i16, py1: i16, pz: i16, pz1: i16
 }
 
 fn emit_box(
-    verts: *std.ArrayList(Vertex),
+    mesh: *BatchMeshData,
     x0: i32,
     y0: i32,
     z0: i32,
@@ -458,7 +475,7 @@ fn emit_box(
 
     const faces = [_]Face{ .y_pos, .y_neg, .z_pos, .z_neg, .x_neg, .x_pos };
     for (faces, 0..) |face, i| {
-        emit_quad(verts, make_quad(face, px, px1, py, py1, pz, pz1, uvs[i], face_color(face)));
+        emit_quad(mesh, make_quad(face, px, px1, py, py1, pz, pz1, uvs[i], face_color(face)));
     }
 }
 
@@ -466,32 +483,32 @@ fn emit_box(
 // All limbs are built relative to their rotation pivot so that rotations
 // in the model matrix produce natural joint movement.
 
-fn build_torso(verts: *std.ArrayList(Vertex)) void {
+fn build_torso(mesh: *BatchMeshData) void {
     // 0.5 wide, 0.75 tall, 0.25 deep. Positioned at model origin (feet).
-    emit_box(verts, -64, 192, -32, 64, 384, 32, &torso_uvs);
+    emit_box(mesh, -64, 192, -32, 64, 384, 32, &torso_uvs);
 }
 
-fn build_head(verts: *std.ArrayList(Vertex)) void {
+fn build_head(mesh: *BatchMeshData) void {
     // Pivot at bottom-center (neck). Y [0, 0.5] relative to pivot.
-    emit_box(verts, -64, 0, -64, 64, 128, 64, &head_uvs);
+    emit_box(mesh, -64, 0, -64, 64, 128, 64, &head_uvs);
 }
 
-fn build_right_arm(verts: *std.ArrayList(Vertex)) void {
+fn build_right_arm(mesh: *BatchMeshData) void {
     // Pivot at shoulder (top-center). Y [-0.75, 0] relative to pivot.
-    emit_box(verts, -32, -192, -32, 32, 0, 32, &arm_uvs);
+    emit_box(mesh, -32, -192, -32, 32, 0, 32, &arm_uvs);
 }
 
-fn build_left_arm(verts: *std.ArrayList(Vertex)) void {
+fn build_left_arm(mesh: *BatchMeshData) void {
     const left_arm_uvs = comptime mirror_uvs(arm_uvs);
-    emit_box(verts, -32, -192, -32, 32, 0, 32, &left_arm_uvs);
+    emit_box(mesh, -32, -192, -32, 32, 0, 32, &left_arm_uvs);
 }
 
-fn build_right_leg(verts: *std.ArrayList(Vertex)) void {
+fn build_right_leg(mesh: *BatchMeshData) void {
     // Pivot at hip (top-center). Y [-0.75, 0] relative to pivot.
-    emit_box(verts, -32, -192, -32, 32, 0, 32, &leg_uvs);
+    emit_box(mesh, -32, -192, -32, 32, 0, 32, &leg_uvs);
 }
 
-fn build_left_leg(verts: *std.ArrayList(Vertex)) void {
+fn build_left_leg(mesh: *BatchMeshData) void {
     const left_leg_uvs = comptime mirror_uvs(leg_uvs);
-    emit_box(verts, -32, -192, -32, 32, 0, 32, &left_leg_uvs);
+    emit_box(mesh, -32, -192, -32, 32, 0, 32, &left_leg_uvs);
 }

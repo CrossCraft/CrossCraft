@@ -8,19 +8,21 @@
             .url = "git+https://github.com/IridescentRose/ZeeBuffer#8e1b2d03a905c2a70d4b0430f9a651e31027b181",
             .hash = "ZeeBuffer-0.2.0-RVIQu-7-AQC_98ycQNuJ4hxVxLDGMQkPAvLVvP4DsHz2",
         },
-        .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#e57b41aa8fc1abe9c0a0eff07b03d12e055aca20",
-            .hash = "Aether-0.0.0-cjG28h1tDwAanxbIRFCNqquIkDS8nRsDyyT4N94Ytket",
-        },
         .resources = .{
             .path = "resources",
         },
+        .engine = .{
+            .url = "git+https://github.com/AetherEngine/Aether#105f6c332131c6d8efbe2fad629a831996ee2ed4",
+            .hash = "Aether-0.0.0-cjG28m0SGABJfdFa1O78btcyC2jbVU7u6T4e8mlVdpgK",
+        },
     },
     .paths = .{
+        "assets",
         "build.zig",
         "build.zig.zon",
         "src",
         "tools",
+        "web",
         "LICENSE",
         "README.md",
     },

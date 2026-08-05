@@ -2,7 +2,9 @@ const std = @import("std");
 const common = @import("common");
 const BlockRegistry = common.BlockRegistry;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
-const Vertex = @import("../../graphics/Vertex.zig").Vertex;
+const Rendering = @import("aether").Rendering;
+const Vertex = Rendering.Vertex;
+const BatchMesh = Rendering.MeshData(Vertex);
 
 pub const Face = common.consts.Face;
 
@@ -106,23 +108,13 @@ fn brighter_along_02(verts: [4]Vertex) bool {
     return (g0 + g2) >= (g1 + g3);
 }
 
-fn emit_quad(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
+fn emit_quad(mesh: *BatchMesh, verts: [4]Vertex) void {
     if (brighter_along_02(verts)) {
         // Diagonal 0-2 (original winding).
-        vertices.appendAssumeCapacity(verts[0]);
-        vertices.appendAssumeCapacity(verts[2]);
-        vertices.appendAssumeCapacity(verts[1]);
-        vertices.appendAssumeCapacity(verts[0]);
-        vertices.appendAssumeCapacity(verts[3]);
-        vertices.appendAssumeCapacity(verts[2]);
+        mesh.add_quad_assume_capacity(verts[0], verts[3], verts[2], verts[1]);
     } else {
         // Diagonal 1-3 (flipped, same winding orientation).
-        vertices.appendAssumeCapacity(verts[0]);
-        vertices.appendAssumeCapacity(verts[3]);
-        vertices.appendAssumeCapacity(verts[1]);
-        vertices.appendAssumeCapacity(verts[1]);
-        vertices.appendAssumeCapacity(verts[3]);
-        vertices.appendAssumeCapacity(verts[2]);
+        mesh.add_quad_assume_capacity(verts[3], verts[2], verts[1], verts[0]);
     }
 }
 
@@ -130,27 +122,17 @@ fn emit_quad(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
 /// always picks diagonal 0-2 when the four greens match, so the per-quad
 /// 4 byte-extracts + add + compare are pure waste on the non-AO path. Any
 /// caller that builds verts via uniform_colors should use this.
-fn emit_quad_uniform(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
-    vertices.appendAssumeCapacity(verts[0]);
-    vertices.appendAssumeCapacity(verts[2]);
-    vertices.appendAssumeCapacity(verts[1]);
-    vertices.appendAssumeCapacity(verts[0]);
-    vertices.appendAssumeCapacity(verts[3]);
-    vertices.appendAssumeCapacity(verts[2]);
+fn emit_quad_uniform(mesh: *BatchMesh, verts: [4]Vertex) void {
+    mesh.add_quad_assume_capacity(verts[0], verts[3], verts[2], verts[1]);
 }
 
-fn emit_quad_reversed(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
-    vertices.appendAssumeCapacity(verts[0]);
-    vertices.appendAssumeCapacity(verts[1]);
-    vertices.appendAssumeCapacity(verts[2]);
-    vertices.appendAssumeCapacity(verts[0]);
-    vertices.appendAssumeCapacity(verts[2]);
-    vertices.appendAssumeCapacity(verts[3]);
+fn emit_quad_reversed(mesh: *BatchMesh, verts: [4]Vertex) void {
+    mesh.add_quad_assume_capacity(verts[0], verts[1], verts[2], verts[3]);
 }
 
-fn emit_quad_uniform_double_sided(vertices: *std.ArrayList(Vertex), verts: [4]Vertex) void {
-    emit_quad_uniform(vertices, verts);
-    emit_quad_reversed(vertices, verts);
+fn emit_quad_uniform_double_sided(mesh: *BatchMesh, verts: [4]Vertex) void {
+    emit_quad_uniform(mesh, verts);
+    emit_quad_reversed(mesh, verts);
 }
 
 // --- Public emission functions ---
@@ -158,7 +140,7 @@ fn emit_quad_uniform_double_sided(vertices: *std.ArrayList(Vertex), verts: [4]Ve
 /// Emit one block face (6 vertices). All 4 corners share `color`, so the
 /// AO-aware brighter-diagonal pick is skipped.
 pub fn emit_face(
-    vertices: *std.ArrayList(Vertex),
+    mesh: *BatchMesh,
     face: Face,
     x: u32,
     y: u32,
@@ -170,7 +152,7 @@ pub fn emit_face(
     const base = face_color(face);
     const color = if (shadowed) apply_shadow(base) else base;
     const uv = tile_uvs(tile, atlas);
-    emit_quad_uniform(vertices, make_quad(
+    emit_quad_uniform(mesh, make_quad(
         face,
         encode_pos(x),
         encode_pos(x + 1),
@@ -189,7 +171,7 @@ pub fn emit_face(
 /// Emit one block face (6 vertices) with per-corner colors. Used by the AO
 /// path; `colors[i]` is applied to vertex `i` as laid out by `make_quad`.
 pub fn emit_face_colors(
-    vertices: *std.ArrayList(Vertex),
+    mesh: *BatchMesh,
     face: Face,
     x: u32,
     y: u32,
@@ -199,7 +181,7 @@ pub fn emit_face_colors(
     colors: [4]u32,
 ) void {
     const uv = tile_uvs(tile, atlas);
-    emit_quad(vertices, make_quad(
+    emit_quad(mesh, make_quad(
         face,
         encode_pos(x),
         encode_pos(x + 1),
@@ -218,7 +200,7 @@ pub fn emit_face_colors(
 /// Emit one face of a half-height slab (6 vertices). Top face sits at
 /// y + 0.5; side faces span [y, y + 0.5]; bottom face is unchanged.
 pub fn emit_slab_face(
-    vertices: *std.ArrayList(Vertex),
+    mesh: *BatchMesh,
     face: Face,
     x: u32,
     y: u32,
@@ -244,7 +226,7 @@ pub fn emit_slab_face(
     const half_v: i16 = @intCast(@divTrunc(@as(i32, uv.tv1) - @as(i32, uv.tv0), 2));
     const tv0: i16 = if (use_lower_half) @intCast(@as(i32, uv.tv0) + half_v) else uv.tv0;
 
-    emit_quad_uniform(vertices, make_quad(
+    emit_quad_uniform(mesh, make_quad(
         face,
         encode_pos(x),
         encode_pos(x + 1),
@@ -265,7 +247,7 @@ pub fn emit_slab_face(
 /// not also fluid; otherwise it spans the full block so stacked fluid
 /// columns remain flush. Not valid for y_pos / y_neg faces.
 pub fn emit_fluid_side_face(
-    vertices: *std.ArrayList(Vertex),
+    mesh: *BatchMesh,
     face: Face,
     x: u32,
     y: u32,
@@ -282,7 +264,7 @@ pub fn emit_fluid_side_face(
     const py_top: i16 = if (above_is_fluid) encode_pos(y + 1) else encode_pos_frac(y, 230);
     const tile_h: i32 = @as(i32, uv.tv1) - @as(i32, uv.tv0);
     const tv0: i16 = if (above_is_fluid) uv.tv0 else @intCast(@as(i32, uv.tv1) - @divTrunc(tile_h * 230, 256));
-    emit_quad_uniform(vertices, make_quad(
+    emit_quad_uniform(mesh, make_quad(
         face,
         encode_pos(x),
         encode_pos(x + 1),
@@ -300,7 +282,7 @@ pub fn emit_fluid_side_face(
 
 /// Emit fluid top face at 0.9 block height, double-sided (12 vertices).
 pub fn emit_fluid_top(
-    vertices: *std.ArrayList(Vertex),
+    mesh: *BatchMesh,
     x: u32,
     y: u32,
     z: u32,
@@ -310,7 +292,7 @@ pub fn emit_fluid_top(
 ) void {
     const color: u32 = if (shadowed) apply_shadow(0xFFFFFFFF) else 0xFFFFFFFF;
     const uv = tile_uvs(tile, atlas);
-    emit_quad_uniform_double_sided(vertices, make_quad(
+    emit_quad_uniform_double_sided(mesh, make_quad(
         .y_pos,
         encode_pos(x),
         encode_pos(x + 1),
@@ -332,7 +314,7 @@ pub fn emit_fluid_top(
 /// fluid side, passing the depth test. Perpendicular axes are expanded by
 /// the same amount to close hairline seams at block corners. (6 vertices)
 pub fn emit_fluid_overlay(
-    vertices: *std.ArrayList(Vertex),
+    mesh: *BatchMesh,
     face: Face,
     x: u32,
     y: u32,
@@ -400,12 +382,12 @@ pub fn emit_fluid_overlay(
         },
     }
 
-    emit_quad_uniform(vertices, make_quad(face, px, px1, py, py1, pz, pz1, uv.tu0, uv.tv0, uv.tu1, uv.tv1, uniform_colors(color)));
+    emit_quad_uniform(mesh, make_quad(face, px, px1, py, py1, pz, pz1, uv.tu0, uv.tv0, uv.tu1, uv.tv1, uniform_colors(color)));
 }
 
 /// Emit two intersecting diagonal planes for cross-plants (24 vertices).
 pub fn emit_cross(
-    vertices: *std.ArrayList(Vertex),
+    mesh: *BatchMesh,
     x: u32,
     y: u32,
     z: u32,
@@ -424,26 +406,26 @@ pub fn emit_cross(
 
     // Back faces swap tu0/tu1 so the reversed winding does not mirror the
     // texture when the quad is viewed from behind.
-    emit_quad_uniform(vertices, .{
+    emit_quad_uniform(mesh, .{
         .{ .pos = .{ px, py, pz }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
         .{ .pos = .{ px1, py, pz1 }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
         .{ .pos = .{ px1, py1, pz1 }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
         .{ .pos = .{ px, py1, pz }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
     });
-    emit_quad_reversed(vertices, .{
+    emit_quad_reversed(mesh, .{
         .{ .pos = .{ px, py, pz }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
         .{ .pos = .{ px1, py, pz1 }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
         .{ .pos = .{ px1, py1, pz1 }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
         .{ .pos = .{ px, py1, pz }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
     });
 
-    emit_quad_uniform(vertices, .{
+    emit_quad_uniform(mesh, .{
         .{ .pos = .{ px1, py, pz }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
         .{ .pos = .{ px, py, pz1 }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
         .{ .pos = .{ px, py1, pz1 }, .uv = .{ uv.tu1, uv.tv0 }, .color = color },
         .{ .pos = .{ px1, py1, pz }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },
     });
-    emit_quad_reversed(vertices, .{
+    emit_quad_reversed(mesh, .{
         .{ .pos = .{ px1, py, pz }, .uv = .{ uv.tu1, uv.tv1 }, .color = color },
         .{ .pos = .{ px, py, pz1 }, .uv = .{ uv.tu0, uv.tv1 }, .color = color },
         .{ .pos = .{ px, py1, pz1 }, .uv = .{ uv.tu0, uv.tv0 }, .color = color },

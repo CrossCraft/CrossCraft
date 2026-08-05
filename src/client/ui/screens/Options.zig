@@ -1,5 +1,4 @@
 const std = @import("std");
-const ae = @import("aether");
 
 const Ui = @import("../Ui.zig");
 const Options = @import("../../Options.zig");
@@ -27,8 +26,6 @@ pub const Widget = enum(u16) {
 pub const DIM_LAYER: u8 = 1;
 pub const LAYER_BASE: u8 = 2;
 pub const WIDGET_W: i16 = 150;
-pub const SENS_MIN: f32 = 0.1;
-pub const SENS_MAX: f32 = 10.0;
 
 pub const Hooks = struct {
     on_fov_changed: ?*const fn () void = null,
@@ -81,10 +78,10 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
             if (hooks.on_fov_changed) |f| f();
         }
         _ = ui.slider(wid(.sensitivity), &opt.sensitivity, .{
-            .label = ui.fmt("Sensitivity: {d}%", .{sens_pct(opt.sensitivity)}),
+            .label = ui.fmt("Sensitivity: {d}%", .{Options.sensitivity_percent(opt.sensitivity)}),
             .width = WIDGET_W,
-            .min = SENS_MIN,
-            .max = SENS_MAX,
+            .min = Options.SENS_MIN,
+            .max = Options.SENS_MAX,
             .nudge = 0.05,
             .scale = .log10,
         });
@@ -129,11 +126,11 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
     cycle_row(
         ui,
         opt,
-        .{ .id = .vsync, .label = "VSync", .field = .vsync },
+        .{ .id = .vsync, .label = "VSync", .field = .vsync, .enabled = Options.vsync_toggle_supported() },
         .{ .id = .rain, .label = "Rain", .field = .rain },
     );
 
-    if (ui.button(wid(.controls_placeholder), "Controls...", .{ .width = WIDGET_W }) and result == .none) {
+    if (ui.button(wid(.controls_placeholder), "Controls...", .{ .width = WIDGET_W, .enabled = Options.controls_rebinding_supported() }) and result == .none) {
         result = .controls;
     }
 
@@ -175,18 +172,14 @@ fn pct_round(v: f32) u32 {
     return @intFromFloat(@round(std.math.clamp(v, 0, 1) * 100));
 }
 
-pub fn sens_pct(v: f32) u32 {
-    const cl = std.math.clamp(v, SENS_MIN, SENS_MAX);
-    const lmin = std.math.log10(SENS_MIN);
-    const lmax = std.math.log10(SENS_MAX);
-    return @intFromFloat(@round((std.math.log10(cl) - lmin) / (lmax - lmin) * 100));
-}
-
 fn bool_str(b: bool) []const u8 {
     return if (b) "ON" else "OFF";
 }
 
 fn ct_label(m: Options.ControllerTooltips) []const u8 {
+    if (Options.fixed_controller_glyph_style()) {
+        return if (m == .off) "OFF" else "ON";
+    }
     return switch (m) {
         .auto => "Auto",
         .xbox => "Xbox",
@@ -197,7 +190,7 @@ fn ct_label(m: Options.ControllerTooltips) []const u8 {
 }
 
 fn ct_next(cur: Options.ControllerTooltips) Options.ControllerTooltips {
-    const modes = if (ae.platform == .psp)
+    const modes = if (comptime Options.fixed_controller_glyph_style())
         [_]Options.ControllerTooltips{ .auto, .off }
     else
         [_]Options.ControllerTooltips{ .auto, .xbox, .playstation, .nintendo, .off };

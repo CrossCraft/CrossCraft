@@ -21,6 +21,7 @@
 
 const ae = @import("aether");
 const Options = @import("../Options.zig");
+const input = ae.Core.input;
 
 pub const Rect = struct {
     /// Source rect in the glyph sheet.
@@ -36,9 +37,10 @@ pub const Rect = struct {
 };
 
 /// A single physical button.  Semantic naming: A=bottom, B=right, X=left,
-/// Y=top, matching Xbox conventions.  On PSP A=Cross, B=Circle, X=Square,
-/// Y=Triangle; the sprite art lives in the physically-correct position on
-/// each sheet regardless of the manufacturer label.
+/// Y=top, matching Xbox conventions.  On Nintendo-style sheets this maps to
+/// B/A/Y/X labels respectively; on PSP it maps to Cross/Circle/Square/
+/// Triangle.  Sprite art lives in the physically-correct position on each
+/// sheet regardless of manufacturer label.
 ///
 /// Not every value is valid in every style (e.g. `.LMB` is KB+M-only,
 /// `.Home` is PSP-only).  `lookup` hits `unreachable` on invalid combos;
@@ -95,12 +97,19 @@ pub fn glyph_y_offset() i16 {
     return if (resolve_style() == .kbm) 1 else 0;
 }
 
+var last_mode: input.InputMode = .keyboard_mouse;
+
+pub fn note_input_mode(mode: input.InputMode) void {
+    last_mode = mode;
+}
+
 pub fn resolve_style() Style {
     if (ae.platform == .psp) return .psp;
+    if ((ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) and Options.current.controller_tooltips != .off) return .nintendo;
     return switch (Options.current.controller_tooltips) {
         // Auto follows whatever device produced input most recently; the
         // Xbox sheet stands in for any gamepad since we don't probe vendor.
-        .auto => switch (ae.Core.input.last_input_mode()) {
+        .auto => switch (last_mode) {
             .keyboard_mouse => .kbm,
             .gamepad => .xbox,
         },
@@ -153,10 +162,10 @@ fn lookup_controller(button: Button, style: Style) Rect {
     const row0 = pc_row_pair_base(style);
     const row1 = row0 + PC_TILE;
     return switch (button) {
-        .A => pc_tile(0, row0),
-        .B => pc_tile(1, row0),
-        .X => pc_tile(2, row0),
-        .Y => pc_tile(3, row0),
+        .A => pc_tile(if (style == .nintendo) 1 else 0, row0),
+        .B => pc_tile(if (style == .nintendo) 0 else 1, row0),
+        .X => pc_tile(if (style == .nintendo) 3 else 2, row0),
+        .Y => pc_tile(if (style == .nintendo) 2 else 3, row0),
         .DpadUp => pc_tile(4, row0),
         .DpadDown => pc_tile(5, row0),
         .DpadLeft => pc_tile(6, row0),
@@ -231,6 +240,10 @@ test "lookup covers every style for the buttons it supports" {
     // is exercised at comptime by the compiler for the rest.
     const r = lookup(.A, .xbox);
     try std.testing.expect(r.render_w > 0 and r.render_h > 0);
+    try std.testing.expect(lookup(.A, .nintendo).tex_x == PC_TILE);
+    try std.testing.expect(lookup(.B, .nintendo).tex_x == 0);
+    try std.testing.expect(lookup(.X, .nintendo).tex_x == 3 * PC_TILE);
+    try std.testing.expect(lookup(.Y, .nintendo).tex_x == 2 * PC_TILE);
     const p = lookup(.LButton, .psp);
     try std.testing.expect(p.tex_w == PSP_WIDE_W);
     const k = lookup(.EscapeKey, .kbm);

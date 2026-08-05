@@ -79,9 +79,9 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try Server.init(alloc, alloc, engine.io, engine.dirs.data, config);
 
     // Dedicated thread for world compression -- shared across world-send
-    // (network) and world-save (classic_cw, gzip-on-disk). Off-loads the
-    // deep `flate` call frames out of the per-task IO stacks (see
-    // `psp_async_stack_size` in main.zig).
+    // (network) and world-save (disk). Off-loads save dispatch from
+    // std.Io task spawning and keeps deep `flate` call frames out of small
+    // per-task IO stacks.
     self.compressor_thread = try CompressorThread.spawn(alloc);
 
     engine.report();
@@ -185,11 +185,11 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     global_listener = null;
     self.listener.deinit(engine.io);
 
-    // Server.deinit triggers the final world save and waits for it. For
-    // classic_cw that save runs on the compressor thread, so the thread
-    // must still be alive here. Tear it down only after Server.deinit
-    // returns. Any in-flight world-send job aborts with WriteFailed
-    // because tasks.cancel above drained the IO read loops.
+    // Server.deinit triggers the final world save and waits for it. That
+    // save runs on the compressor thread, so the thread must still be alive
+    // here. Tear it down only after Server.deinit returns. Any in-flight
+    // world-send job aborts with WriteFailed because tasks.cancel above
+    // drained the IO read loops.
     Server.deinit();
 
     CompressWorker.signal_exit();

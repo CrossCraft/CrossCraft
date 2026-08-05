@@ -1,10 +1,11 @@
 const std = @import("std");
 const common = @import("common");
 const c = common.consts;
-const prefetch = common.prefetch;
 const World = @import("game").World;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
-const Vertex = @import("../../graphics/Vertex.zig").Vertex;
+const Rendering = @import("aether").Rendering;
+const Vertex = Rendering.Vertex;
+const BatchMesh = Rendering.MeshData(Vertex);
 const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 
@@ -69,27 +70,14 @@ pub const SectionCounts = struct {
     fluid_verts: u32, // water/lava
 };
 
-// --- Prefetch ---
-
-/// 256 bytes (one chunk Y-slice: 16 z-rows x 16 x-blocks) = 4 cache lines.
-const Y_SLICE_BYTES: u32 = c.ChunkSize * c.ChunkSize;
-
-/// Streaming prefetch for one Y-level's worth of central-chunk data.
-/// Caller must ensure y_local is in [0, ChunkSize). No-op for callers
-/// whose pack path doesn't read this data (all-opaque chunks hit the
-/// boundary-only fast path).
-inline fn prefetch_y_slice(chunk_ptr: *const [c.ChunkVolume]c.Block, y_local: u32) void {
-    const offset: u32 = y_local * Y_SLICE_BYTES;
-    const slice = chunk_ptr[offset..][0..Y_SLICE_BYTES];
-    prefetch.prefetch_slice(c.Block, slice);
-}
-
 // --- Pack ---
 
 fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
+    const AIR: Row = .{ .opq = 0, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
     const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
+    if (y >= @as(i32, WORLD_H)) return AIR;
     if (wz_raw < 0 or wz_raw >= @as(i32, WORLD_D)) return BOUNDARY;
-    if (y < 0 or y >= @as(i32, WORLD_H)) return BOUNDARY;
+    if (y < 0) return BOUNDARY;
 
     var opq: u32 = 0;
     var vis: u32 = 0;
@@ -196,31 +184,8 @@ pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf)
     const all_opaque = World.data.is_chunk_all_opaque(cx, sy, cz);
     const base_y: i32 = @as(i32, @intCast(sy)) * 16 - 1;
 
-    // Streaming prefetch only for non-opaque chunks: pack_row_opaque reads
-    // just the 2 boundary blocks, so warming the central chunk for opaque
-    // sections is pure waste. For non-opaque, prefetch each Y-slice (256 B
-    // = 4 cache lines) one iteration ahead so the misses overlap with the
-    // current iteration's compute (BlockRegistry props lookups, bit packing,
-    // SectionBuf writes) rather than blocking pack_row's reads.
-    const chunk_ptr: ?*const [c.ChunkVolume]c.Block = if (all_opaque)
-        null
-    else
-        World.data.get_chunk_ptr(cx, sy, cz);
-
-    // Pre-warm the first inner slice (read by by==1) before the loop, then
-    // each inner iteration issues the slice that the *next* iteration will
-    // read. by==0 (y-1 boundary) and by==16/17 don't read inner-chunk data
-    // either side, so the prefetch span is exactly y_local = 0..15.
-    if (chunk_ptr) |ptr| prefetch_y_slice(ptr, 0);
-
     for (0..BUF_Y) |by| {
         const wy: i32 = base_y + @as(i32, @intCast(by));
-
-        if (chunk_ptr) |ptr| {
-            if (by >= 1 and by <= 15) {
-                prefetch_y_slice(ptr, @intCast(by));
-            }
-        }
 
         for (0..BUF_Z) |bz| {
             const wz_raw: i32 = @as(i32, @intCast(cz)) * 16 + @as(i32, @intCast(bz)) - 1;
@@ -539,8 +504,14 @@ pub fn count_section(buf: *const SectionBuf) SectionCounts {
 
 // --- Emit ---
 
-fn assert_has_room(verts: *const std.ArrayList(Vertex), n: u32) void {
-    std.debug.assert(verts.items.len + n <= verts.capacity);
+fn assert_has_room(mesh: *const BatchMesh, quad_count: u32) void {
+    const quads: usize = quad_count;
+    if (Rendering.mesh.indexing_enabled) {
+        std.debug.assert(mesh.vertices.items.len + quads * 4 <= mesh.vertices.capacity);
+        std.debug.assert(mesh.indices.items.len + quads * 6 <= mesh.indices.capacity);
+    } else {
+        std.debug.assert(mesh.vertices.items.len + quads * 6 <= mesh.vertices.capacity);
+    }
 }
 
 // --- Ambient Occlusion ---
@@ -633,9 +604,9 @@ fn compute_ao_colors(buf: *const SectionBuf, by: u32, bz: u32, bit: u5, face: Fa
 }
 
 pub const Meshes = struct {
-    @"opaque": *std.ArrayList(Vertex),
-    transparent: *std.ArrayList(Vertex),
-    fluid: *std.ArrayList(Vertex),
+    @"opaque": *BatchMesh,
+    transparent: *BatchMesh,
+    fluid: *BatchMesh,
 };
 
 fn emit_mask(
@@ -678,24 +649,24 @@ fn emit_mask(
         const shadowed = !face_sunlit(wx, y, wz, face) and !p.emits_light;
 
         if (face == .y_pos and is_fluid) {
-            assert_has_room(mesh, 12);
+            assert_has_room(mesh, 2);
             face_mod.emit_fluid_top(mesh, lx, local_y, lz, tile, atlas, shadowed);
         } else if (is_fluid and face != .y_neg) {
             // Horizontal side of a fluid: match the top plane's inset height
             // when this block's top is exposed, else span the full block so
             // stacked fluid columns look continuous.
-            assert_has_room(mesh, 6);
+            assert_has_room(mesh, 1);
             const above_is_fluid = ((buf[by + 1][bz].flu >> bit_pos) & 1) != 0;
             face_mod.emit_fluid_side_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed, above_is_fluid);
         } else if (is_slab) {
-            assert_has_room(mesh, 6);
+            assert_has_room(mesh, 1);
             face_mod.emit_slab_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);
         } else if (ao and !is_fluid) {
-            assert_has_room(mesh, 6);
+            assert_has_room(mesh, 1);
             const colors = compute_ao_colors(buf, by, bz, bit_pos, face, shadowed);
             face_mod.emit_face_colors(mesh, face, lx, local_y, lz, tile, atlas, colors);
         } else {
-            assert_has_room(mesh, 6);
+            assert_has_room(mesh, 1);
             face_mod.emit_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed);
         }
     }
@@ -709,7 +680,7 @@ fn emit_opaque_leaf_mask(
     cx: u32,
     cz: u32,
     face: Face,
-    opaque_mesh: *std.ArrayList(Vertex),
+    opaque_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
     chunk_row: *const [c.ChunkSize]Block,
     buf: *const SectionBuf,
@@ -722,7 +693,7 @@ fn emit_opaque_leaf_mask(
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
         bits &= bits - 1;
-        assert_has_room(opaque_mesh, 6);
+        assert_has_room(opaque_mesh, 1);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
         const wx: u16 = @intCast(cx * 16 + lx);
@@ -745,7 +716,7 @@ fn emit_cross_mask(
     lz: u32,
     cx: u32,
     cz: u32,
-    transparent_mesh: *std.ArrayList(Vertex),
+    transparent_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
     chunk_row: *const [c.ChunkSize]Block,
 ) void {
@@ -754,7 +725,7 @@ fn emit_cross_mask(
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
         bits &= bits - 1;
-        assert_has_room(transparent_mesh, 24);
+        assert_has_room(transparent_mesh, 4);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
         const wx: u16 = @intCast(cx * 16 + lx);
@@ -775,7 +746,7 @@ fn emit_fluid_overlay_mask(
     cx: u32,
     cz: u32,
     face: Face,
-    fluid_mesh: *std.ArrayList(Vertex),
+    fluid_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
 ) void {
     const local_y: u32 = y % SECTION_H;
@@ -798,7 +769,7 @@ fn emit_fluid_overlay_mask(
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
         bits &= bits - 1;
-        assert_has_room(fluid_mesh, 6);
+        assert_has_room(fluid_mesh, 1);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
         const wx: u16 = @intCast(cx * 16 + lx);
@@ -816,7 +787,7 @@ fn emit_fluid_overlay_mask(
 
 /// Walks the SectionBuf and emits faces. Caller pre-allocates the three
 /// meshes from the SectionCounts pack_section returned, so emit can use
-/// appendAssumeCapacity without any per-row growth checks. Recomputes face
+/// assume-capacity mesh helpers without any per-row growth checks. Recomputes face
 /// masks per cell (cheaper than caching them on PSP -- see pack_section).
 pub fn emit_section(
     buf: *const SectionBuf,

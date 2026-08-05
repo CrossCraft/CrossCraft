@@ -44,9 +44,25 @@ pub fn row_wid(control: Options.PcControl) widget_id.WidgetId {
 
 pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
     var result: Result = .{};
+    const sys = ui.input.input_system;
     var col = ui.stack(.{ .axis = .vertical, .anchor = .middle_center, .cross_align = .center, .gap = 4 });
 
     ui.label("Controls");
+    if (!Options.controls_rebinding_supported()) {
+        ui.label("Fixed on this platform");
+        if (ui.button(wid(.done), "Done", .{ .width = WIDGET_W })) {
+            cancel_capture(sys, ctx);
+            result.back = true;
+        }
+        col.end();
+        ui.prompts(&.{ Prompts.select(), Prompts.back() });
+        if (ui.cancel_pressed()) {
+            cancel_capture(sys, ctx);
+            result.back = true;
+        }
+        return result;
+    }
+
     var suppress_actions = false;
     if (ae.platform == .psp) {
         run_psp(ui, opt, &result);
@@ -60,33 +76,33 @@ pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
         } else {
             opt.reset_pc_controls();
             ctx.status.* = .none;
-            cancel_capture(ctx);
+            cancel_capture(sys, ctx);
         }
         result.changed = true;
     }
     if (ui.button(wid(.done), "Done", .{ .width = WIDGET_W, .enabled = !suppress_actions })) {
-        cancel_capture(ctx);
+        cancel_capture(sys, ctx);
         result.back = true;
     }
 
     col.end();
     ui.prompts(&.{ Prompts.select(), Prompts.back() });
     if (!suppress_actions and ui.cancel_pressed()) {
-        cancel_capture(ctx);
+        cancel_capture(sys, ctx);
         result.back = true;
     }
     return result;
 }
 
-pub fn cancel_capture(ctx: Ctx) void {
+pub fn cancel_capture(sys: ?*input.InputSystem, ctx: Ctx) void {
     if (ctx.capture.* != null) {
-        input.cancel_capture() catch {};
+        if (sys) |s| s.cancel_capture() catch {};
         ctx.capture.* = null;
     }
 }
 
 fn run_pc(ui: *Ui, opt: *Options.Options, ctx: Ctx, result: *Result) bool {
-    const suppress_actions = ui.input.text_events and poll_capture(opt, ctx, result);
+    const suppress_actions = ui.input.text_events and poll_capture(ui.input.input_system, opt, ctx, result);
     pc_row(ui, opt, .forward, "Forward", ctx, !suppress_actions);
     pc_row(ui, opt, .back, "Back", ctx, !suppress_actions);
     pc_row(ui, opt, .left, "Left", ctx, !suppress_actions);
@@ -107,22 +123,24 @@ fn pc_row(ui: *Ui, opt: *Options.Options, control: Options.PcControl, label: []c
     else
         ui.fmt("{s}: {s}", .{ label, Options.pc_key_label(opt.pc_key(control)) });
     if (ui.button(row_wid(control), text, .{ .width = WIDGET_W, .enabled = enabled })) {
-        begin_capture(ctx, control);
+        begin_capture(ui.input.input_system, ctx, control);
     }
 }
 
-fn begin_capture(ctx: Ctx, control: Options.PcControl) void {
-    cancel_capture(ctx);
+fn begin_capture(sys: ?*input.InputSystem, ctx: Ctx, control: Options.PcControl) void {
+    const s = sys orelse return;
+    cancel_capture(sys, ctx);
     var eligible = std.EnumSet(input.BindingSourceKind).initEmpty();
     eligible.insert(.key);
-    input.begin_capture_next_input(eligible) catch return;
+    s.begin_capture_next_input(eligible) catch return;
     ctx.capture.* = control;
     ctx.status.* = .none;
 }
 
-fn poll_capture(opt: *Options.Options, ctx: Ctx, result: *Result) bool {
+fn poll_capture(sys: ?*input.InputSystem, opt: *Options.Options, ctx: Ctx, result: *Result) bool {
+    const s = sys orelse return false;
     const control = ctx.capture.* orelse return false;
-    const session = input.current_capture_session() orelse return false;
+    const session = s.current_capture_session() orelse return false;
     switch (session.status) {
         .waiting => return false,
         .cancelled => {

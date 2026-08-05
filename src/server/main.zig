@@ -1,27 +1,18 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ae = @import("aether");
-const Util = ae.Util;
-
-pub const std_options = Util.std_options;
 
 const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
-comptime {
-    if (sdk != void)
-        asm (sdk.extra.module.module_info("CrossCraft Classic Server", .{ .mode = .User }, 1, 0));
-}
 
-pub const psp_stack_size: u32 = 256 * 1024;
-pub const psp_async_stack_size: u32 = 64 * 1024;
-pub const psp_heap_reserve_kb_size: u32 = 2048;
-
-pub const panic = if (ae.platform == .psp) sdk.extra.debug.panic else std.debug.FullPanic(std.debug.defaultPanic);
-pub const std_options_debug_threaded_io = if (ae.platform == .psp) null else std.Io.Threaded.global_single_threaded;
-pub const std_options_debug_io = if (ae.platform == .psp) sdk.extra.Io.psp_io else std.Io.Threaded.global_single_threaded.io();
-pub const std_options_cwd = if (ae.platform == .psp) psp_cwd else null;
-fn psp_cwd() std.Io.Dir {
-    return .{ .handle = -1 };
-}
+pub const aether_options: ae.Options = .{
+    .title = "CrossCraft Classic Server",
+    .psp = .{
+        .module_name = "CrossCraft Classic Server",
+        .stack_size = 256 * 1024,
+        .async_stack_size = 64 * 1024,
+        .heap_reserve_kb_size = 2048,
+    },
+};
 
 const ServerState = @import("ServerState.zig");
 
@@ -52,6 +43,11 @@ pub fn main(init: std.process.Init) !void {
     // PSP-1000 has ~24 MiB of user RAM after the kernel's reservation;
     // desktop has plenty so cap at a comfortable working set.
     const total_mb: usize = if (ae.platform == .psp) 18 else 32;
+    const total_bytes = total_mb * 1024 * 1024;
+    const render_budget = 4 * 1024;
+    const game_budget = 512 * 1024;
+    const frame_budget = 0;
+    const user_budget = total_bytes - render_budget - game_budget - frame_budget;
     const memory = try init.gpa.alloc(u8, total_mb * 1024 * 1024);
     defer init.gpa.free(memory);
 
@@ -59,14 +55,16 @@ pub fn main(init: std.process.Init) !void {
     const state = server_state.state();
 
     var engine: ae.Engine = undefined;
-    try engine.init(init.io, init.environ_map, memory, .{
+    try engine.init(init.io, init.environ_map, memory, &.{
         .memory = .{
-            .render = 64, // Default texture TODO: Fix this in Aether?
+            .render = render_budget,
             .audio = 0,
-            .game = 512 * 1024,
-            .user = (total_mb - 1) * 1024 * 1024,
+            .game = game_budget,
+            .frame = frame_budget,
+            .user = user_budget,
         },
-        .title = "CrossCraft Classic Server",
+        .title = aether_options.title,
+        .app_name = ae.AppOptions.resolveAppName(aether_options),
         .vsync = false,
         .resizable = false,
     }, &state);
