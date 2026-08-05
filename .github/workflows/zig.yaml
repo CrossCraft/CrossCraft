@@ -29,8 +29,8 @@ jobs:
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux_gl,   kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: macos-latest,   name: mac,        kind: game }
-          - { os: macos-latest,   name: mac,        kind: server }
+          - { os: macos-14,                                   name: mac,        kind: game }
+          - { os: macos-14,                                   name: mac,        kind: server }
           - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
