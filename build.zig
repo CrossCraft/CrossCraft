@@ -85,6 +85,7 @@ pub fn build(b: *std.Build) void {
         pack_cmd.addDirectoryArg(resources.path("default"));
         break :blk pack_cmd.addOutputFileArg("pack.zip");
     };
+    const archival_save_path = b.path("saves/origins.cw");
 
     // Whether pack.zip is embedded directly in the Linux/Windows binary.
     // True for local release builds; false for -Duse-cwd (CI/dev) and all
@@ -173,13 +174,19 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "embed_pack", should_embed);
     client_root.addImport("build_options", build_options.createModule());
 
-    // On macOS we pipe pack.zip through exportArtifact so it lands in
-    // Contents/Resources/ inside the .app bundle. On PSP/3DS/desktop the
-    // install_pack branch above handles placement.
-    const mac_resources: []const Aether.packaging.Resource = if (is_macos and pack_zip_path != null)
-        &.{.{ .path = pack_zip_path.?, .name = "pack.zip" }}
-    else
-        &.{};
+    // On macOS we pipe the default pack and archival save through
+    // exportArtifact so they land in Contents/Resources/ inside the .app
+    // bundle before Aether signs it. On PSP/3DS/desktop the install steps
+    // above and the release workflow handle their placement.
+    const mac_resources: []const Aether.packaging.Resource = if (is_macos) blk: {
+        if (pack_zip_path) |pack_zip| {
+            break :blk &.{
+                .{ .path = pack_zip, .name = "pack.zip" },
+                .{ .path = archival_save_path, .name = "saves/origins.cw" },
+            };
+        }
+        break :blk &.{.{ .path = archival_save_path, .name = "saves/origins.cw" }};
+    } else &.{};
     Aether.packaging.exportArtifact(ae_dep.builder, b, client_exe, config, .{
         .title = "CrossCraft Classic",
         .output_dir = if (is_psp) psp_client_dir else if (is_3ds) nintendo_3ds_client_dir else if (is_switch) nintendo_switch_client_dir else null,

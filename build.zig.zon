@@ -18,6 +18,7 @@
     },
     .paths = .{
         "assets",
+        "saves",
         "build.zig",
         "build.zig.zon",
         "src",

@@ -22,6 +22,7 @@ const DirectConnect = @import("../ui/screens/DirectConnect.zig");
 const TexturePacks = @import("../ui/screens/TexturePacks.zig");
 const SelectWorld = @import("../ui/screens/SelectWorld.zig");
 const CreateWorld = @import("../ui/screens/CreateWorld.zig");
+const BundledSave = @import("BundledSave.zig");
 const OptionsScreen = @import("../ui/screens/Options.zig");
 const ControlsScreen = @import("../ui/screens/Controls.zig");
 const GameplayBindings = @import("../player/bindings.zig");
@@ -118,6 +119,9 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         else => log.warn("failed to create saves/: {}", .{err}),
     };
     migrate_default_saves(engine.allocator(.user), engine.io, engine.dirs.data);
+    _ = BundledSave.import_if_missing(engine.io, engine.dirs.resources, engine.dirs.data) catch |err| {
+        log.warn("bundled save import failed; continuing without archival world: {}", .{err});
+    };
     if (build_options.embed_pack) {
         engine.dirs.data.access(engine.io, "pack.zip", .{}) catch {
             const file = engine.dirs.data.createFile(engine.io, "pack.zip", .{}) catch |err|

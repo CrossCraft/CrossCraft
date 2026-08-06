@@ -47,7 +47,7 @@ Classic Server v1.1 is a feature-complete Minecraft Classic 0.30 server and can 
 
 **Console mode.** The standalone server uses stdio as a real operator console: `stdin` accepts commands, `stdout` carries chat, `stderr` carries logs. Pipe each one separately if you want to.
 
-**Persistence.** World saving is fully async. The default save format is now ClassicWorld; existing worlds migrate on first save. Save path and world seed are command-line arguments and `server.properties` keys. 
+**Persistence.** World saving is fully async. The default save format is now ClassicWorld; existing worlds migrate on first save. Save path and world seed are command-line arguments and `server.properties` keys. On macOS, client data is stored under `~/Library/Application Support/CrossCraft Classic/`, with worlds in `saves/`; on first launch, the bundled `saves/origins.cw` world is copied there if it is not already present.
 
 ## Status
 

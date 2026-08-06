@@ -189,9 +189,9 @@ jobs:
         if: matrix.kind == 'game' && matrix.name == '3ds'
         run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
 
-      # Ship the archival world with every release artifact. Console builds
-      # keep their files in platform-specific bundle directories, while
-      # desktop/server artifacts are rooted directly in zig-out/bin/.
+      # Ship the archival world with every release artifact. macOS game
+      # bundles receive it from build.zig before signing; console builds and
+      # CWD-based desktop/server artifacts are copied here.
       - name: Bundle archival saves
         shell: bash
         run: |
@@ -202,14 +202,10 @@ jobs:
             *) bundle="zig-out/bin" ;;
           esac
           test -d "$bundle" || { echo "missing release bundle $bundle"; exit 1; }
-          cp -R saves "$bundle/"
-          test -s "$bundle/saves/origins.cw" || { echo "missing bundled saves/origins.cw"; exit 1; }
-          # Aether signs the macOS app during `zig build game`. Adding the
-          # archival save afterwards changes Contents/Resources, so refresh
-          # the outer bundle signature before verification and packaging.
-          if [[ "${{ matrix.kind }}_${{ matrix.name }}" == "game_mac" ]]; then
-            codesign --force --sign - zig-out/bin/CrossCraft-Classic.app
+          if [[ "${{ matrix.kind }}_${{ matrix.name }}" != "game_mac" ]]; then
+            cp -R saves "$bundle/"
           fi
+          test -s "$bundle/saves/origins.cw" || { echo "missing bundled saves/origins.cw"; exit 1; }
 
       # pack.zip size check guards against LFS regressions on every game
       # platform: a pointer stub is ~130 B, a real pack is multi-MB.
@@ -234,6 +230,9 @@ jobs:
           size=$(stat -f%z "$pack")
           test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
           echo "pack.zip OK ($size bytes)"
+          save="zig-out/bin/CrossCraft-Classic.app/Contents/Resources/saves/origins.cw"
+          test -s "$save" || { echo "missing bundled $save"; exit 1; }
+          echo "archival save OK ($save)"
 
       # ditto preserves .app metadata / symlinks better than zip;
       # actions/upload-artifact otherwise re-zips and can mangle bundles.
