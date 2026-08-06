@@ -31,9 +31,9 @@ jobs:
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: macos-14,                                   name: mac,        kind: game }
           - { os: macos-14,                                   name: mac,        kind: server }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,         kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows_vulkan,  kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=vulkan -Duse-cwd=true" }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,         kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
           - { os: ubuntu-latest,  target: arm-3ds,            name: 3ds,        kind: game,   extra: "" }
     runs-on: ${{ matrix.os }}
@@ -71,7 +71,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: dev-${{ matrix.kind }}_${{ matrix.name }}
-          path: zig-out/bin/
+          # Windows PDBs are debugger symbols, not part of the distributable.
+          path: |
+            zig-out/bin/
+            !zig-out/bin/**/*.pdb
           if-no-files-found: error
 
   # Switch packaging needs devkitA64 and libnx, which the dedicated
@@ -129,9 +132,9 @@ jobs:
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: macos-latest,   name: mac,        kind: game }
           - { os: macos-latest,   name: mac,        kind: server }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: game,   extra: -Dcpu=x86_64_v3 }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,         kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows_vulkan,  kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=vulkan" }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,         kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
           - { os: ubuntu-latest,  target: arm-3ds,            name: 3ds,        kind: game,   extra: "" }
     runs-on: ${{ matrix.os }}
@@ -275,7 +278,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.kind }}_${{ matrix.name }}
-          path: zig-out/bin/
+          # Windows PDBs are debugger symbols, not part of the distributable.
+          path: |
+            zig-out/bin/
+            !zig-out/bin/**/*.pdb
           if-no-files-found: error
 
   # Release-style Switch build.  This is separate from rel because devkitA64
