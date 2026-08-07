@@ -8,5 +8,6 @@ comptime {
     _ = @import("client/state/BundledSave.zig");
     _ = @import("client/Options.zig");
     _ = @import("client/player/bindings.zig");
+    _ = @import("client/ui/Ui.zig");
     _ = @import("client/ui/TextWrap.zig");
 }

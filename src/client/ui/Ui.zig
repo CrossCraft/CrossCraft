@@ -208,6 +208,20 @@ fn input_system(self: *const Self) ?*input_api.InputSystem {
     return self.input.input_system;
 }
 
+/// End the engine session alongside the UI-side field state. Aether permits
+/// only one non-terminal text session, so clearing just `UiState.active_text`
+/// leaves the next pointer-selected field unable to begin editing.
+fn cancel_active_text(self: *Self) void {
+    if (self.state.active_text != null) {
+        if (self.input_system()) |sys| {
+            if (sys.current_text_session()) |session| {
+                if (!session.is_terminal()) sys.cancel_text() catch {};
+            }
+        }
+    }
+    self.state.cancel_active_text();
+}
+
 pub fn end(self: *Self) void {
     std.debug.assert(self.depth == 1);
 
@@ -226,7 +240,7 @@ pub fn end(self: *Self) void {
         if (self.find_current_visible_id(id) == null) self.state.hovered = null;
     }
     if (self.state.active_text) |id| {
-        if (self.find_current_visible_id(id) == null) self.state.cancel_active_text();
+        if (self.find_current_visible_id(id) == null) self.cancel_active_text();
     }
     if (self.state.captured) |id| {
         if (self.find_current_visible_id(id) == null) {
@@ -359,14 +373,14 @@ pub fn button(self: *Self, id: WidgetId, text: []const u8, opts: ButtonOpts) boo
         self.claimed_click = true;
         self.state.focused = id;
         self.state.focus_source = .mouse;
-        self.state.cancel_active_text();
+        self.cancel_active_text();
         self.state.captured = null;
         self.state.captured_via_click = false;
         return true;
     }
     if (self.input.confirm_edge and self.state_focused_eq(id) and !self.claimed_confirm) {
         self.claimed_confirm = true;
-        self.state.cancel_active_text();
+        self.cancel_active_text();
         self.state.captured = null;
         self.state.captured_via_click = false;
         return true;
@@ -397,7 +411,7 @@ pub fn slider(self: *Self, id: WidgetId, value: *f32, opts: SliderOpts) bool {
         self.claimed_click = true;
         self.state.focused = id;
         self.state.focus_source = .mouse;
-        self.state.cancel_active_text();
+        self.cancel_active_text();
         self.state.captured = id;
         self.state.captured_via_click = true;
         changed = self.set_slider_from_cursor(id, value, opts);
@@ -892,7 +906,7 @@ fn offset_scroll_range(self: *Self, start: u8, finish: u8, dx: i16, dy: i16) voi
 
 fn route_pre_frame(self: *Self) void {
     if (self.input.cancel_edge and self.state.active_text != null) {
-        self.state.cancel_active_text();
+        self.cancel_active_text();
         self.cancel_consumed = true;
     }
 
@@ -926,7 +940,7 @@ fn route_pre_frame(self: *Self) void {
     if (self.input.cursor_available and self.input.click_edge) {
         const idx = if (refresh_pointer_pick) pointer_pick else self.pick_previous(self.input.cursor_x, self.input.cursor_y);
         if (idx != null) return;
-        self.state.cancel_active_text();
+        self.cancel_active_text();
         self.state.captured = null;
         self.state.captured_via_click = false;
     }
@@ -1170,7 +1184,7 @@ fn nudge_slider_value(value: *f32, opts: SliderOpts, dir: ui_input.NavDir) bool 
 
 fn set_active_text(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) void {
     if (self.state.active_text != null and self.state.active_text.? == id and self.state.text_session_started) return;
-    self.state.cancel_active_text();
+    self.cancel_active_text();
     self.state.active_text = id;
     self.state.text_session_started = false;
     if (uses_modal_text_input()) return;
@@ -1184,6 +1198,11 @@ fn set_active_text(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) voi
         self.finish_active_text();
         return;
     };
+    // A screen can be replaced outside this UI pass. Recover from any
+    // orphaned non-terminal session before claiming this field.
+    if (sys.current_text_session()) |session| {
+        if (!session.is_terminal()) sys.cancel_text() catch {};
+    }
     _ = sys.begin_text_input(&target, &input_opts) catch {
         self.finish_active_text();
         return;
@@ -1301,6 +1320,70 @@ fn copy_session_to_buf(items: []const u8, buf: *TextBuf) bool {
     if (take > 0) std.mem.copyForwards(u8, buf.bytes[0..take], items[0..take]);
     buf.len.* = @intCast(take);
     return changed;
+}
+
+test "pointer text-field transitions release the prior text session" {
+    var sys: input_api.InputSystem = .{};
+    try sys.init(std.testing.allocator);
+    defer sys.deinit();
+
+    var state: UiState = .{};
+    var in: UiInput = .{
+        .input_system = &sys,
+        .cursor_x = 0,
+        .cursor_y = 0,
+        .cursor_available = false,
+        .cursor_moved = false,
+        .click_edge = false,
+        .click_held = false,
+        .nav = .none,
+        .confirm_edge = false,
+        .cancel_edge = false,
+        .pause_edge = false,
+        .inventory_edge = false,
+        .wheel_dy = 0,
+        .text_events = true,
+    };
+    var ui: Self = undefined;
+    ui.state = &state;
+    ui.input = &in;
+
+    var first_bytes: [8]u8 = undefined;
+    var first_len: u8 = 0;
+    var first: TextBuf = .{ .bytes = &first_bytes, .len = &first_len, .max = first_bytes.len };
+    const first_id = widget_id.raw(1);
+    ui.set_active_text(first_id, &first, .{ .session_id = "first" });
+    try std.testing.expectEqual(first_id, state.active_text.?);
+    try std.testing.expectEqualStrings("first", sys.current_text_session().?.target.id);
+
+    // A screen transition can clear its local state before its next UI pass.
+    // Starting another field must recover from that orphaned Aether session.
+    state.cancel_active_text();
+    var second_bytes: [8]u8 = undefined;
+    var second_len: u8 = 0;
+    var second: TextBuf = .{ .bytes = &second_bytes, .len = &second_len, .max = second_bytes.len };
+    const second_id = widget_id.raw(2);
+    ui.set_active_text(second_id, &second, .{ .session_id = "second" });
+
+    try std.testing.expectEqual(second_id, state.active_text.?);
+    const session = sys.current_text_session().?;
+    try std.testing.expectEqual(input_api.TextInputStatus.active, session.status);
+    try std.testing.expectEqualStrings("second", session.target.id);
+
+    // An outside click must end the Aether session as well as local UI focus,
+    // so a subsequent click-to-type field can start normally.
+    in.cursor_available = true;
+    in.click_edge = true;
+    ui.route_pre_frame();
+    try std.testing.expect(state.active_text == null);
+    try std.testing.expectEqual(input_api.TextInputStatus.cancelled, sys.current_text_session().?.status);
+
+    in.cursor_available = false;
+    in.click_edge = false;
+    const third_id = widget_id.raw(3);
+    ui.set_active_text(third_id, &first, .{ .session_id = "third" });
+    try std.testing.expectEqual(third_id, state.active_text.?);
+    try std.testing.expectEqualStrings("third", sys.current_text_session().?.target.id);
 }
 
 fn slot_grid_size(opts: SlotGridOpts) Point {
