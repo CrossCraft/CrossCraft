@@ -63,6 +63,9 @@ pub fn left_right() Prompt {
 // --- in-game HUD actions ---
 
 pub fn inventory() Prompt {
+    if (Options.uses_old_3ds_controls()) {
+        return .{ .chord = .{ .LButton, .RButton }, .label = "Inventory" };
+    }
     return switch (Buttons.resolve_style()) {
         .kbm => .{ .chord = .{ .BlankKey, null }, .label = "Inventory", .letter_overlay = Options.pc_key_prompt_label(Options.current.key_inventory) },
         .nintendo, .xbox, .playstation => .{ .chord = .{ .Y, null }, .label = "Inventory" },

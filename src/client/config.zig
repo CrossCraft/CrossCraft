@@ -152,7 +152,7 @@ pub fn init() void {
             .phat => psp_phat_profile,
             .slim => psp_slim_profile,
         },
-        .nintendo_3ds => old_3ds_profile,
+        .nintendo_3ds => if (ae.N3ds.is_new()) new_3ds_profile else old_3ds_profile,
         .nintendo_switch => nintendo_switch_profile,
         else => desktop_profile,
     };

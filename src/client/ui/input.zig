@@ -199,7 +199,7 @@ pub fn menu_set() input.ActionSetHandle {
 
 fn bind_inventory(sys: *input.InputSystem, action: input.ActionHandle) !void {
     try sys.bind_action(action, &.{ .source = .{ .key = Options.current.key_inventory } });
-    if (ae.platform != .psp) {
+    if (ae.platform != .psp and !Options.uses_old_3ds_controls()) {
         try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y } });
     }
 }

@@ -66,12 +66,16 @@ pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
     var suppress_actions = false;
     if (ae.platform == .psp) {
         run_psp(ui, opt, &result);
+    } else if (Options.uses_old_3ds_controls()) {
+        run_old_3ds(ui, opt, &result);
     } else {
         suppress_actions = run_pc(ui, opt, ctx, &result);
     }
 
     if (ui.button(wid(.reset), "Reset Defaults", .{ .width = WIDGET_W, .enabled = !suppress_actions })) {
         if (ae.platform == .psp) {
+            opt.reset_psp_controls();
+        } else if (Options.uses_old_3ds_controls()) {
             opt.reset_psp_controls();
         } else {
             opt.reset_pc_controls();
@@ -184,6 +188,10 @@ fn run_psp(ui: *Ui, opt: *Options.Options, result: *Result) void {
         };
         result.changed = true;
     }
+}
+
+fn run_old_3ds(ui: *Ui, opt: *Options.Options, result: *Result) void {
+    run_psp(ui, opt, result);
 }
 
 fn psp_analog_label(mode: Options.PspAnalogMode) []const u8 {

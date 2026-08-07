@@ -211,10 +211,41 @@ pub fn fixed_controller_glyph_style() bool {
     return ae.platform == .psp or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
 }
 
+/// True only on an Old 3DS-family console.
+pub fn uses_old_3ds_controls() bool {
+    return uses_old_3ds_controls_for(ae.platform, cfg.current().hardware);
+}
+
 /// True when the controls screen can edit bindings on this platform.
-/// Nintendo console bindings are fixed for now.
+/// Old 3DS exposes its single-stick swaps; New 3DS and Switch stay fixed.
 pub fn controls_rebinding_supported() bool {
-    return ae.platform != .nintendo_3ds and ae.platform != .nintendo_switch;
+    return controls_rebinding_supported_for(ae.platform, cfg.current().hardware);
+}
+
+fn controls_rebinding_supported_for(platform: ae.Platform, hardware: cfg.HardwareClass) bool {
+    return switch (platform) {
+        .nintendo_3ds => uses_old_3ds_controls_for(platform, hardware),
+        .nintendo_switch => false,
+        else => true,
+    };
+}
+
+fn uses_old_3ds_controls_for(platform: ae.Platform, hardware: cfg.HardwareClass) bool {
+    return platform == .nintendo_3ds and hardware == .old_3ds;
+}
+
+test "Old 3DS controls follow the runtime hardware class" {
+    try std.testing.expect(!uses_old_3ds_controls_for(.psp, .psp_phat));
+    try std.testing.expect(uses_old_3ds_controls_for(.nintendo_3ds, .old_3ds));
+    try std.testing.expect(!uses_old_3ds_controls_for(.nintendo_3ds, .new_3ds));
+    try std.testing.expect(!uses_old_3ds_controls_for(.nintendo_switch, .nintendo_switch));
+    try std.testing.expect(!uses_old_3ds_controls_for(.linux, .desktop));
+
+    try std.testing.expect(controls_rebinding_supported_for(.psp, .psp_phat));
+    try std.testing.expect(controls_rebinding_supported_for(.nintendo_3ds, .old_3ds));
+    try std.testing.expect(!controls_rebinding_supported_for(.nintendo_3ds, .new_3ds));
+    try std.testing.expect(!controls_rebinding_supported_for(.nintendo_switch, .nintendo_switch));
+    try std.testing.expect(controls_rebinding_supported_for(.linux, .desktop));
 }
 
 pub fn pc_key_assignable(key: input.Key) bool {

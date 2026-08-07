@@ -1330,8 +1330,15 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
     self.jumping = jump == .pressed;
     self.sneaking = sys.button(actions.sneak).current == .pressed;
 
-    self.break_held = sys.button(actions.break_).current == .pressed;
-    self.place_held = sys.button(actions.place).current == .pressed;
+    const br = sys.button(actions.break_).current;
+    const pl = sys.button(actions.place).current;
+    self.break_held = br == .pressed;
+    self.place_held = pl == .pressed;
+    if (Options.uses_old_3ds_controls() and self.break_held and self.place_held) {
+        // L+R is the Old 3DS inventory chord, not two simultaneous actions.
+        self.break_held = false;
+        self.place_held = false;
+    }
     self.shoulder_r_held = sys.button(actions.shoulder_r).current == .pressed;
     self.shoulder_l_held = sys.button(actions.shoulder_l).current == .pressed;
     self.playerlist_held = sys.button(actions.playerlist).current == .pressed;
@@ -1344,8 +1351,8 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
             self.prev_inputs.noclip = sys.button(actions.noclip).current;
         }
         self.prev_inputs.jump = jump;
-        self.prev_inputs.break_ = sys.button(actions.break_).current;
-        self.prev_inputs.place = sys.button(actions.place).current;
+        self.prev_inputs.break_ = br;
+        self.prev_inputs.place = pl;
         self.prev_inputs.pick_block = sys.button(actions.pick_block).current;
         self.prev_inputs.shoulder_r = sys.button(actions.shoulder_r).current;
         self.prev_inputs.shoulder_l = sys.button(actions.shoulder_l).current;
@@ -1389,20 +1396,41 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
         self.prev_inputs.noclip = nc;
     }
 
-    const br = sys.button(actions.break_).current;
-    self.break_held = br == .pressed;
-    if (rising_edge(self.prev_inputs.break_, br)) {
-        self.break_repeat_timer = 0;
-        self.do_break();
+    if (Options.uses_old_3ds_controls()) {
+        const both_held = br == .pressed and pl == .pressed;
+        const break_pressed = rising_edge(self.prev_inputs.break_, br);
+        const place_pressed = rising_edge(self.prev_inputs.place, pl);
+        self.break_held = br == .pressed and !both_held;
+        self.place_held = pl == .pressed and !both_held;
+
+        if (both_held and (break_pressed or place_pressed)) {
+            self.inventory_toggle_pending = true;
+            self.break_repeat_timer = 0;
+            self.place_repeat_timer = 0;
+        } else {
+            if (break_pressed) {
+                self.break_repeat_timer = 0;
+                self.do_break();
+            }
+            if (place_pressed) {
+                self.place_repeat_timer = 0;
+                self.do_place();
+            }
+        }
+    } else {
+        self.break_held = br == .pressed;
+        if (rising_edge(self.prev_inputs.break_, br)) {
+            self.break_repeat_timer = 0;
+            self.do_break();
+        }
+
+        self.place_held = pl == .pressed;
+        if (rising_edge(self.prev_inputs.place, pl)) {
+            self.place_repeat_timer = 0;
+            self.do_place();
+        }
     }
     self.prev_inputs.break_ = br;
-
-    const pl = sys.button(actions.place).current;
-    self.place_held = pl == .pressed;
-    if (rising_edge(self.prev_inputs.place, pl)) {
-        self.place_repeat_timer = 0;
-        self.do_place();
-    }
     self.prev_inputs.place = pl;
 
     const pb = sys.button(actions.pick_block).current;
@@ -1411,8 +1439,9 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
     }
     self.prev_inputs.pick_block = pb;
 
-    // L+R chord = inventory toggle; otherwise rising edge defers a
-    // break/place that update() can cancel if the chord completes.
+    // PSP L+R chord = inventory toggle; otherwise rising edge defers a
+    // break/place that update() can cancel if the chord completes. Old 3DS
+    // handles its direct L/R bindings above.
     const sr = sys.button(actions.shoulder_r).current;
     self.shoulder_r_held = sr == .pressed;
     if (rising_edge(self.prev_inputs.shoulder_r, sr)) {
@@ -1529,6 +1558,12 @@ fn is_gameplay_active(sys: *input.InputSystem) bool {
 
 fn playerlist_controller_button() input.Button {
     if (ae.platform == .psp) {
+        return switch (Options.current.psp_jump_mode) {
+            .up => .Back,
+            .select => .DpadUp,
+        };
+    }
+    if (Options.uses_old_3ds_controls()) {
         return switch (Options.current.psp_jump_mode) {
             .up => .Back,
             .select => .DpadUp,
