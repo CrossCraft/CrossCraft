@@ -56,7 +56,7 @@ jobs:
 
       - name: Build
         if: matrix.name != 'mac'
-        run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=${{ startsWith(matrix.name, 'windows') && 'ReleaseFast' || 'ReleaseSafe' }} ${{ matrix.extra }} -Dskip-pack=true
+        run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=${{ (startsWith(matrix.name, 'windows') || matrix.name == '3ds') && 'ReleaseFast' || 'ReleaseSafe' }} ${{ matrix.extra }} -Dskip-pack=true
 
       # macOS builds natively. SDL's build demands --sysroot for any explicit
       # (non-native) -Dtarget, and --sysroot in turn breaks the absolute
@@ -190,7 +190,7 @@ jobs:
       # 3DS game: build.zig installs pack.zip beside the .3dsx artifact.
       - name: Build game (3DS)
         if: matrix.kind == 'game' && matrix.name == '3ds'
-        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast ${{ matrix.extra }}
 
       # Ship the archival world with every release artifact. macOS game
       # bundles receive it from build.zig before signing; console builds and
