@@ -96,7 +96,7 @@ pub fn build(b: *std.Build) void {
     //   PSP: install into bin/<psp_client_dir>/ for EBOOT layout.
     //   3DS: install beside the 3dsx; users copy the directory to SDMC.
     //   Switch: install beside the NRO; users copy the directory to SDMC.
-    //   macOS: routed through Aether.exportArtifact into the .app bundle's
+    //   macOS: routed through Aether.exportArtifactWithOutputs into the .app bundle's
     //     Contents/Resources/ — see below.
     //   Desktop, embedding: pack.zip is baked into the binary; no loose file.
     //   Desktop, -Duse-cwd: install to zig-out/bin/ so run-game (which cd's
@@ -123,7 +123,7 @@ pub fn build(b: *std.Build) void {
             );
             break :blk &nintendo_switch_install.step;
         }
-        if (is_macos) break :blk null; // Aether.exportArtifact installs via opts.resources.
+        if (is_macos) break :blk null; // Aether.exportArtifactWithOutputs installs via opts.resources.
         if (should_embed) break :blk null; // Baked into binary; no separate file needed.
 
         // -Duse-cwd path: install pack.zip alongside the binary in
@@ -169,7 +169,7 @@ pub fn build(b: *std.Build) void {
     client_root.addImport("build_options", build_options.createModule());
 
     // On macOS we pipe the default pack and archival save through
-    // exportArtifact so they land in Contents/Resources/ inside the .app
+    // exportArtifactWithOutputs so they land in Contents/Resources/ inside the .app
     // bundle before Aether signs it. On PSP/3DS/desktop the install steps
     // above and the release workflow handle their placement.
     const mac_resources: []const Aether.packaging.Resource = if (is_macos) blk: {
@@ -181,7 +181,7 @@ pub fn build(b: *std.Build) void {
         }
         break :blk &.{.{ .path = archival_save_path, .name = "saves/origins.cw" }};
     } else &.{};
-    Aether.packaging.exportArtifact(ae_dep.builder, b, client_exe, config, .{
+    const packaged = Aether.packaging.exportArtifactWithOutputs(ae_dep.builder, b, client_exe, config, .{
         .title = "CrossCraft Classic",
         .output_dir = if (is_psp) psp_client_dir else if (is_3ds) nintendo_3ds_client_dir else if (is_switch) nintendo_switch_client_dir else null,
         .bundle_id = "com.iridescentrose.crosscraft-classic",
@@ -243,7 +243,7 @@ pub fn build(b: *std.Build) void {
 
     const build_game_step = b.step("game", "Build the game");
     // macOS ships the exe inside CrossCraft-Classic.app (wired by
-    // Aether.exportArtifact onto b.getInstallStep()). Installing a flat
+    // Aether.exportArtifactWithOutputs onto b.getInstallStep()). Installing a flat
     // copy alongside would duplicate the binary and confuse downstream
     // packaging.
     if (!is_macos and !is_3ds and !is_switch) {
@@ -251,7 +251,7 @@ pub fn build(b: *std.Build) void {
     }
     if (install_pack) |ip| build_game_step.dependOn(ip);
     if (is_psp or is_macos or is_3ds or is_switch) {
-        // exportArtifact registers pipeline / bundle steps on
+        // exportArtifactWithOutputs registers pipeline / bundle steps on
         // b.getInstallStep(); wire them into the game step so
         // `zig build game -Dtarget=<platform>` produces the artifact.
         build_game_step.dependOn(b.getInstallStep());
@@ -259,11 +259,11 @@ pub fn build(b: *std.Build) void {
 
     const run_client_step = b.step("run-game", "Run the app");
     if (is_3ds) {
-        const threedsx_path = b.getInstallPath(
-            .bin,
-            b.fmt("{s}/{s}.3dsx", .{ nintendo_3ds_client_dir, client_name }),
-        );
-        const link_cmd = Aether.packaging.add3dslink(b, threedsx_path);
+        const threedsx = packaged.nintendo_3dsx orelse unreachable;
+        const link_cmd = Aether.packaging.addLink3dsx(b, threedsx, .{
+            .address = b.option([]const u8, "3dslink-address", "3DS: target IP for 3dslink push (default: broadcast auto-discover)"),
+            .retries = b.option(u32, "3dslink-retries", "3DS: broadcast-discovery retry count (default: Zitrus default)"),
+        });
         link_cmd.step.dependOn(build_game_step);
         run_client_step.dependOn(&link_cmd.step);
 
@@ -301,7 +301,7 @@ pub fn build(b: *std.Build) void {
     } else {
         // macOS must run the binary from inside the .app bundle: pack.zip
         // is installed into <Bundle>.app/Contents/Resources/ by
-        // exportArtifact, and the engine resolves the resources dir from
+        // exportArtifactWithOutputs, and the engine resolves the resources dir from
         // the exe path (only bundle-laid-out exes look in Contents/).
         // Running the raw cache artifact would leave it looking for
         // pack.zip beside the cache binary and fail with FileNotFound.
