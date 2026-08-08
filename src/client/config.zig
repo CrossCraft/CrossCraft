@@ -84,14 +84,14 @@ const psp_slim_profile: Profile = .{
 const old_3ds_profile: Profile = .{
     .hardware = .old_3ds,
     .total_memory_mb = NINTENDO_3DS_TOTAL_MEMORY_MB,
-    .chunk_radius = 6,
+    .chunk_radius = 4,
     .lod_near_radius_blocks = 28,
     .init_render = 4 * MB,
     .init_audio = 2 * MB,
     .init_game = 2 * MB,
     .init_user = 12 * MB,
-    .rt_render = 26 * MB + 512 * KB,
-    .rt_audio = 0 * KB,
+    .rt_render = 26 * MB,
+    .rt_audio = 512 * KB,
     .rt_game = 1 * MB,
     .rt_user = 4 * MB + 512 * KB,
 };
@@ -152,7 +152,7 @@ pub fn init() void {
             .phat => psp_phat_profile,
             .slim => psp_slim_profile,
         },
-        .nintendo_3ds => old_3ds_profile,
+        .nintendo_3ds => if (ae.N3ds.is_new()) new_3ds_profile else old_3ds_profile,
         .nintendo_switch => nintendo_switch_profile,
         else => desktop_profile,
     };

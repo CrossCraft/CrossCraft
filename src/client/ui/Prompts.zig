@@ -63,6 +63,9 @@ pub fn left_right() Prompt {
 // --- in-game HUD actions ---
 
 pub fn inventory() Prompt {
+    if (Options.uses_old_3ds_controls()) {
+        return .{ .chord = .{ .LButton, .RButton }, .label = "Inventory" };
+    }
     return switch (Buttons.resolve_style()) {
         .kbm => .{ .chord = .{ .BlankKey, null }, .label = "Inventory", .letter_overlay = Options.pc_key_prompt_label(Options.current.key_inventory) },
         .nintendo, .xbox, .playstation => .{ .chord = .{ .Y, null }, .label = "Inventory" },
@@ -71,6 +74,9 @@ pub fn inventory() Prompt {
 }
 
 pub fn place() Prompt {
+    if (Options.uses_old_3ds_controls()) {
+        return .{ .chord = .{ .LButton, null }, .label = "Place" };
+    }
     return switch (Buttons.resolve_style()) {
         .kbm => .{ .chord = .{ .RMB, null }, .label = "Place" },
         .nintendo, .xbox, .playstation => .{ .chord = .{ .RTrigger, null }, .label = "Place" },
@@ -79,6 +85,9 @@ pub fn place() Prompt {
 }
 
 pub fn break_() Prompt {
+    if (Options.uses_old_3ds_controls()) {
+        return .{ .chord = .{ .RButton, null }, .label = "Break" };
+    }
     return switch (Buttons.resolve_style()) {
         .kbm => .{ .chord = .{ .LMB, null }, .label = "Break" },
         .nintendo, .xbox, .playstation => .{ .chord = .{ .LTrigger, null }, .label = "Break" },

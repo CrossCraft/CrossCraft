@@ -441,23 +441,61 @@ pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts:
     });
 
     const text_x: i16 = LEFT_PAD + TEXT_PAD_X;
-    var last_line: []const u8 = INPUT_PROMPT;
+    const prompt_w = fonts.string_width(INPUT_PROMPT, 0, 1);
+    var last_line_w: i16 = prompt_w;
     var input_i: usize = 0;
     while (input_i < @as(usize, input_line_count)) : (input_i += 1) {
         const row_y: i16 = -(base + @as(i16, @intCast(@as(usize, input_line_count) - 1 - input_i)) * ROW_H);
         if (self.store_render_line(input_lines[input_i][0..input_lens[input_i]])) |line| {
-            last_line = line;
-            list.add_text(&.{
-                .str = line,
-                .pos_x = text_x,
-                .pos_y = row_y,
-                .color = Colors.white_fg,
-                .shadow_color = Colors.menu_gray,
-                .spacing = 0,
-                .layer = INPUT_TEXT_LAYER,
-                .reference = .bottom_left,
-                .origin = .bottom_left,
-            });
+            // Keep the prompt separate from the editable text. Combining
+            // them makes FontBatcher add another inter-character gap after
+            // the prompt's trailing space, which is especially noticeable
+            // before a leading command slash.
+            if (input_i == 0 and line.len > 0 and line[0] == INPUT_PROMPT[0]) {
+                const prompt_len: usize = @min(line.len, INPUT_PROMPT.len);
+                list.add_text(&.{
+                    .str = INPUT_PROMPT,
+                    .pos_x = text_x,
+                    .pos_y = row_y,
+                    .color = Colors.white_fg,
+                    .shadow_color = Colors.menu_gray,
+                    .spacing = 0,
+                    .layer = INPUT_TEXT_LAYER,
+                    .reference = .bottom_left,
+                    .origin = .bottom_left,
+                });
+
+                if (prompt_len < line.len) {
+                    const body_line = line[prompt_len..];
+                    list.add_text(&.{
+                        .str = body_line,
+                        .pos_x = text_x + prompt_w,
+                        .pos_y = row_y,
+                        .color = Colors.white_fg,
+                        .shadow_color = Colors.menu_gray,
+                        .spacing = 0,
+                        .layer = INPUT_TEXT_LAYER,
+                        .reference = .bottom_left,
+                        .origin = .bottom_left,
+                    });
+                    last_line_w = prompt_w + fonts.string_width(body_line, 0, 1);
+                } else {
+                    last_line_w = prompt_w;
+                }
+            } else {
+                list.add_text(&.{
+                    .str = line,
+                    .pos_x = text_x,
+                    .pos_y = row_y,
+                    .color = Colors.white_fg,
+                    .shadow_color = Colors.menu_gray,
+                    .spacing = 0,
+                    .layer = INPUT_TEXT_LAYER,
+                    .reference = .bottom_left,
+                    .origin = .bottom_left,
+                });
+                last_line_w = fonts.string_width(line, 0, 1);
+            }
         }
     }
     if (input_line_count == 0) {
@@ -474,10 +512,9 @@ pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts:
         });
     }
 
-    const typed_w = fonts.string_width(last_line, 0, 1);
     list.add_text(&.{
         .str = "_",
-        .pos_x = text_x + typed_w + 1,
+        .pos_x = text_x + last_line_w + 1,
         .pos_y = -base,
         .color = Colors.white_fg,
         .shadow_color = Colors.menu_gray,

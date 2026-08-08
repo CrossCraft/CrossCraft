@@ -22,6 +22,7 @@ const DirectConnect = @import("../ui/screens/DirectConnect.zig");
 const TexturePacks = @import("../ui/screens/TexturePacks.zig");
 const SelectWorld = @import("../ui/screens/SelectWorld.zig");
 const CreateWorld = @import("../ui/screens/CreateWorld.zig");
+const BundledSave = @import("BundledSave.zig");
 const OptionsScreen = @import("../ui/screens/Options.zig");
 const ControlsScreen = @import("../ui/screens/Controls.zig");
 const GameplayBindings = @import("../player/bindings.zig");
@@ -118,6 +119,9 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         else => log.warn("failed to create saves/: {}", .{err}),
     };
     migrate_default_saves(engine.allocator(.user), engine.io, engine.dirs.data);
+    _ = BundledSave.import_if_missing(engine.io, engine.dirs.resources, engine.dirs.data) catch |err| {
+        log.warn("bundled save import failed; continuing without archival world: {}", .{err});
+    };
     if (build_options.embed_pack) {
         engine.dirs.data.access(engine.io, "pack.zip", .{}) catch {
             const file = engine.dirs.data.createFile(engine.io, "pack.zip", .{}) catch |err|
@@ -513,6 +517,11 @@ fn prepare_batches(self: *@This(), _: *Engine) !void {
 }
 
 fn update_main(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
+    if (in.title_exit_edge) {
+        engine.quit();
+        return;
+    }
+
     var list: UiDrawList = .{};
     var ui = self.begin_ui(&list, &self.main_ui_state, in, 0);
     const action = MainMenu.run(&ui, main_menu_options());
@@ -851,6 +860,7 @@ fn empty_input() ui_input.UiInput {
         .confirm_edge = false,
         .cancel_edge = false,
         .pause_edge = false,
+        .title_exit_edge = false,
         .inventory_edge = false,
         .wheel_dy = 0,
         .text_events = false,
@@ -859,7 +869,7 @@ fn empty_input() ui_input.UiInput {
 
 fn draw_corner_labels(self: *@This()) void {
     self.font_batcher.add_text(&.{
-        .str = "CrossCraft Classic v1.1-RC2",
+        .str = "CrossCraft Classic v1.1",
         .pos_x = 2,
         .pos_y = 2,
         .color = Colors.gray_fg,

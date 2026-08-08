@@ -12,12 +12,17 @@
             .path = "resources",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#105f6c332131c6d8efbe2fad629a831996ee2ed4",
-            .hash = "Aether-0.0.0-cjG28m0SGABJfdFa1O78btcyC2jbVU7u6T4e8mlVdpgK",
+            .url = "git+https://github.com/AetherEngine/Aether#8956df0954cccbd50fa3679e1c4a5f93eb12ff75",
+            .hash = "Aether-0.0.0-cjG28krBGACxNtM6U-5VbsqUqwjVsm0HtrOmUYTwUoYp",
+        },
+        .zitrus = .{
+            .url = "git+https://codeberg.org/GasInfinity/zitrus#e2c90c0fbaff32e151e76351ecb522035939aae2",
+            .hash = "zitrus-0.0.0-Ewix9NNzHACfeAvGCedgdUIrUOY6_g1Oaus3TPNkHpHB",
         },
     },
     .paths = .{
         "assets",
+        "saves",
         "build.zig",
         "build.zig.zon",
         "src",

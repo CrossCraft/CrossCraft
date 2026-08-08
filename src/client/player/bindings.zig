@@ -60,7 +60,7 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
     try bind_jump(sys, jump);
     const sneak = try sys.add_action(set, "sneak", .button);
     try sys.bind_action(sneak, &.{ .source = .{ .key = .LeftShift } });
-    if (ae.platform == .psp) {
+    if (ae.platform == .psp or Options.uses_old_3ds_controls()) {
         try sys.bind_action(sneak, &.{ .source = .{ .gamepad_button = .DpadDown } });
     } else {
         try sys.bind_action(sneak, &.{ .source = .{ .gamepad_button = .X } });
@@ -114,7 +114,15 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
     const place = try sys.add_action(set, "place", .button);
     try sys.bind_action(place, &.{ .source = .{ .mouse_button = .Right } });
     var pick_block: input.ActionHandle = .none;
-    if (ae.platform != .psp) {
+    if (Options.uses_old_3ds_controls()) {
+        // Old 3DS has physical L/R shoulders but no ZL/ZR triggers. Bind the
+        // physical buttons directly; keep Aether's trigger-axis aliases as a
+        // compatibility fallback for builds using that backend mapping.
+        try sys.bind_action(break_, &.{ .source = .{ .gamepad_button = .RButton } });
+        try sys.bind_action(place, &.{ .source = .{ .gamepad_button = .LButton } });
+        try sys.bind_action(break_, &.{ .source = .{ .gamepad_axis = .RightTrigger } });
+        try sys.bind_action(place, &.{ .source = .{ .gamepad_axis = .LeftTrigger } });
+    } else if (ae.platform != .psp) {
         try sys.bind_action(break_, &.{ .source = .{ .gamepad_axis = .RightTrigger } });
         try sys.bind_action(place, &.{ .source = .{ .gamepad_axis = .LeftTrigger } });
         pick_block = try sys.add_action(set, "pick_block", .button);
@@ -148,7 +156,7 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
     try sys.bind_action(hotbar_right, &.{ .source = .{ .gamepad_button = .DpadRight } });
     const hotbar_scroll = try sys.add_action(set, "hotbar_scroll", .axis);
     try sys.bind_action(hotbar_scroll, &.{ .source = .{ .mouse_wheel = .y } });
-    if (ae.platform != .psp) {
+    if (ae.platform != .psp and !Options.uses_old_3ds_controls()) {
         try sys.bind_action(hotbar_left, &.{ .source = .{ .gamepad_button = .LButton } });
         try sys.bind_action(hotbar_right, &.{ .source = .{ .gamepad_button = .RButton } });
     }
@@ -204,10 +212,55 @@ pub fn refresh_active_context(sys: *input.InputSystem) !void {
     const set = gameplay_set orelse return;
     const top = sys.stack_top() orelse return;
     if (!std.mem.eql(u8, top.name, "gameplay")) return;
-    if (top.actions == set) return;
+    // Replacing even an unchanged context synchronizes its actions with the
+    // currently held physical inputs.  An overlay can be closed by Escape
+    // while that key is still held; without this sync, gameplay would see it
+    // as a fresh ui_pause edge on the following frame.
     var ctx = top.*;
     ctx.actions = set;
     _ = try sys.replace_top(&ctx);
+}
+
+test "refreshing gameplay after an overlay consumes held Escape" {
+    var sys = input.InputSystem{};
+    try sys.init(std.testing.allocator);
+    defer sys.deinit();
+    defer {
+        gameplay_set = null;
+        gameplay_actions = null;
+    }
+
+    const gameplay = try init(&sys);
+    try sys.push_context(&.{
+        .name = "gameplay",
+        .cursor_mode = .captured,
+        .actions = gameplay,
+    });
+
+    const overlay = try sys.register_action_set("test_overlay");
+    try sys.install_action_set(overlay);
+    try sys.push_context(&.{
+        .name = "test_overlay",
+        .cursor_mode = .visible,
+        .actions = overlay,
+    });
+
+    sys.deliver_key_down(.Escape, .{}, false);
+    sys.update();
+    _ = try sys.pop_context();
+    try refresh_active_context(&sys);
+
+    try std.testing.expect(sys.button(actions().ui_pause).down());
+    try std.testing.expect(!sys.button(actions().ui_pause).pressed());
+
+    sys.update();
+    try std.testing.expect(!sys.button(actions().ui_pause).pressed());
+
+    sys.deliver_key_up(.Escape, .{});
+    sys.update();
+    sys.deliver_key_down(.Escape, .{}, false);
+    sys.update();
+    try std.testing.expect(sys.button(actions().ui_pause).pressed());
 }
 
 fn bind_move(sys: *input.InputSystem, action: input.ActionHandle) !void {
@@ -222,12 +275,24 @@ fn bind_move(sys: *input.InputSystem, action: input.ActionHandle) !void {
         return;
     }
 
+    if (Options.uses_old_3ds_controls()) {
+        switch (Options.current.psp_analog_mode) {
+            .move => {
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .LeftX }, .component = .x, .multiplier = 1.0 });
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .LeftY }, .component = .y, .multiplier = -1.0 });
+            },
+            .look => try bind_old_3ds_face_move(sys, action),
+        }
+        return;
+    }
+
     try sys.bind_action(action, &.{ .source = .{ .key = Options.current.key_forward }, .component = .y, .multiplier = 1.0 });
     try sys.bind_action(action, &.{ .source = .{ .key = Options.current.key_back }, .component = .y, .multiplier = -1.0 });
     try sys.bind_action(action, &.{ .source = .{ .key = Options.current.key_left }, .component = .x, .multiplier = -1.0 });
     try sys.bind_action(action, &.{ .source = .{ .key = Options.current.key_right }, .component = .x, .multiplier = 1.0 });
 
-    // Desktop: left analog stick drives movement. LeftY is +1 when pushed
+    // Standard dual-stick layout: left analog stick drives movement.
+    // LeftY is +1 when pushed
     // down, so invert to make forward = +y.
     try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .LeftX }, .component = .x, .multiplier = 1.0 });
     try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .LeftY }, .component = .y, .multiplier = -1.0 });
@@ -240,9 +305,22 @@ fn bind_psp_face_move(sys: *input.InputSystem, action: input.ActionHandle) !void
     try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .y, .multiplier = -1.0 }); // Cross = back
 }
 
+fn bind_old_3ds_face_move(sys: *input.InputSystem, action: input.ActionHandle) !void {
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .x, .multiplier = 1.0 }); // A = right
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y }, .component = .x, .multiplier = -1.0 }); // Y = left
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .X }, .component = .y, .multiplier = 1.0 }); // X = forward
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .B }, .component = .y, .multiplier = -1.0 }); // B = back
+}
+
 fn bind_jump(sys: *input.InputSystem, action: input.ActionHandle) !void {
     try sys.bind_action(action, &.{ .source = .{ .key = .Space } });
     if (ae.platform == .psp) {
+        const button: input.Button = switch (Options.current.psp_jump_mode) {
+            .up => .DpadUp,
+            .select => .Back,
+        };
+        try sys.bind_action(action, &.{ .source = .{ .gamepad_button = button } });
+    } else if (Options.uses_old_3ds_controls()) {
         const button: input.Button = switch (Options.current.psp_jump_mode) {
             .up => .DpadUp,
             .select => .Back,
@@ -255,7 +333,7 @@ fn bind_jump(sys: *input.InputSystem, action: input.ActionHandle) !void {
 
 fn bind_inventory_toggle(sys: *input.InputSystem, action: input.ActionHandle) !void {
     try sys.bind_action(action, &.{ .source = .{ .key = Options.current.key_inventory } });
-    if (ae.platform != .psp) {
+    if (ae.platform != .psp and !Options.uses_old_3ds_controls()) {
         try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y } });
     }
 }
@@ -274,6 +352,19 @@ fn bind_look_stick(sys: *input.InputSystem, action: input.ActionHandle) !void {
                 try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .y, .multiplier = 1.0 }); // Cross = down
             },
         }
+    } else if (Options.uses_old_3ds_controls()) {
+        switch (Options.current.psp_analog_mode) {
+            .look => {
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .LeftX }, .component = .x });
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .LeftY }, .component = .y });
+            },
+            .move => {
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .x, .multiplier = 1.0 }); // A = right
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y }, .component = .x, .multiplier = -1.0 }); // Y = left
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .X }, .component = .y, .multiplier = -1.0 }); // X = up
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .B }, .component = .y, .multiplier = 1.0 }); // B = down
+            },
+        }
     } else if (ae.platform == .nintendo_3ds) {
         try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .RightX }, .component = .x, .deadzone = 0.0 });
         try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .RightY }, .component = .y, .deadzone = 0.0 });
@@ -286,6 +377,11 @@ fn bind_look_stick(sys: *input.InputSystem, action: input.ActionHandle) !void {
 fn bind_playerlist(sys: *input.InputSystem, action: input.ActionHandle) !void {
     try sys.bind_action(action, &.{ .source = .{ .key = .Tab } });
     const button: input.Button = if (ae.platform == .psp)
+        switch (Options.current.psp_jump_mode) {
+            .up => .Back,
+            .select => .DpadUp,
+        }
+    else if (Options.uses_old_3ds_controls())
         switch (Options.current.psp_jump_mode) {
             .up => .Back,
             .select => .DpadUp,

@@ -29,11 +29,11 @@ jobs:
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux_gl,   kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: server, extra: -Dcpu=x86_64_v3 }
-          - { os: macos-latest,   name: mac,        kind: game }
-          - { os: macos-latest,   name: mac,        kind: server }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: game,   extra: "-Dcpu=x86_64_v3 -Duse-cwd=true" }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
+          - { os: macos-14,                                   name: mac,        kind: game }
+          - { os: macos-14,                                   name: mac,        kind: server }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,         kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl -Duse-cwd=true" }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows_vulkan,  kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=vulkan -Duse-cwd=true" }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,         kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
           - { os: ubuntu-latest,  target: arm-3ds,            name: 3ds,        kind: game,   extra: "" }
     runs-on: ${{ matrix.os }}
@@ -56,7 +56,7 @@ jobs:
 
       - name: Build
         if: matrix.name != 'mac'
-        run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=${{ startsWith(matrix.name, 'windows') && 'ReleaseFast' || 'ReleaseSafe' }} ${{ matrix.extra }} -Dskip-pack=true
+        run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=${{ (startsWith(matrix.name, 'windows') || matrix.name == '3ds') && 'ReleaseFast' || 'ReleaseSafe' }} ${{ matrix.extra }} -Dskip-pack=true
 
       # macOS builds natively. SDL's build demands --sysroot for any explicit
       # (non-native) -Dtarget, and --sysroot in turn breaks the absolute
@@ -71,7 +71,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: dev-${{ matrix.kind }}_${{ matrix.name }}
-          path: zig-out/bin/
+          # Windows PDBs are debugger symbols, not part of the distributable.
+          path: |
+            zig-out/bin/
+            !zig-out/bin/**/*.pdb
           if-no-files-found: error
 
   # Switch packaging needs devkitA64 and libnx, which the dedicated
@@ -129,9 +132,9 @@ jobs:
           - { os: ubuntu-latest,  target: x86_64-linux-gnu,   name: linux,      kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: macos-latest,   name: mac,        kind: game }
           - { os: macos-latest,   name: mac,        kind: server }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: game,   extra: -Dcpu=x86_64_v3 }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows_gl, kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
-          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,    kind: server, extra: -Dcpu=x86_64_v3 }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,         kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=opengl" }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows_vulkan,  kind: game,   extra: "-Dcpu=x86_64_v3 -Dgfx=vulkan" }
+          - { os: ubuntu-latest,  target: x86_64-windows-gnu, name: windows,         kind: server, extra: -Dcpu=x86_64_v3 }
           - { os: ubuntu-latest,  target: mipsel-psp,         name: psp,        kind: game,   extra: "" }
           - { os: ubuntu-latest,  target: arm-3ds,            name: 3ds,        kind: game,   extra: "" }
     runs-on: ${{ matrix.os }}
@@ -187,11 +190,11 @@ jobs:
       # 3DS game: build.zig installs pack.zip beside the .3dsx artifact.
       - name: Build game (3DS)
         if: matrix.kind == 'game' && matrix.name == '3ds'
-        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast ${{ matrix.extra }}
 
-      # Ship the archival world with every release artifact. Console builds
-      # keep their files in platform-specific bundle directories, while
-      # desktop/server artifacts are rooted directly in zig-out/bin/.
+      # Ship the archival world with every release artifact. macOS game
+      # bundles receive it from build.zig before signing; console builds and
+      # CWD-based desktop/server artifacts are copied here.
       - name: Bundle archival saves
         shell: bash
         run: |
@@ -202,14 +205,10 @@ jobs:
             *) bundle="zig-out/bin" ;;
           esac
           test -d "$bundle" || { echo "missing release bundle $bundle"; exit 1; }
-          cp -R saves "$bundle/"
-          test -s "$bundle/saves/origins.cw" || { echo "missing bundled saves/origins.cw"; exit 1; }
-          # Aether signs the macOS app during `zig build game`. Adding the
-          # archival save afterwards changes Contents/Resources, so refresh
-          # the outer bundle signature before verification and packaging.
-          if [[ "${{ matrix.kind }}_${{ matrix.name }}" == "game_mac" ]]; then
-            codesign --force --sign - zig-out/bin/CrossCraft-Classic.app
+          if [[ "${{ matrix.kind }}_${{ matrix.name }}" != "game_mac" ]]; then
+            cp -R saves "$bundle/"
           fi
+          test -s "$bundle/saves/origins.cw" || { echo "missing bundled saves/origins.cw"; exit 1; }
 
       # pack.zip size check guards against LFS regressions on every game
       # platform: a pointer stub is ~130 B, a real pack is multi-MB.
@@ -234,6 +233,9 @@ jobs:
           size=$(stat -f%z "$pack")
           test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
           echo "pack.zip OK ($size bytes)"
+          save="zig-out/bin/CrossCraft-Classic.app/Contents/Resources/saves/origins.cw"
+          test -s "$save" || { echo "missing bundled $save"; exit 1; }
+          echo "archival save OK ($save)"
 
       # ditto preserves .app metadata / symlinks better than zip;
       # actions/upload-artifact otherwise re-zips and can mangle bundles.
@@ -276,7 +278,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.kind }}_${{ matrix.name }}
-          path: zig-out/bin/
+          # Windows PDBs are debugger symbols, not part of the distributable.
+          path: |
+            zig-out/bin/
+            !zig-out/bin/**/*.pdb
           if-no-files-found: error
 
   # Release-style Switch build.  This is separate from rel because devkitA64
