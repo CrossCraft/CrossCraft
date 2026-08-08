@@ -90,8 +90,8 @@ const old_3ds_profile: Profile = .{
     .init_audio = 2 * MB,
     .init_game = 2 * MB,
     .init_user = 12 * MB,
-    .rt_render = 26 * MB + 512 * KB,
-    .rt_audio = 0 * KB,
+    .rt_render = 26 * MB,
+    .rt_audio = 512 * KB,
     .rt_game = 1 * MB,
     .rt_user = 4 * MB + 512 * KB,
 };
