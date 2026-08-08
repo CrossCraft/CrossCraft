@@ -45,6 +45,10 @@ pub const UiInput = struct {
     /// In-game pause - Escape and gamepad Start only; excludes B so the
     /// inventory key cannot pause mid-gameplay.
     pause_edge: bool,
+    /// Console-only Start/Plus edge used to exit from the main title screen.
+    /// Other menu screens intentionally leave this unconsumed so their
+    /// existing Start-as-Back behavior remains intact.
+    title_exit_edge: bool,
     /// Inventory toggle while a UI overlay owns input. This lets the same
     /// keyboard/gamepad binding close inventory without making B a global
     /// text-screen cancel key.
@@ -63,6 +67,7 @@ const Prev = struct {
     confirm: input.ButtonState = .released,
     cancel: input.ButtonState = .released,
     pause: input.ButtonState = .released,
+    title_exit: input.ButtonState = .released,
     inventory: input.ButtonState = .released,
 };
 
@@ -71,6 +76,7 @@ const Actions = struct {
     confirm: input.ActionHandle,
     cancel: input.ActionHandle,
     pause: input.ActionHandle,
+    title_exit: input.ActionHandle,
     inventory: input.ActionHandle,
     up: input.ActionHandle,
     down: input.ActionHandle,
@@ -115,6 +121,20 @@ pub fn seed_focus_on_open() bool {
     return !profile_uses_pointer() or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
 }
 
+/// Whether this platform maps its physical Start-equivalent to exiting from
+/// the main title screen. Switch Plus is normalized to gamepad Start by
+/// Aether's input backend.
+pub fn title_exit_enabled() bool {
+    return title_exit_enabled_for(ae.platform);
+}
+
+fn title_exit_enabled_for(platform: ae.Platform) bool {
+    return switch (platform) {
+        .psp, .nintendo_3ds, .nintendo_switch => true,
+        else => false,
+    };
+}
+
 /// Idempotent: registers and installs the menu ActionSet on first call.
 /// The set persists for the lifetime of the process.
 pub fn ensure_registered(sys: *input.InputSystem) !void {
@@ -141,6 +161,14 @@ pub fn ensure_registered(sys: *input.InputSystem) !void {
     const pause = try sys.add_action(set, "ui_pause", .button);
     try sys.bind_action(pause, &.{ .source = .{ .key = .Escape } });
     try sys.bind_action(pause, &.{ .source = .{ .gamepad_button = .Start } });
+
+    // On consoles, Start exits only from the main title screen. Keep this
+    // separate from cancel so every other menu continues to treat Start as
+    // Back, and gameplay continues to use it for Pause.
+    const title_exit = try sys.add_action(set, "ui_title_exit", .button);
+    if (title_exit_enabled()) {
+        try sys.bind_action(title_exit, &.{ .source = .{ .gamepad_button = .Start } });
+    }
 
     const inventory = try sys.add_action(set, "ui_inventory", .button);
     try bind_inventory(sys, inventory);
@@ -177,6 +205,7 @@ pub fn ensure_registered(sys: *input.InputSystem) !void {
         .confirm = confirm,
         .cancel = cancel,
         .pause = pause,
+        .title_exit = title_exit,
         .inventory = inventory,
         .up = up,
         .down = down,
@@ -231,6 +260,7 @@ pub fn build_frame(sys: *input.InputSystem, dt: f32, repeat: *Repeat) UiInput {
     const confirm = sys.button(actions.confirm).current;
     const cancel = sys.button(actions.cancel).current;
     const pause = sys.button(actions.pause).current;
+    const title_exit = sys.button(actions.title_exit).current;
     const inventory = sys.button(actions.inventory).current;
 
     const active_now = is_menu_set_active(sys);
@@ -244,12 +274,14 @@ pub fn build_frame(sys: *input.InputSystem, dt: f32, repeat: *Repeat) UiInput {
     const confirm_edge = !fresh_activation and rising_edge(runtime.prev.confirm, confirm);
     const cancel_edge = !fresh_activation and rising_edge(runtime.prev.cancel, cancel);
     const pause_edge = !fresh_activation and rising_edge(runtime.prev.pause, pause);
+    const title_exit_edge = !fresh_activation and rising_edge(runtime.prev.title_exit, title_exit);
     const inventory_edge = !fresh_activation and rising_edge(runtime.prev.inventory, inventory);
 
     runtime.prev.click = click;
     runtime.prev.confirm = confirm;
     runtime.prev.cancel = cancel;
     runtime.prev.pause = pause;
+    runtime.prev.title_exit = title_exit;
     runtime.prev.inventory = inventory;
 
     const held = [4]bool{
@@ -272,6 +304,7 @@ pub fn build_frame(sys: *input.InputSystem, dt: f32, repeat: *Repeat) UiInput {
         .confirm_edge = confirm_edge,
         .cancel_edge = cancel_edge,
         .pause_edge = pause_edge,
+        .title_exit_edge = title_exit_edge,
         .inventory_edge = inventory_edge,
         .wheel_dy = if (profile_uses_pointer() and !fresh_activation) read_wheel_dy(sys) else 0,
         .text_events = true,
@@ -297,6 +330,14 @@ fn read_wheel_dy(sys: *input.InputSystem) i8 {
 
 fn rising_edge(prev: input.ButtonState, cur: input.ButtonState) bool {
     return prev == .released and cur == .pressed;
+}
+
+test "title exit is limited to handheld console targets" {
+    try std.testing.expect(title_exit_enabled_for(.psp));
+    try std.testing.expect(title_exit_enabled_for(.nintendo_3ds));
+    try std.testing.expect(title_exit_enabled_for(.nintendo_switch));
+    try std.testing.expect(!title_exit_enabled_for(.linux));
+    try std.testing.expect(!title_exit_enabled_for(.wasm));
 }
 
 fn is_menu_set_active(sys: *input.InputSystem) bool {

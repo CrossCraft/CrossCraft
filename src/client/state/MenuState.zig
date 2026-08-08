@@ -517,6 +517,11 @@ fn prepare_batches(self: *@This(), _: *Engine) !void {
 }
 
 fn update_main(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
+    if (in.title_exit_edge) {
+        engine.quit();
+        return;
+    }
+
     var list: UiDrawList = .{};
     var ui = self.begin_ui(&list, &self.main_ui_state, in, 0);
     const action = MainMenu.run(&ui, main_menu_options());
@@ -855,6 +860,7 @@ fn empty_input() ui_input.UiInput {
         .confirm_edge = false,
         .cancel_edge = false,
         .pause_edge = false,
+        .title_exit_edge = false,
         .inventory_edge = false,
         .wheel_dy = 0,
         .text_events = false,

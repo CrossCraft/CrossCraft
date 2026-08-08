@@ -1340,6 +1340,7 @@ test "pointer text-field transitions release the prior text session" {
         .confirm_edge = false,
         .cancel_edge = false,
         .pause_edge = false,
+        .title_exit_edge = false,
         .inventory_edge = false,
         .wheel_dy = 0,
         .text_events = true,
