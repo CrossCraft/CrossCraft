@@ -74,6 +74,9 @@ pub fn inventory() Prompt {
 }
 
 pub fn place() Prompt {
+    if (Options.uses_old_3ds_controls()) {
+        return .{ .chord = .{ .LButton, null }, .label = "Place" };
+    }
     return switch (Buttons.resolve_style()) {
         .kbm => .{ .chord = .{ .RMB, null }, .label = "Place" },
         .nintendo, .xbox, .playstation => .{ .chord = .{ .RTrigger, null }, .label = "Place" },
@@ -82,6 +85,9 @@ pub fn place() Prompt {
 }
 
 pub fn break_() Prompt {
+    if (Options.uses_old_3ds_controls()) {
+        return .{ .chord = .{ .RButton, null }, .label = "Break" };
+    }
     return switch (Buttons.resolve_style()) {
         .kbm => .{ .chord = .{ .LMB, null }, .label = "Break" },
         .nintendo, .xbox, .playstation => .{ .chord = .{ .LTrigger, null }, .label = "Break" },

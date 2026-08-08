@@ -129,6 +129,11 @@ pub const Options = struct {
     psp_analog_mode: PspAnalogMode = .look,
     psp_jump_mode: PspJumpMode = .up,
 
+    /// Lets a New 3DS use the Old 3DS single-stick control layout when its
+    /// right-side input is unavailable. This preference has no effect on
+    /// other platforms.
+    new_3ds_use_old_controls: bool = false,
+
     /// Returns the active texture pack path as a slice (may be empty).
     pub fn active_texturepack(self: *const Options) []const u8 {
         return self.active_texturepack_buf[0..self.active_texturepack_len];
@@ -179,6 +184,11 @@ pub const Options = struct {
         self.psp_analog_mode = .look;
         self.psp_jump_mode = .up;
     }
+
+    pub fn reset_new_3ds_controls(self: *Options) void {
+        self.new_3ds_use_old_controls = false;
+        self.reset_psp_controls();
+    }
 };
 
 /// Effective render distance, capped to the active runtime profile.
@@ -211,39 +221,60 @@ pub fn fixed_controller_glyph_style() bool {
     return ae.platform == .psp or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
 }
 
-/// True only on an Old 3DS-family console.
+/// True when the active control layout is the Old 3DS single-stick scheme.
+/// New 3DS users can opt into this layout when their right-side input is
+/// unavailable; physical Old 3DS hardware always uses it.
 pub fn uses_old_3ds_controls() bool {
-    return uses_old_3ds_controls_for(ae.platform, cfg.current().hardware);
+    return uses_old_3ds_controls_for(ae.platform, cfg.current().hardware, current.new_3ds_use_old_controls);
 }
 
-/// True when the controls screen can edit bindings on this platform.
-/// Old 3DS exposes its single-stick swaps; New 3DS and Switch stay fixed.
+/// True when the controls screen has settings available on this platform.
+/// Both 3DS hardware classes expose their relevant control settings; Switch
+/// remains fixed.
 pub fn controls_rebinding_supported() bool {
     return controls_rebinding_supported_for(ae.platform, cfg.current().hardware);
 }
 
 fn controls_rebinding_supported_for(platform: ae.Platform, hardware: cfg.HardwareClass) bool {
     return switch (platform) {
-        .nintendo_3ds => uses_old_3ds_controls_for(platform, hardware),
+        .nintendo_3ds => hardware == .old_3ds or hardware == .new_3ds,
         .nintendo_switch => false,
         else => true,
     };
 }
 
-fn uses_old_3ds_controls_for(platform: ae.Platform, hardware: cfg.HardwareClass) bool {
-    return platform == .nintendo_3ds and hardware == .old_3ds;
+/// True only on New 3DS hardware, where the user may select the Old 3DS
+/// fallback layout.
+pub fn new_3ds_old_controls_supported() bool {
+    return new_3ds_old_controls_supported_for(ae.platform, cfg.current().hardware);
 }
 
-test "Old 3DS controls follow the runtime hardware class" {
-    try std.testing.expect(!uses_old_3ds_controls_for(.psp, .psp_phat));
-    try std.testing.expect(uses_old_3ds_controls_for(.nintendo_3ds, .old_3ds));
-    try std.testing.expect(!uses_old_3ds_controls_for(.nintendo_3ds, .new_3ds));
-    try std.testing.expect(!uses_old_3ds_controls_for(.nintendo_switch, .nintendo_switch));
-    try std.testing.expect(!uses_old_3ds_controls_for(.linux, .desktop));
+fn new_3ds_old_controls_supported_for(platform: ae.Platform, hardware: cfg.HardwareClass) bool {
+    return platform == .nintendo_3ds and hardware == .new_3ds;
+}
+
+fn uses_old_3ds_controls_for(platform: ae.Platform, hardware: cfg.HardwareClass, new_3ds_use_old_controls: bool) bool {
+    return platform == .nintendo_3ds and (hardware == .old_3ds or (hardware == .new_3ds and new_3ds_use_old_controls));
+}
+
+test "Old 3DS controls follow the runtime hardware class and N3DS fallback" {
+    try std.testing.expect(!uses_old_3ds_controls_for(.psp, .psp_phat, false));
+    try std.testing.expect(!uses_old_3ds_controls_for(.psp, .psp_phat, true));
+    try std.testing.expect(uses_old_3ds_controls_for(.nintendo_3ds, .old_3ds, false));
+    try std.testing.expect(uses_old_3ds_controls_for(.nintendo_3ds, .old_3ds, true));
+    try std.testing.expect(!uses_old_3ds_controls_for(.nintendo_3ds, .new_3ds, false));
+    try std.testing.expect(uses_old_3ds_controls_for(.nintendo_3ds, .new_3ds, true));
+    try std.testing.expect(!uses_old_3ds_controls_for(.nintendo_switch, .nintendo_switch, true));
+    try std.testing.expect(!uses_old_3ds_controls_for(.linux, .desktop, true));
+
+    try std.testing.expect(!new_3ds_old_controls_supported_for(.psp, .psp_phat));
+    try std.testing.expect(!new_3ds_old_controls_supported_for(.nintendo_3ds, .old_3ds));
+    try std.testing.expect(new_3ds_old_controls_supported_for(.nintendo_3ds, .new_3ds));
+    try std.testing.expect(!new_3ds_old_controls_supported_for(.nintendo_switch, .nintendo_switch));
 
     try std.testing.expect(controls_rebinding_supported_for(.psp, .psp_phat));
     try std.testing.expect(controls_rebinding_supported_for(.nintendo_3ds, .old_3ds));
-    try std.testing.expect(!controls_rebinding_supported_for(.nintendo_3ds, .new_3ds));
+    try std.testing.expect(controls_rebinding_supported_for(.nintendo_3ds, .new_3ds));
     try std.testing.expect(!controls_rebinding_supported_for(.nintendo_switch, .nintendo_switch));
     try std.testing.expect(controls_rebinding_supported_for(.linux, .desktop));
 }
@@ -404,6 +435,7 @@ const LoadJsonOptions = struct {
     key_inventory: []const u8 = "B",
     psp_analog_mode: u8 = @intFromEnum(PspAnalogMode.look),
     psp_jump_mode: u8 = @intFromEnum(PspJumpMode.up),
+    new_3ds_use_old_controls: bool = false,
 };
 
 const SaveJsonOptions = struct {
@@ -428,6 +460,7 @@ const SaveJsonOptions = struct {
     key_inventory: []const u8,
     psp_analog_mode: u8,
     psp_jump_mode: u8,
+    new_3ds_use_old_controls: bool,
 };
 
 // --- public API ---
@@ -511,6 +544,7 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
         1 => .up,
         else => .up,
     };
+    current.new_3ds_use_old_controls = j.new_3ds_use_old_controls;
 }
 
 /// Write current options to `options.json` in `dir`.
@@ -540,6 +574,7 @@ pub fn save(io: Io, dir: std.Io.Dir) void {
         .key_inventory = @tagName(current.key_inventory),
         .psp_analog_mode = @intFromEnum(current.psp_analog_mode),
         .psp_jump_mode = @intFromEnum(current.psp_jump_mode),
+        .new_3ds_use_old_controls = current.new_3ds_use_old_controls,
     };
 
     var json_buf: [max_json_size]u8 = undefined;
@@ -653,9 +688,10 @@ test "versioned options json accepts legacy floats and new integer values" {
     try std.testing.expectEqual(@as(f32, 0.5), json_float_f32(legacy.value.music_volume.?, 0.0, 1.0));
     try std.testing.expectEqual(@as(f32, 70.5), json_float_f32(legacy.value.fov.?, 10.0, 170.0));
     try std.testing.expectEqual(@as(f32, 3.0), json_float_f32(legacy.value.sensitivity.?, SENS_MIN, 20.0));
+    try std.testing.expect(!legacy.value.new_3ds_use_old_controls);
 
     const integer_json =
-        \\{"version":2,"sound_volume":100,"music_volume":50,"fov":71,"sensitivity":65}
+        \\{"version":2,"sound_volume":100,"music_volume":50,"fov":71,"sensitivity":65,"new_3ds_use_old_controls":true}
     ;
     const integer = try std.json.parseFromSlice(
         LoadJsonOptions,
@@ -669,6 +705,7 @@ test "versioned options json accepts legacy floats and new integer values" {
     try std.testing.expectEqual(@as(f32, 0.5), json_percent_to_unit(integer.value.music_volume.?));
     try std.testing.expectEqual(@as(f32, 71.0), json_rounded_f32(integer.value.fov.?, 10.0, 170.0));
     try std.testing.expectApproxEqAbs(sensitivity_from_percent(65), sensitivity_from_percent(json_percent(integer.value.sensitivity.?)), 0.0001);
+    try std.testing.expect(integer.value.new_3ds_use_old_controls);
 }
 
 test "current options json writes menu numbers as integers" {
@@ -692,6 +729,7 @@ test "current options json writes menu numbers as integers" {
         .key_inventory = "B",
         .psp_analog_mode = @intFromEnum(PspAnalogMode.look),
         .psp_jump_mode = @intFromEnum(PspJumpMode.up),
+        .new_3ds_use_old_controls = false,
     };
 
     var json_buf: [512]u8 = undefined;
@@ -703,5 +741,6 @@ test "current options json writes menu numbers as integers" {
     try std.testing.expect(std.mem.indexOf(u8, written, "\"sound_volume\":100") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "\"music_volume\":50") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "\"fov\":71") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"new_3ds_use_old_controls\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, ".") == null);
 }

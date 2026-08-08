@@ -12,6 +12,7 @@ pub const Widget = enum(u16) {
     done = 2,
     psp_analog = 3,
     psp_jump = 4,
+    old_3ds_controls = 5,
     _,
 };
 
@@ -63,18 +64,29 @@ pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
         return result;
     }
 
+    const new_3ds_fallback_available = Options.new_3ds_old_controls_supported();
+    if (new_3ds_fallback_available) {
+        if (ui.button(wid(.old_3ds_controls), ui.fmt("O3DS Controls: {s}", .{bool_str(opt.new_3ds_use_old_controls)}), .{ .width = WIDGET_W })) {
+            opt.new_3ds_use_old_controls = !opt.new_3ds_use_old_controls;
+            result.changed = true;
+        }
+    }
+
     var suppress_actions = false;
     if (ae.platform == .psp) {
         run_psp(ui, opt, &result);
     } else if (Options.uses_old_3ds_controls()) {
         run_old_3ds(ui, opt, &result);
-    } else {
+    } else if (!new_3ds_fallback_available) {
         suppress_actions = run_pc(ui, opt, ctx, &result);
     }
 
-    if (ui.button(wid(.reset), "Reset Defaults", .{ .width = WIDGET_W, .enabled = !suppress_actions })) {
+    const show_reset = !new_3ds_fallback_available or Options.uses_old_3ds_controls();
+    if (show_reset and ui.button(wid(.reset), "Reset Defaults", .{ .width = WIDGET_W, .enabled = !suppress_actions })) {
         if (ae.platform == .psp) {
             opt.reset_psp_controls();
+        } else if (new_3ds_fallback_available) {
+            opt.reset_new_3ds_controls();
         } else if (Options.uses_old_3ds_controls()) {
             opt.reset_psp_controls();
         } else {
@@ -206,4 +218,8 @@ fn psp_jump_label(mode: Options.PspJumpMode) []const u8 {
         .select => "Select",
         .up => "Up",
     };
+}
+
+fn bool_str(b: bool) []const u8 {
+    return if (b) "ON" else "OFF";
 }
