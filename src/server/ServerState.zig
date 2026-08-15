@@ -23,6 +23,15 @@ const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
 const SERVER_PORT: u16 = 25565;
 const HEARTBEAT_INTERVAL_MS: i64 = 45_000;
 const SALT_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const LOGIN_FRAME_LEN: usize = 131;
+
+const ConnectionState = enum {
+    free,
+    pending,
+    ready,
+    active,
+    failed,
+};
 
 const ConnectionData = struct {
     stream: std.Io.net.Stream,
@@ -31,6 +40,21 @@ const ConnectionData = struct {
     read_buffer: [4096]u8,
     write_buffer: [4096]u8,
     connected: bool,
+    ip: [PlayersDb.ip_str_len:0]u8,
+    is_op: bool,
+    closed: bool = false,
+};
+
+/// A connection always lives at one stable address. The pending reader can
+/// therefore prefetch bytes beyond the login frame without losing them when
+/// the record becomes an active client connection.
+const ConnectionSlot = struct {
+    data: ConnectionData = undefined,
+    state: ConnectionState = .free,
+    worker_done: bool = true,
+    pending_index: ?usize = null,
+    active_index: ?usize = null,
+    login: Server.LoginRequest = undefined,
 };
 
 // Signal handlers run with C calling conventions and cannot carry
@@ -51,7 +75,10 @@ var stdout_iface: ?*std.Io.Writer = null;
 
 const Self = @This();
 
-conn_handles: []?ConnectionData,
+conn_handles: []?*ConnectionSlot,
+pending_handles: []?*ConnectionSlot,
+connection_pool: []ConnectionSlot,
+connections_mutex: std.Io.Mutex,
 tasks: std.Io.Group,
 listener: std.Io.net.Server,
 compressor_thread: CompressorThread.Thread,
@@ -74,11 +101,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     const alloc = engine.allocator(.user);
 
-    self.conn_handles = try alloc.alloc(?ConnectionData, Consts.MAX_PLAYERS);
-    errdefer alloc.free(self.conn_handles);
-    @memset(self.conn_handles, null);
-
     self.tasks = .init;
+    self.connections_mutex = .init;
     self.heartbeat_users = .init(0);
 
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(engine.io, .boot).raw.nanoseconds)));
@@ -88,6 +112,19 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         },
     };
     try Server.init(alloc, alloc, engine.io, engine.dirs.data, config);
+
+    self.conn_handles = try alloc.alloc(?*ConnectionSlot, Consts.MAX_PLAYERS);
+    errdefer alloc.free(self.conn_handles);
+    @memset(self.conn_handles, null);
+
+    const pending_len: usize = @intCast(Server.max_pending_logins);
+    self.pending_handles = try alloc.alloc(?*ConnectionSlot, pending_len);
+    errdefer alloc.free(self.pending_handles);
+    @memset(self.pending_handles, null);
+
+    self.connection_pool = try alloc.alloc(ConnectionSlot, Consts.MAX_PLAYERS + pending_len);
+    errdefer alloc.free(self.connection_pool);
+    for (self.connection_pool) |*slot| slot.* = .{};
 
     // Dedicated thread for world compression -- shared across world-send
     // (network) and world-save (disk). Off-loads save dispatch from
@@ -186,16 +223,8 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(Self, ctx);
 
     Server.tick();
-
-    for (0..Consts.MAX_PLAYERS) |i| {
-        if (self.conn_handles[i]) |*data| {
-            if (!data.connected) {
-                log.info("Connection in slot {d} disconnected", .{i});
-                data.stream.close(engine.io);
-                self.conn_handles[i] = null;
-            }
-        }
-    }
+    self.reap_finished_connections(engine);
+    self.promote_ready_logins(engine);
 
     if (self.heartbeat_config.count > 0) {
         self.heartbeat_users.store(count_initialized_users(), .release);
@@ -206,6 +235,269 @@ fn update(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
     PlayersDb.flush_if_due();
 }
 fn draw(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {}
+
+const PendingReservation = union(enum) {
+    accepted: *ConnectionSlot,
+    pending_full,
+    ip_limited,
+};
+
+fn slot_ip(slot: *const ConnectionSlot) []const u8 {
+    return std.mem.sliceTo(slot.data.ip[0..], 0);
+}
+
+fn count_connections_for_ip_locked(self: *Self, ip: []const u8) usize {
+    var count: usize = 0;
+
+    for (self.pending_handles) |maybe_slot| {
+        const slot = maybe_slot orelse continue;
+        if (slot.state != .free and std.mem.eql(u8, slot_ip(slot), ip)) count += 1;
+    }
+    for (self.conn_handles) |maybe_slot| {
+        const slot = maybe_slot orelse continue;
+        if (slot.state != .free and std.mem.eql(u8, slot_ip(slot), ip)) count += 1;
+    }
+
+    return count;
+}
+
+fn reserve_pending_slot_locked(
+    self: *Self,
+    conn: std.Io.net.Stream,
+    ip: []const u8,
+    is_op: bool,
+    engine: *Engine,
+) PendingReservation {
+    if (count_connections_for_ip_locked(self, ip) >= Server.max_connections_per_ip)
+        return .ip_limited;
+
+    const pending_index = for (self.pending_handles, 0..) |entry, index| {
+        if (entry == null) break index;
+    } else return .pending_full;
+
+    const slot = for (self.connection_pool) |*candidate| {
+        if (candidate.state == .free) break candidate;
+    } else return .pending_full;
+
+    slot.* = .{
+        .data = .{
+            .stream = conn,
+            .reader = undefined,
+            .writer = undefined,
+            .read_buffer = @splat(0),
+            .write_buffer = @splat(0),
+            .connected = true,
+            .ip = std.mem.zeroes([PlayersDb.ip_str_len:0]u8),
+            .is_op = is_op,
+        },
+        .state = .pending,
+        .worker_done = false,
+        .pending_index = pending_index,
+    };
+    const ip_len = @min(ip.len, PlayersDb.ip_str_len);
+    @memcpy(slot.data.ip[0..ip_len], ip[0..ip_len]);
+    slot.data.reader = std.Io.net.Stream.Reader.init(conn, engine.io, &slot.data.read_buffer);
+    slot.data.writer = std.Io.net.Stream.Writer.init(conn, engine.io, &slot.data.write_buffer);
+    self.pending_handles[pending_index] = slot;
+
+    return .{ .accepted = slot };
+}
+
+fn release_slot_locked(self: *Self, slot: *ConnectionSlot, engine: *Engine) void {
+    if (slot.pending_index) |index| {
+        self.pending_handles[index] = null;
+        slot.pending_index = null;
+    }
+    if (slot.active_index) |index| {
+        self.conn_handles[index] = null;
+        slot.active_index = null;
+    }
+    if (!slot.data.closed) {
+        slot.data.stream.close(engine.io);
+        slot.data.closed = true;
+    }
+    slot.data.connected = false;
+    slot.state = .free;
+    slot.worker_done = true;
+}
+
+fn reject_slot_locked(slot: *ConnectionSlot, engine: *Engine, reason: []const u8) void {
+    if (slot.data.closed) return;
+    common.protocol.send_disconnect_to_client(&slot.data.writer.interface, reason) catch {};
+    slot.data.stream.close(engine.io);
+    slot.data.closed = true;
+    slot.data.connected = false;
+}
+
+fn finish_pending_worker(self: *Self, slot: *ConnectionSlot, engine: *Engine) void {
+    self.connections_mutex.lockUncancelable(engine.io);
+    defer self.connections_mutex.unlock(engine.io);
+
+    if (slot.state == .pending) slot.state = .failed;
+    slot.worker_done = true;
+}
+
+fn finish_active_worker(self: *Self, slot: *ConnectionSlot, engine: *Engine) void {
+    self.connections_mutex.lockUncancelable(engine.io);
+    defer self.connections_mutex.unlock(engine.io);
+
+    if (slot.state == .active) slot.worker_done = true;
+}
+
+fn reap_finished_connections(self: *Self, engine: *Engine) void {
+    self.connections_mutex.lockUncancelable(engine.io);
+    defer self.connections_mutex.unlock(engine.io);
+
+    for (self.pending_handles) |maybe_slot| {
+        const slot = maybe_slot orelse continue;
+        if (slot.state == .failed and slot.worker_done) {
+            release_slot_locked(self, slot, engine);
+        }
+    }
+
+    for (self.conn_handles, 0..) |maybe_slot, index| {
+        const slot = maybe_slot orelse continue;
+        if (slot.state == .active and slot.worker_done and !slot.data.connected) {
+            log.info("Connection in slot {d} disconnected", .{index});
+            release_slot_locked(self, slot, engine);
+        }
+    }
+}
+
+fn promote_ready_logins(self: *Self, engine: *Engine) void {
+    self.connections_mutex.lockUncancelable(engine.io);
+    defer self.connections_mutex.unlock(engine.io);
+
+    for (self.pending_handles, 0..) |maybe_slot, pending_index| {
+        const slot = maybe_slot orelse continue;
+        if (slot.state != .ready or !slot.worker_done) continue;
+
+        const active_index = for (self.conn_handles, 0..) |entry, index| {
+            if (entry == null) break index;
+        } else {
+            log.info("&4Server full, rejecting completed login", .{});
+            reject_slot_locked(slot, engine, "Server is full!");
+            release_slot_locked(self, slot, engine);
+            continue;
+        };
+
+        const admission = Server.admit_login(
+            &slot.data.reader.interface,
+            &slot.data.writer.interface,
+            &slot.data.connected,
+            slot_ip(slot),
+            slot.data.is_op,
+            slot.login,
+        );
+        const client = switch (admission) {
+            .rejected => |reason| {
+                log.info("Rejecting completed login: {s}", .{reason});
+                reject_slot_locked(slot, engine, reason);
+                release_slot_locked(self, slot, engine);
+                continue;
+            },
+            .accepted => |accepted| accepted,
+        };
+
+        self.pending_handles[pending_index] = null;
+        slot.pending_index = null;
+        self.conn_handles[active_index] = slot;
+        slot.active_index = active_index;
+        slot.state = .active;
+        slot.worker_done = false;
+
+        self.tasks.concurrent(engine.io, client_login_loop, .{ self, slot, client, engine }) catch {
+            log.err("Failed to spawn login task for slot {d}", .{active_index});
+            client.connected.* = false;
+            slot.worker_done = true;
+        };
+    }
+}
+
+fn wait_for_login_frame(reader: *std.Io.Reader) std.Io.Reader.Error!void {
+    _ = try reader.peek(LOGIN_FRAME_LEN);
+}
+
+fn wait_for_login_timeout(io: std.Io, timeout_ms: u32) std.Io.Cancelable!void {
+    try io.sleep(.{ .nanoseconds = @as(i96, timeout_ms) * std.time.ns_per_ms }, .real);
+}
+
+const LoginRaceResult = union(enum) {
+    read: std.Io.Reader.Error!void,
+    timeout: std.Io.Cancelable!void,
+};
+
+fn pending_login_loop(self: *Self, slot: *ConnectionSlot, engine: *Engine) std.Io.Cancelable!void {
+    defer finish_pending_worker(self, slot, engine);
+
+    const LoginSelect = std.Io.Select(LoginRaceResult);
+    var result_buffer: [2]LoginRaceResult = undefined;
+    var select = LoginSelect.init(engine.io, &result_buffer);
+    defer select.cancelDiscard();
+
+    select.concurrent(.read, wait_for_login_frame, .{&slot.data.reader.interface}) catch |err| {
+        log.err("Failed to schedule pending login read: {}", .{err});
+        return;
+    };
+    select.concurrent(.timeout, wait_for_login_timeout, .{ engine.io, Server.login_timeout_ms }) catch |err| {
+        log.err("Failed to schedule pending login timeout: {}", .{err});
+        return;
+    };
+
+    const result = try select.await();
+    switch (result) {
+        .read => |read_result| {
+            read_result catch |err| {
+                log.info("Pending login read failed: {}", .{err});
+                return;
+            };
+
+            const frame = slot.data.reader.interface.peek(LOGIN_FRAME_LEN) catch |err| {
+                log.info("Pending login frame disappeared: {}", .{err});
+                return;
+            };
+            const request = Server.parse_login_frame(frame) catch |err| {
+                log.info("Rejecting malformed login: {}", .{err});
+                return;
+            };
+            slot.data.reader.interface.toss(LOGIN_FRAME_LEN);
+
+            self.connections_mutex.lockUncancelable(engine.io);
+            if (slot.state == .pending) {
+                slot.login = request;
+                slot.state = .ready;
+                slot.worker_done = true;
+            }
+            self.connections_mutex.unlock(engine.io);
+        },
+        .timeout => |timeout_result| {
+            timeout_result catch |err| switch (err) {
+                error.Canceled => return error.Canceled,
+            };
+            log.info("Pending login timed out after {d} ms", .{Server.login_timeout_ms});
+        },
+    }
+}
+
+fn client_login_loop(
+    self: *Self,
+    slot: *ConnectionSlot,
+    client: *Server.Client,
+    engine: *Engine,
+) std.Io.Cancelable!void {
+    defer finish_active_worker(self, slot, engine);
+
+    client.finish_login() catch |err| {
+        client.connected.* = false;
+        if (err == error.Canceled) return error.Canceled;
+        // Server.tick may reclaim a failed player entry as soon as its
+        // connected flag becomes false, so do not dereference `client` after
+        // this point.
+        log.info("Login failed: {}", .{err});
+        return;
+    };
+    client.read_loop();
+}
 
 fn generate_salt(io: std.Io, out: *[16]u8) !void {
     var random_bytes: [32]u8 = undefined;
@@ -267,6 +559,12 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.tasks.cancel(engine.io);
     log.info("Shutting down server...", .{});
 
+    self.connections_mutex.lockUncancelable(engine.io);
+    for (self.connection_pool) |*slot| {
+        if (slot.state != .free) self.release_slot_locked(slot, engine);
+    }
+    self.connections_mutex.unlock(engine.io);
+
     global_listener = null;
     self.listener.deinit(engine.io);
 
@@ -281,13 +579,11 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.compressor_thread.join();
     CompressWorker.deinit();
 
+    engine.allocator(.user).free(self.connection_pool);
+    engine.allocator(.user).free(self.pending_handles);
     engine.allocator(.user).free(self.conn_handles);
 
     global_engine = null;
-}
-
-fn client_read_loop(client: *Server.Client) std.Io.Cancelable!void {
-    client.read_loop();
 }
 
 fn reject_connection(conn: std.Io.net.Stream, engine: *Engine, reason: []const u8) void {
@@ -336,38 +632,28 @@ fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
             reject_connection(conn, engine, reason);
             continue;
         }
-        const is_op = policy.op;
+        self.connections_mutex.lockUncancelable(engine.io);
+        const reservation = self.reserve_pending_slot_locked(conn, ip, policy.op, engine);
+        self.connections_mutex.unlock(engine.io);
 
-        var assigned = false;
-        for (0..Consts.MAX_PLAYERS) |i| {
-            if (self.conn_handles[i] != null) continue;
-
-            log.info("Assigning connection to slot {d}", .{i});
-            self.conn_handles[i] = .{
-                .stream = conn,
-                .reader = undefined,
-                .writer = undefined,
-                .read_buffer = @splat(0),
-                .write_buffer = @splat(0),
-                .connected = true,
-            };
-
-            self.conn_handles[i].?.reader = std.Io.net.Stream.Reader.init(conn, engine.io, &self.conn_handles[i].?.read_buffer);
-            self.conn_handles[i].?.writer = std.Io.net.Stream.Writer.init(conn, engine.io, &self.conn_handles[i].?.write_buffer);
-
-            if (Server.client_join(&self.conn_handles[i].?.reader.interface, &self.conn_handles[i].?.writer.interface, &self.conn_handles[i].?.connected, ip, is_op)) |client| {
-                self.tasks.concurrent(engine.io, client_read_loop, .{client}) catch {
-                    log.err("Failed to spawn read task for slot {d}", .{i});
-                    self.conn_handles[i].?.connected = false;
+        switch (reservation) {
+            .accepted => |slot| {
+                log.info("Staging pending login from {s}", .{ip});
+                self.tasks.concurrent(engine.io, pending_login_loop, .{ self, slot, engine }) catch |err| {
+                    log.err("Failed to spawn pending-login task: {}", .{err});
+                    self.connections_mutex.lockUncancelable(engine.io);
+                    self.release_slot_locked(slot, engine);
+                    self.connections_mutex.unlock(engine.io);
                 };
-            }
-            assigned = true;
-            break;
-        }
-
-        if (!assigned) {
-            log.info("&4Server full, rejecting connection", .{});
-            reject_connection(conn, engine, "Server is full!");
+            },
+            .pending_full => {
+                log.info("Pending-login pool full; rejecting {s}", .{ip});
+                reject_connection(conn, engine, "Server is busy, try again");
+            },
+            .ip_limited => {
+                log.info("Connection limit reached for {s}", .{ip});
+                reject_connection(conn, engine, "Too many connections from your IP");
+            },
         }
     }
 }

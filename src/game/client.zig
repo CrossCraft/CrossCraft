@@ -30,6 +30,19 @@ const ConnectionPhase = enum {
     closing,
 };
 
+/// The parts of a PlayerIDToServer frame needed before a Client exists in the
+/// server player table. Keeping this small lets the network host validate and
+/// stage a login without giving an unauthenticated socket a player slot.
+pub const LoginRequest = struct {
+    protocol_version: u8,
+    username: [64]u8,
+};
+
+pub const LoginName = struct {
+    value: [16:0]u8,
+    len: u8,
+};
+
 id: i8,
 x: u16,
 y: u16,
@@ -119,6 +132,58 @@ const log = std.log.scoped(.client);
 
 fn ctx_to_client(ctx: *anyopaque) *Self {
     return @ptrCast(@alignCast(ctx));
+}
+
+pub fn login_name(request: LoginRequest) LoginName {
+    var result: LoginName = .{
+        .value = @splat(' '),
+        .len = 16,
+    };
+
+    for (0..result.value.len) |i| {
+        if (request.username[i] == ' ') {
+            result.len = @intCast(i);
+            break;
+        }
+        result.value[i] = request.username[i];
+    }
+
+    return result;
+}
+
+/// Initialise a client that has already completed the transport-level login
+/// frame. The caller must add it to `Server.players` and call `init` on the
+/// stored entry before starting its read loop; `Protocol.init` keeps a pointer
+/// to its client context.
+pub fn init_remote_admitted(
+    self: *Self,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    connected: *bool,
+    ip: []const u8,
+    is_op: bool,
+    request: LoginRequest,
+) void {
+    const name = login_name(request);
+
+    self.connected = connected;
+    self.reader = reader;
+    self.writer = writer;
+    self.initialized = false;
+    self.phase = .handshaking;
+    self.local = false;
+    self.is_op = is_op;
+    self.ip = std.mem.zeroes([players_db.ip_str_len:0]u8);
+    const ip_n = @min(ip.len, players_db.ip_str_len);
+    @memcpy(self.ip[0..ip_n], ip[0..ip_n]);
+    self.name = name.value;
+    self.name_len = name.len;
+    self.id = -1;
+    self.x = 0;
+    self.y = 0;
+    self.z = 0;
+    self.yaw = 0;
+    self.pitch = 0;
 }
 
 fn read_packet(self: *Self) !bool {
@@ -340,45 +405,45 @@ pub fn handshake(self: *Self) !void {
     }
 }
 
-fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
-    const self = ctx_to_client(ctx);
-
+pub fn prepare_login(self: *Self, request: LoginRequest) bool {
     // The generated protocol dispatcher has one broad Connected state, so
     // preserve the server's actual login state here as a defense in depth.
     if (self.phase != .awaiting_login or self.initialized) {
         self.reject_protocol("Player ID already received");
-        return;
+        return false;
     }
 
-    if (event.protocol_version != 0x07) {
+    if (request.protocol_version != 0x07) {
         self.reject_protocol("Unsupported protocol version!");
-        return;
+        return false;
     }
 
-    self.name = @splat(' ');
-    self.name_len = @intCast(self.name.len);
-    for (0..self.name.len) |i| {
-        if (event.username[i] == ' ') {
-            self.name_len = @intCast(i);
-            break;
-        }
-
-        self.name[i] = event.username[i];
-    }
-    // TODO: Verify key for login... maybe
-
-    for (0..Server.players.items.len) |i| {
-        if (Server.players.items[i]) |p| {
-            if (p.id == self.id or !p.initialized)
+    const name = login_name(request);
+    for (Server.players.items) |maybe_client| {
+        if (maybe_client) |p| {
+            // Awaiting clients have not chosen a name yet. Handshaking
+            // clients do count: their name is reserved until their world
+            // transfer succeeds or fails.
+            if (p.id == self.id or p.phase == .awaiting_login or p.phase == .closing)
                 continue;
-            if (std.mem.eql(u8, p.name[0..p.name_len], self.name[0..self.name_len])) {
+            if (p.name_len == name.len and std.mem.eql(u8, p.name[0..p.name_len], name.value[0..name.len])) {
                 self.reject_protocol("A player with that name is already connected!");
-                return;
+                return false;
             }
         }
     }
 
+    self.name = name.value;
+    self.name_len = name.len;
     self.phase = .handshaking;
+    return true;
+}
+
+/// Complete the expensive, output-producing half of a login after the name
+/// and player slot have already been reserved.
+pub fn finish_login(self: *Self) !void {
+    if (self.phase != .handshaking or self.initialized) return error.InvalidLoginState;
+
     self.handshake() catch |err| {
         self.phase = .closing;
         self.connected.* = false;
@@ -388,6 +453,17 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
 
     const ip = self.ip_slice();
     if (ip.len > 0) players_db.record_completed_login(ip, self.name[0..self.name_len]);
+}
+
+fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
+    const self = ctx_to_client(ctx);
+    const request: LoginRequest = .{
+        .protocol_version = event.protocol_version,
+        .username = event.username,
+    };
+
+    if (!self.prepare_login(request)) return;
+    try self.finish_login();
 }
 
 fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void {

@@ -1,5 +1,6 @@
 const std = @import("std");
 const consts = @import("common").consts;
+const protocol = @import("common").protocol;
 const FAB = @import("common").fa_buffer.FirstAvailableBuffer;
 pub const Client = @import("client.zig");
 const StaticAllocator = @import("common").static_allocator;
@@ -87,6 +88,16 @@ pub var max_players_saved: u32 = 1024;
 /// and never evicts bans, ops, or whitelist entries.
 pub var max_policy_records: u32 = 4096;
 
+/// Absolute deadline from TCP accept until the full PlayerIDToServer frame is
+/// received. It deliberately does not reset when a peer trickles bytes.
+pub const default_login_timeout_ms: u32 = 15_000;
+pub const default_max_pending_logins: u32 = 16;
+pub const default_max_connections_per_ip: u32 = 8;
+
+pub var login_timeout_ms: u32 = default_login_timeout_ms;
+pub var max_pending_logins: u32 = default_max_pending_logins;
+pub var max_connections_per_ip: u32 = default_max_connections_per_ip;
+
 /// Optional sink the host (ServerState) installs to mirror chat broadcasts
 /// to its admin console. Server-core has no business knowing about stdout
 /// directly, so it goes through this hook instead.
@@ -137,6 +148,13 @@ pub fn init(
     allocator = .init(alloc);
     errdefer allocator.deinit();
     io = _io;
+
+    // Server globals survive an embedded-server teardown in the same
+    // process. Reset connection-admission values before optionally loading a
+    // fresh standalone configuration.
+    login_timeout_ms = default_login_timeout_ms;
+    max_pending_logins = default_max_pending_logins;
+    max_connections_per_ip = default_max_connections_per_ip;
 
     var wcfg = config.world();
     if (wcfg.save_location.len == 0) {
@@ -403,6 +421,24 @@ fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
                 } else {
                     log.warn("server.properties save-format '{s}' unknown; using default", .{value});
                 }
+            } else if (std.mem.eql(u8, key, "login-timeout-ms")) {
+                if (std.fmt.parseInt(u32, value, 10)) |parsed| {
+                    login_timeout_ms = std.math.clamp(parsed, 1_000, 60_000);
+                } else |_| {
+                    log.warn("server.properties login-timeout-ms value '{s}' is not a u32; ignoring", .{value});
+                }
+            } else if (std.mem.eql(u8, key, "max-pending-logins")) {
+                if (std.fmt.parseInt(u32, value, 10)) |parsed| {
+                    max_pending_logins = std.math.clamp(parsed, 1, @as(u32, consts.MAX_PLAYERS));
+                } else |_| {
+                    log.warn("server.properties max-pending-logins value '{s}' is not a u32; ignoring", .{value});
+                }
+            } else if (std.mem.eql(u8, key, "max-connections-per-ip")) {
+                if (std.fmt.parseInt(u32, value, 10)) |parsed| {
+                    max_connections_per_ip = std.math.clamp(parsed, 1, @as(u32, consts.MAX_PLAYERS));
+                } else |_| {
+                    log.warn("server.properties max-connections-per-ip value '{s}' is not a u32; ignoring", .{value});
+                }
             } else if (std.mem.eql(u8, key, "whitelist")) {
                 whitelist_enabled = std.mem.eql(u8, value, "true");
             } else if (std.mem.eql(u8, key, "max-players-saved")) {
@@ -434,8 +470,18 @@ fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
     var buf: [512]u8 = undefined;
     const contents = std.fmt.bufPrint(
         &buf,
-        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nsave-format:classic_cw\nwhitelist:false\nmax-players-saved:{d}\nmax-policy-records:{d}\nheartbeat-url:\n",
-        .{ default_server_name, default_server_motd, wcfg.seed, wcfg.save_location, max_players_saved, max_policy_records },
+        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nsave-format:classic_cw\nlogin-timeout-ms:{d}\nmax-pending-logins:{d}\nmax-connections-per-ip:{d}\nwhitelist:false\nmax-players-saved:{d}\nmax-policy-records:{d}\nheartbeat-url:\n",
+        .{
+            default_server_name,
+            default_server_motd,
+            wcfg.seed,
+            wcfg.save_location,
+            login_timeout_ms,
+            max_pending_logins,
+            max_connections_per_ip,
+            max_players_saved,
+            max_policy_records,
+        },
     ) catch |err| {
         log.info("Failed to format default server.properties ({}), using defaults", .{err});
         return;
@@ -473,6 +519,70 @@ pub fn deinit() void {
     players = .init();
 }
 
+/// A decoded, structurally valid Classic login frame. It contains only the
+/// identity data the server needs before a Client has been assigned a player
+/// table entry.
+pub const LoginRequest = Client.LoginRequest;
+
+pub const LoginAdmission = union(enum) {
+    accepted: *Client,
+    rejected: []const u8,
+};
+
+/// Parse and validate the one fixed-size frame that must arrive before a
+/// remote peer is allowed to consume a game-player slot.
+pub fn parse_login_frame(frame: []const u8) !LoginRequest {
+    if (frame.len == 0 or frame[0] != 0x00) return error.InvalidLoginPacket;
+    const expected = protocol.packet_length_to_server(frame[0]) catch return error.InvalidLoginPacket;
+    if (frame.len != expected) return error.InvalidLoginPacket;
+
+    var reader = std.Io.Reader.fixed(frame[1..]);
+    const packet = try zb.PlayerIDToServer.read(&reader);
+    if (packet.protocol_version != 0x07) return error.UnsupportedProtocolVersion;
+
+    return .{
+        .protocol_version = packet.protocol_version,
+        .username = packet.username,
+    };
+}
+
+/// Reserve a real player only after `parse_login_frame` has completed. This
+/// keeps pre-auth TCP sockets out of `players` and reserves names while their
+/// world transfer is still in progress.
+pub fn admit_login(
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    connected: *bool,
+    ip: []const u8,
+    is_op: bool,
+    request: LoginRequest,
+) LoginAdmission {
+    if (request.protocol_version != 0x07) return .{ .rejected = "Unsupported protocol version!" };
+
+    const name = Client.login_name(request);
+    for (players.items) |maybe_client| {
+        if (maybe_client) |client| {
+            // `name_len` is zero only before a local client sends its own
+            // login. A staged remote login always has its name installed
+            // before this check can be observed by another admission.
+            if (client.name_len == name.len and std.mem.eql(u8, client.name[0..client.name_len], name.value[0..name.len])) {
+                return .{ .rejected = "A player with that name is already connected!" };
+            }
+        }
+    }
+
+    var client: Client = undefined;
+    client.init_remote_admitted(reader, writer, connected, ip, is_op, request);
+
+    const id = players.add(client) orelse return .{ .rejected = "Server is full!" };
+    players.items[id].?.id = @intCast(id);
+    // `Protocol.init` captures the client address as its dispatch context, so
+    // initialise only after the temporary `client` has been copied into the
+    // stable player table.
+    players.items[id].?.init();
+    return .{ .accepted = &(players.items[id].?) };
+}
+
 pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bool, ip: []const u8, is_op: bool) ?*Client {
     var client: Client = undefined;
     client.connected = connected;
@@ -504,6 +614,27 @@ pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *b
         client.send_disconnect("Server is full!") catch return null;
         return null;
     }
+}
+
+test "pending login frame must be complete and use the Classic protocol version" {
+    var frame: [131]u8 = @splat(' ');
+    frame[0] = 0x00;
+    frame[1] = 0x07;
+    @memcpy(frame[2..7], "Alice");
+    frame[130] = 0;
+
+    const request = try parse_login_frame(&frame);
+    try std.testing.expectEqual(@as(u8, 0x07), request.protocol_version);
+    try std.testing.expectEqualStrings("Alice", request.username[0..5]);
+
+    try std.testing.expectError(error.InvalidLoginPacket, parse_login_frame(frame[0..130]));
+
+    frame[0] = 0x05;
+    try std.testing.expectError(error.InvalidLoginPacket, parse_login_frame(&frame));
+
+    frame[0] = 0x00;
+    frame[1] = 0x06;
+    try std.testing.expectError(error.UnsupportedProtocolVersion, parse_login_frame(&frame));
 }
 
 /// Join the server as the local singleplayer client. Same as client_join
