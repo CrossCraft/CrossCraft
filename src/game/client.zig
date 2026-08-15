@@ -606,20 +606,22 @@ test "duplicate player id disconnects before handshake dispatch" {
     try std.testing.expectEqual(@as(u8, 0x0E), writer.buffered()[0]);
 }
 
-test "pre-login gameplay packet disconnects before dispatch" {
-    const packet = [_]u8{0x05};
-    var reader = std.Io.Reader.fixed(&packet);
-    var output: [256]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&output);
-    var connected = true;
-    var client: Self = undefined;
-    client.reader = &reader;
-    client.writer = &writer;
-    client.connected = &connected;
-    client.initialized = false;
-    client.phase = .awaiting_login;
+test "pre-login mutation and chat packets disconnect before dispatch" {
+    for ([_]u8{ 0x05, 0x0D }) |packet_id| {
+        const packet = [_]u8{packet_id};
+        var reader = std.Io.Reader.fixed(&packet);
+        var output: [256]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&output);
+        var connected = true;
+        var client: Self = undefined;
+        client.reader = &reader;
+        client.writer = &writer;
+        client.connected = &connected;
+        client.initialized = false;
+        client.phase = .awaiting_login;
 
-    try std.testing.expect(!(try client.process_packet()));
-    try std.testing.expect(!connected);
-    try std.testing.expectEqual(@as(u8, 0x0E), writer.buffered()[0]);
+        try std.testing.expect(!(try client.process_packet()));
+        try std.testing.expect(!connected);
+        try std.testing.expectEqual(@as(u8, 0x0E), writer.buffered()[0]);
+    }
 }
