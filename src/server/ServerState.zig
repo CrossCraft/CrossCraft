@@ -11,12 +11,17 @@ const State = ae.Core.State;
 const Server = game.Server;
 const CompressWorker = game.CompressWorker;
 const CompressorThread = @import("CompressorThread.zig");
+const Heartbeat = @import("Heartbeat.zig");
 const PlayersDb = game.PlayersDb;
 const Commands = game.Commands;
 const Consts = common.consts;
 
 const log = std.log.scoped(.server);
 const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
+
+const SERVER_PORT: u16 = 25565;
+const HEARTBEAT_INTERVAL_MS: i64 = 45_000;
+const SALT_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 const ConnectionData = struct {
     stream: std.Io.net.Stream,
@@ -49,6 +54,9 @@ conn_handles: []?ConnectionData,
 tasks: std.Io.Group,
 listener: std.Io.net.Server,
 compressor_thread: CompressorThread.Thread,
+heartbeat_config: Heartbeat.Config,
+heartbeat_salt: [16]u8,
+heartbeat_users: std.atomic.Value(u32),
 
 pub fn state(self: *Self) State {
     return .{ .ptr = self, .tab = &.{
@@ -66,9 +74,11 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     const alloc = engine.allocator(.user);
 
     self.conn_handles = try alloc.alloc(?ConnectionData, Consts.MAX_PLAYERS);
+    errdefer alloc.free(self.conn_handles);
     @memset(self.conn_handles, null);
 
     self.tasks = .init;
+    self.heartbeat_users = .init(0);
 
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(engine.io, .boot).raw.nanoseconds)));
     const config: Server.GameConfig = .{
@@ -86,12 +96,20 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     engine.report();
 
+    self.heartbeat_config = Heartbeat.Config.load(engine.io, engine.dirs.data);
+    if (self.heartbeat_config.count > 0) {
+        generate_salt(engine.io, &self.heartbeat_salt) catch |err| {
+            log.warn("Heartbeat disabled: could not generate a salt: {}", .{err});
+            self.heartbeat_config.count = 0;
+        };
+    }
+
     global_engine = engine;
     install_signal_handlers();
 
-    log.info("Starting server on port 25565", .{});
+    log.info("Starting server on port {d}", .{SERVER_PORT});
 
-    const server_ip = try std.Io.net.IpAddress.parseIp4("0.0.0.0", 25565);
+    const server_ip = try std.Io.net.IpAddress.parseIp4("0.0.0.0", SERVER_PORT);
     // SO_REUSEADDR so a fresh server can rebind immediately after a client
     // disconnects - otherwise the listening socket sits in TIME_WAIT for
     // up to a minute and the next `zig build run-server` hits AddressInUse.
@@ -99,6 +117,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     global_listener = &self.listener;
 
     self.tasks.concurrent(engine.io, accept_loop, .{ self, engine }) catch unreachable;
+    if (self.heartbeat_config.count > 0) {
+        self.tasks.concurrent(engine.io, heartbeat_loop, .{ self, engine }) catch |err| {
+            log.err("Failed to start heartbeat sender: {}", .{err});
+            return err;
+        };
+    }
 
     const stdout_file = platform_stdout();
     stdout_writer = stdout_file.writer(engine.io, &stdout_buf);
@@ -171,10 +195,68 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
             }
         }
     }
+
+    if (self.heartbeat_config.count > 0) {
+        self.heartbeat_users.store(count_initialized_users(), .release);
+    }
 }
 
 fn update(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {}
 fn draw(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {}
+
+fn generate_salt(io: std.Io, out: *[16]u8) !void {
+    var random_bytes: [32]u8 = undefined;
+    var written: usize = 0;
+    const rejection_limit: u16 = (256 / SALT_ALPHABET.len) * SALT_ALPHABET.len;
+
+    while (written < out.len) {
+        try io.randomSecure(&random_bytes);
+        for (random_bytes) |byte| {
+            if (@as(u16, byte) >= rejection_limit) continue;
+            out[written] = SALT_ALPHABET[byte % SALT_ALPHABET.len];
+            written += 1;
+            if (written == out.len) break;
+        }
+    }
+}
+
+fn count_initialized_users() u32 {
+    var count: u32 = 0;
+    for (Server.players.items) |maybe_client| {
+        if (maybe_client) |client| {
+            if (client.initialized and client.connected.*) count += 1;
+        }
+    }
+    return count;
+}
+
+fn heartbeat_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
+    var client: std.http.Client = .{
+        .allocator = engine.allocator(.user),
+        .io = engine.io,
+    };
+    defer client.deinit();
+
+    while (true) {
+        const request = Heartbeat.RequestData{
+            .server_name = &Server.server_name,
+            .port = SERVER_PORT,
+            .users = self.heartbeat_users.load(.acquire),
+            .max_players = Consts.MAX_PLAYERS,
+            .salt = &self.heartbeat_salt,
+        };
+
+        for (0..self.heartbeat_config.count) |index| {
+            const endpoint_len: usize = self.heartbeat_config.lens[index];
+            const endpoint = self.heartbeat_config.urls[index][0..endpoint_len];
+            Heartbeat.send(engine.io, &client, endpoint, request) catch |err| switch (err) {
+                error.Canceled => return error.Canceled,
+                else => log.warn("Heartbeat endpoint {d} failed after retries: {}", .{ index + 1, err }),
+            };
+        }
+        try engine.io.sleep(.{ .nanoseconds = @as(i96, HEARTBEAT_INTERVAL_MS) * std.time.ns_per_ms }, .real);
+    }
+}
 
 fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(Self, ctx);

@@ -404,7 +404,7 @@ fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
     var buf: [512]u8 = undefined;
     const contents = std.fmt.bufPrint(
         &buf,
-        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nsave-format:classic_cw\nwhitelist:false\nmax-players-saved:{d}\n",
+        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nsave-format:classic_cw\nwhitelist:false\nmax-players-saved:{d}\nheartbeat-url:\n",
         .{ default_server_name, default_server_motd, wcfg.seed, wcfg.save_location, max_players_saved },
     ) catch |err| {
         log.info("Failed to format default server.properties ({}), using defaults", .{err});
