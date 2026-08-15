@@ -94,6 +94,22 @@ pub var players: FAB(Client, consts.MAX_PLAYERS) = .init();
 /// real network clients (server.properties I/O, join/leave chat spam, etc.).
 pub var internal_use: bool = false;
 
+/// Used for scheduler-driven changes: queue protocol packets into each
+/// client's existing writer buffer, then flush once at the end of Server.tick.
+const tick_change_sink: world.BlockChangeSink = .{ .emit_fn = emit_tick_block_change };
+
+/// Used by direct gameplay actions such as sponge absorption, where the
+/// caller preserves the pre-existing immediate-broadcast behavior.
+pub const immediate_block_change_sink: world.BlockChangeSink = .{ .emit_fn = emit_immediate_block_change };
+
+fn emit_tick_block_change(_: ?*anyopaque, change: world.BlockChange) void {
+    broadcast_block_change_buffered(change.x, change.y, change.z, change.block);
+}
+
+fn emit_immediate_block_change(_: ?*anyopaque, change: world.BlockChange) void {
+    broadcast_block_change(change.x, change.y, change.z, change.block);
+}
+
 fn pad(comptime s: []const u8) [64]u8 {
     var buf: [64]u8 = @splat(' ');
     @memcpy(buf[0..s.len], s);
@@ -524,9 +540,25 @@ pub fn broadcast_chat_message(id: i8, message: []u8) void {
 }
 
 pub fn broadcast_block_change(x: u16, y: u16, z: u16, block: consts.Block) void {
+    broadcast_block_change_impl(x, y, z, block, true);
+}
+
+fn broadcast_block_change_buffered(x: u16, y: u16, z: u16, block: consts.Block) void {
+    broadcast_block_change_impl(x, y, z, block, false);
+}
+
+fn broadcast_block_change_impl(x: u16, y: u16, z: u16, block: consts.Block, flush: bool) void {
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
             players.items[i].?.send_block_change(x, y, z, block) catch continue;
+            if (flush) players.items[i].?.writer.flush() catch continue;
+        }
+    }
+}
+
+fn flush_block_change_broadcasts() void {
+    for (0..consts.MAX_PLAYERS) |i| {
+        if (players.items[i] != null and players.items[i].?.initialized) {
             players.items[i].?.writer.flush() catch continue;
         }
     }
@@ -583,13 +615,8 @@ pub fn tick() void {
         }
     }
 
-    world.tick();
-
-    for (0..world.sim.pending_count) |i| {
-        const change = world.sim.pending_changes[i];
-        broadcast_block_change(change.x, change.y, change.z, change.block);
-    }
-    world.sim.pending_count = 0;
+    const emitted = world.tick(tick_change_sink);
+    if (emitted > 0) flush_block_change_broadcasts();
 
     broadcast_player_positions();
 

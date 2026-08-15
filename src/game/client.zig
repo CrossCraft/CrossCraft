@@ -452,7 +452,7 @@ fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
     world.enqueue_neighbors_of(event.x, event.y, event.z);
 
     if (mode == .create and block.id == .sponge) {
-        world.sponge_absorb(event.x, event.y, event.z);
+        world.sponge_absorb(Server.immediate_block_change_sink, event.x, event.y, event.z);
     }
     if (mode == .destroy and old_block.id == .sponge) {
         world.sponge_release(event.x, event.y, event.z);

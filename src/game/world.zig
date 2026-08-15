@@ -9,8 +9,8 @@
 //
 // The substructs (data, sim, saver) are split into separate files for
 // readability, but exposed at module scope rather than wrapped in an
-// aggregate struct -- callers write `world.data.get_block(x,y,z)` or
-// `world.tick()` directly.
+// aggregate struct -- callers write `world.data.get_block(x,y,z)` or pass a
+// block-change sink to `world.tick()` directly.
 
 const std = @import("std");
 const common = @import("common");
@@ -26,6 +26,7 @@ pub const SaveFormat = fmt_mod.SaveFormat;
 pub const LoadOutcome = fmt_mod.LoadOutcome;
 pub const ClassicDat = fmt_mod.ClassicDat;
 pub const BlockChange = WorldSimulation.BlockChange;
+pub const BlockChangeSink = WorldSimulation.BlockChangeSink;
 
 const worldgen = @import("worldgen.zig");
 const Block = c.Block;
@@ -197,9 +198,10 @@ pub fn finalize_loaded() void {
 
 // --- Tick + simulation ---
 
-pub fn tick() void {
-    sim.tick(&data);
+pub fn tick(sink: BlockChangeSink) u32 {
+    const emitted = sim.tick(&data, sink);
     saver.maybe_autosave(&data);
+    return emitted;
 }
 
 pub fn set_block(x: u16, y: u16, z: u16, block: Block) void {
@@ -210,8 +212,8 @@ pub fn enqueue_neighbors_of(x: u16, y: u16, z: u16) void {
     sim.enqueue_neighbors_of(&data, x, y, z);
 }
 
-pub fn sponge_absorb(cx: u16, cy: u16, cz: u16) void {
-    sim.sponge_absorb(&data, cx, cy, cz);
+pub fn sponge_absorb(sink: BlockChangeSink, cx: u16, cy: u16, cz: u16) void {
+    sim.sponge_absorb(&data, sink, cx, cy, cz);
 }
 
 pub fn sponge_release(cx: u16, cy: u16, cz: u16) void {

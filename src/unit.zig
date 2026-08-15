@@ -4,6 +4,7 @@ comptime {
     _ = @import("client/world/chunk/face.zig");
     _ = @import("game/world/DumpName.zig");
     _ = @import("game/world/CreateName.zig");
+    _ = @import("game/world/WorldSimulation.zig");
     _ = @import("client/state/Session.zig");
     _ = @import("client/state/BundledSave.zig");
     _ = @import("client/Options.zig");
