@@ -335,6 +335,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             });
             root.addImport("aether", client_root.import_table.get("aether").?);
+            root.addImport("protocol", protocol);
             root.addImport("common", common);
             root.addImport("game", game);
             break :unit_tests_root root;

@@ -1,5 +1,6 @@
 const std = @import("std");
 const players_db = @import("players_db.zig");
+const access_control = @import("access_control.zig");
 const Server = @import("server.zig");
 const proto = @import("common").protocol;
 
@@ -102,7 +103,10 @@ fn cmd_ipban(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
         return;
     }
 
-    _ = players_db.set_banned(ip, true, if (reason.len > 0) reason else "Banned");
+    access_control.set_banned(ip, true, if (reason.len > 0) reason else "Banned") catch |err| {
+        report_policy_error(sink, err);
+        return;
+    };
     const dc_reason = if (reason.len > 0) reason else "You have been banned";
     client.send_disconnect(dc_reason) catch {};
     _ = client.writer.flush() catch {};
@@ -158,7 +162,10 @@ fn cmd_ipop(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
         return;
     }
 
-    _ = players_db.set_op(ip, true);
+    access_control.set_op(ip, true) catch |err| {
+        report_policy_error(sink, err);
+        return;
+    };
     client.is_op = true;
     proto.send_update_player_type_to_client(client.writer, true) catch {};
     _ = client.writer.flush() catch {};
@@ -186,7 +193,10 @@ fn cmd_ipwhitelist(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
         return;
     };
 
-    _ = players_db.set_whitelisted(canon, true);
+    access_control.set_whitelisted(canon, true) catch |err| {
+        report_policy_error(sink, err);
+        return;
+    };
 
     var out_buf: [80]u8 = undefined;
     const msg = std.fmt.bufPrint(&out_buf, "Whitelisted {s}", .{canon}) catch "Whitelisted";
@@ -201,4 +211,12 @@ fn rest_of(tok: *std.mem.TokenIterator(u8, .any)) []const u8 {
     if (tok.index >= tok.buffer.len) return "";
     const tail = tok.buffer[tok.index..];
     return std.mem.trim(u8, tail, " \t");
+}
+
+fn report_policy_error(sink: Sink, err: anyerror) void {
+    if (err == error.PolicyStoreFull) {
+        sink.write("&cAccess-control store is full; raise max-policy-records and restart the server");
+    } else {
+        sink.write("&cFailed to persist access-control policy");
+    }
 }

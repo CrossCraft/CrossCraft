@@ -5,6 +5,9 @@ comptime {
     _ = @import("game/world/DumpName.zig");
     _ = @import("game/world/CreateName.zig");
     _ = @import("game/world/WorldSimulation.zig");
+    _ = @import("game/client.zig");
+    _ = @import("game/players_db.zig");
+    _ = @import("game/access_control.zig");
     _ = @import("client/state/Session.zig");
     _ = @import("client/state/BundledSave.zig");
     _ = @import("client/Options.zig");

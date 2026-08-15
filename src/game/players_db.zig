@@ -1,33 +1,21 @@
 const std = @import("std");
+const access_control = @import("access_control.zig");
 
 const log = std.log.scoped(.players_db);
 
-// --- Capacity ---
-
-/// Hard ceiling shared by every platform. The actual table size comes
-/// from `server.properties:max-players-saved` (default 1024) and is
-/// clamped to this. Each record is ~140 bytes; 4096 caps memory at
-/// ~560 KiB which is still comfortable on the leanest PSP target.
+/// Recent-player metadata is deliberately bounded and non-authoritative. IP
+/// bans, ops, and whitelist entries live in access_control.zig instead.
 pub const max_capacity: u32 = 4096;
-
-/// Largest IPv4 literal: "255.255.255.255". The listener binds 0.0.0.0
-/// so we only ever see IPv4 peers; IPv6 support would just bloat every
-/// record. Sentinel byte makes string compares trivial without a length
-/// field.
 pub const ip_str_len: u32 = 15;
 pub const username_len: u32 = 16;
-pub const reason_len: u32 = 64;
 
-// --- In-memory record ---
+const flush_period_seconds: i64 = 60;
+const file_name = "players.json";
 
 pub const PlayerRecord = struct {
     ip: [ip_str_len:0]u8,
     last_username: [username_len:0]u8,
-    ban_reason: [reason_len:0]u8,
     last_seen_unix: i64,
-    banned: bool,
-    op: bool,
-    whitelisted: bool,
 
     pub fn ip_slice(self: *const PlayerRecord) []const u8 {
         return std.mem.sliceTo(self.ip[0..], 0);
@@ -36,21 +24,23 @@ pub const PlayerRecord = struct {
     pub fn username_slice(self: *const PlayerRecord) []const u8 {
         return std.mem.sliceTo(self.last_username[0..], 0);
     }
-
-    pub fn ban_reason_slice(self: *const PlayerRecord) []const u8 {
-        return std.mem.sliceTo(self.ban_reason[0..], 0);
-    }
-
-    /// True when dropping this record would silently weaken enforcement.
-    /// LRU eviction inspects this to decide whether to log a warning.
-    pub fn has_persistent_flag(self: *const PlayerRecord) bool {
-        return self.banned or self.op or self.whitelisted;
-    }
 };
 
-// --- JSON wire form ---
-
+/// Current on-disk form. The cache contains only observation metadata, never
+/// enforcement state.
 const JsonRecord = struct {
+    ip: []const u8,
+    last_username: []const u8 = "",
+    last_seen_unix: i64 = 0,
+};
+
+const JsonFile = struct {
+    records: []const JsonRecord,
+};
+
+/// Legacy players.json records carried policy flags. We read them only so the
+/// first boot after the split can import them into access-control.json.
+const LegacyJsonRecord = struct {
     ip: []const u8,
     last_username: []const u8 = "",
     ban_reason: []const u8 = "",
@@ -60,64 +50,79 @@ const JsonRecord = struct {
     whitelisted: bool = false,
 };
 
-const JsonFile = struct {
-    records: []const JsonRecord,
+const LegacyJsonFile = struct {
+    records: []const LegacyJsonRecord,
 };
 
-// --- Module state ---
-
+var mutex: std.Io.Mutex = .init;
 var records: []PlayerRecord = &.{};
+var json_records: []JsonRecord = &.{};
+var json_scratch: []u8 = &.{};
 var count: u32 = 0;
 var capacity: u32 = 0;
 var save_dir: std.Io.Dir = undefined;
 var save_io: std.Io = undefined;
 var owning_alloc: std.mem.Allocator = undefined;
 var initialized: bool = false;
-var last_eviction_warning: ?[ip_str_len:0]u8 = null;
-
-// JSON scratch buffer sized once at init. Lives off the heap (not the
-// per-task stack) so the PSP's 64 KiB async stack isn't blown when a
-// large record table is serialized.
-var json_scratch: []u8 = &.{};
-
-const file_name = "players.json";
-
-// --- Init / deinit ---
+var dirty: bool = false;
+var dirty_since_unix: i64 = 0;
 
 pub fn init(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, cap_request: u32) !void {
     const cap = std.math.clamp(cap_request, 1, max_capacity);
+    const scratch_len: usize = @as(usize, cap) * 256 + 1024;
+
+    std.debug.assert(!initialized);
+    errdefer {
+        if (records.len > 0) alloc.free(records);
+        if (json_records.len > 0) alloc.free(json_records);
+        if (json_scratch.len > 0) alloc.free(json_scratch);
+        records = &.{};
+        json_records = &.{};
+        json_scratch = &.{};
+        count = 0;
+        capacity = 0;
+        initialized = false;
+        dirty = false;
+        dirty_since_unix = 0;
+    }
+
     records = try alloc.alloc(PlayerRecord, cap);
+    json_records = try alloc.alloc(JsonRecord, cap);
+    json_scratch = try alloc.alloc(u8, scratch_len);
+
     @memset(std.mem.sliceAsBytes(records), 0);
-    // ~256 bytes per record covers the worst-case JSON expansion with
-    // indent_2 plus a small header allowance. Two passes use the same
-    // buffer (parse + serialize) so size for the larger of the two.
-    const json_size: usize = @as(usize, cap) * 256 + 1024;
-    json_scratch = try alloc.alloc(u8, json_size);
     count = 0;
     capacity = cap;
     save_dir = dir;
     save_io = io;
     owning_alloc = alloc;
     initialized = true;
-    load();
+    dirty = false;
+    dirty_since_unix = 0;
+    try load_locked();
 }
 
 pub fn deinit() void {
     if (!initialized) return;
+    mutex.lockUncancelable(save_io);
+    defer mutex.unlock(save_io);
+
+    flush_now_locked();
     owning_alloc.free(records);
+    owning_alloc.free(json_records);
     owning_alloc.free(json_scratch);
     records = &.{};
+    json_records = &.{};
     json_scratch = &.{};
     count = 0;
     capacity = 0;
     initialized = false;
+    dirty = false;
+    dirty_since_unix = 0;
 }
 
-// --- IP canonicalisation ---
-
-/// Format an IPv4 peer address as "1.2.3.4" into `out`. Returns null
-/// when the address is IPv6 (the listener is IPv4-only, so this should
-/// never happen in practice -- treat it as a hard skip on lookup).
+/// Format an IPv4 peer address as "1.2.3.4" into out. Returns null for IPv6;
+/// the listener is IPv4-only today.
 pub fn format_ip(addr: std.Io.net.IpAddress, out: *[ip_str_len]u8) ?[]const u8 {
     const v4 = switch (addr) {
         .ip4 => |a| a,
@@ -127,161 +132,113 @@ pub fn format_ip(addr: std.Io.net.IpAddress, out: *[ip_str_len]u8) ?[]const u8 {
     return std.fmt.bufPrint(out, "{d}.{d}.{d}.{d}", .{ b[0], b[1], b[2], b[3] }) catch null;
 }
 
-/// Canonicalise a user-typed IPv4 literal (e.g. "1.2.3.4") into `out`.
-/// Returns null on parse failure or if the user typed an IPv6 literal.
+/// Canonicalise a user-typed IPv4 literal (e.g. "1.2.3.4") into out.
 pub fn canonicalise_literal(text: []const u8, out: *[ip_str_len]u8) ?[]const u8 {
     const parsed = std.Io.net.IpAddress.parseIp4(text, 0) catch return null;
     return format_ip(parsed, out);
 }
 
-// --- Lookup ---
+/// Record only a fully initialized player. This function does no I/O; a
+/// single server update later flushes the accumulated cache at most once per
+/// minute, while a clean shutdown flushes any remaining changes.
+pub fn record_completed_login(ip: []const u8, name: []const u8) void {
+    if (ip.len == 0) return;
 
-/// O(n) scan; n is bounded by `max_players_saved` (1024 default) so this is
-/// fine even on the connect hot path.
-pub fn lookup_by_ip(ip: []const u8) ?*PlayerRecord {
-    if (!initialized) return null;
-    for (0..count) |i| {
-        if (std.mem.eql(u8, records[i].ip_slice(), ip)) {
-            return &records[i];
-        }
-    }
-    return null;
-}
+    if (!initialized) return;
+    mutex.lockUncancelable(save_io);
+    defer mutex.unlock(save_io);
+    if (!initialized) return;
 
-pub fn lookup_by_username(name: []const u8) ?*PlayerRecord {
-    if (!initialized) return null;
-    for (0..count) |i| {
-        if (std.mem.eql(u8, records[i].username_slice(), name)) {
-            return &records[i];
-        }
-    }
-    return null;
-}
-
-// --- Mutators ---
-
-/// Find-or-insert by IP. May evict the LRU entry; on eviction of a record
-/// with persistent flags (ban/op/whitelist) we log a loud warning so the
-/// operator notices a silent enforcement gap.
-pub fn upsert(ip: []const u8) ?*PlayerRecord {
-    if (!initialized) return null;
-    if (lookup_by_ip(ip)) |existing| return existing;
-
-    var slot: u32 = undefined;
-    if (count < capacity) {
-        slot = count;
-        count += 1;
-    } else {
-        slot = pick_lru();
-        const victim = &records[slot];
-        if (victim.has_persistent_flag()) {
-            warn_eviction(victim);
-        }
-    }
-
-    const rec = &records[slot];
-    rec.* = std.mem.zeroes(PlayerRecord);
-    const n = @min(ip.len, ip_str_len);
-    @memcpy(rec.ip[0..n], ip[0..n]);
-    rec.last_seen_unix = now_unix();
-    return rec;
-}
-
-pub fn touch_seen(ip: []const u8) void {
-    const rec = upsert(ip) orelse return;
-    rec.last_seen_unix = now_unix();
-    save();
-}
-
-pub fn set_username(ip: []const u8, name: []const u8) void {
-    const rec = upsert(ip) orelse return;
+    const now = now_unix();
+    const rec = &records[upsert_index_locked(ip)];
     @memset(&rec.last_username, 0);
     const n = @min(name.len, username_len);
     @memcpy(rec.last_username[0..n], name[0..n]);
-    save();
-}
-
-pub fn set_banned(ip: []const u8, banned: bool, reason: []const u8) ?*PlayerRecord {
-    const rec = upsert(ip) orelse return null;
-    rec.banned = banned;
-    @memset(&rec.ban_reason, 0);
-    if (banned) {
-        const n = @min(reason.len, reason_len);
-        @memcpy(rec.ban_reason[0..n], reason[0..n]);
+    rec.last_seen_unix = now;
+    if (!dirty) {
+        dirty = true;
+        dirty_since_unix = now;
     }
-    save();
-    return rec;
 }
 
-pub fn set_op(ip: []const u8, op: bool) ?*PlayerRecord {
-    const rec = upsert(ip) orelse return null;
-    rec.op = op;
-    save();
-    return rec;
+/// Called from the standalone server update loop. A failed write is retried
+/// no more often than once per period, avoiding an error-path disk-I/O loop.
+pub fn flush_if_due() void {
+    if (!initialized or !dirty) return;
+    mutex.lockUncancelable(save_io);
+    defer mutex.unlock(save_io);
+    if (!initialized or !dirty) return;
+    flush_if_due_locked(now_unix());
 }
 
-pub fn set_whitelisted(ip: []const u8, whitelisted: bool) ?*PlayerRecord {
-    const rec = upsert(ip) orelse return null;
-    rec.whitelisted = whitelisted;
-    save();
-    return rec;
+fn flush_if_due_locked(now: i64) void {
+    if (now - dirty_since_unix < flush_period_seconds) return;
+    save_locked() catch |err| {
+        log.warn("scheduled {s} write failed: {}", .{ file_name, err });
+        dirty_since_unix = now;
+        return;
+    };
+    dirty = false;
+    dirty_since_unix = 0;
 }
 
-// --- Internal helpers ---
+fn flush_now_locked() void {
+    if (!dirty) return;
+    save_locked() catch |err| {
+        log.warn("final {s} write failed: {}", .{ file_name, err });
+        return;
+    };
+    dirty = false;
+    dirty_since_unix = 0;
+}
 
-fn pick_lru() u32 {
-    var idx: u32 = 0;
-    var oldest: i64 = records[0].last_seen_unix;
+fn find_index_locked(ip: []const u8) ?u32 {
+    for (0..count) |i| {
+        if (std.mem.eql(u8, records[i].ip_slice(), ip)) return @intCast(i);
+    }
+    return null;
+}
+
+fn upsert_index_locked(ip: []const u8) u32 {
+    if (find_index_locked(ip)) |index| return index;
+
+    const index: u32 = if (count < capacity) blk: {
+        const next = count;
+        count += 1;
+        break :blk next;
+    } else pick_lru_locked();
+
+    const rec = &records[index];
+    rec.* = std.mem.zeroes(PlayerRecord);
+    const n = @min(ip.len, ip_str_len);
+    @memcpy(rec.ip[0..n], ip[0..n]);
+    return index;
+}
+
+fn pick_lru_locked() u32 {
+    var index: u32 = 0;
+    var oldest = records[0].last_seen_unix;
     for (1..count) |i| {
         if (records[i].last_seen_unix < oldest) {
             oldest = records[i].last_seen_unix;
-            idx = @intCast(i);
+            index = @intCast(i);
         }
     }
-    return idx;
-}
-
-fn warn_eviction(victim: *const PlayerRecord) void {
-    log.warn(
-        "players.json full (cap={d}): evicting ip={s} last_user='{s}' last_seen={d} flags=[{s}{s}{s}] -- enforcement for this IP is now LOST. Raise max-players-saved in server.properties.",
-        .{
-            capacity,
-            victim.ip_slice(),
-            victim.username_slice(),
-            victim.last_seen_unix,
-            if (victim.banned) "banned " else "",
-            if (victim.op) "op " else "",
-            if (victim.whitelisted) "whitelisted" else "",
-        },
-    );
-    // Stash the IP so the console layer can echo a yellow warning if it
-    // wants. Cleared by `take_eviction_warning`.
-    var stash: [ip_str_len:0]u8 = std.mem.zeroes([ip_str_len:0]u8);
-    const slice = victim.ip_slice();
-    @memcpy(stash[0..slice.len], slice);
-    last_eviction_warning = stash;
-}
-
-/// One-shot getter for the console layer. Returns the IP slice of the
-/// most recently evicted persistent record (since the previous call), or
-/// null if none. Subsequent calls return null until the next eviction.
-pub fn take_eviction_warning(out: *[ip_str_len:0]u8) ?[]const u8 {
-    if (last_eviction_warning) |stash| {
-        out.* = stash;
-        last_eviction_warning = null;
-        return std.mem.sliceTo(out[0..], 0);
-    }
-    return null;
+    return index;
 }
 
 fn now_unix() i64 {
     return std.Io.Clock.Timestamp.now(save_io, .real).raw.toSeconds();
 }
 
-// --- JSON load/save ---
-
-fn load() void {
-    const file = save_dir.openFile(save_io, file_name, .{}) catch return;
+fn load_locked() !void {
+    const file = save_dir.openFile(save_io, file_name, .{}) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => {
+            log.warn("open {s} failed: {}", .{ file_name, err });
+            return;
+        },
+    };
     defer file.close(save_io);
 
     const n = file.readPositionalAll(save_io, json_scratch, 0) catch |err| {
@@ -290,82 +247,136 @@ fn load() void {
     };
     if (n == 0) return;
 
-    // Reserve a heap-backed arena for the parser. The owning_alloc is the
-    // same pool the records table lives in, so this stays predictable.
     var arena = std.heap.ArenaAllocator.init(owning_alloc);
     defer arena.deinit();
     const parsed = std.json.parseFromSliceLeaky(
-        JsonFile,
+        LegacyJsonFile,
         arena.allocator(),
         json_scratch[0..n],
         .{ .ignore_unknown_fields = true },
     ) catch |err| {
-        log.warn("parse {s} failed: {} -- starting empty", .{ file_name, err });
+        log.warn("parse {s} failed: {}", .{ file_name, err });
         return;
     };
 
-    count = 0;
+    var metadata_truncated = false;
     for (parsed.records) |jr| {
+        // Import policy before applying the bounded metadata limit. A legacy
+        // file may contain more observations than the new cache capacity, but
+        // no ban/op/whitelist entry may be skipped because of that.
+        try access_control.import_legacy(
+            jr.ip,
+            jr.banned,
+            jr.ban_reason,
+            jr.op,
+            jr.whitelisted,
+        );
+
         if (count >= capacity) {
-            log.warn("{s} has more entries than max-players-saved={d}; truncating", .{ file_name, capacity });
-            break;
+            if (!metadata_truncated) {
+                log.warn("{s} has more entries than max-players-saved={d}; truncating recent metadata", .{ file_name, capacity });
+                metadata_truncated = true;
+            }
+            continue;
         }
+
         const rec = &records[count];
+        count += 1;
         rec.* = std.mem.zeroes(PlayerRecord);
         const ip_n = @min(jr.ip.len, ip_str_len);
         @memcpy(rec.ip[0..ip_n], jr.ip[0..ip_n]);
-        const u_n = @min(jr.last_username.len, username_len);
-        @memcpy(rec.last_username[0..u_n], jr.last_username[0..u_n]);
-        const r_n = @min(jr.ban_reason.len, reason_len);
-        @memcpy(rec.ban_reason[0..r_n], jr.ban_reason[0..r_n]);
+        const name_n = @min(jr.last_username.len, username_len);
+        @memcpy(rec.last_username[0..name_n], jr.last_username[0..name_n]);
         rec.last_seen_unix = jr.last_seen_unix;
-        rec.banned = jr.banned;
-        rec.op = jr.op;
-        rec.whitelisted = jr.whitelisted;
-        count += 1;
     }
 
-    log.info("Loaded {s} ({d} record(s))", .{ file_name, count });
+    log.info("Loaded {s} ({d} recent player record(s))", .{ file_name, count });
 }
 
-/// Synchronous write after every mutation -- Classic Minecraft is a tiny
-/// audience and ban state correctness matters more than save throughput.
-fn save() void {
-    if (!initialized) return;
-
-    var arena = std.heap.ArenaAllocator.init(owning_alloc);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    var jr_list = a.alloc(JsonRecord, count) catch |err| {
-        log.warn("alloc JsonRecord list failed: {}", .{err});
-        return;
-    };
+fn save_locked() !void {
     for (0..count) |i| {
-        jr_list[i] = .{
+        json_records[i] = .{
             .ip = records[i].ip_slice(),
             .last_username = records[i].username_slice(),
-            .ban_reason = records[i].ban_reason_slice(),
             .last_seen_unix = records[i].last_seen_unix,
-            .banned = records[i].banned,
-            .op = records[i].op,
-            .whitelisted = records[i].whitelisted,
         };
     }
-    const json_file: JsonFile = .{ .records = jr_list };
 
-    var w = std.Io.Writer.fixed(json_scratch);
-    std.json.Stringify.value(json_file, .{ .whitespace = .indent_2 }, &w) catch |err| {
+    var writer = std.Io.Writer.fixed(json_scratch);
+    std.json.Stringify.value(
+        JsonFile{ .records = json_records[0..count] },
+        .{ .whitespace = .indent_2 },
+        &writer,
+    ) catch |err| {
         log.warn("serialize {s} failed: {}", .{ file_name, err });
-        return;
+        return err;
     };
-    const slice = w.buffered();
 
     const file = save_dir.createFile(save_io, file_name, .{}) catch |err| {
         log.warn("create {s} failed: {}", .{ file_name, err });
-        return;
+        return err;
     };
     defer file.close(save_io);
-    file.writeStreamingAll(save_io, slice) catch |err|
+    file.writeStreamingAll(save_io, writer.buffered()) catch |err| {
         log.warn("write {s} failed: {}", .{ file_name, err });
+        return err;
+    };
+}
+
+test "completed login is batched before players json is written" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try init(std.testing.allocator, io, tmp.dir, 2);
+    defer deinit();
+
+    record_completed_login("203.0.113.42", "Alice");
+    try std.testing.expect(dirty);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.openFile(io, file_name, .{}));
+
+    mutex.lockUncancelable(save_io);
+    defer mutex.unlock(save_io);
+    flush_if_due_locked(dirty_since_unix + flush_period_seconds - 1);
+    try std.testing.expect(dirty);
+    flush_if_due_locked(dirty_since_unix + flush_period_seconds);
+    try std.testing.expect(!dirty);
+
+    const file = try tmp.dir.openFile(io, file_name, .{});
+    defer file.close(io);
+    var contents: [512]u8 = undefined;
+    const n = try file.readPositionalAll(io, &contents, 0);
+    try std.testing.expect(std.mem.indexOf(u8, contents[0..n], "203.0.113.42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, contents[0..n], "Alice") != null);
+}
+
+test "legacy players flags migrate into access control" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const legacy =
+        \\{
+        \\  "records": [
+        \\    {"ip":"198.51.100.1","last_username":"One","banned":true,"ban_reason":"first"},
+        \\    {"ip":"198.51.100.2","last_username":"Two","op":true,"whitelisted":true}
+        \\  ]
+        \\}
+    ;
+    const legacy_file = try tmp.dir.createFile(io, file_name, .{});
+    try legacy_file.writeStreamingAll(io, legacy);
+    legacy_file.close(io);
+
+    try access_control.init(std.testing.allocator, io, tmp.dir, 2);
+    defer access_control.deinit();
+    try init(std.testing.allocator, io, tmp.dir, 2);
+    defer deinit();
+    try access_control.finish_legacy_migration();
+
+    const first = access_control.lookup("198.51.100.1");
+    const second = access_control.lookup("198.51.100.2");
+    try std.testing.expect(first.banned);
+    try std.testing.expectEqualStrings("first", first.ban_reason_slice());
+    try std.testing.expect(second.op);
+    try std.testing.expect(second.whitelisted);
 }

@@ -37,13 +37,13 @@ Classic Client v1.0 is a feature-complete, clean-room reimplementation of Minecr
 
 Classic Server v1.1 is a feature-complete Minecraft Classic 0.30 server and can stand up to the open internet without immediately being cooked. 
 
-**Administrative controls.** A persistent player database tracks ops, bans, IP bans, and a whitelist. All operator actions are IP-keyed so a renamed account does not reset enforcement.
+**Administrative controls.** Durable IP-keyed policy in `access-control.json` tracks bans (with reasons), ops, and whitelist entries, so recent-player cache eviction can never weaken enforcement. `players.json` stores only bounded last-seen/username metadata and is flushed in batches. All operator actions are IP-keyed so a renamed account does not reset enforcement.
 
 - `/ipop <username>` - grant op to the IP currently behind `<username>`.
 - `/ipban <username> [reason]` - ban the IP currently behind `<username>`.
 - `/kick <username> [reason]` - drop a connected player.
 - `/ipwhitelist <ip>` - add an IP to the whitelist (whitelist mode toggled in `server.properties`).
-- Player database capacity is bounded and configurable in `server.properties`; LRU eviction warns before dropping any record carrying a persistent flag.
+- `max-players-saved` bounds only recent-player metadata. `max-policy-records` (default 4096) bounds durable policy at startup; policy entries are never evicted, and an attempted change fails clearly when full.
 
 **Console mode.** The standalone server uses stdio as a real operator console: `stdin` accepts commands, `stdout` carries chat, `stderr` carries logs. Pipe each one separately if you want to.
 

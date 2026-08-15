@@ -13,6 +13,7 @@ const CompressWorker = game.CompressWorker;
 const CompressorThread = @import("CompressorThread.zig");
 const Heartbeat = @import("Heartbeat.zig");
 const PlayersDb = game.PlayersDb;
+const AccessControl = game.AccessControl;
 const Commands = game.Commands;
 const Consts = common.consts;
 
@@ -201,7 +202,9 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     }
 }
 
-fn update(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {}
+fn update(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
+    PlayersDb.flush_if_due();
+}
 fn draw(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {}
 
 fn generate_salt(io: std.Io, out: *[16]u8) !void {
@@ -313,28 +316,27 @@ fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
                 log.warn("TCP_NODELAY failed: {}", .{err});
         }
 
-        // Canonicalise the peer IP and look up the persistent record.
+        // Canonicalise the peer IP and look up durable policy. This is a
+        // snapshot-only check: accepting a TCP connection never creates a
+        // recent-player record or writes players.json.
         // Done before any slot assignment so banned IPs cannot consume
         // a slot and whitelist mode rejects strangers cheaply.
         var ip_buf: [PlayersDb.ip_str_len]u8 = undefined;
         const ip = PlayersDb.format_ip(conn.socket.address, &ip_buf) orelse "";
-        const rec = PlayersDb.lookup_by_ip(ip);
+        const policy = AccessControl.lookup(ip);
 
-        if (Server.whitelist_enabled and (rec == null or !rec.?.whitelisted)) {
+        if (Server.whitelist_enabled and !policy.whitelisted) {
             log.info("Rejecting {s}: not whitelisted", .{ip});
             reject_connection(conn, engine, "Not whitelisted");
             continue;
         }
-        if (rec) |r| {
-            if (r.banned) {
-                const reason = if (r.ban_reason_slice().len > 0) r.ban_reason_slice() else "Banned";
-                log.info("Rejecting {s}: banned ({s})", .{ ip, reason });
-                reject_connection(conn, engine, reason);
-                continue;
-            }
+        if (policy.banned) {
+            const reason = if (policy.ban_reason_slice().len > 0) policy.ban_reason_slice() else "Banned";
+            log.info("Rejecting {s}: banned ({s})", .{ ip, reason });
+            reject_connection(conn, engine, reason);
+            continue;
         }
-        const is_op = if (rec) |r| r.op else false;
-        PlayersDb.touch_seen(ip);
+        const is_op = policy.op;
 
         var assigned = false;
         for (0..Consts.MAX_PLAYERS) |i| {

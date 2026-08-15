@@ -6,6 +6,7 @@ const StaticAllocator = @import("common").static_allocator;
 const world = @import("world.zig");
 const compress_worker = @import("compress_worker.zig");
 const players_db = @import("players_db.zig");
+const access_control = @import("access_control.zig");
 const zb = @import("protocol");
 
 const log = std.log.scoped(.server);
@@ -75,12 +76,16 @@ pub var server_name: [64]u8 = pad(default_server_name);
 pub var server_motd: [64]u8 = pad(default_server_motd);
 
 /// When true, accept_loop refuses any inbound connection whose IP isn't
-/// in the players_db whitelist.
+/// in the durable access-control whitelist.
 pub var whitelist_enabled: bool = false;
 
 /// Capacity of the players_db record table. Read from server.properties
 /// `max-players-saved` at init; clamped to platform-appropriate limits.
 pub var max_players_saved: u32 = 1024;
+
+/// Capacity of the durable access-control table. It is configured at startup
+/// and never evicts bans, ops, or whitelist entries.
+pub var max_policy_records: u32 = 4096;
 
 /// Optional sink the host (ServerState) installs to mirror chat broadcasts
 /// to its admin console. Server-core has no business knowing about stdout
@@ -193,12 +198,15 @@ pub fn init(
     );
     errdefer world.deinit_after_init_error();
 
-    // players_db must allocate from the raw `alloc`, not the static
-    // wrapper -- StaticAllocator forbids any post-init allocation, and
-    // its records table is final-sized once max_players_saved is known.
+    // Both persistent stores allocate from raw `alloc`, not the static
+    // wrapper. Their capacities are fixed at init before the allocator is
+    // frozen for the server's gameplay hot path.
     if (!internal_use) {
+        try access_control.init(alloc, io, save_dir, max_policy_records);
+        errdefer access_control.deinit();
         try players_db.init(alloc, io, save_dir, max_players_saved);
         errdefer players_db.deinit();
+        try access_control.finish_legacy_migration();
     }
 
     allocator.transition_from_init_to_static();
@@ -403,6 +411,12 @@ fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
                 } else |_| {
                     log.warn("server.properties max-players-saved value '{s}' is not a u32; ignoring", .{value});
                 }
+            } else if (std.mem.eql(u8, key, "max-policy-records")) {
+                if (std.fmt.parseInt(u32, value, 10)) |parsed| {
+                    max_policy_records = std.math.clamp(parsed, 1, access_control.max_capacity);
+                } else |_| {
+                    log.warn("server.properties max-policy-records value '{s}' is not a u32; ignoring", .{value});
+                }
             }
         }
     }
@@ -420,8 +434,8 @@ fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
     var buf: [512]u8 = undefined;
     const contents = std.fmt.bufPrint(
         &buf,
-        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nsave-format:classic_cw\nwhitelist:false\nmax-players-saved:{d}\nheartbeat-url:\n",
-        .{ default_server_name, default_server_motd, wcfg.seed, wcfg.save_location, max_players_saved },
+        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nsave-format:classic_cw\nwhitelist:false\nmax-players-saved:{d}\nmax-policy-records:{d}\nheartbeat-url:\n",
+        .{ default_server_name, default_server_motd, wcfg.seed, wcfg.save_location, max_players_saved, max_policy_records },
     ) catch |err| {
         log.info("Failed to format default server.properties ({}), using defaults", .{err});
         return;
@@ -441,7 +455,10 @@ pub fn deinit() void {
     // world.deinit submits and waits for the final .cw save; the host-owned
     // compressor thread/storage must remain alive until this returns.
     world.deinit();
-    if (!internal_use) players_db.deinit();
+    if (!internal_use) {
+        players_db.deinit();
+        access_control.deinit();
+    }
 
     allocator.deinit();
 
@@ -462,6 +479,7 @@ pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *b
     client.reader = reader;
     client.writer = writer;
     client.initialized = false;
+    client.phase = .awaiting_login;
     client.local = false;
     client.is_op = is_op;
     client.ip = std.mem.zeroes([players_db.ip_str_len:0]u8);

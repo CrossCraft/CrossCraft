@@ -23,6 +23,13 @@ var jobs: [c.MAX_PLAYERS]WorldSendJob = undefined;
 
 const Self = @This();
 
+const ConnectionPhase = enum {
+    awaiting_login,
+    handshaking,
+    active,
+    closing,
+};
+
 id: i8,
 x: u16,
 y: u16,
@@ -37,6 +44,7 @@ connected: *bool,
 name: [16:0]u8,
 name_len: u8,
 initialized: bool,
+phase: ConnectionPhase,
 local: bool,
 is_op: bool,
 ip: [players_db.ip_str_len:0]u8,
@@ -124,12 +132,60 @@ fn read_packet(self: *Self) !bool {
     return true;
 }
 
+fn packet_allowed(phase: ConnectionPhase, packet_id: u8) bool {
+    return switch (phase) {
+        .awaiting_login => packet_id == 0x00,
+        .active => switch (packet_id) {
+            0x05, 0x08, 0x0D => true,
+            else => false,
+        },
+        .handshaking, .closing => false,
+    };
+}
+
+fn reject_protocol(self: *Self, reason: []const u8) void {
+    if (self.phase == .closing) return;
+    self.phase = .closing;
+    proto.send_disconnect_to_client(self.writer, reason) catch {
+        self.connected.* = false;
+        return;
+    };
+    self.writer.flush() catch {};
+    self.connected.* = false;
+}
+
+fn require_active(self: *Self) bool {
+    if (self.phase == .active and self.initialized) return true;
+    self.reject_protocol("Unexpected packet before login");
+    return false;
+}
+
+fn process_packet(self: *Self) !bool {
+    if (!self.connected.*) return false;
+
+    // Check the phase before asking the generated protocol layer for a packet
+    // length. That guarantees any unexpected byte, including an unknown ID,
+    // gets an explicit disconnect without reaching the decoder or dispatcher.
+    const packet_id = try self.reader.peekByte();
+    if (!packet_allowed(self.phase, packet_id)) {
+        self.reject_protocol("Protocol state violation");
+        return false;
+    }
+
+    const received = try self.read_packet();
+    if (!received) return false;
+
+    try self.protocol.handle_packet(self.buffer[1..], self.buffer[0]);
+    return true;
+}
+
 pub fn send_message(self: *Self, id: i8, message: []u8) !void {
     const pid: i8 = if (id == self.id) -1 else id;
     try proto.send_message(self.writer, pid, message);
 }
 
 pub fn send_disconnect(self: *Self, reason: []const u8) !void {
+    self.phase = .closing;
     defer self.connected.* = false;
     try proto.send_disconnect_to_client(self.writer, reason);
 }
@@ -287,13 +343,20 @@ pub fn handshake(self: *Self) !void {
 fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     const self = ctx_to_client(ctx);
 
+    // The generated protocol dispatcher has one broad Connected state, so
+    // preserve the server's actual login state here as a defense in depth.
+    if (self.phase != .awaiting_login or self.initialized) {
+        self.reject_protocol("Player ID already received");
+        return;
+    }
+
     if (event.protocol_version != 0x07) {
-        self.send_disconnect("Unsupported protocol version!") catch {};
-        self.connected.* = false;
+        self.reject_protocol("Unsupported protocol version!");
         return;
     }
 
     self.name = @splat(' ');
+    self.name_len = @intCast(self.name.len);
     for (0..self.name.len) |i| {
         if (event.username[i] == ' ') {
             self.name_len = @intCast(i);
@@ -304,25 +367,32 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     }
     // TODO: Verify key for login... maybe
 
-    const ip = self.ip_slice();
-    if (ip.len > 0) players_db.set_username(ip, self.name[0..self.name_len]);
-
     for (0..Server.players.items.len) |i| {
         if (Server.players.items[i]) |p| {
             if (p.id == self.id or !p.initialized)
                 continue;
             if (std.mem.eql(u8, p.name[0..p.name_len], self.name[0..self.name_len])) {
-                self.send_disconnect("A player with that name is already connected!") catch {};
+                self.reject_protocol("A player with that name is already connected!");
                 return;
             }
         }
     }
 
-    try self.handshake();
+    self.phase = .handshaking;
+    self.handshake() catch |err| {
+        self.phase = .closing;
+        self.connected.* = false;
+        return err;
+    };
+    self.phase = .active;
+
+    const ip = self.ip_slice();
+    if (ip.len > 0) players_db.record_completed_login(ip, self.name[0..self.name_len]);
 }
 
 fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void {
     const self: *Self = ctx_to_client(ctx);
+    if (!require_active(self)) return;
 
     self.x = e.x;
     self.y = e.y;
@@ -333,6 +403,7 @@ fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void 
 
 fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
     const self: *Self = @ptrCast(@alignCast(ctx));
+    if (!require_active(self)) return;
 
     // Strip the trailing space-padding the wire format mandates so
     // command parsing sees clean tokens. Done before the dup_buf rewrite
@@ -393,7 +464,10 @@ fn handle_slash_command(self: *Self, body: []const u8) void {
     commands.dispatch(sink, body, allowed);
 }
 
-fn handle_set_block(_: *anyopaque, event: zb.SetBlockToServer) !void {
+fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
+    const self = ctx_to_client(ctx);
+    if (!require_active(self)) return;
+
     if (event.x >= c.WorldLength or event.y >= c.WorldHeight or event.z >= c.WorldDepth)
         return;
 
@@ -473,19 +547,10 @@ pub fn init(self: *Self) void {
 /// if a packet was processed. Used for singleplayer (same-process) mode
 /// where there is no dedicated read thread.
 pub fn try_process_packet(self: *Self) bool {
-    const received = self.read_packet() catch |err| switch (err) {
-        error.ReadFailed => return false,
-        else => {
-            log.err("read packet failed for client id={d}: {}", .{ self.id, err });
-            return false;
-        },
-    };
-    if (!received) return false;
-    self.protocol.handle_packet(self.buffer[1..], self.buffer[0]) catch |err| {
-        log.err("handle packet 0x{x:0>2} failed for client id={d}: {}", .{ self.buffer[0], self.id, err });
+    return self.process_packet() catch |err| {
+        log.err("process packet failed for client id={d}: {}", .{ self.id, err });
         return false;
     };
-    return true;
 }
 
 pub fn drain_packets(self: *Self) void {
@@ -496,7 +561,7 @@ pub fn drain_packets(self: *Self) void {
 /// processes packets until the connection drops, then marks disconnected.
 pub fn read_loop(self: *Self) void {
     while (self.connected.*) {
-        const received = self.read_packet() catch |e| switch (e) {
+        const received = self.process_packet() catch |e| switch (e) {
             error.ReadFailed => false,
             else => {
                 self.connected.* = false;
@@ -508,9 +573,53 @@ pub fn read_loop(self: *Self) void {
             self.connected.* = false;
             return;
         }
-        self.protocol.handle_packet(self.buffer[1..], self.buffer[0]) catch {
-            self.connected.* = false;
-            return;
-        };
     }
+}
+
+test "connection phase accepts only phase-valid client packets" {
+    try std.testing.expect(packet_allowed(.awaiting_login, 0x00));
+    try std.testing.expect(!packet_allowed(.awaiting_login, 0x05));
+    try std.testing.expect(!packet_allowed(.handshaking, 0x00));
+    try std.testing.expect(!packet_allowed(.active, 0x00));
+    try std.testing.expect(packet_allowed(.active, 0x05));
+    try std.testing.expect(packet_allowed(.active, 0x08));
+    try std.testing.expect(packet_allowed(.active, 0x0D));
+    try std.testing.expect(!packet_allowed(.closing, 0x0D));
+}
+
+test "duplicate player id disconnects before handshake dispatch" {
+    var packet: [131]u8 = @splat(0);
+    packet[0] = 0x00;
+    var reader = std.Io.Reader.fixed(&packet);
+    var output: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output);
+    var connected = true;
+    var client: Self = undefined;
+    client.reader = &reader;
+    client.writer = &writer;
+    client.connected = &connected;
+    client.initialized = true;
+    client.phase = .active;
+
+    try std.testing.expect(!(try client.process_packet()));
+    try std.testing.expect(!connected);
+    try std.testing.expectEqual(@as(u8, 0x0E), writer.buffered()[0]);
+}
+
+test "pre-login gameplay packet disconnects before dispatch" {
+    const packet = [_]u8{0x05};
+    var reader = std.Io.Reader.fixed(&packet);
+    var output: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output);
+    var connected = true;
+    var client: Self = undefined;
+    client.reader = &reader;
+    client.writer = &writer;
+    client.connected = &connected;
+    client.initialized = false;
+    client.phase = .awaiting_login;
+
+    try std.testing.expect(!(try client.process_packet()));
+    try std.testing.expect(!connected);
+    try std.testing.expectEqual(@as(u8, 0x0E), writer.buffered()[0]);
 }
