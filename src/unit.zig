@@ -6,6 +6,7 @@ comptime {
     _ = @import("game/world/CreateName.zig");
     _ = @import("game/world/WorldSimulation.zig");
     _ = @import("game/client.zig");
+    _ = @import("game/outbound_queue.zig");
     _ = @import("game/players_db.zig");
     _ = @import("game/access_control.zig");
     _ = @import("client/state/Session.zig");

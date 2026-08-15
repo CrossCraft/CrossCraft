@@ -10,6 +10,21 @@ const Server = @import("server.zig");
 const compress_worker = @import("compress_worker.zig");
 const players_db = @import("players_db.zig");
 const commands = @import("commands.zig");
+const outbound_queue = @import("outbound_queue.zig");
+const OutboundQueue = outbound_queue.OutboundQueue;
+
+/// Largest to-client packet is the 1028-byte LevelDataChunk; round up so
+/// any serialized packet fits the staging buffer.
+const packet_buf_bytes = 1100;
+/// Stack buffer used when draining the outbound queue to the socket.
+const drain_buf_bytes = 64 * 1024;
+/// Caps how long queued outbound data waits while the client is silent;
+/// aligned with the 20 Hz (50 ms) tick.
+const recv_poll_timeout: std.Io.Timeout = .{ .duration = .{ .raw = common.time.ms(25), .clock = .real } };
+/// Inbound accumulation buffer for the connection loop. The largest
+/// to-server packet is the 131-byte login frame and any invalid byte
+/// disconnects immediately, so a full buffer can never deadlock.
+const in_buf_bytes = 4096;
 
 /// World-send job submitted by an IO read loop and processed by the shared
 /// compressor worker. One slot per player; the slots outlive any individual
@@ -54,6 +69,12 @@ reader: *std.Io.Reader,
 writer: *std.Io.Writer,
 connected: *bool,
 
+/// Remote clients only: producers serialize packets into this queue and the
+/// client's own connection thread writes them to `stream`. Null for local
+/// (singleplayer) clients, which keep direct memory-writer sends.
+out: ?*OutboundQueue,
+stream: ?*std.Io.net.Stream,
+
 name: [16:0]u8,
 name_len: u8,
 initialized: bool,
@@ -66,13 +87,16 @@ protocol: Protocol,
 buffer: [1024]u8,
 
 /// Streams gzip-compressed data as 1024-byte LevelDataChunk protocol packets.
+/// Packets are appended to the client's outbound queue -- the compress worker
+/// never touches a socket, so a slow joiner fails its own login instead of
+/// stalling world compression for everyone.
 const ChunkSender = struct {
     interface: std.Io.Writer,
-    output: *std.Io.Writer,
+    out: *OutboundQueue,
     raw_written: u32,
     total_raw: u32,
 
-    fn init(output: *std.Io.Writer, chunk_buffer: *[1024]u8, total_raw: u32) ChunkSender {
+    fn init(out: *OutboundQueue, chunk_buffer: *[1024]u8, total_raw: u32) ChunkSender {
         return .{
             .interface = .{
                 .vtable = &.{
@@ -80,7 +104,7 @@ const ChunkSender = struct {
                 },
                 .buffer = chunk_buffer,
             },
-            .output = output,
+            .out = out,
             .raw_written = 0,
             .total_raw = total_raw,
         };
@@ -113,16 +137,12 @@ const ChunkSender = struct {
             filled += n;
         }
 
-        const end_before = cs.output.end;
-        proto.send_level_chunk_to_client(cs.output, @intCast(filled), &chunk, cs.percent()) catch
+        var packet_buf: [1028]u8 = undefined;
+        var packet_writer = std.Io.Writer.fixed(&packet_buf);
+        proto.send_level_chunk_to_client(&packet_writer, @intCast(filled), &chunk, cs.percent()) catch
             return error.WriteFailed;
-        const end_after = cs.output.end;
-        // If the protocol write triggered an auto-drain, end_after < end_before + 1028
-        if (end_before != 0 or end_after != 1028) {
-            log.warn("drain: end before={d} after={d} (expected 0->1028)", .{ end_before, end_after });
-        }
-        cs.output.flush() catch return error.WriteFailed;
-        @memset(cs.output.buffer, 0x00);
+        cs.out.append(Server.io, packet_writer.buffered()) catch
+            return error.WriteFailed;
 
         return w.consume(filled);
     }
@@ -160,6 +180,8 @@ pub fn init_remote_admitted(
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
     connected: *bool,
+    out: *OutboundQueue,
+    stream: *std.Io.net.Stream,
     ip: []const u8,
     is_op: bool,
     request: LoginRequest,
@@ -169,6 +191,8 @@ pub fn init_remote_admitted(
     self.connected = connected;
     self.reader = reader;
     self.writer = writer;
+    self.out = out;
+    self.stream = stream;
     self.initialized = false;
     self.phase = .handshaking;
     self.local = false;
@@ -186,14 +210,14 @@ pub fn init_remote_admitted(
     self.pitch = 0;
 }
 
-fn read_packet(self: *Self) !bool {
-    const packet_id = try self.reader.peekByte();
+fn read_packet(self: *Self, reader: *std.Io.Reader) !bool {
+    const packet_id = try reader.peekByte();
     const len = try proto.packet_length_to_server(packet_id);
 
-    const buffer = try self.reader.peek(len);
+    const buffer = try reader.peek(len);
     @memcpy(self.buffer[0..len], buffer);
 
-    self.reader.toss(len);
+    reader.toss(len);
     return true;
 }
 
@@ -225,56 +249,131 @@ fn require_active(self: *Self) bool {
     return false;
 }
 
-fn process_packet(self: *Self) !bool {
+fn process_packet(self: *Self, reader: *std.Io.Reader) !bool {
     if (!self.connected.*) return false;
 
     // Check the phase before asking the generated protocol layer for a packet
     // length. That guarantees any unexpected byte, including an unknown ID,
     // gets an explicit disconnect without reaching the decoder or dispatcher.
-    const packet_id = try self.reader.peekByte();
+    const packet_id = try reader.peekByte();
     if (!packet_allowed(self.phase, packet_id)) {
         self.reject_protocol("Protocol state violation");
         return false;
     }
 
-    const received = try self.read_packet();
+    const received = try self.read_packet(reader);
     if (!received) return false;
 
     try self.protocol.handle_packet(self.buffer[1..], self.buffer[0]);
     return true;
 }
 
+/// Serialize one packet and hand it to the right sink. Remote clients get it
+/// queued for their own connection thread to write (a full queue kicks the
+/// slow client); local clients keep the direct memory-writer write + flush.
+fn send_packet(self: *Self, comptime send_fn: anytype, args: anytype) !void {
+    if (self.out) |q| {
+        var buf: [packet_buf_bytes]u8 = undefined;
+        var fixed = std.Io.Writer.fixed(&buf);
+        try @call(.auto, send_fn, .{&fixed} ++ args);
+        q.append(Server.io, fixed.buffered()) catch {
+            self.kickSlow();
+            return error.QueueFull;
+        };
+    } else {
+        try @call(.auto, send_fn, .{self.writer} ++ args);
+        try self.writer.flush();
+    }
+}
+
+/// Kick a client whose outbound queue overflowed: it is reading too slowly
+/// and must never be waited on. Shutting the stream down unblocks the
+/// connection thread's pending receive.
+fn kickSlow(self: *Self) void {
+    const was_connected = self.connected.*;
+    self.connected.* = false;
+    if (self.stream) |s| s.shutdown(Server.io, .both) catch {};
+    if (was_connected) {
+        log.info("Kicking {s} ({s}): outbound queue full (slow client)", .{ self.name[0..self.name_len], self.ip_slice() });
+    }
+}
+
+/// Write all queued outbound bytes to the socket. Runs only on the client's
+/// own connection thread, so a stuck peer blocks nobody else. The queue
+/// mutex is released before each socket write.
+fn drainOutbound(self: *Self) void {
+    const q = self.out orelse return;
+    var buf: [drain_buf_bytes]u8 = undefined;
+    var wrote_any = false;
+    while (true) {
+        const n = q.take(Server.io, &buf);
+        if (n == 0) break;
+        wrote_any = true;
+        self.writer.writeAll(buf[0..n]) catch {
+            self.connected.* = false;
+            return;
+        };
+    }
+    if (wrote_any) {
+        self.writer.flush() catch {
+            self.connected.* = false;
+        };
+    }
+}
+
 pub fn send_message(self: *Self, id: i8, message: []u8) !void {
     const pid: i8 = if (id == self.id) -1 else id;
-    try proto.send_message(self.writer, pid, message);
+    try self.send_packet(proto.send_message, .{ pid, message });
 }
 
 pub fn send_disconnect(self: *Self, reason: []const u8) !void {
     self.phase = .closing;
     defer self.connected.* = false;
+    if (self.out) |q| {
+        // Callers include foreign threads (console /kick, /ban), so never
+        // touch the socket here: queue the packet best-effort and let the
+        // client's own thread drain it before teardown.
+        var buf: [packet_buf_bytes]u8 = undefined;
+        var fixed = std.Io.Writer.fixed(&buf);
+        try proto.send_disconnect_to_client(&fixed, reason);
+        q.append(Server.io, fixed.buffered()) catch {};
+        return;
+    }
     try proto.send_disconnect_to_client(self.writer, reason);
 }
 
+pub fn send_ping(self: *Self) !void {
+    try self.send_packet(write_ping_byte, .{});
+}
+
+fn write_ping_byte(writer: *std.Io.Writer) !void {
+    try writer.writeByte(0x01);
+}
+
 pub fn send_player_position(self: *Self, id: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) !void {
-    try proto.send_position_to_client(self.writer, id, x, y, z, yaw, pitch);
+    try self.send_packet(proto.send_position_to_client, .{ id, x, y, z, yaw, pitch });
 }
 
 pub fn send_spawn(ctx: *Self, packet: *zb.SpawnPlayer) !void {
     const self: *Self = @ptrCast(@alignCast(ctx));
-    try proto.send_spawn_to_client(self.writer, packet);
+    try self.send_packet(proto.send_spawn_to_client, .{packet});
 }
 
 pub fn send_despawn(self: *Self, id: i8) !void {
-    try proto.send_despawn_to_client(self.writer, id);
+    try self.send_packet(proto.send_despawn_to_client, .{id});
 }
 
 pub fn send_block_change(self: *Self, x: u16, y: u16, z: u16, block: c.Block) !void {
-    try proto.send_block_change_to_client(self.writer, x, y, z, block);
+    try self.send_packet(proto.send_block_change_to_client, .{ x, y, z, block });
+}
+
+pub fn send_update_player_type(self: *Self, is_op: bool) !void {
+    try self.send_packet(proto.send_update_player_type_to_client, .{is_op});
 }
 
 fn send_world(self: *Self) !void {
-    try proto.send_level_initialize_to_client(self.writer);
-    try self.writer.flush();
+    try self.send_packet(proto.send_level_initialize_to_client, .{});
+    self.drainOutbound();
 
     if (self.local) {
         // Local client reads World.blocks directly - no chunks needed.
@@ -289,9 +388,13 @@ fn send_world(self: *Self) !void {
         .client = self,
     };
     compress_worker.submit(&job.base);
+    // The worker streams chunks into the outbound queue; keep draining so a
+    // slow peer stalls only this thread, never the compressor.
     while (!job.base.done.load(.acquire)) {
+        self.drainOutbound();
         try Server.io.sleep(common.time.ms(20), .real);
     }
+    self.drainOutbound();
     if (job.base.err) |e| return e;
 }
 
@@ -303,7 +406,8 @@ fn world_send_run(base: *compress_worker.Job) anyerror!void {
 fn send_world_impl(self: *Self) !void {
     var chunk_buf: [1024]u8 = @splat(0);
 
-    var sender = ChunkSender.init(self.writer, &chunk_buf, @intCast(world.data.raw_blocks.len));
+    const out = self.out orelse return error.WriteFailed;
+    var sender = ChunkSender.init(out, &chunk_buf, @intCast(world.data.raw_blocks.len));
     try compress_worker.reset(&sender.interface);
 
     // Feed 4-byte size header, then block data in contiguous YZX wire
@@ -318,12 +422,13 @@ fn send_world_impl(self: *Self) !void {
     if (sender.interface.end > 0) {
         var final_chunk: [1024]u8 = @splat(0);
         @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
-        try proto.send_level_chunk_to_client(self.writer, @intCast(sender.interface.end), &final_chunk, sender.percent());
-        try self.writer.flush();
+        var packet_buf: [1028]u8 = undefined;
+        var packet_writer = std.Io.Writer.fixed(&packet_buf);
+        try proto.send_level_chunk_to_client(&packet_writer, @intCast(sender.interface.end), &final_chunk, sender.percent());
+        out.append(Server.io, packet_writer.buffered()) catch return error.WriteFailed;
     }
 
-    try proto.send_level_finalize_to_client(self.writer, c.WorldLength, c.WorldHeight, c.WorldDepth);
-    try self.writer.flush();
+    try self.send_packet(proto.send_level_finalize_to_client, .{ c.WorldLength, c.WorldHeight, c.WorldDepth });
 }
 
 pub fn ip_slice(self: *const Self) []const u8 {
@@ -331,7 +436,7 @@ pub fn ip_slice(self: *const Self) []const u8 {
 }
 
 pub fn handshake(self: *Self) !void {
-    try proto.send_player_id_to_client(self.writer, &Server.server_name, &Server.server_motd, self.is_op);
+    try self.send_packet(proto.send_player_id_to_client, .{ &Server.server_name, &Server.server_motd, self.is_op });
 
     try self.send_world();
 
@@ -353,8 +458,8 @@ pub fn handshake(self: *Self) !void {
     self.z = initial_spawn.z;
     self.yaw = 0;
     self.pitch = 0;
-    try proto.send_spawn_to_client(self.writer, &initial_spawn);
-    try self.writer.flush();
+    try self.send_packet(proto.send_spawn_to_client, .{&initial_spawn});
+    self.drainOutbound();
 
     // Send existing players to the new joiner before broadcasting the new joiner to others.
     for (0..Server.players.items.len) |i| {
@@ -374,8 +479,8 @@ pub fn handshake(self: *Self) !void {
                 .yaw = p.yaw,
                 .pitch = p.pitch,
             };
-            try proto.send_spawn_to_client(self.writer, &player_spawn);
-            try self.writer.flush();
+            try self.send_packet(proto.send_spawn_to_client, .{&player_spawn});
+            self.drainOutbound();
         }
     }
 
@@ -383,8 +488,8 @@ pub fn handshake(self: *Self) !void {
 
     Server.broadcast_spawn_player(self.id, &initial_spawn);
 
-    try proto.send_position_to_client(self.writer, -1, self.x, self.y, self.z, 0, 0);
-    try self.writer.flush();
+    try self.send_packet(proto.send_position_to_client, .{ -1, self.x, self.y, self.z, 0, 0 });
+    self.drainOutbound();
 
     self.initialized = true;
 
@@ -395,13 +500,13 @@ pub fn handshake(self: *Self) !void {
         std.mem.copyForwards(u8, &msg_buf, "&eWelcome to the world!");
 
         try self.send_message(self.id, &msg_buf);
-        try self.writer.flush();
+        self.drainOutbound();
 
         msg_buf = @splat(' ');
         _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
 
         Server.broadcast_chat_message(self.id, &msg_buf);
-        try self.writer.flush();
+        self.drainOutbound();
     }
 }
 
@@ -623,7 +728,7 @@ pub fn init(self: *Self) void {
 /// if a packet was processed. Used for singleplayer (same-process) mode
 /// where there is no dedicated read thread.
 pub fn try_process_packet(self: *Self) bool {
-    return self.process_packet() catch |err| {
+    return self.process_packet(self.reader) catch |err| {
         log.err("process packet failed for client id={d}: {}", .{ self.id, err });
         return false;
     };
@@ -633,22 +738,63 @@ pub fn drain_packets(self: *Self) void {
     while (self.try_process_packet()) {}
 }
 
-/// Blocking read loop -- runs on an Io thread pool thread. Reads and
-/// processes packets until the connection drops, then marks disconnected.
+/// Connection loop -- runs on the client's own Io thread pool thread.
+/// Interleaves draining the outbound queue with inbound reads so a slow
+/// peer only ever stalls this one thread; returns when the connection ends.
 pub fn read_loop(self: *Self) void {
+    const stream = self.stream orelse {
+        // Only remote clients have a connection loop; without a socket
+        // there is nothing to interleave reads with.
+        self.connected.* = false;
+        return;
+    };
+
+    var inbuf: [in_buf_bytes]u8 = undefined;
+
+    // Salvage bytes the pending-login phase prefetched past the login frame
+    // into the Stream.Reader buffer; that reader is not used afterwards.
+    const prefetched = self.reader.buffered();
+    const prefetched_len = @min(prefetched.len, inbuf.len);
+    @memcpy(inbuf[0..prefetched_len], prefetched[0..prefetched_len]);
+    var in_len: usize = prefetched_len;
+
     while (self.connected.*) {
-        const received = self.process_packet() catch |e| switch (e) {
-            error.ReadFailed => false,
+        self.drainOutbound();
+
+        std.debug.assert(in_len < inbuf.len);
+        const msg = stream.socket.receiveTimeout(Server.io, inbuf[in_len..], recv_poll_timeout) catch |err| switch (err) {
+            error.Timeout => continue,
+            error.Canceled => return,
             else => {
                 self.connected.* = false;
                 return;
             },
         };
-
-        if (!received) {
+        if (msg.data.len == 0) {
+            // Orderly EOF.
             self.connected.* = false;
             return;
         }
+        in_len += msg.data.len;
+
+        var fixed = std.Io.Reader.fixed(inbuf[0..in_len]);
+        while (self.connected.*) {
+            const processed = self.process_packet(&fixed) catch |err| switch (err) {
+                // No complete packet buffered yet; wait for more bytes.
+                error.EndOfStream => break,
+                else => {
+                    self.connected.* = false;
+                    return;
+                },
+            };
+            if (!processed) return;
+        }
+        if (!self.connected.*) return;
+
+        // Compact the incomplete-packet remainder to the front.
+        const remaining = fixed.bufferedLen();
+        std.mem.copyForwards(u8, inbuf[0..remaining], inbuf[in_len - remaining .. in_len]);
+        in_len = remaining;
     }
 }
 
@@ -677,7 +823,7 @@ test "duplicate player id disconnects before handshake dispatch" {
     client.initialized = true;
     client.phase = .active;
 
-    try std.testing.expect(!(try client.process_packet()));
+    try std.testing.expect(!(try client.process_packet(&reader)));
     try std.testing.expect(!connected);
     try std.testing.expectEqual(@as(u8, 0x0E), writer.buffered()[0]);
 }
@@ -696,7 +842,7 @@ test "pre-login mutation and chat packets disconnect before dispatch" {
         client.initialized = false;
         client.phase = .awaiting_login;
 
-        try std.testing.expect(!(try client.process_packet()));
+        try std.testing.expect(!(try client.process_packet(&reader)));
         try std.testing.expect(!connected);
         try std.testing.expectEqual(@as(u8, 0x0E), writer.buffered()[0]);
     }

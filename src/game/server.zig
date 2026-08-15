@@ -3,6 +3,7 @@ const consts = @import("common").consts;
 const protocol = @import("common").protocol;
 const FAB = @import("common").fa_buffer.FirstAvailableBuffer;
 pub const Client = @import("client.zig");
+const OutboundQueue = @import("outbound_queue.zig").OutboundQueue;
 const StaticAllocator = @import("common").static_allocator;
 const world = @import("world.zig");
 const compress_worker = @import("compress_worker.zig");
@@ -553,6 +554,8 @@ pub fn admit_login(
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
     connected: *bool,
+    out: *OutboundQueue,
+    stream: *std.Io.net.Stream,
     ip: []const u8,
     is_op: bool,
     request: LoginRequest,
@@ -572,7 +575,7 @@ pub fn admit_login(
     }
 
     var client: Client = undefined;
-    client.init_remote_admitted(reader, writer, connected, ip, is_op, request);
+    client.init_remote_admitted(reader, writer, connected, out, stream, ip, is_op, request);
 
     const id = players.add(client) orelse return .{ .rejected = "Server is full!" };
     players.items[id].?.id = @intCast(id);
@@ -588,6 +591,8 @@ pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *b
     client.connected = connected;
     client.reader = reader;
     client.writer = writer;
+    client.out = null;
+    client.stream = null;
     client.initialized = false;
     client.phase = .awaiting_login;
     client.local = false;
@@ -662,7 +667,6 @@ pub fn broadcast_spawn_player(sender_id: i8, packet: *zb.SpawnPlayer) void {
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] != null and players.items[i].?.initialized and players.items[i].?.id != sender_id) {
             players.items[i].?.send_spawn(packet) catch continue;
-            players.items[i].?.writer.flush() catch continue;
         }
     }
 }
@@ -671,7 +675,6 @@ pub fn broadcast_despawn_player(id: i8) void {
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
             players.items[i].?.send_despawn(id) catch continue;
-            players.items[i].?.writer.flush() catch continue;
         }
     }
 }
@@ -680,7 +683,6 @@ pub fn broadcast_chat_message(id: i8, message: []u8) void {
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
             players.items[i].?.send_message(id, message) catch continue;
-            players.items[i].?.writer.flush() catch continue;
         }
     }
     // Mirror to the host's admin console (stdout in standalone). Hook is
@@ -689,26 +691,20 @@ pub fn broadcast_chat_message(id: i8, message: []u8) void {
 }
 
 pub fn broadcast_block_change(x: u16, y: u16, z: u16, block: consts.Block) void {
-    broadcast_block_change_impl(x, y, z, block, true);
+    broadcast_block_change_impl(x, y, z, block);
 }
 
 fn broadcast_block_change_buffered(x: u16, y: u16, z: u16, block: consts.Block) void {
-    broadcast_block_change_impl(x, y, z, block, false);
+    broadcast_block_change_impl(x, y, z, block);
 }
 
-fn broadcast_block_change_impl(x: u16, y: u16, z: u16, block: consts.Block, flush: bool) void {
+// Sends only enqueue into each client's outbound queue (pure CPU work), so
+// the buffered/immediate split above no longer differs in flush behavior;
+// both wrappers are kept so call sites stay put.
+fn broadcast_block_change_impl(x: u16, y: u16, z: u16, block: consts.Block) void {
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
             players.items[i].?.send_block_change(x, y, z, block) catch continue;
-            if (flush) players.items[i].?.writer.flush() catch continue;
-        }
-    }
-}
-
-fn flush_block_change_broadcasts() void {
-    for (0..consts.MAX_PLAYERS) |i| {
-        if (players.items[i] != null and players.items[i].?.initialized) {
-            players.items[i].?.writer.flush() catch continue;
         }
     }
 }
@@ -725,7 +721,6 @@ pub fn broadcast_player_positions() void {
             if (players.items[j] != null and players.items[j].?.initialized) {
                 const p = players.items[j].?;
                 players.items[i].?.send_player_position(p.id, p.x, p.y, p.z, p.yaw, p.pitch) catch continue;
-                players.items[i].?.writer.flush() catch continue;
             }
         }
     }
@@ -764,8 +759,7 @@ pub fn tick() void {
         }
     }
 
-    const emitted = world.tick(tick_change_sink);
-    if (emitted > 0) flush_block_change_broadcasts();
+    _ = world.tick(tick_change_sink);
 
     broadcast_player_positions();
 
@@ -779,8 +773,7 @@ pub fn tick() void {
 fn broadcast_ping() void {
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
-            players.items[i].?.writer.writeByte(0x01) catch continue;
-            players.items[i].?.writer.flush() catch continue;
+            players.items[i].?.send_ping() catch continue;
         }
     }
 }

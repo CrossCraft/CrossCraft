@@ -15,6 +15,7 @@ const Heartbeat = @import("Heartbeat.zig");
 const PlayersDb = game.PlayersDb;
 const AccessControl = game.AccessControl;
 const Commands = game.Commands;
+const outbound_queue = game.OutboundQueue;
 const Consts = common.consts;
 
 const log = std.log.scoped(.server);
@@ -39,6 +40,10 @@ const ConnectionData = struct {
     writer: std.Io.net.Stream.Writer,
     read_buffer: [4096]u8,
     write_buffer: [4096]u8,
+    /// Bounded per-client outbound backlog. The buffer is allocated when the
+    /// login is admitted and freed in `release_slot_locked`; producers only
+    /// ever append here, never write to the socket.
+    out_queue: outbound_queue.OutboundQueue,
     connected: bool,
     ip: [PlayersDb.ip_str_len:0]u8,
     is_op: bool,
@@ -286,6 +291,7 @@ fn reserve_pending_slot_locked(
             .writer = undefined,
             .read_buffer = @splat(0),
             .write_buffer = @splat(0),
+            .out_queue = .{},
             .connected = true,
             .ip = std.mem.zeroes([PlayersDb.ip_str_len:0]u8),
             .is_op = is_op,
@@ -315,6 +321,10 @@ fn release_slot_locked(self: *Self, slot: *ConnectionSlot, engine: *Engine) void
     if (!slot.data.closed) {
         slot.data.stream.close(engine.io);
         slot.data.closed = true;
+    }
+    if (slot.data.out_queue.buf.len > 0) {
+        engine.allocator(.user).free(slot.data.out_queue.buf);
+        slot.data.out_queue = .{};
     }
     slot.data.connected = false;
     slot.state = .free;
@@ -381,10 +391,22 @@ fn promote_ready_logins(self: *Self, engine: *Engine) void {
             continue;
         };
 
+        // Allocate the outbound queue now that the login consumes a real
+        // player slot; pre-allocating for every pending socket would waste
+        // memory on connections that never finish logging in.
+        slot.data.out_queue.buf = engine.allocator(.user).alloc(u8, outbound_queue.out_queue_bytes) catch {
+            log.err("Failed to allocate outbound queue, rejecting completed login", .{});
+            reject_slot_locked(slot, engine, "Server error, try again");
+            release_slot_locked(self, slot, engine);
+            continue;
+        };
+
         const admission = Server.admit_login(
             &slot.data.reader.interface,
             &slot.data.writer.interface,
             &slot.data.connected,
+            &slot.data.out_queue,
+            &slot.data.stream,
             slot_ip(slot),
             slot.data.is_op,
             slot.login,

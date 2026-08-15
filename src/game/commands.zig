@@ -2,7 +2,6 @@ const std = @import("std");
 const players_db = @import("players_db.zig");
 const access_control = @import("access_control.zig");
 const Server = @import("server.zig");
-const proto = @import("common").protocol;
 
 const log = std.log.scoped(.commands);
 
@@ -109,7 +108,6 @@ fn cmd_ipban(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
     };
     const dc_reason = if (reason.len > 0) reason else "You have been banned";
     client.send_disconnect(dc_reason) catch {};
-    _ = client.writer.flush() catch {};
 
     var out_buf: [128]u8 = undefined;
     const msg = std.fmt.bufPrint(&out_buf, "Banned {s} ({s})", .{ username, ip }) catch "Banned";
@@ -132,7 +130,6 @@ fn cmd_kick(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
 
     const dc_reason = if (reason.len > 0) reason else "Kicked";
     client.send_disconnect(dc_reason) catch {};
-    _ = client.writer.flush() catch {};
 
     var out_buf: [80]u8 = undefined;
     const msg = std.fmt.bufPrint(&out_buf, "Kicked {s}", .{username}) catch "Kicked";
@@ -167,8 +164,7 @@ fn cmd_ipop(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
         return;
     };
     client.is_op = true;
-    proto.send_update_player_type_to_client(client.writer, true) catch {};
-    _ = client.writer.flush() catch {};
+    client.send_update_player_type(true) catch {};
 
     var out_buf: [128]u8 = undefined;
     const msg = std.fmt.bufPrint(&out_buf, "Granted op to {s} ({s})", .{ username, ip }) catch "Granted op";
