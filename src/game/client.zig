@@ -728,9 +728,15 @@ pub fn init(self: *Self) void {
 /// if a packet was processed. Used for singleplayer (same-process) mode
 /// where there is no dedicated read thread.
 pub fn try_process_packet(self: *Self) bool {
-    return self.process_packet(self.reader) catch |err| {
-        log.err("process packet failed for client id={d}: {}", .{ self.id, err });
-        return false;
+    return self.process_packet(self.reader) catch |err| switch (err) {
+        // Non-blocking local reader (FakeConn ring): ReadFailed just means
+        // no complete packet is buffered right now -- the normal idle case,
+        // not an error.
+        error.ReadFailed => false,
+        else => {
+            log.err("process packet failed for client id={d}: {}", .{ self.id, err });
+            return false;
+        },
     };
 }
 
