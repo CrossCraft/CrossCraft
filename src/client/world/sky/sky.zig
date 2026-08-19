@@ -116,6 +116,8 @@ fn set_sky_fog(submerged: ?collision.Liquid) void {
     const params = fog_params(submerged);
     Rendering.gfx.api.set_fog(
         true,
+        Camera.near_plane,
+        Camera.far_plane,
         params[0],
         params[1],
         @as(f32, @floatFromInt(c.r)) / 255.0,

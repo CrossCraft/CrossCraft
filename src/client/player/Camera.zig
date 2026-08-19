@@ -5,6 +5,9 @@ const Rendering = ae.Rendering;
 
 const Self = @This();
 
+pub const near_plane: f32 = if (ae.platform == .psp) 0.3275 else 0.1;
+pub const far_plane: f32 = if (ae.platform == .psp) 132.0 else 256.0;
+
 x: f32,
 y: f32,
 z: f32,
@@ -42,7 +45,7 @@ pub fn apply(self: *Self) void {
     const screen_h = Rendering.gfx.surface.get_height();
     const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
 
-    const proj = Math.Mat4.perspectiveFovRh(self.fov, aspect, if (ae.platform == .psp) 0.3275 else 0.1, if (ae.platform == .psp) 132.0 else 256.0);
+    const proj = Math.Mat4.perspectiveFovRh(self.fov, aspect, near_plane, far_plane);
     Rendering.gfx.api.set_proj_matrix(&proj);
 
     const view = Math.Mat4.translation(-self.x, -self.y, -self.z)
