@@ -73,6 +73,11 @@ const SwingKind = enum { idle, place, dig };
 
 const Self = @This();
 
+// Keep the established hand projection on existing backends. The 3DS uses
+// the world far plane because its W-buffer depth scale remains active here.
+const hand_near_plane: f32 = if (ae.platform == .psp) 0.3 else Camera.near_plane;
+const hand_far_plane: f32 = if (ae.platform == .nintendo_3ds) Camera.far_plane else 128.0;
+
 atlas: TextureAtlas,
 mesh_data: Rendering.MeshData(Vertex),
 mesh: Rendering.Mesh(Vertex),
@@ -277,7 +282,7 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
         const screen_w = Rendering.gfx.surface.get_width();
         const screen_h = Rendering.gfx.surface.get_height();
         const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
-        const proj = Math.Mat4.perspectiveFovRh(hand_fov, aspect, if (ae.platform == .psp) 0.3 else 0.1, 128.0);
+        const proj = Math.Mat4.perspectiveFovRh(hand_fov, aspect, hand_near_plane, hand_far_plane);
         Rendering.gfx.api.set_proj_matrix(&proj);
     }
 
@@ -327,7 +332,7 @@ pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camer
         const screen_w = Rendering.gfx.surface.get_width();
         const screen_h = Rendering.gfx.surface.get_height();
         const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
-        const proj = Math.Mat4.perspectiveFovRh(camera.fov, aspect, if (ae.platform == .psp) 0.3 else 0.1, 128.0);
+        const proj = Math.Mat4.perspectiveFovRh(camera.fov, aspect, hand_near_plane, hand_far_plane);
         Rendering.gfx.api.set_proj_matrix(&proj);
     }
 }

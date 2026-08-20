@@ -1241,7 +1241,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (trace) log.info("trace: first draw held done", .{});
 
     // UI pass: orthographic overlay drawn on top of the 3D scene.
-    Rendering.gfx.api.set_fog(false, 0.0, 1.0, 0.0, 0.0, 0.0);
+    Rendering.gfx.api.set_fog(false, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
     // Draw order is hotbar bg -> selector -> inventory panel -> iso block
     // icons -> tooltip text. The 2D sprites all batch into one pass; the
     // iso blocks flush after them so they sit on top of the selector frame
