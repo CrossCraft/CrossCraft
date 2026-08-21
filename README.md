@@ -5,103 +5,73 @@
 
 CrossCraft is a monorepo containing clean-room Minecraft reimplementations written in Zig on top of the custom Aether engine. It is developed in phases, one era at a time.
 
-We choose specific versions deemed important within an era:
-
-* Classic (0.30)
-* Survival Test (0.30)
-* Indev (0.31)
-* Infdev (TBD)
-* Alpha (1.1.2 and 1.2.6)
-* Beta (1.7.3 and 1.8.1)
-* Official (1.0 - TBD)
-
-## Where are we?
-
-The current phase is **Classic (0.30)**, now at **v1.0**. Each completed phase stays in the tree as a first-class build. Shared code lives in shared modules; version-specific behavior lives behind branching code paths so that improvements made while developing a newer phase flow back into older ones automatically.
-
-For example:
+Every era stays within the same source tree, allowing code changes to benefit all versions. For example:
 - General engine optimizations or new platforms are available to all versions
-- Bug fixes in shared systems (worldgen, networking, rendering, etc.) propagate to all in-repo versions
+- Bug fixes in shared systems (worldgen, networking, rendering, etc.) propagate to all versions
 
-## Classic Client & Server
+## Current Status & Roadmap
 
-Classic Client v1.0 is a feature-complete, clean-room reimplementation of Minecraft Classic 0.30.
+#### Current Phase: Classic (0.30)
 
-- **Classic 0.30 protocol** - full client and server implementation, compatible with the public Classic protocol.
-- **Singleplayer and multiplayer** - singleplayer runs an in-process server, no code bifurcation.
-- **Desktop + PSP** - Linux, macOS, Windows, and PSP (32 & 64 MB) ship from the same tree.
-- **Fixed-point worldgen and rendering** - deterministic across targets, fast on all hardware.
-- **Zero post-init allocation on the server.** Minimal hot-path allocation on the client.
-- **Full in-game settings UI** - options persist in a JSON file and are wired into every system.
-- **Accessible UI** - controller & item tooltips available
+| Component | State  |
+|-----------|--------|
+| Client    | v1.1.2 |
+| Server    | v1.1.0 |
 
-Classic Server v1.1 is a feature-complete Minecraft Classic 0.30 server and can stand up to the open internet without immediately being cooked. 
+#### Next Version: Classic v1.2
 
-**Administrative controls.** A persistent player database tracks ops, bans, IP bans, and a whitelist. All operator actions are IP-keyed so a renamed account does not reset enforcement.
+**Features:**
+* Plugin Support
+* Byte-Identical World Generator
+* Bigger Worlds
+* World Streaming
+* Better Multiplayer in Client
 
-- `/ipop <username>` - grant op to the IP currently behind `<username>`.
-- `/ipban <username> [reason]` - ban the IP currently behind `<username>`.
-- `/kick <username> [reason]` - drop a connected player.
-- `/ipwhitelist <ip>` - add an IP to the whitelist (whitelist mode toggled in `server.properties`).
-- Player database capacity is bounded and configurable in `server.properties`; LRU eviction warns before dropping any record carrying a persistent flag.
+#### Next Phase: Survival Test (0.30)
 
-**Console mode.** The standalone server uses stdio as a real operator console: `stdin` accepts commands, `stdout` carries chat, `stderr` carries logs. Pipe each one separately if you want to.
+### Client
 
-**Persistence.** World saving is fully async. The default save format is now ClassicWorld; existing worlds migrate on first save. Save path and world seed are command-line arguments and `server.properties` keys. On macOS, client data is stored under `~/Library/Application Support/CrossCraft Classic/`, with worlds in `saves/`; on first launch, the bundled `saves/origins.cw` world is copied there if it is not already present.
+Classic Client v1.1 is a feature-complete, clean-room reimplementation of Minecraft Classic 0.30.
 
-## Status
+- **Singleplayer and multiplayer** - full client and server support for Classic 0.30
+- **Cross-platform** - Linux, macOS, Windows, PSP, 3DS, Switch and Web
+- **Cross-compatbile** - Supports ClassicWorld format for broader ecosystem, base protocol compatible with ClassiCube & others
+- **Full in-game settings UI** - Persistent options and control remapping
+- **Accessible UI** - Controller & Item tooltips available
 
-| Component        | State       | Notes                                                       |
-|------------------|-------------|-------------------------------------------------------------|
-| Server (Classic) | v1.1        | Stable. Speaks the Classic 0.30 protocol.                  |
-| Client (Classic) | v1.0        | Stable. Full singleplayer and multiplayer, desktop and PSP. |
-| Engine (Aether)  | External dep | Powers rendering, audio, input, packing, platform ports.    |
+### Server
 
-## Roadmap
+Classic Server v1.1 is a feature-complete Minecraft Classic 0.30 server with basic server administration. 
 
-The near-term plan, in order:
-
-1. **Classic v1.1** - next up. Client release built on top of the v1.1 server work. Includes 3DS, Nintendo Switch, and Web builds.
-2. **Classic v1.2** - plugin support, world streaming, bigger worlds and better multiplayer connectivity features
-2. **Survival Test** - the next phase. Shares the engine, common primitives, and most of the game module with Classic.
-
-## Performance Notes
-
-- Desktop: high frame rates at full view distance.
-- PSP: 60-70 FPS in normal terrain, dipping into the mid-50s only in the densest forest. Achieved through aggressive section LODs, fixed-point worldgen and rendering, and careful meshing. The PSP build detects PSP-1000 vs PSP-2000+ at startup and selects the matching memory profile automatically.
-- Server: zero allocations after init. Builds for Linux, macOS, and Windows.
+- **Administrative controls** - A persistent IP-keyed player stat tracker allowing OPs, Bans, etc.
+- **Console mode** - The server runs as a regular console application on Windows, macOS, and Linux.
+- **Tiny footprint** - Creates a fixed 32 MB pool and uses around 6 MB, never grows or OOMs after startup.
+- **Configurable** - `server.properties` keys allows granular control over server internals.
 
 ## Building
 
-A recent Zig (matching `build.zig.zon`'s `minimum_zig_version`) is required.
+Requirement: Zig (matching `build.zig.zon`'s `minimum_zig_version`)
 
 ```
+# General
 zig build game       # desktop client
 zig build server     # standalone server
 zig build run-game   # run client locally
 zig build run-server # run server locally
 zig build test       # unit tests
-```
 
-### Consoles
-
-```
+# Consoles
 zig build game -Dtarget=mipsel-psp
 zig build game -Dtarget=arm-3ds
 zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch
-```
 
-### Web
-
-```
+# Web
 zig build serve-web
 ```
 
-Opens on `localhost:8000`, needs WASM & WebGL2 support in browser.
-
 ## Contributing
 
-Read `STYLE.MD` first. Run `zig fmt` before submitting. Add tests inline with `test "..."` blocks. When touching protocol, world, or rendering code, build the affected target plus `zig build test` before opening a PR.
+Read `STYLE.MD` first. Run `zig fmt` before submitting. Run `zig build test` before opening a PR.
 
 ## Legal Notice
 
