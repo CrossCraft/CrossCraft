@@ -105,6 +105,50 @@ pub var max_connections_per_ip: u32 = default_max_connections_per_ip;
 pub var on_broadcast_chat: ?*const fn ([]const u8) void = null;
 
 pub var players: FAB(Client, consts.MAX_PLAYERS) = .init();
+var player_generations: [consts.MAX_PLAYERS]u32 = @splat(0);
+
+/// Synchronization domains for the standalone server. They are intentionally
+/// separate: world simulation never contends with chat or position traffic,
+/// and roster readers may proceed concurrently while membership is stable.
+var roster_lock: std.Io.RwLock = .init;
+var world_lock: std.Io.RwLock = .init;
+
+pub const PlayerHandle = struct {
+    id: u8,
+    generation: u32,
+};
+
+pub fn lock_roster() void {
+    roster_lock.lockUncancelable(io);
+}
+
+pub fn unlock_roster() void {
+    roster_lock.unlock(io);
+}
+
+pub fn lock_roster_shared() void {
+    roster_lock.lockSharedUncancelable(io);
+}
+
+pub fn unlock_roster_shared() void {
+    roster_lock.unlockShared(io);
+}
+
+pub fn lock_world() void {
+    world_lock.lockUncancelable(io);
+}
+
+pub fn unlock_world() void {
+    world_lock.unlock(io);
+}
+
+pub fn lock_world_shared() void {
+    world_lock.lockSharedUncancelable(io);
+}
+
+pub fn unlock_world_shared() void {
+    world_lock.unlockShared(io);
+}
 
 /// True when the server is hosted inside the client process for singleplayer.
 /// Gates behaviors that only make sense for a standalone server reachable by
@@ -149,6 +193,9 @@ pub fn init(
     allocator = .init(alloc);
     errdefer allocator.deinit();
     io = _io;
+    roster_lock = .init;
+    world_lock = .init;
+    player_generations = @splat(0);
 
     // Server globals survive an embedded-server teardown in the same
     // process. Reset connection-admission values before optionally loading a
@@ -553,7 +600,7 @@ pub fn parse_login_frame(frame: []const u8) !LoginRequest {
 pub fn admit_login(
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
-    connected: *bool,
+    transport: *std.atomic.Value(Client.TransportState),
     out: *OutboundQueue,
     stream: *std.Io.net.Stream,
     ip: []const u8,
@@ -561,6 +608,9 @@ pub fn admit_login(
     request: LoginRequest,
 ) LoginAdmission {
     if (request.protocol_version != 0x07) return .{ .rejected = "Unsupported protocol version!" };
+
+    lock_roster();
+    defer unlock_roster();
 
     const name = Client.login_name(request);
     for (players.items) |maybe_client| {
@@ -575,10 +625,13 @@ pub fn admit_login(
     }
 
     var client: Client = undefined;
-    client.init_remote_admitted(reader, writer, connected, out, stream, ip, is_op, request);
+    client.init_remote_admitted(reader, writer, transport, out, stream, ip, is_op, request);
 
     const id = players.add(client) orelse return .{ .rejected = "Server is full!" };
     players.items[id].?.id = @intCast(id);
+    player_generations[id] +%= 1;
+    if (player_generations[id] == 0) player_generations[id] = 1;
+    players.items[id].?.generation = player_generations[id];
     // `Protocol.init` captures the client address as its dispatch context, so
     // initialise only after the temporary `client` has been copied into the
     // stable player table.
@@ -589,29 +642,33 @@ pub fn admit_login(
 pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bool, ip: []const u8, is_op: bool) ?*Client {
     var client: Client = undefined;
     client.connected = connected;
+    client.transport = null;
     client.reader = reader;
     client.writer = writer;
     client.out = null;
     client.stream = null;
     client.initialized = false;
-    client.phase = .awaiting_login;
+    client.phase = .init(.awaiting_login);
     client.local = false;
-    client.is_op = is_op;
+    client.is_op = .init(is_op);
+    client.catchup_mode = .init(.none);
     client.ip = std.mem.zeroes([players_db.ip_str_len:0]u8);
     const ip_n = @min(ip.len, players_db.ip_str_len);
     @memcpy(client.ip[0..ip_n], ip[0..ip_n]);
     client.name_len = 0;
     client.id = -1;
-    client.x = 0;
-    client.y = 0;
-    client.z = 0;
-    client.yaw = 0;
-    client.pitch = 0;
+    client.generation = 0;
+    client.pose = .init(@bitCast(@as(u64, 0)));
 
+    lock_roster();
+    defer unlock_roster();
     const id = players.add(client);
 
     if (id) |i| {
         players.items[i].?.id = @intCast(i);
+        player_generations[i] +%= 1;
+        if (player_generations[i] == 0) player_generations[i] = 1;
+        players.items[i].?.generation = player_generations[i];
         players.items[i].?.init();
         return &(players.items[i].?);
     } else {
@@ -651,19 +708,98 @@ pub fn local_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bo
     return client;
 }
 
-/// Linear scan over the active player table. Used by the /-command
-/// dispatcher (console + in-game) to look up a target by username.
-pub fn find_client_by_name(name: []const u8) ?*Client {
+pub const ClientSnapshot = struct {
+    handle: PlayerHandle,
+    ip: [players_db.ip_str_len:0]u8,
+
+    pub fn ip_slice(self: *const ClientSnapshot) []const u8 {
+        return std.mem.sliceTo(self.ip[0..], 0);
+    }
+};
+
+/// Resolve a command target without returning a pointer whose roster slot can
+/// be reused after the lock is released.
+pub fn find_client_by_name(name: []const u8) ?ClientSnapshot {
+    lock_roster_shared();
+    defer unlock_roster_shared();
     for (0..consts.MAX_PLAYERS) |i| {
-        if (players.items[i]) |*p| {
+        if (players.items[i]) |p| {
             if (!p.initialized) continue;
-            if (std.mem.eql(u8, p.name[0..p.name_len], name)) return p;
+            if (std.mem.eql(u8, p.name[0..p.name_len], name)) return .{
+                .handle = .{ .id = @intCast(i), .generation = p.generation },
+                .ip = p.ip,
+            };
         }
     }
     return null;
 }
 
+fn client_from_handle_locked(handle: PlayerHandle) ?*Client {
+    const client = &(players.items[handle.id] orelse return null);
+    if (client.generation != handle.generation) return null;
+    return client;
+}
+
+pub fn disconnect_handle(handle: PlayerHandle, reason: []const u8) bool {
+    lock_roster();
+    defer unlock_roster();
+    const client = client_from_handle_locked(handle) orelse return false;
+    client.send_disconnect(reason) catch {};
+    return true;
+}
+
+pub fn grant_op_handle(handle: PlayerHandle) bool {
+    lock_roster();
+    defer unlock_roster();
+    const client = client_from_handle_locked(handle) orelse return false;
+    client.is_op.store(true, .release);
+    client.send_update_player_type(true) catch {};
+    return true;
+}
+
+/// Detach a finished transport from the inline player table. The generation
+/// check prevents a late worker completion from removing a newer occupant of
+/// the same player id.
+pub fn remove_client(handle: PlayerHandle) void {
+    var console_line: ?consts.Message = null;
+
+    lock_roster();
+    const client = client_from_handle_locked(handle) orelse {
+        unlock_roster();
+        return;
+    };
+    const id = client.id;
+    const initialized = client.initialized;
+    const name = client.name;
+    const name_len = client.name_len;
+    players.remove(handle.id);
+
+    if (initialized) {
+        for (0..consts.MAX_PLAYERS) |i| {
+            const recipient = &(players.items[i] orelse continue);
+            if (!recipient.initialized) continue;
+            recipient.send_despawn(id) catch {};
+        }
+
+        var msg: consts.Message = @splat(' ');
+        _ = std.fmt.bufPrint(&msg, "&e{s} left the game", .{name[0..name_len]}) catch unreachable;
+        for (0..consts.MAX_PLAYERS) |i| {
+            const recipient = &(players.items[i] orelse continue);
+            if (!recipient.initialized) continue;
+            recipient.send_message(id, &msg) catch {};
+        }
+        console_line = msg;
+    }
+    unlock_roster();
+
+    if (console_line) |*line| {
+        if (on_broadcast_chat) |hook| hook(std.mem.trimEnd(u8, line, " \x00"));
+    }
+}
+
 pub fn broadcast_spawn_player(sender_id: i8, packet: *zb.SpawnPlayer) void {
+    lock_roster_shared();
+    defer unlock_roster_shared();
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] != null and players.items[i].?.initialized and players.items[i].?.id != sender_id) {
             players.items[i].?.send_spawn(packet) catch continue;
@@ -672,6 +808,8 @@ pub fn broadcast_spawn_player(sender_id: i8, packet: *zb.SpawnPlayer) void {
 }
 
 pub fn broadcast_despawn_player(id: i8) void {
+    lock_roster_shared();
+    defer unlock_roster_shared();
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
             players.items[i].?.send_despawn(id) catch continue;
@@ -680,11 +818,13 @@ pub fn broadcast_despawn_player(id: i8) void {
 }
 
 pub fn broadcast_chat_message(id: i8, message: []u8) void {
+    lock_roster_shared();
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
             players.items[i].?.send_message(id, message) catch continue;
         }
     }
+    unlock_roster_shared();
     // Mirror to the host's admin console (stdout in standalone). Hook is
     // null in singleplayer / on PSP, so this is free in those builds.
     if (on_broadcast_chat) |hook| hook(std.mem.trimEnd(u8, message, " \x00"));
@@ -702,14 +842,26 @@ fn broadcast_block_change_buffered(x: u16, y: u16, z: u16, block: consts.Block) 
 // the buffered/immediate split above no longer differs in flush behavior;
 // both wrappers are kept so call sites stay put.
 fn broadcast_block_change_impl(x: u16, y: u16, z: u16, block: consts.Block) void {
+    var catchup_packet: [8]u8 = undefined;
+    var fixed = std.Io.Writer.fixed(&catchup_packet);
+    protocol.send_block_change_to_client(&fixed, x, y, z, block) catch unreachable;
+
+    lock_roster_shared();
+    defer unlock_roster_shared();
     for (0..consts.MAX_PLAYERS) |i| {
-        if (players.items[i] != null and players.items[i].?.initialized) {
-            players.items[i].?.send_block_change(x, y, z, block) catch continue;
+        const client = &(players.items[i] orelse continue);
+        if (client.initialized or client.catchup_mode.load(.acquire) == .direct) {
+            client.send_block_change(x, y, z, block) catch continue;
+        } else if (client.catchup_mode.load(.acquire) == .capturing) {
+            const out = client.out orelse continue;
+            out.appendCatchup(io, &catchup_packet) catch client.kick_slow();
         }
     }
 }
 
 pub fn broadcast_player_positions() void {
+    lock_roster_shared();
+    defer unlock_roster_shared();
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] == null or !players.items[i].?.initialized)
             continue;
@@ -720,7 +872,8 @@ pub fn broadcast_player_positions() void {
 
             if (players.items[j] != null and players.items[j].?.initialized) {
                 const p = players.items[j].?;
-                players.items[i].?.send_player_position(p.id, p.x, p.y, p.z, p.yaw, p.pitch) catch continue;
+                const pose = p.load_pose();
+                players.items[i].?.send_player_position(p.id, pose.x, pose.y, pose.z, pose.yaw, pose.pitch) catch continue;
             }
         }
     }
@@ -739,27 +892,9 @@ pub fn drain_local_packets() void {
 var tick_counter: u32 = 0;
 
 pub fn tick() void {
-    for (0..consts.MAX_PLAYERS) |i| {
-        if (players.items[i]) |client| {
-            if (!client.connected.*) {
-                const id = client.id;
-                players.remove(@intCast(id));
-
-                if (!client.initialized) continue;
-
-                const name = client.name;
-                const name_len = client.name_len;
-
-                broadcast_despawn_player(id);
-
-                var msg_buf: consts.Message = @splat(' ');
-                _ = std.fmt.bufPrint(&msg_buf, "&e{s} left the game", .{name[0..name_len]}) catch unreachable;
-                broadcast_chat_message(id, &msg_buf);
-            }
-        }
-    }
-
+    lock_world();
     _ = world.tick(tick_change_sink);
+    unlock_world();
 
     broadcast_player_positions();
 
@@ -771,6 +906,8 @@ pub fn tick() void {
 }
 
 fn broadcast_ping() void {
+    lock_roster_shared();
+    defer unlock_roster_shared();
     for (0..consts.MAX_PLAYERS) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
             players.items[i].?.send_ping() catch continue;

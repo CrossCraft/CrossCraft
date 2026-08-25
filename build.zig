@@ -346,6 +346,12 @@ pub fn build(b: *std.Build) void {
         },
         .filters = test_filters,
     });
+    // Same glibc .sframe workaround as the desktop client executable: the
+    // system linker cannot consume GCC 16's R_X86_64_PC64 relocations.
+    if (target.result.os.tag == .linux and target.result.isGnuLibC()) {
+        unit_tests.use_llvm = true;
+        unit_tests.use_lld = true;
+    }
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     // Standalone build step for the pack_zip host tool.

@@ -38,11 +38,74 @@ var jobs: [c.MAX_PLAYERS]WorldSendJob = undefined;
 
 const Self = @This();
 
-const ConnectionPhase = enum {
+const ConnectionPhase = enum(u8) {
     awaiting_login,
     handshaking,
     active,
     closing,
+};
+
+pub const TransportState = enum(u8) {
+    open,
+    closing,
+    closed,
+};
+
+const CatchupMode = enum(u8) {
+    none,
+    capturing,
+    direct,
+};
+
+pub const PlayerPose = packed struct(u64) {
+    x: u16,
+    y: u16,
+    z: u16,
+    yaw: u8,
+    pitch: u8,
+};
+
+/// Cross-platform whole-pose publication. PSP/MIPS cannot issue 64-bit atomic
+/// operations, so a sequence counter brackets two 32-bit atomic words. There
+/// is one pose writer per client; readers retry if they overlap that writer.
+pub const AtomicPlayerPose = struct {
+    sequence: std.atomic.Value(u32),
+    low: std.atomic.Value(u32),
+    high: std.atomic.Value(u32),
+
+    pub fn init(pose: PlayerPose) AtomicPlayerPose {
+        const bits: u64 = @bitCast(pose);
+        return .{
+            .sequence = .init(0),
+            .low = .init(@truncate(bits)),
+            .high = .init(@truncate(bits >> 32)),
+        };
+    }
+
+    pub fn store(self: *AtomicPlayerPose, pose: PlayerPose) void {
+        const bits: u64 = @bitCast(pose);
+        _ = self.sequence.fetchAdd(1, .acq_rel);
+        self.low.store(@truncate(bits), .monotonic);
+        self.high.store(@truncate(bits >> 32), .monotonic);
+        _ = self.sequence.fetchAdd(1, .release);
+    }
+
+    pub fn load(self: *const AtomicPlayerPose) PlayerPose {
+        while (true) {
+            const before = self.sequence.load(.acquire);
+            if (before & 1 != 0) {
+                std.atomic.spinLoopHint();
+                continue;
+            }
+            const low = self.low.load(.monotonic);
+            const high = self.high.load(.monotonic);
+            const after = self.sequence.load(.acquire);
+            if (before == after) {
+                const bits = @as(u64, high) << 32 | low;
+                return @bitCast(bits);
+            }
+        }
+    }
 };
 
 /// The parts of a PlayerIDToServer frame needed before a Client exists in the
@@ -59,15 +122,15 @@ pub const LoginName = struct {
 };
 
 id: i8,
-x: u16,
-y: u16,
-z: u16,
-yaw: u8,
-pitch: u8,
+generation: u32,
+pose: AtomicPlayerPose,
 
 reader: *std.Io.Reader,
 writer: *std.Io.Writer,
 connected: *bool,
+/// Remote connections publish transport closure across the socket, tick, and
+/// console threads. Local singleplayer continues to use `connected` directly.
+transport: ?*std.atomic.Value(TransportState),
 
 /// Remote clients only: producers serialize packets into this queue and the
 /// client's own connection thread writes them to `stream`. Null for local
@@ -78,9 +141,10 @@ stream: ?*std.Io.net.Stream,
 name: [16:0]u8,
 name_len: u8,
 initialized: bool,
-phase: ConnectionPhase,
+phase: std.atomic.Value(ConnectionPhase),
 local: bool,
-is_op: bool,
+is_op: std.atomic.Value(bool),
+catchup_mode: std.atomic.Value(CatchupMode),
 ip: [players_db.ip_str_len:0]u8,
 protocol: Protocol,
 
@@ -154,6 +218,32 @@ fn ctx_to_client(ctx: *anyopaque) *Self {
     return @ptrCast(@alignCast(ctx));
 }
 
+pub fn load_pose(self: *const Self) PlayerPose {
+    return self.pose.load();
+}
+
+fn store_pose(self: *Self, pose: PlayerPose) void {
+    self.pose.store(pose);
+}
+
+pub fn is_connected(self: *const Self) bool {
+    if (self.transport) |transport| return transport.load(.acquire) != .closed;
+    return self.connected.*;
+}
+
+fn accepts_packets(self: *const Self) bool {
+    if (self.transport) |transport| return transport.load(.acquire) == .open;
+    return self.connected.*;
+}
+
+pub fn mark_closed(self: *Self) void {
+    if (self.transport) |transport| {
+        transport.store(.closed, .release);
+    } else {
+        self.connected.* = false;
+    }
+}
+
 pub fn login_name(request: LoginRequest) LoginName {
     var result: LoginName = .{
         .value = @splat(' '),
@@ -179,7 +269,7 @@ pub fn init_remote_admitted(
     self: *Self,
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
-    connected: *bool,
+    transport: *std.atomic.Value(TransportState),
     out: *OutboundQueue,
     stream: *std.Io.net.Stream,
     ip: []const u8,
@@ -188,26 +278,25 @@ pub fn init_remote_admitted(
 ) void {
     const name = login_name(request);
 
-    self.connected = connected;
+    self.connected = undefined;
+    self.transport = transport;
     self.reader = reader;
     self.writer = writer;
     self.out = out;
     self.stream = stream;
     self.initialized = false;
-    self.phase = .handshaking;
+    self.phase = .init(.handshaking);
     self.local = false;
-    self.is_op = is_op;
+    self.is_op = .init(is_op);
+    self.catchup_mode = .init(.none);
     self.ip = std.mem.zeroes([players_db.ip_str_len:0]u8);
     const ip_n = @min(ip.len, players_db.ip_str_len);
     @memcpy(self.ip[0..ip_n], ip[0..ip_n]);
     self.name = name.value;
     self.name_len = name.len;
     self.id = -1;
-    self.x = 0;
-    self.y = 0;
-    self.z = 0;
-    self.yaw = 0;
-    self.pitch = 0;
+    self.generation = 0;
+    self.pose = .init(@bitCast(@as(u64, 0)));
 }
 
 fn read_packet(self: *Self, reader: *std.Io.Reader) !bool {
@@ -233,30 +322,24 @@ fn packet_allowed(phase: ConnectionPhase, packet_id: u8) bool {
 }
 
 fn reject_protocol(self: *Self, reason: []const u8) void {
-    if (self.phase == .closing) return;
-    self.phase = .closing;
-    proto.send_disconnect_to_client(self.writer, reason) catch {
-        self.connected.* = false;
-        return;
-    };
-    self.writer.flush() catch {};
-    self.connected.* = false;
+    if (self.phase.swap(.closing, .acq_rel) == .closing) return;
+    self.send_disconnect(reason) catch self.mark_closed();
 }
 
 fn require_active(self: *Self) bool {
-    if (self.phase == .active and self.initialized) return true;
+    if (self.phase.load(.acquire) == .active) return true;
     self.reject_protocol("Unexpected packet before login");
     return false;
 }
 
 fn process_packet(self: *Self, reader: *std.Io.Reader) !bool {
-    if (!self.connected.*) return false;
+    if (!self.accepts_packets()) return false;
 
     // Check the phase before asking the generated protocol layer for a packet
     // length. That guarantees any unexpected byte, including an unknown ID,
     // gets an explicit disconnect without reaching the decoder or dispatcher.
     const packet_id = try reader.peekByte();
-    if (!packet_allowed(self.phase, packet_id)) {
+    if (!packet_allowed(self.phase.load(.acquire), packet_id)) {
         self.reject_protocol("Protocol state violation");
         return false;
     }
@@ -277,7 +360,7 @@ fn send_packet(self: *Self, comptime send_fn: anytype, args: anytype) !void {
         var fixed = std.Io.Writer.fixed(&buf);
         try @call(.auto, send_fn, .{&fixed} ++ args);
         q.append(Server.io, fixed.buffered()) catch {
-            self.kickSlow();
+            self.kick_slow();
             return error.QueueFull;
         };
     } else {
@@ -289,9 +372,9 @@ fn send_packet(self: *Self, comptime send_fn: anytype, args: anytype) !void {
 /// Kick a client whose outbound queue overflowed: it is reading too slowly
 /// and must never be waited on. Shutting the stream down unblocks the
 /// connection thread's pending receive.
-fn kickSlow(self: *Self) void {
-    const was_connected = self.connected.*;
-    self.connected.* = false;
+pub fn kick_slow(self: *Self) void {
+    const was_connected = self.is_connected();
+    self.mark_closed();
     if (self.stream) |s| s.shutdown(Server.io, .both) catch {};
     if (was_connected) {
         log.info("Kicking {s} ({s}): outbound queue full (slow client)", .{ self.name[0..self.name_len], self.ip_slice() });
@@ -310,13 +393,13 @@ fn drainOutbound(self: *Self) void {
         if (n == 0) break;
         wrote_any = true;
         self.writer.writeAll(buf[0..n]) catch {
-            self.connected.* = false;
+            self.mark_closed();
             return;
         };
     }
     if (wrote_any) {
         self.writer.flush() catch {
-            self.connected.* = false;
+            self.mark_closed();
         };
     }
 }
@@ -327,8 +410,7 @@ pub fn send_message(self: *Self, id: i8, message: []u8) !void {
 }
 
 pub fn send_disconnect(self: *Self, reason: []const u8) !void {
-    self.phase = .closing;
-    defer self.connected.* = false;
+    self.phase.store(.closing, .release);
     if (self.out) |q| {
         // Callers include foreign threads (console /kick, /ban), so never
         // touch the socket here: queue the packet best-effort and let the
@@ -337,9 +419,13 @@ pub fn send_disconnect(self: *Self, reason: []const u8) !void {
         var fixed = std.Io.Writer.fixed(&buf);
         try proto.send_disconnect_to_client(&fixed, reason);
         q.append(Server.io, fixed.buffered()) catch {};
+        if (self.transport) |transport| {
+            _ = transport.cmpxchgStrong(.open, .closing, .release, .acquire);
+        }
         return;
     }
     try proto.send_disconnect_to_client(self.writer, reason);
+    self.connected.* = false;
 }
 
 pub fn send_ping(self: *Self) !void {
@@ -390,11 +476,25 @@ fn send_world(self: *Self) !void {
     compress_worker.submit(&job.base);
     // The worker streams chunks into the outbound queue; keep draining so a
     // slow peer stalls only this thread, never the compressor.
+    var canceled = false;
     while (!job.base.done.load(.acquire)) {
         self.drainOutbound();
-        try Server.io.sleep(common.time.ms(20), .real);
+        if (canceled) {
+            std.atomic.spinLoopHint();
+        } else {
+            Server.io.sleep(common.time.ms(20), .real) catch |err| switch (err) {
+                error.Canceled => {
+                    // Keep the Client, connection slot, and outbound storage
+                    // alive until the raw compressor thread has dropped every
+                    // reference. Deinit may cancel the IO task first.
+                    canceled = true;
+                    self.mark_closed();
+                },
+            };
+        }
     }
     self.drainOutbound();
+    if (canceled) return error.Canceled;
     if (job.base.err) |e| return e;
 }
 
@@ -410,11 +510,32 @@ fn send_world_impl(self: *Self) !void {
     var sender = ChunkSender.init(out, &chunk_buf, @intCast(world.data.raw_blocks.len));
     try compress_worker.reset(&sender.interface);
 
-    // Feed 4-byte size header, then block data in contiguous YZX wire
-    // order (Java Classic compatible) from chunk-aware memory layout.
-    try compress_worker.compressor.writer.writeAll(world.data.raw_blocks[0..4]);
+    // Begin journaling under the exclusive world lock so no mutation can fall
+    // between capture activation and the first snapshot copy.
+    var size_header: [4]u8 = undefined;
+    Server.lock_world();
+    Server.lock_roster_shared();
+    self.catchup_mode.store(.capturing, .release);
+    @memcpy(&size_header, world.data.raw_blocks[0..4]);
+    Server.unlock_roster_shared();
+    Server.unlock_world();
+
+    try compress_worker.compressor.writer.writeAll(&size_header);
     sender.raw_written = 4;
-    try world.data.write_blocks_yzx(&compress_worker.compressor.writer);
+
+    // Copy a 4 KiB wire-contiguous band under a shared lock, then release the
+    // world before doing any compression. A full level uses 1,024 short read
+    // sections instead of freezing simulation for the whole gzip operation.
+    var band: [c.WorldLength * c.ChunkSize]u8 = undefined;
+    for (0..c.WorldHeight) |y| {
+        var z: usize = 0;
+        while (z < c.WorldDepth) : (z += c.ChunkSize) {
+            Server.lock_world_shared();
+            world.data.copy_blocks_yzx_band(@intCast(y), @intCast(z), &band);
+            Server.unlock_world_shared();
+            try compress_worker.compressor.writer.writeAll(&band);
+        }
+    }
     sender.raw_written = @intCast(world.data.raw_blocks.len);
     try compress_worker.compressor.finish();
 
@@ -429,6 +550,16 @@ fn send_world_impl(self: *Self) !void {
     }
 
     try self.send_packet(proto.send_level_finalize_to_client, .{ c.WorldLength, c.WorldHeight, c.WorldDepth });
+
+    // LevelFinalize is now in the normal queue. Close the capture gap while
+    // mutations are excluded, promote journaled packets behind it, then let
+    // future edits append directly even if the peer is still downloading.
+    Server.lock_world();
+    Server.lock_roster_shared();
+    out.promoteCatchup(Server.io);
+    self.catchup_mode.store(.direct, .release);
+    Server.unlock_roster_shared();
+    Server.unlock_world();
 }
 
 pub fn ip_slice(self: *const Self) []const u8 {
@@ -436,14 +567,16 @@ pub fn ip_slice(self: *const Self) []const u8 {
 }
 
 pub fn handshake(self: *Self) !void {
-    try self.send_packet(proto.send_player_id_to_client, .{ &Server.server_name, &Server.server_motd, self.is_op });
+    try self.send_packet(proto.send_player_id_to_client, .{ &Server.server_name, &Server.server_motd, self.is_op.load(.acquire) });
 
     try self.send_world();
 
     var name_buf: c.Message = @splat(' ');
     std.mem.copyForwards(u8, &name_buf, self.name[0..self.name_len]);
 
+    Server.lock_world_shared();
     const spawn = world.find_spawn();
+    Server.unlock_world_shared();
     var initial_spawn = zb.SpawnPlayer{
         .pid = -1,
         .name = name_buf,
@@ -453,45 +586,43 @@ pub fn handshake(self: *Self) !void {
         .yaw = 0,
         .pitch = 0,
     };
-    self.x = initial_spawn.x;
-    self.y = initial_spawn.y;
-    self.z = initial_spawn.z;
-    self.yaw = 0;
-    self.pitch = 0;
+    self.store_pose(.{ .x = initial_spawn.x, .y = initial_spawn.y, .z = initial_spawn.z, .yaw = 0, .pitch = 0 });
     try self.send_packet(proto.send_spawn_to_client, .{&initial_spawn});
     self.drainOutbound();
 
     // Send existing players to the new joiner before broadcasting the new joiner to others.
+    Server.lock_roster_shared();
     for (0..Server.players.items.len) |i| {
         if (Server.players.items[i]) |p| {
-            if (p.id == self.id)
+            if (p.id == self.id or !p.initialized)
                 continue;
 
             var name_cpy = [_]u8{' '} ** 64;
             std.mem.copyForwards(u8, &name_cpy, &p.name);
 
+            const pose = p.load_pose();
             var player_spawn = zb.SpawnPlayer{
                 .pid = p.id,
                 .name = name_cpy,
-                .x = p.x,
-                .y = p.y,
-                .z = p.z,
-                .yaw = p.yaw,
-                .pitch = p.pitch,
+                .x = pose.x,
+                .y = pose.y,
+                .z = pose.z,
+                .yaw = pose.yaw,
+                .pitch = pose.pitch,
             };
             try self.send_packet(proto.send_spawn_to_client, .{&player_spawn});
             self.drainOutbound();
         }
     }
+    Server.unlock_roster_shared();
 
     initial_spawn.pid = self.id;
 
     Server.broadcast_spawn_player(self.id, &initial_spawn);
 
-    try self.send_packet(proto.send_position_to_client, .{ -1, self.x, self.y, self.z, 0, 0 });
+    const own_pose = self.load_pose();
+    try self.send_packet(proto.send_position_to_client, .{ -1, own_pose.x, own_pose.y, own_pose.z, 0, 0 });
     self.drainOutbound();
-
-    self.initialized = true;
 
     // Skip welcome + join-broadcast chat in singleplayer: the lone local
     // player would just be seeing themselves "join" their own world.
@@ -513,7 +644,9 @@ pub fn handshake(self: *Self) !void {
 pub fn prepare_login(self: *Self, request: LoginRequest) bool {
     // The generated protocol dispatcher has one broad Connected state, so
     // preserve the server's actual login state here as a defense in depth.
-    if (self.phase != .awaiting_login or self.initialized) {
+    Server.lock_roster();
+    defer Server.unlock_roster();
+    if (self.phase.load(.acquire) != .awaiting_login or self.initialized) {
         self.reject_protocol("Player ID already received");
         return false;
     }
@@ -529,7 +662,8 @@ pub fn prepare_login(self: *Self, request: LoginRequest) bool {
             // Awaiting clients have not chosen a name yet. Handshaking
             // clients do count: their name is reserved until their world
             // transfer succeeds or fails.
-            if (p.id == self.id or p.phase == .awaiting_login or p.phase == .closing)
+            const phase = p.phase.load(.acquire);
+            if (p.id == self.id or phase == .awaiting_login or phase == .closing)
                 continue;
             if (p.name_len == name.len and std.mem.eql(u8, p.name[0..p.name_len], name.value[0..name.len])) {
                 self.reject_protocol("A player with that name is already connected!");
@@ -540,21 +674,24 @@ pub fn prepare_login(self: *Self, request: LoginRequest) bool {
 
     self.name = name.value;
     self.name_len = name.len;
-    self.phase = .handshaking;
+    self.phase.store(.handshaking, .release);
     return true;
 }
 
 /// Complete the expensive, output-producing half of a login after the name
 /// and player slot have already been reserved.
 pub fn finish_login(self: *Self) !void {
-    if (self.phase != .handshaking or self.initialized) return error.InvalidLoginState;
+    if (self.phase.load(.acquire) != .handshaking or self.initialized) return error.InvalidLoginState;
 
     self.handshake() catch |err| {
-        self.phase = .closing;
-        self.connected.* = false;
+        self.phase.store(.closing, .release);
+        self.mark_closed();
         return err;
     };
-    self.phase = .active;
+    Server.lock_roster();
+    self.initialized = true;
+    self.phase.store(.active, .release);
+    Server.unlock_roster();
 
     const ip = self.ip_slice();
     if (ip.len > 0) players_db.record_completed_login(ip, self.name[0..self.name_len]);
@@ -575,11 +712,7 @@ fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void 
     const self: *Self = ctx_to_client(ctx);
     if (!require_active(self)) return;
 
-    self.x = e.x;
-    self.y = e.y;
-    self.z = e.z;
-    self.yaw = e.yaw;
-    self.pitch = e.pitch;
+    self.store_pose(.{ .x = e.x, .y = e.y, .z = e.z, .yaw = e.yaw, .pitch = e.pitch });
 }
 
 fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
@@ -640,13 +773,17 @@ fn slash_sink_write(ctx: *anyopaque, line: []const u8) void {
 }
 
 fn handle_slash_command(self: *Self, body: []const u8) void {
-    const allowed = self.is_op or Server.internal_use;
+    const allowed = self.is_op.load(.acquire) or Server.internal_use;
     const sink: commands.Sink = .{ .ctx = self, .write_fn = slash_sink_write };
     commands.dispatch(sink, body, allowed);
 }
 
 fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     const self = ctx_to_client(ctx);
+    if (!require_active(self)) return;
+
+    Server.lock_world();
+    defer Server.unlock_world();
     if (!require_active(self)) return;
 
     if (event.x >= c.WorldLength or event.y >= c.WorldHeight or event.z >= c.WorldDepth)
@@ -751,7 +888,7 @@ pub fn read_loop(self: *Self) void {
     const stream = self.stream orelse {
         // Only remote clients have a connection loop; without a socket
         // there is nothing to interleave reads with.
-        self.connected.* = false;
+        self.mark_closed();
         return;
     };
 
@@ -764,38 +901,49 @@ pub fn read_loop(self: *Self) void {
     @memcpy(inbuf[0..prefetched_len], prefetched[0..prefetched_len]);
     var in_len: usize = prefetched_len;
 
-    while (self.connected.*) {
+    while (self.is_connected()) {
         self.drainOutbound();
+        if (self.transport.?.load(.acquire) == .closing) {
+            self.mark_closed();
+            stream.shutdown(Server.io, .both) catch {};
+            return;
+        }
 
         std.debug.assert(in_len < inbuf.len);
         const msg = stream.socket.receiveTimeout(Server.io, inbuf[in_len..], recv_poll_timeout) catch |err| switch (err) {
             error.Timeout => continue,
             error.Canceled => return,
             else => {
-                self.connected.* = false;
+                self.mark_closed();
                 return;
             },
         };
         if (msg.data.len == 0) {
             // Orderly EOF.
-            self.connected.* = false;
+            self.mark_closed();
             return;
         }
         in_len += msg.data.len;
 
         var fixed = std.Io.Reader.fixed(inbuf[0..in_len]);
-        while (self.connected.*) {
+        while (self.accepts_packets()) {
             const processed = self.process_packet(&fixed) catch |err| switch (err) {
                 // No complete packet buffered yet; wait for more bytes.
                 error.EndOfStream => break,
                 else => {
-                    self.connected.* = false;
+                    self.mark_closed();
                     return;
                 },
             };
-            if (!processed) return;
+            if (!processed) {
+                self.drainOutbound();
+                self.mark_closed();
+                stream.shutdown(Server.io, .both) catch {};
+                return;
+            }
         }
-        if (!self.connected.*) return;
+        if (!self.is_connected()) return;
+        if (!self.accepts_packets()) continue;
 
         // Compact the incomplete-packet remainder to the front.
         const remaining = fixed.bufferedLen();
@@ -826,8 +974,11 @@ test "duplicate player id disconnects before handshake dispatch" {
     client.reader = &reader;
     client.writer = &writer;
     client.connected = &connected;
+    client.transport = null;
+    client.out = null;
+    client.stream = null;
     client.initialized = true;
-    client.phase = .active;
+    client.phase = .init(.active);
 
     try std.testing.expect(!(try client.process_packet(&reader)));
     try std.testing.expect(!connected);
@@ -845,11 +996,22 @@ test "pre-login mutation and chat packets disconnect before dispatch" {
         client.reader = &reader;
         client.writer = &writer;
         client.connected = &connected;
+        client.transport = null;
+        client.out = null;
+        client.stream = null;
         client.initialized = false;
-        client.phase = .awaiting_login;
+        client.phase = .init(.awaiting_login);
 
         try std.testing.expect(!(try client.process_packet(&reader)));
         try std.testing.expect(!connected);
         try std.testing.expectEqual(@as(u8, 0x0E), writer.buffered()[0]);
     }
+}
+
+test "player pose publishes all coordinates as one atomic snapshot" {
+    const expected: PlayerPose = .{ .x = 123, .y = 456, .z = 789, .yaw = 42, .pitch = 99 };
+    var atomic_pose = AtomicPlayerPose.init(@bitCast(@as(u64, 0)));
+    atomic_pose.store(expected);
+    const actual = atomic_pose.load();
+    try std.testing.expectEqual(expected, actual);
 }

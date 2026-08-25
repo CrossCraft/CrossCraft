@@ -278,6 +278,31 @@ pub fn write_blocks_yzx(self: *const WorldData, writer: *std.Io.Writer) !void {
     }
 }
 
+/// Copy one wire-contiguous YZX band: all X values for sixteen adjacent Z
+/// rows at one Y level. The dedicated server holds its shared world lock only
+/// for this 4 KiB copy, then compresses the band without blocking mutations.
+pub fn copy_blocks_yzx_band(
+    self: *const WorldData,
+    y: u16,
+    z_start: u16,
+    out: *[c.WorldLength * c.ChunkSize]u8,
+) void {
+    assert(y < c.WorldHeight);
+    assert(z_start + c.ChunkSize <= c.WorldDepth);
+    assert(z_start % c.ChunkSize == 0);
+
+    var offset: usize = 0;
+    for (0..c.ChunkSize) |z_offset| {
+        const z: u16 = z_start + @as(u16, @intCast(z_offset));
+        for (0..c.ChunksX) |chunk_x| {
+            const base = c.block_index(@intCast(chunk_x * c.ChunkSize), y, z);
+            const row: *const [c.ChunkSize]u8 = @ptrCast(self.blocks[base..][0..c.ChunkSize]);
+            @memcpy(out[offset..][0..c.ChunkSize], row);
+            offset += c.ChunkSize;
+        }
+    }
+}
+
 /// Read contiguous YZX wire-order data and scatter into chunk-aware positions.
 pub fn read_blocks_yzx(self: *WorldData, reader: *std.Io.Reader) !void {
     for (0..c.WorldHeight) |yi| {
@@ -287,6 +312,31 @@ pub fn read_blocks_yzx(self: *WorldData, reader: *std.Io.Reader) !void {
                 const slice: *[c.ChunkSize]u8 = @ptrCast(self.blocks[base..][0..c.ChunkSize]);
                 try reader.readSliceAll(slice);
             }
+        }
+    }
+}
+
+test "copy_blocks_yzx_band preserves wire row order" {
+    var data: WorldData = undefined;
+    try data.init_in_place(std.testing.allocator, 1);
+    defer data.deinit();
+
+    const y: u16 = 7;
+    const z_start: u16 = 32;
+    for (0..c.ChunkSize) |z_offset| {
+        const z: u16 = z_start + @as(u16, @intCast(z_offset));
+        for (0..c.WorldLength) |x| {
+            const value: u8 = @truncate(x + z_offset * 17);
+            data.blocks[data.get_index(@intCast(x), y, z)] = .{ .id = @enumFromInt(value) };
+        }
+    }
+
+    var band: [c.WorldLength * c.ChunkSize]u8 = undefined;
+    data.copy_blocks_yzx_band(y, z_start, &band);
+    for (0..c.ChunkSize) |z_offset| {
+        for (0..c.WorldLength) |x| {
+            const expected: u8 = @truncate(x + z_offset * 17);
+            try std.testing.expectEqual(expected, band[z_offset * c.WorldLength + x]);
         }
     }
 }

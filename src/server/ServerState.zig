@@ -44,7 +44,7 @@ const ConnectionData = struct {
     /// login is admitted and freed in `release_slot_locked`; producers only
     /// ever append here, never write to the socket.
     out_queue: outbound_queue.OutboundQueue,
-    connected: bool,
+    transport: std.atomic.Value(Server.Client.TransportState),
     ip: [PlayersDb.ip_str_len:0]u8,
     is_op: bool,
     closed: bool = false,
@@ -60,6 +60,7 @@ const ConnectionSlot = struct {
     pending_index: ?usize = null,
     active_index: ?usize = null,
     login: Server.LoginRequest = undefined,
+    player_handle: ?Server.PlayerHandle = null,
 };
 
 // Signal handlers run with C calling conventions and cannot carry
@@ -77,6 +78,7 @@ var global_listener: ?*std.Io.net.Server = null;
 var stdout_buf: [512]u8 = undefined;
 var stdout_writer: std.Io.File.Writer = undefined;
 var stdout_iface: ?*std.Io.Writer = null;
+var stdout_mutex: std.Io.Mutex = .init;
 
 const Self = @This();
 
@@ -109,6 +111,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.tasks = .init;
     self.connections_mutex = .init;
     self.heartbeat_users = .init(0);
+    stdout_mutex = .init;
 
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(engine.io, .boot).raw.nanoseconds)));
     const config: Server.GameConfig = .{
@@ -159,6 +162,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.listener = try server_ip.listen(engine.io, .{ .reuse_address = true });
     global_listener = &self.listener;
 
+    // Publish console state before any connection task can broadcast chat.
+    const stdout_file = platform_stdout();
+    stdout_writer = stdout_file.writer(engine.io, &stdout_buf);
+    stdout_iface = &stdout_writer.interface;
+    Server.on_broadcast_chat = stdout_chat_hook;
+
     self.tasks.concurrent(engine.io, accept_loop, .{ self, engine }) catch unreachable;
     if (self.heartbeat_config.count > 0) {
         self.tasks.concurrent(engine.io, heartbeat_loop, .{ self, engine }) catch |err| {
@@ -167,10 +176,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         };
     }
 
-    const stdout_file = platform_stdout();
-    stdout_writer = stdout_file.writer(engine.io, &stdout_buf);
-    stdout_iface = &stdout_writer.interface;
-    Server.on_broadcast_chat = stdout_chat_hook;
     self.tasks.concurrent(engine.io, console_loop, .{ self, engine }) catch unreachable;
 }
 
@@ -205,6 +210,9 @@ fn stdout_console_write(_: *anyopaque, line: []const u8) void {
 /// "&e" noise in the operator's console.
 fn write_stripped_line(line: []const u8) void {
     const w = stdout_iface orelse return;
+    const engine = global_engine orelse return;
+    stdout_mutex.lockUncancelable(engine.io);
+    defer stdout_mutex.unlock(engine.io);
     var i: usize = 0;
     while (i < line.len) {
         if (line[i] == '&' and i + 1 < line.len and is_color_code(line[i + 1])) {
@@ -292,7 +300,7 @@ fn reserve_pending_slot_locked(
             .read_buffer = @splat(0),
             .write_buffer = @splat(0),
             .out_queue = .{},
-            .connected = true,
+            .transport = .init(.open),
             .ip = std.mem.zeroes([PlayersDb.ip_str_len:0]u8),
             .is_op = is_op,
         },
@@ -326,7 +334,8 @@ fn release_slot_locked(self: *Self, slot: *ConnectionSlot, engine: *Engine) void
         engine.allocator(.user).free(slot.data.out_queue.buf);
         slot.data.out_queue = .{};
     }
-    slot.data.connected = false;
+    slot.data.transport.store(.closed, .release);
+    slot.player_handle = null;
     slot.state = .free;
     slot.worker_done = true;
 }
@@ -336,7 +345,7 @@ fn reject_slot_locked(slot: *ConnectionSlot, engine: *Engine, reason: []const u8
     common.protocol.send_disconnect_to_client(&slot.data.writer.interface, reason) catch {};
     slot.data.stream.close(engine.io);
     slot.data.closed = true;
-    slot.data.connected = false;
+    slot.data.transport.store(.closed, .release);
 }
 
 fn finish_pending_worker(self: *Self, slot: *ConnectionSlot, engine: *Engine) void {
@@ -367,8 +376,10 @@ fn reap_finished_connections(self: *Self, engine: *Engine) void {
 
     for (self.conn_handles, 0..) |maybe_slot, index| {
         const slot = maybe_slot orelse continue;
-        if (slot.state == .active and slot.worker_done and !slot.data.connected) {
+        if (slot.state == .active and slot.worker_done and slot.data.transport.load(.acquire) == .closed) {
             log.info("Connection in slot {d} disconnected", .{index});
+            if (slot.player_handle) |handle| Server.remove_client(handle);
+            slot.player_handle = null;
             release_slot_locked(self, slot, engine);
         }
     }
@@ -404,7 +415,7 @@ fn promote_ready_logins(self: *Self, engine: *Engine) void {
         const admission = Server.admit_login(
             &slot.data.reader.interface,
             &slot.data.writer.interface,
-            &slot.data.connected,
+            &slot.data.transport,
             &slot.data.out_queue,
             &slot.data.stream,
             slot_ip(slot),
@@ -427,10 +438,11 @@ fn promote_ready_logins(self: *Self, engine: *Engine) void {
         slot.active_index = active_index;
         slot.state = .active;
         slot.worker_done = false;
+        slot.player_handle = .{ .id = @intCast(client.id), .generation = client.generation };
 
         self.tasks.concurrent(engine.io, client_login_loop, .{ self, slot, client, engine }) catch {
             log.err("Failed to spawn login task for slot {d}", .{active_index});
-            client.connected.* = false;
+            client.mark_closed();
             slot.worker_done = true;
         };
     }
@@ -510,11 +522,11 @@ fn client_login_loop(
     defer finish_active_worker(self, slot, engine);
 
     client.finish_login() catch |err| {
-        client.connected.* = false;
+        client.mark_closed();
         if (err == error.Canceled) return error.Canceled;
-        // Server.tick may reclaim a failed player entry as soon as its
-        // connected flag becomes false, so do not dereference `client` after
-        // this point.
+        // The reaper waits for this task's worker_done publication before it
+        // removes the generation-checked player entry. Do not add accesses
+        // after the task returns and publishes that completion.
         log.info("Login failed: {}", .{err});
         return;
     };
@@ -539,9 +551,11 @@ fn generate_salt(io: std.Io, out: *[16]u8) !void {
 
 fn count_initialized_users() u32 {
     var count: u32 = 0;
+    Server.lock_roster_shared();
+    defer Server.unlock_roster_shared();
     for (Server.players.items) |maybe_client| {
         if (maybe_client) |client| {
-            if (client.initialized and client.connected.*) count += 1;
+            if (client.initialized and client.is_connected()) count += 1;
         }
     }
     return count;
@@ -605,6 +619,8 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     engine.allocator(.user).free(self.pending_handles);
     engine.allocator(.user).free(self.conn_handles);
 
+    Server.on_broadcast_chat = null;
+    stdout_iface = null;
     global_engine = null;
 }
 

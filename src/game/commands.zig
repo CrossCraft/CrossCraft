@@ -89,14 +89,14 @@ fn cmd_ipban(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
     };
     const reason = rest_of(tok);
 
-    const client = Server.find_client_by_name(username) orelse {
+    const target = Server.find_client_by_name(username) orelse {
         var buf: [80]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "User '{s}' is not connected", .{username}) catch "User not connected";
         sink.write(msg);
         return;
     };
 
-    const ip = client.ip_slice();
+    const ip = target.ip_slice();
     if (ip.len == 0) {
         sink.write("Client has no recorded IP (local connection?)");
         return;
@@ -107,7 +107,7 @@ fn cmd_ipban(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
         return;
     };
     const dc_reason = if (reason.len > 0) reason else "You have been banned";
-    client.send_disconnect(dc_reason) catch {};
+    _ = Server.disconnect_handle(target.handle, dc_reason);
 
     var out_buf: [128]u8 = undefined;
     const msg = std.fmt.bufPrint(&out_buf, "Banned {s} ({s})", .{ username, ip }) catch "Banned";
@@ -121,7 +121,7 @@ fn cmd_kick(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
     };
     const reason = rest_of(tok);
 
-    const client = Server.find_client_by_name(username) orelse {
+    const target = Server.find_client_by_name(username) orelse {
         var buf: [80]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "User '{s}' is not connected", .{username}) catch "User not connected";
         sink.write(msg);
@@ -129,7 +129,7 @@ fn cmd_kick(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
     };
 
     const dc_reason = if (reason.len > 0) reason else "Kicked";
-    client.send_disconnect(dc_reason) catch {};
+    _ = Server.disconnect_handle(target.handle, dc_reason);
 
     var out_buf: [80]u8 = undefined;
     const msg = std.fmt.bufPrint(&out_buf, "Kicked {s}", .{username}) catch "Kicked";
@@ -146,14 +146,14 @@ fn cmd_ipop(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
         return;
     }
 
-    const client = Server.find_client_by_name(username) orelse {
+    const target = Server.find_client_by_name(username) orelse {
         var buf: [80]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "User '{s}' is not connected", .{username}) catch "User not connected";
         sink.write(msg);
         return;
     };
 
-    const ip = client.ip_slice();
+    const ip = target.ip_slice();
     if (ip.len == 0) {
         sink.write("Client has no recorded IP (local connection?)");
         return;
@@ -163,8 +163,7 @@ fn cmd_ipop(sink: Sink, tok: *std.mem.TokenIterator(u8, .any)) void {
         report_policy_error(sink, err);
         return;
     };
-    client.is_op = true;
-    client.send_update_player_type(true) catch {};
+    _ = Server.grant_op_handle(target.handle);
 
     var out_buf: [128]u8 = undefined;
     const msg = std.fmt.bufPrint(&out_buf, "Granted op to {s} ({s})", .{ username, ip }) catch "Granted op";
