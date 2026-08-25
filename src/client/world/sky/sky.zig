@@ -8,8 +8,8 @@ const Colors = @import("../../graphics/Color.zig");
 const Color = Colors.Color;
 const Camera = @import("../../player/Camera.zig");
 
-const BatchMesh = Rendering.Mesh(Vertex);
-const BatchMeshData = Rendering.MeshData(Vertex);
+const BatchMesh = Rendering.MeshType(Vertex);
+const BatchMeshData = Rendering.MeshDataType(Vertex);
 
 /// Sky plane: 64x64 grid of 16-unit tiles (1024x1024 total).
 const PLANE_GRID: u32 = 64;

@@ -59,8 +59,8 @@ const LIMB_VERTS: usize = LIMB_QUADS * 6;
 // Name tag billboard above the head.
 const TAG_HEIGHT: f32 = 0.3; // world-space height of text (blocks)
 const TAG_Y_OFFSET: f32 = 2.2; // above feet (head top is 2.0)
-const BatchMesh = Rendering.Mesh(Vertex);
-const BatchMeshData = Rendering.MeshData(Vertex);
+const BatchMesh = Rendering.MeshType(Vertex);
+const BatchMeshData = Rendering.MeshDataType(Vertex);
 
 const PlayerState = struct {
     active: bool,

@@ -63,15 +63,15 @@ const Axis = enum(u2) { x, y, z };
 const PerAxis = struct { x: i16, y: i16, z: i16 };
 const Thickness = struct { thick: PerAxis, protrusion: PerAxis };
 
-mesh_data: Rendering.MeshData(Vertex),
-mesh: Rendering.Mesh(Vertex),
+mesh_data: Rendering.MeshDataType(Vertex),
+mesh: Rendering.MeshType(Vertex),
 allocator: std.mem.Allocator,
 last_bounds: ?SubvoxelBounds = null,
 
 pub fn init(allocator: std.mem.Allocator) !Self {
     var self: Self = .{
-        .mesh_data = try Rendering.MeshData(Vertex).init(allocator),
-        .mesh = try Rendering.Mesh(Vertex).init(&.{}),
+        .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
+        .mesh = try Rendering.MeshType(Vertex).init(&.{}),
         .allocator = allocator,
     };
     try self.mesh_data.ensure_quad_capacity(allocator, QUAD_COUNT);
@@ -185,7 +185,7 @@ fn outward_range(at_hi: bool, total: i16, protrusion: i16) struct { i16, i16 } {
         .{ LO - protrusion, LO + inside };
 }
 
-fn build_edges(mesh: *Rendering.MeshData(Vertex), t: Thickness) void {
+fn build_edges(mesh: *Rendering.MeshDataType(Vertex), t: Thickness) void {
     for (EDGES) |e| {
         const u_axis, const v_axis = perp_axes(e.axis);
         const u_lo, const u_hi = outward_range(e.u_hi, axis_thick(t.thick, u_axis), axis_thick(t.protrusion, u_axis));
@@ -222,7 +222,7 @@ fn build_edges(mesh: *Rendering.MeshData(Vertex), t: Thickness) void {
 /// from c0 to c1 (componentwise c0 < c1). Winding matches chunk face.zig
 /// (outward normals, CCW from outside) so default backface culling hides
 /// the inward-facing quads on all three backends.
-fn emit_box(mesh: *Rendering.MeshData(Vertex), c0: [3]i16, c1: [3]i16) void {
+fn emit_box(mesh: *Rendering.MeshDataType(Vertex), c0: [3]i16, c1: [3]i16) void {
     const x0 = c0[0];
     const x1 = c1[0];
     const y0 = c0[1];
@@ -260,6 +260,6 @@ fn v(x: i16, y: i16, z: i16) Vertex {
     return .{ .pos = .{ x, y, z }, .uv = .{ 0, 0 }, .color = COLOR };
 }
 
-fn append_quad(mesh: *Rendering.MeshData(Vertex), q: [4]Vertex) void {
+fn append_quad(mesh: *Rendering.MeshDataType(Vertex), q: [4]Vertex) void {
     mesh.add_quad_assume_capacity(q[0], q[3], q[2], q[1]);
 }

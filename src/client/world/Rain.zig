@@ -115,10 +115,10 @@ const Splash = struct {
 
 const Self = @This();
 
-streak_data: Rendering.MeshData(Vertex),
-streak_mesh: Rendering.Mesh(Vertex),
-splash_data: Rendering.MeshData(Vertex),
-splash_mesh: Rendering.Mesh(Vertex),
+streak_data: Rendering.MeshDataType(Vertex),
+streak_mesh: Rendering.MeshType(Vertex),
+splash_data: Rendering.MeshDataType(Vertex),
+splash_mesh: Rendering.MeshType(Vertex),
 particle_atlas: TextureAtlas,
 scroll_v: i32,
 streak_mesh_dirty: bool,
@@ -134,10 +134,10 @@ allocator: std.mem.Allocator,
 
 pub fn init(allocator: std.mem.Allocator) !Self {
     var self: Self = .{
-        .streak_data = try Rendering.MeshData(Vertex).init(allocator),
-        .streak_mesh = try Rendering.Mesh(Vertex).init(&.{}),
-        .splash_data = try Rendering.MeshData(Vertex).init(allocator),
-        .splash_mesh = try Rendering.Mesh(Vertex).init(&.{}),
+        .streak_data = try Rendering.MeshDataType(Vertex).init(allocator),
+        .streak_mesh = try Rendering.MeshType(Vertex).init(&.{}),
+        .splash_data = try Rendering.MeshDataType(Vertex).init(allocator),
+        .splash_mesh = try Rendering.MeshType(Vertex).init(&.{}),
         .particle_atlas = TextureAtlas.init(PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_TILES, PARTICLE_ATLAS_TILES),
         .scroll_v = 0,
         .streak_mesh_dirty = true,
@@ -350,7 +350,7 @@ fn streak_v_offset(scroll_v: i32) f32 {
 
 // --- Streak mesh build ---
 
-fn build_streaks(mesh: *Rendering.MeshData(Vertex), cam_tile_x: i32, cam_tile_z: i32) void {
+fn build_streaks(mesh: *Rendering.MeshDataType(Vertex), cam_tile_x: i32, cam_tile_z: i32) void {
     const world_ceiling: f32 = @as(f32, @floatFromInt(c.WorldHeight));
 
     var dz: i32 = -EXTENT;
@@ -388,7 +388,7 @@ fn build_streaks(mesh: *Rendering.MeshData(Vertex), cam_tile_x: i32, cam_tile_z:
 /// so their @mod(32768) SNORM16s tile seamlessly across the seam.  When a
 /// section crosses the SNORM16 wrap, split it so UVs stay monotonic.
 fn emit_column_quads(
-    mesh: *Rendering.MeshData(Vertex),
+    mesh: *Rendering.MeshDataType(Vertex),
     dx: i32,
     dz: i32,
     bottom_y: f32,
@@ -465,7 +465,7 @@ fn emit_column_quads(
 /// sub-section after a wrap split).  v_bot/v_top must both be non-negative
 /// so PSP hardware interpolates a monotonically increasing UV.
 fn emit_section_geom(
-    mesh: *Rendering.MeshData(Vertex),
+    mesh: *Rendering.MeshDataType(Vertex),
     x_ctr: f32,
     z_ctr: f32,
     y_bot: f32,
@@ -545,7 +545,7 @@ fn emit_section_geom(
 }
 
 fn emit_quad(
-    mesh: *Rendering.MeshData(Vertex),
+    mesh: *Rendering.MeshDataType(Vertex),
     // bottom-left
     x0: i16,
     y0: i16,
@@ -583,7 +583,7 @@ fn emit_quad(
 // --- Splash mesh build ---
 
 fn emit_splash(
-    mesh: *Rendering.MeshData(Vertex),
+    mesh: *Rendering.MeshDataType(Vertex),
     p: *const Splash,
     rx: f32,
     rz: f32,

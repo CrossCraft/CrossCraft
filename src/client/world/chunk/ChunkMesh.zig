@@ -8,8 +8,8 @@ const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const mesher = @import("mesher.zig");
 const World = @import("game").World;
 
-pub const BatchMesh = Rendering.Mesh(Vertex);
-pub const BatchMeshData = Rendering.MeshData(Vertex);
+pub const BatchMesh = Rendering.MeshType(Vertex);
+pub const BatchMeshData = Rendering.MeshDataType(Vertex);
 
 /// One 16x16x16 section with 3 meshes:
 ///   opaque -- solid blocks + buried (solid) leaf faces

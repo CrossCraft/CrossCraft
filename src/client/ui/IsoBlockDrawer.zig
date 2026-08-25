@@ -75,8 +75,8 @@ pub const Payload = struct {
 
 terrain: *const Rendering.Texture,
 atlas: TextureAtlas,
-mesh_data: Rendering.MeshData(Vertex),
-mesh: Rendering.Mesh(Vertex),
+mesh_data: Rendering.MeshDataType(Vertex),
+mesh: Rendering.MeshType(Vertex),
 iso_xform: Math.Mat4,
 allocator: std.mem.Allocator,
 
@@ -91,8 +91,8 @@ pub fn init(
     var self: Self = .{
         .terrain = terrain,
         .atlas = atlas,
-        .mesh_data = try Rendering.MeshData(Vertex).init(allocator),
-        .mesh = try Rendering.Mesh(Vertex).init(&.{}),
+        .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
+        .mesh = try Rendering.MeshType(Vertex).init(&.{}),
         .iso_xform = iso,
         .allocator = allocator,
     };

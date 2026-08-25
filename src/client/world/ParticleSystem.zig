@@ -78,8 +78,8 @@ fn gravity_for(block_id: c.Block) f32 {
 
 const Self = @This();
 
-mesh_data: Rendering.MeshData(Vertex),
-mesh: Rendering.Mesh(Vertex),
+mesh_data: Rendering.MeshDataType(Vertex),
+mesh: Rendering.MeshType(Vertex),
 atlas: TextureAtlas,
 particles: [MAX_PARTICLES]Particle,
 count: u16,
@@ -90,8 +90,8 @@ allocator: std.mem.Allocator,
 
 pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
     var self: Self = .{
-        .mesh_data = try Rendering.MeshData(Vertex).init(allocator),
-        .mesh = try Rendering.Mesh(Vertex).init(&.{}),
+        .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
+        .mesh = try Rendering.MeshType(Vertex).init(&.{}),
         .atlas = atlas,
         .particles = undefined,
         .count = 0,
@@ -337,7 +337,7 @@ fn rebuild_mesh(self: *Self, camera: *const Camera) void {
 /// `rx`/`rz` is the camera-right vector (XZ only, pre-scaled by HALF_SIZE);
 /// `(upx,upy,upz)` is camera-up (pre-scaled). Capacity is reserved in init.
 fn emit_particle(
-    mesh: *Rendering.MeshData(Vertex),
+    mesh: *Rendering.MeshDataType(Vertex),
     p: *const Particle,
     rx: f32,
     rz: f32,

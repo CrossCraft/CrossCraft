@@ -79,8 +79,8 @@ const hand_near_plane: f32 = if (ae.platform == .psp) 0.3 else Camera.near_plane
 const hand_far_plane: f32 = if (ae.platform == .nintendo_3ds) Camera.far_plane else 128.0;
 
 atlas: TextureAtlas,
-mesh_data: Rendering.MeshData(Vertex),
-mesh: Rendering.Mesh(Vertex),
+mesh_data: Rendering.MeshDataType(Vertex),
+mesh: Rendering.MeshType(Vertex),
 cached_block: Block,
 pending_block: Block,
 /// Whether the currently baked mesh used the shadow tint. Tracked alongside
@@ -96,8 +96,8 @@ allocator: std.mem.Allocator,
 pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
     var self: Self = .{
         .atlas = atlas,
-        .mesh_data = try Rendering.MeshData(Vertex).init(allocator),
-        .mesh = try Rendering.Mesh(Vertex).init(&.{}),
+        .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
+        .mesh = try Rendering.MeshType(Vertex).init(&.{}),
         .cached_block = SENTINEL,
         .pending_block = SENTINEL,
         .cached_shadowed = false,

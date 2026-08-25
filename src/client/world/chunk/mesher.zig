@@ -5,7 +5,7 @@ const World = @import("game").World;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Rendering = @import("aether").Rendering;
 const Vertex = Rendering.Vertex;
-const BatchMesh = Rendering.MeshData(Vertex);
+const BatchMesh = Rendering.MeshDataType(Vertex);
 const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 
