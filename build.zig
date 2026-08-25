@@ -150,6 +150,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .overrides = overrides,
     });
+    if (target.result.os.tag == .linux and target.result.isGnuLibC()) {
+        client_exe.use_llvm = true;
+        client_exe.use_lld = true;
+    }
     const client_root = Aether.modules.userRootModule(client_exe);
     client_root.addImport("game", game);
     client_root.addImport("common", common);
