@@ -41,11 +41,18 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const worldgen = b.addModule("worldgen", .{
+        .root_source_file = b.path("src/game/worldgen/root.zig"),
+        .optimize = .ReleaseFast,
+        .imports = &.{},
+    });
+
     const game = b.addModule("game", .{
         .root_source_file = b.path("src/game/root.zig"),
         .optimize = optimize,
         .imports = &.{
             .{ .name = "protocol", .module = protocol },
+            .{ .name = "worldgen", .module = worldgen },
             .{ .name = "common", .module = common },
         },
     });
