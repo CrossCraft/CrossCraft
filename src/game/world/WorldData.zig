@@ -8,7 +8,6 @@
 const std = @import("std");
 const common = @import("common");
 const c = common.consts;
-const Xorshift64 = common.xorshift64.Xorshift64;
 const assert = std.debug.assert;
 
 const Block = c.Block;
@@ -45,8 +44,8 @@ const default_name = "world";
 
 pub fn init_in_place(self: *WorldData, allocator: std.mem.Allocator, new_seed: u64) !void {
     self.backing_allocator = allocator;
-    self.raw_blocks = try allocator.alloc(u8, c.WorldDepth * c.WorldHeight * c.WorldLength + 4);
-    self.blocks = @ptrCast(self.raw_blocks[4..]);
+    self.raw_blocks = try allocator.alloc(u8, c.WorldDepth * c.WorldHeight * c.WorldLength);
+    self.blocks = @ptrCast(self.raw_blocks);
     self.world_size = .{ c.WorldLength, c.WorldHeight, c.WorldDepth };
     self.seed = new_seed;
     self.tick_count = 0;
@@ -61,12 +60,6 @@ pub fn init_in_place(self: *WorldData, allocator: std.mem.Allocator, new_seed: u
     @memset(&self.light_map, 0);
     @memset(&self.chunk_counts, 0);
     @memset(&self.chunk_non_opaque, 0);
-
-    // Big-endian total volume prefix kept in raw_blocks[0..4] for the
-    // LevelDataChunk wire path (kept for save-file backward compatibility
-    // too). Will move to the network sender in a later phase.
-    const size: u32 = c.WorldDepth * c.WorldHeight * c.WorldLength;
-    std.mem.writeInt(u32, self.raw_blocks[0..4], size, .big);
 }
 
 /// Stamp the world with a fresh random UUID and the current real-clock
@@ -74,15 +67,33 @@ pub fn init_in_place(self: *WorldData, allocator: std.mem.Allocator, new_seed: u
 /// fields from the save file.
 pub fn stamp_creation_metadata(self: *WorldData, io: std.Io) void {
     const real_ns: i64 = @truncate(std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds);
-    var rng = Xorshift64.init(@bitCast(real_ns));
+    var rng = std.Random.DefaultPrng.init(@bitCast(real_ns));
     std.mem.writeInt(u64, self.uuid[0..8], rng.next(), .little);
     std.mem.writeInt(u64, self.uuid[8..16], rng.next(), .little);
     self.time_created = @divTrunc(real_ns, std.time.ns_per_ms);
 }
 
 pub fn deinit(self: *WorldData) void {
-    self.backing_allocator.free(self.raw_blocks);
+    if (self.raw_blocks.len > 0) {
+        self.backing_allocator.free(self.raw_blocks);
+    }
     self.* = undefined;
+}
+
+/// Free the block storage. Used on the generate path, where the generator
+/// returns its own full-volume buffer that is adopted afterwards.
+pub fn release_blocks(self: *WorldData) void {
+    if (self.raw_blocks.len == 0) return;
+    self.backing_allocator.free(self.raw_blocks);
+    self.raw_blocks = &.{};
+    self.blocks = &.{};
+}
+
+/// Take ownership of a full-volume block buffer.
+pub fn adopt_blocks(self: *WorldData, blocks: []u8) void {
+    assert(blocks.len == c.WorldDepth * c.WorldHeight * c.WorldLength);
+    self.raw_blocks = blocks;
+    self.blocks = @ptrCast(blocks);
 }
 
 pub fn get_index(_: *const WorldData, x: u16, y: u16, z: u16) u32 {
@@ -223,10 +234,10 @@ pub fn has_direct_sunlight(self: *const WorldData, x: u16, y: u16, z: u16) bool 
 
 pub fn find_spawn(self: *const WorldData, io: std.Io) [3]u16 {
     const spawn_seed: u64 = @truncate(@as(u96, @bitCast(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
-    var spawn_rng = Xorshift64.init(spawn_seed);
+    var spawn_rng = std.Random.DefaultPrng.init(spawn_seed);
     for (0..10) |attempt| {
-        const bx: u16 = @intCast(spawn_rng.next_bounded(c.WorldLength));
-        const bz: u16 = @intCast(spawn_rng.next_bounded(c.WorldDepth));
+        const bx: u16 = @intCast(spawn_rng.next() % c.WorldLength);
+        const bz: u16 = @intCast(spawn_rng.next() % c.WorldDepth);
         var by: u16 = c.WorldHeight - 1;
         while (by > 0) : (by -= 1) {
             const blk = self.get_block(bx, by, bz);
@@ -314,6 +325,91 @@ pub fn read_blocks_yzx(self: *WorldData, reader: *std.Io.Reader) !void {
             }
         }
     }
+}
+
+/// Convert a contiguous YZX buffer (worldgen/wire order) to the chunk-aware
+/// layout, in place. The move unit is a 16-byte x-row; destinations overlap
+/// not-yet-moved sources, so cycles are followed with one bit of `visited`
+/// per row and the carry row is staged through `lookaside`.
+/// `visited.len * 8` must cover `blocks.len / ChunkSize` rows.
+pub fn remap_yzx_to_chunk_aware(
+    blocks: []u8,
+    lookaside: *[c.ChunkVolume]u8,
+    visited: []u8,
+) void {
+    const rows = blocks.len / c.ChunkSize;
+    const rows_per_slab = c.WorldDepth * c.ChunksX;
+    const rows_per_chunk = c.ChunkSize * c.ChunkSize;
+    assert(blocks.len % c.ChunkSize == 0);
+    assert(visited.len * 8 >= rows);
+
+    var start: usize = 0;
+    while (start < rows) : (start += 1) {
+        if (row_bit(visited, start)) continue;
+        @memcpy(lookaside[0..c.ChunkSize], blocks[start * c.ChunkSize ..][0..c.ChunkSize]);
+        var j = start;
+        while (true) {
+            const k = blk: {
+                const y = j / rows_per_slab;
+                const rem = j % rows_per_slab;
+                const z = rem / c.ChunksX;
+                const cx = rem % c.ChunksX;
+                const chunk = (y / c.ChunkSize) * (c.ChunksZ * c.ChunksX) +
+                    (z / c.ChunkSize) * c.ChunksX + cx;
+                const within = (y % c.ChunkSize) * c.ChunkSize + (z % c.ChunkSize);
+                break :blk chunk * rows_per_chunk + within;
+            };
+            if (k == start) {
+                @memcpy(blocks[k * c.ChunkSize ..][0..c.ChunkSize], lookaside[0..c.ChunkSize]);
+                set_row_bit(visited, k);
+                break;
+            }
+            @memcpy(lookaside[c.ChunkSize .. 2 * c.ChunkSize], blocks[k * c.ChunkSize ..][0..c.ChunkSize]);
+            @memcpy(blocks[k * c.ChunkSize ..][0..c.ChunkSize], lookaside[0..c.ChunkSize]);
+            @memcpy(lookaside[0..c.ChunkSize], lookaside[c.ChunkSize .. 2 * c.ChunkSize]);
+            set_row_bit(visited, k);
+            j = k;
+        }
+    }
+}
+
+fn set_row_bit(visited: []u8, row: usize) void {
+    visited[row / 8] |= @as(u8, 1) << @intCast(row % 8);
+}
+
+fn row_bit(visited: []const u8, row: usize) bool {
+    return (visited[row / 8] >> @intCast(row % 8)) & 1 != 0;
+}
+
+test "remap_yzx_to_chunk_aware matches row scatter" {
+    const volume = c.WorldDepth * c.WorldHeight * c.WorldLength;
+    const rows = volume / c.ChunkSize;
+    const yzx = try std.testing.allocator.alloc(u8, volume);
+    defer std.testing.allocator.free(yzx);
+    const chunked = try std.testing.allocator.alloc(u8, volume);
+    defer std.testing.allocator.free(chunked);
+    const visited = try std.testing.allocator.alloc(u8, rows / 8);
+    defer std.testing.allocator.free(visited);
+    var lookaside: [c.ChunkVolume]u8 = undefined;
+
+    var prng = std.Random.DefaultPrng.init(0xC0FFEE);
+    prng.random().bytes(yzx);
+
+    var src_row: usize = 0;
+    for (0..c.WorldHeight) |y| {
+        for (0..c.WorldDepth) |z| {
+            for (0..c.ChunksX) |cxi| {
+                const dst = c.block_index(@intCast(cxi * c.ChunkSize), @intCast(y), @intCast(z));
+                @memcpy(chunked[dst..][0..c.ChunkSize], yzx[src_row * c.ChunkSize ..][0..c.ChunkSize]);
+                src_row += 1;
+            }
+        }
+    }
+
+    @memset(visited, 0);
+    remap_yzx_to_chunk_aware(yzx, &lookaside, visited);
+
+    try std.testing.expectEqualSlices(u8, chunked, yzx);
 }
 
 test "copy_blocks_yzx_band preserves wire row order" {

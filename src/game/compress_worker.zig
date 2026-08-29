@@ -148,12 +148,10 @@ pub fn drain_once() bool {
 }
 
 /// Long-running thread entry point. Spawn this with a large stack on a
-/// non-IO-tracked thread.
-///
-/// Caveat: `std.Io.sleep` returns immediately from non-tracked threads on
-/// PSP, so this loop hot-spins there. Acceptable -- the work itself
-/// pegs a core during compression, and at idle the thread still yields
-/// at OS-scheduler granularity.
+/// non-IO-tracked thread, and at a priority strictly below the main thread:
+/// compression stretches make no syscalls, so on PSP (which does not
+/// preempt equal-priority threads) an equal-priority worker would starve
+/// everything else.
 pub fn worker_main() void {
     // PSP: pspsdk's per-thread kernel cwd is only initialised by io-tracked
     // thread entries (futureThreadEntry / groupThreadEntry call its private
@@ -172,7 +170,7 @@ pub fn worker_main() void {
 
     while (!should_exit()) {
         if (!drain_once()) {
-            std.Io.sleep(stored_io, common.time.ms(10), .real) catch {};
+            std.Io.sleep(stored_io, .fromMilliseconds(10), .real) catch {};
         }
     }
 }

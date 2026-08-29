@@ -91,14 +91,14 @@ fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratc
     }
 
     const volume: usize = c.WorldLength * c.WorldHeight * c.WorldDepth;
-    const raw = scratch.alloc(u8, volume + 4) catch |err| {
+    const raw = scratch.alloc(u8, volume) catch |err| {
         log.err("Failed to allocate world scratch for save validation: {}", .{err});
         return false;
     };
     defer scratch.free(raw);
-    const blocks: []Block = @ptrCast(raw[4..]);
+    const blocks: []Block = @ptrCast(raw);
 
-    const outcome = sniff.load_world(scratch, raw, blocks, &reader.interface) catch |err| {
+    const outcome = sniff.load_world(scratch, blocks, &reader.interface) catch |err| {
         log.warn("'{s}' failed to parse as {s}: {}", .{ file_name, @tagName(sniff), err });
         return false;
     };

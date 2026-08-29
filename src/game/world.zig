@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const worldgen = @import("worldgen");
 const c = common.consts;
 
 pub const WorldData = @import("world/WorldData.zig");
@@ -28,13 +29,12 @@ pub const ClassicDat = fmt_mod.ClassicDat;
 pub const BlockChange = WorldSimulation.BlockChange;
 pub const BlockChangeSink = WorldSimulation.BlockChangeSink;
 
-const worldgen = @import("worldgen.zig");
 const Block = c.Block;
 const log = std.log.scoped(.world);
 
 pub const LoadStatus = union(enum) {
     loading,
-    generating: worldgen.GenPhase,
+    generating,
     downloading: u8,
     complete,
 };
@@ -65,7 +65,7 @@ fn encode_load_status(status: LoadStatus) u16 {
     return switch (status) {
         .loading => load_status_loading,
         .complete => load_status_complete,
-        .generating => |phase| load_status_generating_base + @as(u16, @intFromEnum(phase)),
+        .generating => load_status_generating_base,
         .downloading => |pct| load_status_downloading_base + @as(u16, pct),
     };
 }
@@ -75,16 +75,8 @@ fn decode_load_status(encoded: u16) LoadStatus {
     if (encoded >= load_status_downloading_base) {
         return .{ .downloading = @intCast(@min(encoded - load_status_downloading_base, 100)) };
     }
-    if (encoded >= load_status_generating_base) {
-        const max_phase: u16 = @intFromEnum(worldgen.GenPhase.plants);
-        const phase: u8 = @intCast(@min(encoded - load_status_generating_base, max_phase));
-        return .{ .generating = @enumFromInt(phase) };
-    }
+    if (encoded >= load_status_generating_base) return .generating;
     return .loading;
-}
-
-fn set_generation_phase(phase: worldgen.GenPhase) void {
-    set_load_status(.{ .generating = phase });
 }
 
 // --- Lifecycle ---
@@ -134,13 +126,28 @@ pub fn init(
     saver.owned_locally = true;
 
     // Let loadscreen catch up
-    try io.sleep(common.time.ms(250), .real);
+    try io.sleep(.fromMilliseconds(250), .real);
 
     if (!saver.try_load(&data, scratch)) {
         data.seed = seed;
-        set_load_status(.{ .generating = .raising });
+        set_load_status(.generating);
         const start = std.Io.Clock.Timestamp.now(io, .boot);
-        try worldgen.generate(scratch, data.blocks, data.seed, io, set_generation_phase);
+
+        const visited_len = comptime (c.WorldDepth * c.WorldHeight * c.WorldLength / c.ChunkSize + 7) / 8;
+        const lookaside = try scratch.alloc(u8, c.ChunkVolume);
+        const visited = try scratch.alloc(u8, visited_len);
+        @memset(visited, 0);
+
+        data.release_blocks();
+        const generated = try worldgen.generate(
+            data.backing_allocator,
+            scratch,
+            @bitCast(data.seed),
+            .{ .width = c.WorldLength, .height = c.WorldHeight, .depth = c.WorldDepth },
+        );
+        WorldData.remap_yzx_to_chunk_aware(generated.blocks, lookaside[0..c.ChunkVolume], visited);
+        data.adopt_blocks(generated.blocks);
+
         const end = std.Io.Clock.Timestamp.now(io, .boot);
         const elapsed_ms = elapsed_ms_between(start, end);
         log.info("World generation took {d}ms", .{elapsed_ms});

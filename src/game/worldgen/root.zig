@@ -8,7 +8,15 @@ pub const terrain = @import("terrain.zig");
 pub const carve = @import("carve.zig");
 pub const ore = @import("ore.zig");
 
-pub fn generate(allocator: std.mem.Allocator, seed: i64, dimensions: level.world_dimensions) std.mem.Allocator.Error!level {
+/// `allocator` owns the returned level's block buffer (long-lived -- callers
+/// adopt it as world storage); `scratch` backs the generator's transient
+/// workspace (elevation cache, flood queues) and is fully released on return.
+pub fn generate(
+    allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
+    seed: i64,
+    dimensions: level.world_dimensions,
+) std.mem.Allocator.Error!level {
     assert(dimensions.validate());
 
     var generated_level: level = .{
@@ -20,7 +28,7 @@ pub fn generate(allocator: std.mem.Allocator, seed: i64, dimensions: level.world
     };
     errdefer allocator.free(generated_level.blocks);
 
-    try generated_level.generate(allocator);
+    try generated_level.generate(scratch);
 
     return generated_level;
 }

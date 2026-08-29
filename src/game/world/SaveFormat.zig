@@ -22,13 +22,12 @@ pub const ClassicCw = classic_cw_mod.ClassicCw;
 
 /// Everything a format may need to write a save. Formats are free to
 /// ignore the metadata fields they don't carry on disk -- classic_dat
-/// uses only world_size/seed/tick_count/raw_blocks/blocks; classic_cw
-/// consumes all of them.
+/// uses only world_size/seed/tick_count/blocks; classic_cw consumes all
+/// of them.
 pub const SaveContext = struct {
     world_size: [3]u16,
     seed: u64,
     tick_count: u64,
-    raw_blocks: []const u8,
     blocks: []const Block,
     name: []const u8,
     uuid: [16]u8,
@@ -112,12 +111,11 @@ pub const SaveFormat = union(enum) {
     pub fn load_world(
         self: SaveFormat,
         scratch: std.mem.Allocator,
-        raw_blocks: []u8,
         blocks: []Block,
         reader: *std.Io.Reader,
     ) !LoadOutcome {
         return switch (self) {
-            inline else => |arm| try arm.load_world(scratch, raw_blocks, blocks, reader),
+            inline else => |arm| try arm.load_world(scratch, blocks, reader),
         };
     }
 };

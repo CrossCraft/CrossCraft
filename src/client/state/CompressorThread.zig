@@ -17,7 +17,7 @@ pub fn spawn_named(name: [:0]const u8, allocator: std.mem.Allocator) !Thread {
     return Util.Thread.spawn(.{
         .name = name,
         .stack_size = COMPRESSOR_STACK_SIZE,
-        .priority = .low,
+        .priority = .lowest,
         .allocator = allocator,
     }, CompressWorker.worker_main, .{});
 }

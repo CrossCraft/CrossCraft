@@ -20,7 +20,7 @@ const packet_buf_bytes = 1100;
 const drain_buf_bytes = 64 * 1024;
 /// Caps how long queued outbound data waits while the client is silent;
 /// aligned with the 20 Hz (50 ms) tick.
-const recv_poll_timeout: std.Io.Timeout = .{ .duration = .{ .raw = common.time.ms(25), .clock = .real } };
+const recv_poll_timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(25), .clock = .real } };
 /// Inbound accumulation buffer for the connection loop. The largest
 /// to-server packet is the 131-byte login frame and any invalid byte
 /// disconnects immediately, so a full buffer can never deadlock.
@@ -482,7 +482,7 @@ fn send_world(self: *Self) !void {
         if (canceled) {
             std.atomic.spinLoopHint();
         } else {
-            Server.io.sleep(common.time.ms(20), .real) catch |err| switch (err) {
+            Server.io.sleep(.fromMilliseconds(50), .real) catch |err| switch (err) {
                 error.Canceled => {
                     // Keep the Client, connection slot, and outbound storage
                     // alive until the raw compressor thread has dropped every
@@ -507,16 +507,17 @@ fn send_world_impl(self: *Self) !void {
     var chunk_buf: [1024]u8 = @splat(0);
 
     const out = self.out orelse return error.WriteFailed;
-    var sender = ChunkSender.init(out, &chunk_buf, @intCast(world.data.raw_blocks.len));
+    const volume: usize = c.WorldLength * c.WorldHeight * c.WorldDepth;
+    var sender = ChunkSender.init(out, &chunk_buf, @intCast(volume + 4));
     try compress_worker.reset(&sender.interface);
 
     // Begin journaling under the exclusive world lock so no mutation can fall
     // between capture activation and the first snapshot copy.
     var size_header: [4]u8 = undefined;
+    std.mem.writeInt(u32, &size_header, @intCast(volume), .big);
     Server.lock_world();
     Server.lock_roster_shared();
     self.catchup_mode.store(.capturing, .release);
-    @memcpy(&size_header, world.data.raw_blocks[0..4]);
     Server.unlock_roster_shared();
     Server.unlock_world();
 
@@ -536,7 +537,7 @@ fn send_world_impl(self: *Self) !void {
             try compress_worker.compressor.writer.writeAll(&band);
         }
     }
-    sender.raw_written = @intCast(world.data.raw_blocks.len);
+    sender.raw_written = @intCast(volume + 4);
     try compress_worker.compressor.finish();
 
     // Send any remaining partial chunk as the final packet.

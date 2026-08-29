@@ -8,7 +8,9 @@ pub const aether_options: ae.Options = .{
     .title = "CrossCraft Classic Server",
     .psp = .{
         .module_name = "CrossCraft Classic Server",
-        .stack_size = 256 * 1024,
+        // Server.init runs world generation on this thread; level.generate's
+        // instrumented frame is ~290 KiB.
+        .stack_size = 1024 * 1024,
         .async_stack_size = 64 * 1024,
         .heap_reserve_kb_size = 2048,
     },

@@ -4,10 +4,8 @@
 //   3 x u16 : world dimensions (length, height, depth)
 //   1 x u64 : world seed
 //   1 x u64 : tick count
-//   4 x u8  : raw_blocks[0..4] -- the big-endian total volume prefix that
-//             init_empty stamps into the data buffer for the LevelDataChunk
-//             wire path. Persisted verbatim for save-file backward
-//             compatibility; reconstructed on read into raw_blocks[0..4].
+//   4 x u8  : big-endian total volume prefix, written verbatim for save-file
+//             backward compatibility and validated/dropped on read.
 // Body:
 //   blocks in YZX wire order, traversed as 16-byte chunk rows so the chunk-
 //   aware in-memory layout streams without a scatter pass.
@@ -34,7 +32,9 @@ pub const ClassicDat = struct {
         try writer.writeSliceEndian(u64, &seed_arr, .little);
         const tick_arr = [1]u64{ctx.tick_count};
         try writer.writeSliceEndian(u64, &tick_arr, .little);
-        try writer.writeAll(ctx.raw_blocks[0..4]);
+        var prefix: [4]u8 = undefined;
+        std.mem.writeInt(u32, &prefix, @intCast(ctx.blocks.len), .big);
+        try writer.writeAll(&prefix);
         try write_blocks_yzx(ctx.blocks, writer);
         try writer.flush();
     }
@@ -42,7 +42,6 @@ pub const ClassicDat = struct {
     pub fn load_world(
         _: ClassicDat,
         _: std.mem.Allocator,
-        raw_blocks: []u8,
         blocks: []Block,
         reader: *std.Io.Reader,
     ) !LoadOutcome {
@@ -52,7 +51,8 @@ pub const ClassicDat = struct {
         try reader.readSliceEndian(u64, &saved_seed, .little);
         var saved_tick: [1]u64 = undefined;
         try reader.readSliceEndian(u64, &saved_tick, .little);
-        try reader.readSliceAll(raw_blocks[0..4]);
+        var prefix: [4]u8 = undefined;
+        try reader.readSliceAll(&prefix);
         try read_blocks_yzx(blocks, reader);
         return .{
             .dimensions = dims,

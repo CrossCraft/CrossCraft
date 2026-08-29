@@ -23,7 +23,7 @@ const SaveContext = fmt_mod.SaveContext;
 const LoadOutcome = fmt_mod.LoadOutcome;
 const WorldData = @import("../WorldData.zig");
 const compress_worker = @import("../../compress_worker.zig");
-const nbt = common.nbt;
+const nbt = @import("../../nbt/nbt.zig");
 
 const log = std.log.scoped(.world);
 
@@ -52,14 +52,13 @@ pub const ClassicCw = struct {
     pub fn load_world(
         _: ClassicCw,
         scratch: std.mem.Allocator,
-        raw_blocks: []u8,
         blocks: []Block,
         reader: *std.Io.Reader,
     ) !LoadOutcome {
         const window_buf = try scratch.alloc(u8, std.compress.flate.max_window_len);
         defer scratch.free(window_buf);
         var decompress = std.compress.flate.Decompress.init(reader, .gzip, window_buf);
-        return try read_classic_world_compound(&decompress.reader, raw_blocks, blocks);
+        return try read_classic_world_compound(&decompress.reader, blocks);
     }
 };
 
@@ -173,7 +172,6 @@ fn leaf_string(name: []const u8, value: []const u8) nbt.NBT {
 
 fn read_classic_world_compound(
     reader: *std.Io.Reader,
-    raw_blocks: []u8,
     blocks: []Block,
 ) !LoadOutcome {
     // Outer tag must be a compound named "ClassicWorld".
@@ -204,9 +202,6 @@ fn read_classic_world_compound(
             const len = try reader.takeInt(i32, .big);
             const expected: u32 = @as(u32, c.WorldLength) * @as(u32, c.WorldHeight) * @as(u32, c.WorldDepth);
             if (len < 0 or @as(u32, @intCast(len)) != expected) return error.UnexpectedByteArrayLength;
-            // Stamp the wire-format volume prefix that init_empty
-            // would have put there for the network path.
-            std.mem.writeInt(u32, raw_blocks[0..4], expected, .big);
             try read_blocks_yzx_into(blocks, reader);
         } else if (std.mem.eql(u8, child_name, "X") and t == .short) {
             outcome.dimensions[0] = @intCast(try reader.takeInt(i16, .big));

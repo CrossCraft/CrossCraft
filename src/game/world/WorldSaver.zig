@@ -162,7 +162,7 @@ pub fn wait_for_save(self: *WorldSaver) void {
     // Keep the embedded job storage alive until the compressor worker has
     // returned from `run` and published `done`.
     while (!self.cw_job.done.load(.acquire)) {
-        std.Io.sleep(self.io, common.time.ms(20), .real) catch break;
+        std.Io.sleep(self.io, .fromMilliseconds(20), .real) catch break;
     }
 }
 
@@ -224,7 +224,6 @@ fn save_worker(self: *WorldSaver) void {
         .world_size = data.world_size,
         .seed = data.seed,
         .tick_count = data.tick_count,
-        .raw_blocks = data.raw_blocks,
         .blocks = data.blocks,
         .name = self.worker_world_name(data),
         .uuid = data.uuid,
@@ -309,7 +308,7 @@ pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator)
         break :blk sniff;
     };
 
-    const outcome = load_format.load_world(scratch, data.raw_blocks, data.blocks, &reader.interface) catch |err| {
+    const outcome = load_format.load_world(scratch, data.blocks, &reader.interface) catch |err| {
         // Surface the failure so a misnamed/foreign-size save doesn't
         // silently fall through to worldgen with no explanation.
         log.err("Failed to load world from {s} as {s}: {}", .{

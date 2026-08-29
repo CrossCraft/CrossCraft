@@ -1,10 +1,9 @@
 const std = @import("std");
 const consts = @import("common").consts;
 const protocol = @import("common").protocol;
-const FAB = @import("common").fa_buffer.FirstAvailableBuffer;
 pub const Client = @import("client.zig");
 const OutboundQueue = @import("outbound_queue.zig").OutboundQueue;
-const StaticAllocator = @import("common").static_allocator;
+const StaticAllocator = @import("static_allocator.zig");
 const world = @import("world.zig");
 const compress_worker = @import("compress_worker.zig");
 const players_db = @import("players_db.zig");
@@ -104,7 +103,7 @@ pub var max_connections_per_ip: u32 = default_max_connections_per_ip;
 /// directly, so it goes through this hook instead.
 pub var on_broadcast_chat: ?*const fn ([]const u8) void = null;
 
-pub var players: FAB(Client, consts.MAX_PLAYERS) = .init();
+pub var players: FirstAvailableBuffer(Client, consts.MAX_PLAYERS) = .init();
 var player_generations: [consts.MAX_PLAYERS]u32 = @splat(0);
 
 /// Synchronization domains for the standalone server. They are intentionally
@@ -253,8 +252,11 @@ pub fn init(
     // wcfg.seed is used only on first generation; the saver restores
     // the saved seed when an existing save file is found. Format choice
     // comes from server.properties via wcfg; embedded mode uses default.
+    // World storage (and worldgen output) allocates and frees during init,
+    // so it uses raw `alloc` -- the StaticAllocator state machine forbids
+    // frees until teardown. Same rationale as the stores below.
     try world.init(
-        allocator.allocator(),
+        alloc,
         scratch.allocator(),
         io,
         save_dir,
@@ -913,4 +915,32 @@ fn broadcast_ping() void {
             players.items[i].?.send_ping() catch continue;
         }
     }
+}
+
+pub fn FirstAvailableBuffer(comptime T: type, comptime U: usize) type {
+    return struct {
+        items: [U]?T,
+
+        const Self = @This();
+
+        pub fn init() Self {
+            return .{
+                .items = @splat(null),
+            };
+        }
+
+        pub fn add(self: *Self, data: T) ?usize {
+            for (0..U) |i| {
+                if (self.items[i] == null) {
+                    self.items[i] = data;
+                    return i;
+                }
+            } else return null;
+        }
+
+        pub fn remove(self: *Self, id: usize) void {
+            self.items[id].? = undefined;
+            self.items[id] = null;
+        }
+    };
 }

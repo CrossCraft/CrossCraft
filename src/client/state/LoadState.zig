@@ -17,7 +17,6 @@ const GameState = @import("GameState.zig");
 const DisconnectState = @import("DisconnectState.zig");
 const Session = @import("Session.zig");
 const proto = @import("common").protocol;
-const common_time = @import("common").time;
 const flate = std.compress.flate;
 
 const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
@@ -65,17 +64,19 @@ fn start_server_task(
         return .none;
     }
 
-    return .{ .thread = Util.Thread.spawn(.{
-        .name = "load_server",
-        .stack_size = 512 * 1024,
-        .priority = .normal,
-        .allocator = alloc,
-    }, serverTask, .{ alloc, scratch, seed, data_dir, save_location }) catch |err| {
-        log.err("server task thread unavailable: {}", .{err});
-        session_error = err;
-        server_ready.store(true, .release);
-        return .none;
-    } };
+    return .{
+        .thread = Util.Thread.spawn(.{
+            .name = "load_server",
+            .stack_size = 1024 * 1024,
+            .priority = .normal,
+            .allocator = alloc,
+        }, serverTask, .{ alloc, scratch, seed, data_dir, save_location }) catch |err| {
+            log.err("server task thread unavailable: {}", .{err});
+            session_error = err;
+            server_ready.store(true, .release);
+            return .none;
+        },
+    };
 }
 
 fn start_connect_task(
@@ -250,7 +251,8 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     defer alloc.free(window_buf);
     var decompress = flate.Decompress.init(&src, .gzip, window_buf);
 
-    decompress.reader.readSliceAll(World.data.raw_blocks[0..4]) catch |err| {
+    var wire_header: [4]u8 = undefined;
+    decompress.reader.readSliceAll(&wire_header) catch |err| {
         log.err("level decompress header failed: {}", .{err});
         return err;
     };
@@ -423,7 +425,7 @@ fn prepare_batches(self: *@This()) !void {
     const load_status = World.get_load_status();
     const progress: f32 = switch (load_status) {
         .loading => @min(self.time / 3.0, 1.0),
-        .generating => |phase| @as(f32, @floatFromInt(@intFromEnum(phase))) / 10.0,
+        .generating => @min(self.time / 3.0, 1.0),
         .downloading => |pct| @as(f32, @floatFromInt(pct)) / 100.0,
         .complete => 1.0,
     };
@@ -492,18 +494,7 @@ fn prepare_batches(self: *@This()) !void {
         }
         break :blk switch (load_status) {
             .loading => "Loading...",
-            .generating => |phase| switch (phase) {
-                .raising => "Raising...",
-                .erosion => "Eroding...",
-                .strata => "Layering...",
-                .caves => "Carving...",
-                .ores => "Placing ores...",
-                .merge => "Merging...",
-                .water => "Flooding water...",
-                .lava => "Flooding lava...",
-                .surface => "Surfacing...",
-                .plants => "Planting...",
-            },
+            .generating => "Generating level...",
             .downloading => "Receiving chunks...",
             .complete => "Done!",
         };
@@ -535,7 +526,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // present itself and can let the worker finish before any phase frame
     // reaches the screen.
     if (ae.platform != .nintendo_3ds and ae.platform != .nintendo_switch) {
-        try std.Io.sleep(engine.io, common_time.ms(50), .real);
+        try std.Io.sleep(engine.io, .fromMilliseconds(50), .real);
     }
 }
 

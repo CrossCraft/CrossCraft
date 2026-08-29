@@ -13,7 +13,6 @@
 const std = @import("std");
 const common = @import("common");
 const c = common.consts;
-const Xorshift64 = common.xorshift64.Xorshift64;
 const assert = std.debug.assert;
 
 const WorldData = @import("WorldData.zig");
@@ -74,7 +73,7 @@ node_pool: []WheelNode,
 free_head: u32,
 pool_used: u32,
 pool_used_peak: u32,
-rng: Xorshift64,
+rng: std.Random.DefaultPrng,
 
 // --- Enqueue dedup (fixed-capacity flat set, linear scan) ---
 // At POOL_CAPACITY=8192 entries, a flat u32 array is 32 KiB and every op
@@ -102,7 +101,7 @@ pub fn init(allocator: std.mem.Allocator, seed: u64) !WorldSimulation {
     self.ready_tail = SENTINEL;
     self.enqueued = .empty;
     try self.enqueued.ensureTotalCapacityPrecise(allocator, POOL_CAPACITY);
-    self.rng = Xorshift64.init(seed);
+    self.rng = .init(seed);
     self.tick_count = 0;
     return self;
 }
@@ -200,7 +199,7 @@ fn process_block_update(
     } else if (block.id == .grass and !data.has_direct_sunlight(x, y, z)) {
         self.queue_block_change(data, sink, emitted, x, y, z, .{ .id = .dirt });
     } else if (block.id == .sapling and data.has_direct_sunlight(x, y, z)) {
-        const height: u32 = self.rng.next_bounded(3) + 4;
+        const height: u32 = @intCast(self.rng.next() % 3 + 4);
         self.grow_tree(data, sink, emitted, x, y, z, height);
     } else if ((block.id == .sapling or block.id == .flower_1 or block.id == .flower_2) and
         !data.has_direct_sunlight(x, y, z))
@@ -296,7 +295,7 @@ pub fn enqueue_neighbors_of(self: *WorldSimulation, data: *const WorldData, x: u
 /// Tick delay per block type: fluids and gravity use 4 ticks, vegetation is random.
 fn tick_delay(self: *WorldSimulation, block: Block) u32 {
     if (block.fast_tick()) return 4;
-    return self.rng.next_bounded(900) + 100;
+    return @intCast(self.rng.next() % 900 + 100);
 }
 
 fn try_enqueue(self: *WorldSimulation, data: *const WorldData, x: u16, y: u16, z: u16) void {
@@ -621,7 +620,7 @@ fn grow_tree_leaves(
             while (dz <= r) : (dz += 1) {
                 if (dx == 0 and dz == 0 and layer < 2) continue;
                 if (@abs(dx) == r and @abs(dz) == r) {
-                    if (layer == 3 or self.rng.next_bounded(2) == 0) continue;
+                    if (layer == 3 or self.rng.next() % 2 == 0) continue;
                 }
                 const lx = @as(i32, @intCast(x)) + dx;
                 const lz = @as(i32, @intCast(z)) + dz;

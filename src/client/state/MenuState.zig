@@ -310,7 +310,7 @@ fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldDat
     var read_buf: [32768]u8 = undefined;
     var reader = file.reader(io, &read_buf);
     const load_format: World.SaveFormat = .{ .classic_dat = .{} };
-    const outcome = load_format.load_world(data.backing_allocator, data.raw_blocks, data.blocks, &reader.interface) catch |err| {
+    const outcome = load_format.load_world(data.backing_allocator, data.blocks, &reader.interface) catch |err| {
         log.warn("legacy save migration: failed to load {s}: {}", .{ Server.legacy_save_file_name, err });
         return false;
     };

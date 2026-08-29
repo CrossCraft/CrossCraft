@@ -216,7 +216,6 @@ fn save_classic_world(io: std.Io, output_path: []const u8, data: *const WorldDat
         .world_size = data.world_size,
         .seed = data.seed,
         .tick_count = data.tick_count,
-        .raw_blocks = data.raw_blocks,
         .blocks = data.blocks,
         .name = data.name[0..data.name_len],
         .uuid = data.uuid,
