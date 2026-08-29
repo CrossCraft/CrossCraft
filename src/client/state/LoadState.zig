@@ -130,7 +130,6 @@ fn serverTask(
         server_ready.store(true, .release);
         return;
     };
-    World.saver.autosave_enabled = false;
     server_ready.store(true, .release);
 }
 

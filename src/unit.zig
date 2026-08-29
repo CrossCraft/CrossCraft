@@ -16,4 +16,5 @@ comptime {
     _ = @import("client/ui/Ui.zig");
     _ = @import("client/ui/TextWrap.zig");
     _ = @import("server/Heartbeat.zig");
+    _ = @import("server/BackupScheme.zig");
 }

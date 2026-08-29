@@ -93,7 +93,7 @@ fn set_generation_phase(phase: worldgen.GenPhase) void {
 /// Used both by the full singleplayer init (which then generates or
 /// loads and flips `saver.owned_locally` to true) and by the multiplayer
 /// client (which fills `data.blocks` via the level-data-chunk
-/// decompression path and leaves `owned_locally` false so save/autosave
+/// decompression path and leaves `owned_locally` false so save
 /// paths are suppressed).
 pub fn init_empty(
     allocator: std.mem.Allocator,
@@ -199,9 +199,7 @@ pub fn finalize_loaded() void {
 // --- Tick + simulation ---
 
 pub fn tick(sink: BlockChangeSink) u32 {
-    const emitted = sim.tick(&data, sink);
-    saver.maybe_autosave(&data);
-    return emitted;
+    return sim.tick(&data, sink);
 }
 
 pub fn set_block(x: u16, y: u16, z: u16, block: Block) void {

@@ -12,6 +12,7 @@ const Server = game.Server;
 const CompressWorker = game.CompressWorker;
 const CompressorThread = @import("CompressorThread.zig");
 const Heartbeat = @import("Heartbeat.zig");
+const Backup = @import("Backup.zig");
 const PlayersDb = game.PlayersDb;
 const AccessControl = game.AccessControl;
 const Commands = game.Commands;
@@ -92,6 +93,7 @@ compressor_thread: CompressorThread.Thread,
 heartbeat_config: Heartbeat.Config,
 heartbeat_salt: [16]u8,
 heartbeat_users: std.atomic.Value(u32),
+backup: Backup,
 
 pub fn state(self: *Self) State {
     return .{ .ptr = self, .tab = &.{
@@ -119,6 +121,9 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             .world = .{ .seed = seed, .save_location = Server.default_save_location },
         },
     };
+    // Validate the save before the world materialises; a missing or corrupt
+    // primary is transparently replaced with the newest valid epoch backup.
+    Backup.pre_init_validate_and_restore(engine.io, engine.dirs.data, alloc);
     try Server.init(alloc, alloc, engine.io, engine.dirs.data, config);
 
     self.conn_handles = try alloc.alloc(?*ConnectionSlot, Consts.MAX_PLAYERS);
@@ -139,6 +144,15 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // std.Io task spawning and keeps deep `flate` call frames out of small
     // per-task IO stacks.
     self.compressor_thread = try CompressorThread.spawn(alloc);
+
+    // Backup owns the save cadence on the standalone server: it triggers a
+    // world save every `backup-autosave-seconds` and snapshots each
+    // completed save into the epoch buckets.
+    self.backup = Backup.init(engine.io, engine.dirs.data);
+    self.tasks.concurrent(engine.io, Backup.loop, .{ &self.backup, engine }) catch |err| {
+        log.err("Failed to start backup task: {}", .{err});
+        return err;
+    };
 
     engine.report();
 
@@ -594,6 +608,10 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
 
     self.tasks.cancel(engine.io);
     log.info("Shutting down server...", .{});
+
+    // The backup task is dead above; its state holds no owned handles (the
+    // save dir is borrowed from the game module, buckets open per op).
+    self.backup.deinit();
 
     self.connections_mutex.lockUncancelable(engine.io);
     for (self.connection_pool) |*slot| {

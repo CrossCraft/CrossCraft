@@ -1,7 +1,7 @@
 // --- WorldSaver ---
 //
 // Save lifecycle: I/O context (save_dir, file name), `owned_locally` gate,
-// async dispatch with single-flight, autosave cadence. Delegates byte
+// async dispatch with single-flight. Delegates byte
 // layout to a `SaveFormat` -- adding a new format only adds a union arm
 // in SaveFormat.zig and a file under formats/.
 //
@@ -39,16 +39,9 @@ format: SaveFormat,
 format_for_worker: SaveFormat,
 
 /// False for worlds streamed from a remote server (multiplayer client).
-/// All save/autosave paths early-return when this is false so an MP client
+/// All save paths early-return when this is false so an MP client
 /// can never persist a snapshot of somebody else's world as its own.
 owned_locally: bool,
-
-/// Periodic in-tick autosave. Left on for the dedicated server (crash
-/// insurance across long uptimes) and off for singleplayer, which saves
-/// explicitly on worldgen completion and on shutdown.
-autosave_enabled: bool,
-
-save_counter: u32,
 save_in_flight: std.atomic.Value(bool),
 
 /// Explicit user-triggered save target used for multiplayer world dumps.
@@ -83,8 +76,6 @@ pub fn init(io: std.Io, save_dir: std.Io.Dir, save_file_name: []const u8, format
         .format = format,
         .format_for_worker = format,
         .owned_locally = false,
-        .autosave_enabled = true,
-        .save_counter = 0,
         .save_in_flight = .init(false),
         .save_override_active = false,
         .save_override_file_name = undefined,
@@ -202,7 +193,7 @@ fn save_worker(self: *WorldSaver) void {
     const save_file_name = self.worker_save_file_name();
 
     // PSP-only: drop the existing directory entry before recreating it.
-    // After a rename or autosave, sceIoOpen with O_CREAT|O_TRUNC over a
+    // After a rename or save, sceIoOpen with O_CREAT|O_TRUNC over a
     // freshly-created entry can fail with the catch-all SCE error that
     // pspsdk surfaces as `error.AccessDenied`. Removing first sidesteps
     // that window. dirDeleteFile on pspsdk maps the missing-file case
@@ -356,18 +347,4 @@ pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator)
         });
     }
     return true;
-}
-
-/// Bump the autosave counter; once per AUTOSAVE_INTERVAL ticks fire a
-/// save. Caller should pass the current tick count so the cadence is
-/// driven by simulation, not real time.
-pub const AUTOSAVE_INTERVAL: u32 = 6000;
-
-pub fn maybe_autosave(self: *WorldSaver, data: *const WorldData) void {
-    if (!self.autosave_enabled) return;
-    self.save_counter += 1;
-    if (self.save_counter >= AUTOSAVE_INTERVAL) {
-        self.save_counter = 0;
-        self.save(data);
-    }
 }
