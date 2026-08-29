@@ -16,8 +16,8 @@
             .hash = "Aether-0.0.0-cjG28rGFGABup1FKdBGW_83NEThNeL3_Dxk3zgr6N8hM",
         },
         .zitrus = .{
-            .url = "git+https://codeberg.org/GasInfinity/zitrus#e2c90c0fbaff32e151e76351ecb522035939aae2",
-            .hash = "zitrus-0.0.0-Ewix9NNzHACfeAvGCedgdUIrUOY6_g1Oaus3TPNkHpHB",
+            .url = "git+https://codeberg.org/GasInfinity/zitrus#4482d4988b368385aefbe4dffec56feee5b3488a",
+            .hash = "zitrus-0.0.0-Ewix9DbxHABJbXBbOueD9Y15rNb-9HCuYq_-TL0FAJiT",
         },
     },
     .paths = .{
