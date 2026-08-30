@@ -372,3 +372,24 @@ jobs:
           name: pack-tool_${{ matrix.name }}
           path: zig-out/bin/
           if-no-files-found: error
+
+  # Worldgen golden-hash regression test: regenerates 100 predetermined
+  # worlds through the worldgen module and compares sha256 block-array
+  # hashes against values captured from the Classic-Worldgen-RE black-box
+  # oracle (the original Minecraft Classic server). Catches any change that
+  # breaks byte-identical world generation. Runs on the host toolchain only,
+  # so no LFS resources are needed.
+  worldgen-test:
+    runs-on: ubuntu-latest
+    name: worldgen golden hash (100 worlds)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Worldgen golden hash test
+        run: zig build worldgen-test -Doptimize=ReleaseSafe -Dskip-pack=true

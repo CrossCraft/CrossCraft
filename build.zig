@@ -379,6 +379,26 @@ pub fn build(b: *std.Build) void {
     });
     savetool_step.dependOn(&b.addInstallArtifact(savetool_exe, .{}).step);
 
+    // Golden-hash regression test for the worldgen module: regenerates 100
+    // predetermined worlds and compares sha256 block-array hashes against
+    // values captured from the Classic-Worldgen-RE black-box oracle.
+    // Usage: zig build worldgen-test -Doptimize=ReleaseSafe
+    // Produces and runs zig-out/bin/worldgen_test (host-native binary).
+    const worldgen_test_step = b.step("worldgen-test", "Verify worldgen output against 100 oracle-captured golden hashes");
+    const worldgen_test_exe = b.addExecutable(.{
+        .name = "worldgen_test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/worldgen_test.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "worldgen", .module = worldgen },
+            },
+        }),
+    });
+    worldgen_test_step.dependOn(&b.addInstallArtifact(worldgen_test_exe, .{}).step);
+    worldgen_test_step.dependOn(&b.addRunArtifact(worldgen_test_exe).step);
+
     const web_target = Aether.config.webTarget(b);
     const web_overrides: Aether.config.Config.Overrides = .{
         .gfx = .webgl,
