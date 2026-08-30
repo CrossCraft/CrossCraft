@@ -1,9 +1,9 @@
 const std = @import("std");
 const ae = @import("aether");
-const game = @import("game");
+const core = @import("core");
 
 const scheme = @import("BackupScheme.zig");
-const c = game.consts;
+const c = core.consts;
 const Block = c.Block;
 
 const log = std.log.scoped(.backup);
@@ -82,9 +82,9 @@ fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratc
     }
     if (prefix.len < 2) return false;
 
-    const sniff = game.World.SaveFormat.detect(prefix) orelse return false;
+    const sniff = core.World.SaveFormat.detect(prefix) orelse return false;
     if (std.meta.activeTag(sniff) == .classic_cw and
-        !game.World.SaveFormat.verify_classic_cw(prefix, scratch))
+        !core.World.SaveFormat.verify_classic_cw(prefix, scratch))
     {
         log.warn("'{s}' is gzip but not ClassicWorld NBT; failing validation", .{file_name});
         return false;
@@ -128,8 +128,8 @@ pub fn pre_init_validate_and_restore(io: std.Io, data_dir: std.Io.Dir, alloc: st
     var raw_buf: [max_name_len]u8 = undefined;
     const raw = scheme.parse_save_location(
         props,
-        game.Server.default_save_location,
-        game.Server.root_default_save_file_name,
+        core.Server.default_save_location,
+        core.Server.root_default_save_file_name,
         &raw_buf,
     );
 
@@ -302,7 +302,7 @@ last_save_ms: u64,
 pub fn init(io: std.Io, data_dir: std.Io.Dir) Backup {
     var self: Backup = .{
         .config = Config.load(io, data_dir),
-        .save_dir = game.World.saver.save_dir,
+        .save_dir = core.World.saver.save_dir,
         .save_file_name = @splat(0),
         .save_file_name_len = 0,
         .ext = @splat(0),
@@ -310,7 +310,7 @@ pub fn init(io: std.Io, data_dir: std.Io.Dir) Backup {
         .last_save_ms = current_unix_ms(io),
     };
 
-    const save_file_name = game.World.saver.save_file_name;
+    const save_file_name = core.World.saver.save_file_name;
     if (save_file_name.len == 0 or save_file_name.len > self.save_file_name.len) {
         log.err("Could not resolve save file name; periodic backups disabled", .{});
         return self;
@@ -357,7 +357,7 @@ fn prepare_buckets(self: *Backup, io: std.Io) void {
 fn catch_up_snapshot(self: *Backup, io: std.Io) void {
     if (self.save_file_name_len == 0) return;
     if (!file_exists(io, self.save_dir, self.current_save_name())) return;
-    if (game.World.saver.save_in_flight.load(.acquire)) return;
+    if (core.World.saver.save_in_flight.load(.acquire)) return;
     self.snapshot_into(io, 0);
 }
 
@@ -378,10 +378,10 @@ fn tick_once(self: *Backup, io: std.Io) void {
     if (now_ms - self.last_save_ms < @as(u64, self.config.autosave_seconds) * std.time.ms_per_s) return;
 
     // Never fight an in-flight save (initial generation, world dump).
-    if (game.World.saver.save_in_flight.load(.acquire)) return;
+    if (core.World.saver.save_in_flight.load(.acquire)) return;
 
-    game.World.save();
-    game.World.wait_for_save();
+    core.World.save();
+    core.World.wait_for_save();
     self.last_save_ms = now_ms;
 
     // Bucket 0 receives every completed save. Longer epochs promote on

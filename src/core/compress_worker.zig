@@ -7,7 +7,7 @@
 //
 // This module owns the static state and the loop body. Spawning the OS
 // thread is the consumer's job (server's `ServerState`, client's
-// `GameState` / migration code) since the game module is platform-agnostic.
+// `GameState` / migration code) since the core module is platform-agnostic.
 // Pass `worker_main` as the spawn entry point.
 //
 // Concurrency: only one job runs at a time -- the compressor is global

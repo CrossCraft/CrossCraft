@@ -1,7 +1,7 @@
 const Ui = @import("../Ui.zig");
 const widget_id = @import("../widget_id.zig");
 
-pub const NAME_MAX: u8 = @import("game").World.DumpName.NAME_MAX;
+pub const NAME_MAX: u8 = @import("core").World.DumpName.NAME_MAX;
 
 pub const Widget = enum(u16) {
     name = 1,

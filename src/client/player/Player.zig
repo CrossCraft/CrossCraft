@@ -14,11 +14,11 @@ const Math = ae.Math;
 const Rendering = ae.Rendering;
 const input = ae.Core.input;
 
-const game = @import("game");
-const World = game.World;
-const c = game.consts;
+const core = @import("core");
+const World = core.World;
+const c = core.consts;
 const Block = c.Block;
-const proto = game.protocol;
+const proto = core.protocol;
 
 const Camera = @import("Camera.zig");
 const bindings = @import("bindings.zig");
@@ -29,7 +29,7 @@ const layout = ae.UI.layout;
 const Colors = @import("../graphics/Color.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
-const BlockRegistry = game.BlockRegistry;
+const BlockRegistry = core.BlockRegistry;
 const SoundManager = @import("../SoundManager.zig");
 const Face = @import("../world/chunk/face.zig").Face;
 const Options = @import("../Options.zig");

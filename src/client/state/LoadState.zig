@@ -11,13 +11,13 @@ const FontBatcher = ae.UI.FontBatcher;
 const Scaling = ae.UI.Scaling;
 const Colors = @import("../graphics/Color.zig");
 const ResourcePack = @import("../ResourcePack.zig");
-const game = @import("game");
-const Server = game.Server;
-const World = game.World;
+const core = @import("core");
+const Server = core.Server;
+const World = core.World;
 const GameState = @import("GameState.zig");
 const DisconnectState = @import("DisconnectState.zig");
 const Session = @import("Session.zig");
-const proto = game.protocol;
+const proto = core.protocol;
 const flate = std.compress.flate;
 
 const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
@@ -245,7 +245,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     }
 
     // Decompress the accumulated gzip stream. The server uses `.gzip` in
-    // game/client.zig:reset_compressor, so match here. Wire format is
+    // core/client.zig:reset_compressor, so match here. Wire format is
     // contiguous YZX (Java Classic compatible); scatter into chunk-aware layout.
     var src = std.Io.Reader.fixed(compressed[0..compressed_end]);
     const window_buf = try alloc.alloc(u8, flate.max_window_len);

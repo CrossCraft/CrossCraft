@@ -1,10 +1,10 @@
 const std = @import("std");
 const zb = @import("protocol");
-const game = @import("game");
-const proto = game.protocol;
-const Block = game.consts.Block;
+const core = @import("core");
+const proto = core.protocol;
+const Block = core.consts.Block;
 
-const World = game.World;
+const World = core.World;
 const WorldRenderer = @import("../world/world.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
 const Chat = @import("../ui/Chat.zig");

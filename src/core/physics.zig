@@ -20,7 +20,7 @@
 //!      clipped) entity, project to contact, pick one face, and clip.
 //!      Horizontal clips try step-up first when the entity was grounded.
 //!
-//! The module lives in `game` and is generic over a caller-provided world
+//! The module lives in `core` and is generic over a caller-provided world
 //! type (`anytype`) exposing `get_block(u16, u16, u16) Block`. Block AABBs
 //! come from `BlockRegistry.global.bounds`.
 const std = @import("std");
@@ -616,7 +616,7 @@ fn floor_i32(v: f32) i32 {
 const testing = std.testing;
 
 /// In-test stub world: a flat array of blocks exposing `get_block` so tests
-/// don't need to import the real game.World singleton.
+/// don't need to import the real core.World singleton.
 const TestWorld = struct {
     var blocks: [consts.WorldLength * consts.WorldHeight * consts.WorldDepth]Block = undefined;
 

@@ -12,7 +12,7 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const c = @import("game").consts;
+const c = @import("core").consts;
 const Block = c.Block;
 
 const Vertex = @import("aether").Rendering.Vertex;

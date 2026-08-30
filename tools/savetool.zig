@@ -6,17 +6,17 @@
 /// `save.ccc` is a gzip stream containing Classic 256x64x256 block data.
 /// Version 1 and version 2 saves use XZY order, while version 3 saves carry a
 /// three-u32 dimensions header and use direct YZX world-data order. Headerless
-/// XZY data is also accepted. Output is written through the game module's
+/// XZY data is also accepted. Output is written through the core module's
 /// ClassicWorld writer so generated `.cw` files stay format-compatible with
 /// CrossCraft.
 const std = @import("std");
-const game = @import("game");
+const core = @import("core");
 
-const c = game.consts;
-const World = game.World;
+const c = core.consts;
+const World = core.World;
 const WorldData = World.WorldData;
 const SaveFormat = World.SaveFormat;
-const CompressWorker = game.CompressWorker;
+const CompressWorker = core.CompressWorker;
 
 const WORLD_VOLUME: usize = c.WorldLength * c.WorldHeight * c.WorldDepth;
 const LEGACY_VERSION_BYTES: usize = @sizeOf(u32);
@@ -53,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
     };
     const output_path = args[3];
 
-    game.BlockRegistry.init();
+    core.BlockRegistry.init();
     try CompressWorker.init(gpa, io);
     defer CompressWorker.deinit();
 

@@ -1,22 +1,22 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ae = @import("aether");
-const game = @import("game");
+const core = @import("core");
 
 const Util = ae.Util;
 const Engine = ae.Engine;
 const State = ae.Core.State;
 
-const Server = game.Server;
-const CompressWorker = game.CompressWorker;
+const Server = core.Server;
+const CompressWorker = core.CompressWorker;
 const CompressorThread = @import("CompressorThread.zig");
 const Heartbeat = @import("Heartbeat.zig");
 const Backup = @import("Backup.zig");
-const PlayersDb = game.PlayersDb;
-const AccessControl = game.AccessControl;
-const Commands = game.Commands;
-const outbound_queue = game.OutboundQueue;
-const Consts = game.consts;
+const PlayersDb = core.PlayersDb;
+const AccessControl = core.AccessControl;
+const Commands = core.Commands;
+const outbound_queue = core.OutboundQueue;
+const Consts = core.consts;
 
 const log = std.log.scoped(.server);
 const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
@@ -355,7 +355,7 @@ fn release_slot_locked(self: *Self, slot: *ConnectionSlot, engine: *Engine) void
 
 fn reject_slot_locked(slot: *ConnectionSlot, engine: *Engine, reason: []const u8) void {
     if (slot.data.closed) return;
-    game.protocol.send_disconnect_to_client(&slot.data.writer.interface, reason) catch {};
+    core.protocol.send_disconnect_to_client(&slot.data.writer.interface, reason) catch {};
     slot.data.stream.close(engine.io);
     slot.data.closed = true;
     slot.data.transport.store(.closed, .release);
@@ -609,7 +609,7 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     log.info("Shutting down server...", .{});
 
     // The backup task is dead above; its state holds no owned handles (the
-    // save dir is borrowed from the game module, buckets open per op).
+    // save dir is borrowed from the core module, buckets open per op).
     self.backup.deinit();
 
     self.connections_mutex.lockUncancelable(engine.io);
@@ -644,7 +644,7 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
 fn reject_connection(conn: std.Io.net.Stream, engine: *Engine, reason: []const u8) void {
     var write_buf: [128]u8 = undefined;
     var writer = std.Io.net.Stream.Writer.init(conn, engine.io, &write_buf);
-    game.protocol.send_disconnect_to_client(&writer.interface, reason) catch {};
+    core.protocol.send_disconnect_to_client(&writer.interface, reason) catch {};
     var c = conn;
     c.close(engine.io);
 }

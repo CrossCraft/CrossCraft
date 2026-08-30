@@ -34,13 +34,13 @@ pub fn build(b: *std.Build) void {
     });
 
     const worldgen = b.addModule("worldgen", .{
-        .root_source_file = b.path("src/game/worldgen/root.zig"),
+        .root_source_file = b.path("src/core/worldgen/root.zig"),
         .optimize = .ReleaseFast,
         .imports = &.{},
     });
 
-    const game = b.addModule("game", .{
-        .root_source_file = b.path("src/game/root.zig"),
+    const core = b.addModule("core", .{
+        .root_source_file = b.path("src/core/root.zig"),
         .optimize = optimize,
         .imports = &.{
             .{ .name = "protocol", .module = protocol },
@@ -153,7 +153,7 @@ pub fn build(b: *std.Build) void {
         client_exe.use_lld = true;
     }
     const client_root = Aether.modules.userRootModule(client_exe);
-    client_root.addImport("game", game);
+    client_root.addImport("core", core);
     client_root.addImport("protocol", protocol);
 
     // Embed pack.zip directly in the binary on Linux/Windows release builds.
@@ -214,7 +214,7 @@ pub fn build(b: *std.Build) void {
             .overrides = server_overrides,
         });
         const server_root = Aether.modules.userRootModule(server_exe);
-        server_root.addImport("game", game);
+        server_root.addImport("core", core);
 
         const build_server_step = b.step("server", "Build the server");
         build_server_step.dependOn(&b.addInstallArtifact(server_exe, .{}).step);
@@ -336,7 +336,7 @@ pub fn build(b: *std.Build) void {
             });
             root.addImport("aether", client_root.import_table.get("aether").?);
             root.addImport("protocol", protocol);
-            root.addImport("game", game);
+            root.addImport("core", core);
             break :unit_tests_root root;
         },
         .filters = test_filters,
@@ -373,7 +373,7 @@ pub fn build(b: *std.Build) void {
             .target = b.graph.host,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "game", .module = game },
+                .{ .name = "core", .module = core },
             },
         }),
     });
@@ -392,7 +392,7 @@ pub fn build(b: *std.Build) void {
         .overrides = web_overrides,
     });
     const web_root = Aether.modules.userRootModule(web_exe);
-    web_root.addImport("game", game);
+    web_root.addImport("core", core);
     web_root.addImport("protocol", protocol);
 
     const web_build_options = b.addOptions();

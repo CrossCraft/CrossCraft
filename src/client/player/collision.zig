@@ -1,12 +1,12 @@
 /// Player-facing collision facade. Delegates the swept-AABB core to
-/// `game.physics` (generic over the world) and keeps the things that
+/// `core.physics` (generic over the world) and keeps the things that
 /// are player-specific: body dimensions, liquid classification, and the
 /// small `on_ground` spot probe used outside the main tick path.
 const std = @import("std");
-const game = @import("game");
-const World = game.World;
-const physics = game.physics;
-const c = game.consts;
+const core = @import("core");
+const World = core.World;
+const physics = core.physics;
+const c = core.consts;
 const Block = c.Block;
 
 // --- Player dimensions ---
@@ -19,7 +19,7 @@ pub const STEP_HEIGHT: f32 = 0.5;
 /// Collision AABB top of a block, in world-space units. Retained for callers
 /// that reason about a single block's height (pending-block virtual-surface
 /// clamp, particle ground tests). Full collision uses the richer per-block
-/// AABB inside `game.physics`.
+/// AABB inside `core.physics`.
 pub fn block_height(id: Block) f32 {
     return id.collision_height();
 }

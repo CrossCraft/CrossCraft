@@ -3,9 +3,9 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const game = @import("game");
-const World = game.World;
-const c = game.consts;
+const core = @import("core");
+const World = core.World;
+const c = core.consts;
 
 const Vertex = @import("aether").Rendering.Vertex;
 const Colors = @import("../graphics/Color.zig");
@@ -613,7 +613,7 @@ fn encode(world: f32) i16 {
 }
 
 /// Classic-era per-column heightmap: Y+1 of the highest light-blocking block.
-/// Updated by the world on every block change (src/game/world.zig:424) so we
+/// Updated by the world on every block change (src/core/world.zig:424) so we
 /// get invalidation for free by reading it directly.
 fn light_map_at(x: i32, z: i32) i32 {
     std.debug.assert(x >= 0 and x < c.WorldLength);

@@ -1,9 +1,9 @@
 const std = @import("std");
 const ae = @import("aether");
-const game = @import("game");
+const core = @import("core");
 
 const Util = ae.Util;
-const CompressWorker = game.CompressWorker;
+const CompressWorker = core.CompressWorker;
 
 const COMPRESSOR_STACK_SIZE = 512 * 1024;
 

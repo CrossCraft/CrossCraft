@@ -6,7 +6,7 @@ const Rendering = ae.Rendering;
 const Vertex = @import("aether").Rendering.Vertex;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const mesher = @import("mesher.zig");
-const World = @import("game").World;
+const World = @import("core").World;
 
 pub const BatchMesh = Rendering.MeshType(Vertex);
 pub const BatchMeshData = Rendering.MeshDataType(Vertex);

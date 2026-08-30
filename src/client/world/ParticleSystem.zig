@@ -3,9 +3,9 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const game = @import("game");
-const World = game.World;
-const c = game.consts;
+const core = @import("core");
+const World = core.World;
+const c = core.consts;
 
 const Vertex = @import("aether").Rendering.Vertex;
 const Camera = @import("../player/Camera.zig");

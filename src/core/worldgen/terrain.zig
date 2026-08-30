@@ -362,7 +362,6 @@ pub const elevation_noise = struct {
             if (need_parity) parity_p = fixed_distorted_value(&self.parity_carrier, &self.parity_displacement, doubled_x, doubled_z);
         }
 
-
         const strata_p = if (need_strata)
             @divTrunc(noise_module.fixed_value_from(&self.strata, x_fixed, z_fixed, 1), 24)
         else
@@ -698,7 +697,7 @@ pub fn soil(field: block_field, elevation: *const elevation_cache) void {
     // planes become plane-wide memsets instead of per-cell reads and stores.
     var stone_y: i32 = 1;
     while (stone_y <= min_stone_top) : (stone_y += 1) {
-        bulk_fill(stone_id, field.blocks[@as(usize, @intCast(stone_y)) * pitch..][0..pitch]);
+        bulk_fill(stone_id, field.blocks[@as(usize, @intCast(stone_y)) * pitch ..][0..pitch]);
     }
     // The remaining band (exclusive of the memset planes) varies by column.
     // Process one z row at a time: read the row's two tops into a scratch
@@ -732,7 +731,7 @@ pub fn soil(field: block_field, elevation: *const elevation_cache) void {
             var y: i32 = start_y;
             while (y <= max_material_top and y < height_i32) : (y += 1) {
                 const y_signed = y;
-                const row = field.blocks[@as(usize, @intCast(y)) * pitch + z * width_usize..][0..width_usize];
+                const row = field.blocks[@as(usize, @intCast(y)) * pitch + z * width_usize ..][0..width_usize];
                 // Contiguous-row stores: the old per-column loop's stores
                 // advanced by `width * depth` bytes per y — an exact multiple
                 // of the PSP's 16 KiB L1D size, so every column hit the same
@@ -765,7 +764,7 @@ pub fn soil(field: block_field, elevation: *const elevation_cache) void {
         if (y <= min_stone_top) continue; // already memset
         if (y > max_material_top) return;
         const y_signed = y;
-        const plane = field.blocks[@as(usize, @intCast(y)) * pitch..][0..pitch];
+        const plane = field.blocks[@as(usize, @intCast(y)) * pitch ..][0..pitch];
         var z: usize = 0;
         while (z < dimensions.depth) : (z += 1) {
             const z_offset = z * dimensions.width;

@@ -1,12 +1,12 @@
 const std = @import("std");
-const game = @import("game");
-const BlockRegistry = game.BlockRegistry;
+const core = @import("core");
+const BlockRegistry = core.BlockRegistry;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Rendering = @import("aether").Rendering;
 const Vertex = Rendering.Vertex;
 const BatchMesh = Rendering.MeshDataType(Vertex);
 
-pub const Face = game.consts.Face;
+pub const Face = core.consts.Face;
 
 /// Map local coordinate [0, 16] to SNORM16 [0, 32767].
 pub fn encode_pos(local: u32) i16 {
