@@ -3,7 +3,6 @@ const consts = @import("consts.zig");
 const protocol = @import("protocol.zig");
 pub const Client = @import("client.zig");
 const OutboundQueue = @import("outbound_queue.zig").OutboundQueue;
-const StaticAllocator = @import("static_allocator.zig");
 const world = @import("world.zig");
 const compress_worker = @import("compress_worker.zig");
 const players_db = @import("players_db.zig");
@@ -62,7 +61,6 @@ pub const GameConfig = union(enum) {
     }
 };
 
-var allocator: StaticAllocator = undefined;
 pub var io: std.Io = undefined;
 /// Directory containing the active save. Resolved at `init` from the parent of
 /// `WorldConfig.save_location`; the directory is created if it does not
@@ -189,8 +187,6 @@ pub fn init(
     data_dir: std.Io.Dir,
     config: GameConfig,
 ) !void {
-    allocator = .init(alloc);
-    errdefer allocator.deinit();
     io = _io;
     roster_lock = .init;
     world_lock = .init;
@@ -276,8 +272,6 @@ pub fn init(
         errdefer players_db.deinit();
         try access_control.finish_legacy_migration();
     }
-
-    allocator.transition_from_init_to_static();
 }
 
 const SplitPath = struct {
@@ -546,8 +540,6 @@ fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
 }
 
 pub fn deinit() void {
-    allocator.transition_from_static_to_deinit();
-
     // world.deinit submits and waits for the final .cw save; the host-owned
     // compressor thread/storage must remain alive until this returns.
     world.deinit();
@@ -555,8 +547,6 @@ pub fn deinit() void {
         players_db.deinit();
         access_control.deinit();
     }
-
-    allocator.deinit();
 
     if (save_dir_owned) {
         save_dir.close(io);
