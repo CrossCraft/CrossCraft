@@ -1,8 +1,8 @@
-// Portions adapted from ClassiCube[](https://github.com/ClassiCube/ClassiCube) by UnknownShadow200.
+// Portions adapted from ClassiCube (https://github.com/ClassiCube/ClassiCube) by UnknownShadow200.
 // - Swept-AABB resolution (Collisions_MoveAndWallSlide) and per-candidate
 //   DidSlide step-up: cross-referenced from src/Physics.c and
 //   src/EntityComponents.c.
-// See THIRD-PARTY-NOTICES.md for the full BSD 3-Clause license text.
+// See THIRD_PARTY_NOTICES.md for the full BSD 3-Clause license text.
 //
 // Ported to Zig for CrossCraft (GPLv2; uses separate Aether-Engine).
 // Modifications Copyright (c) 2026 CrossCraft

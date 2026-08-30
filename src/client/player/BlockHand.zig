@@ -1,11 +1,8 @@
-// Portions adapted from ClassiCube[](https://github.com/ClassiCube/ClassiCube) by UnknownShadow200.
-// - Map generation & dig animation: primarily from wiki algorithm descriptions
-//   (https://github.com/ClassiCube/ClassiCube/wiki/Minecraft-Classic-map-generation-algorithm
-//    https://github.com/ClassiCube/ClassiCube/wiki/Dig-animation-details)
+// Portions adapted from ClassiCube (https://github.com/ClassiCube/ClassiCube) by UnknownShadow200.
+// - Dig animation: primarily from wiki algorithm descriptions
+//   (https://github.com/ClassiCube/ClassiCube/wiki/Dig-animation-details)
 // - Physics & view-bob: cross-referenced in part from source code.
-// - World generation also includes minimal cross-checks against the original BSD code
-//   (e.g. one-line differences).
-// See THIRD-PARTY-NOTICES.md for the full BSD 3-Clause license text.
+// See THIRD_PARTY_NOTICES.md for the full BSD 3-Clause license text.
 //
 // Ported to Zig for CrossCraft (GPLv2; uses separate Aether-Engine).
 // Modifications Copyright (c) 2026 CrossCraft

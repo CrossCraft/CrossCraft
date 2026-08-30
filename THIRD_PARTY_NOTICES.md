@@ -7,19 +7,17 @@ This file contains licensing information for third-party code, algorithms, and d
 
 Aether-Engine is not covered by these notices.
 
-## ClassiCube (Minecraft Classic map generation algorithm, Dig animation, Physics, and View Bob)
+## ClassiCube (Dig Animation, Physics, View Bob, and Isometric Block Drawer)
 
 Certain portions of this software were adapted from ClassiCube by UnknownShadow200.
 
 **Sources used:**
 
-- Minecraft Classic map generation algorithm and Dig animation: primarily from the official ClassiCube wiki descriptions
-  - <https://github.com/ClassiCube/ClassiCube/wiki/Minecraft-Classic-map-generation-algorithm>
+- Dig animation: primarily from the official ClassiCube wiki descriptions
   - <https://github.com/ClassiCube/ClassiCube/wiki/Dig-animation-details>
-
-  These are detailed algorithm specifications derived from decompiled Minecraft Classic logic.
-- Physics and view-bob code: cross-referenced in part directly from the ClassiCube source code.
-- Additional accuracy cross-checks against the ClassiCube BSD-licensed implementation (minimal differences, e.g. one-line adjustments).
+- Physics and view-bob code: cross-referenced in part from the ClassiCube source code.
+- Isometric block drawer (hotbar): adapted from ClassiCube's IsometricDrawer
+  - <https://github.com/ClassiCube/ClassiCube/blob/master/src/IsometricDrawer.c>
 
 The original ClassiCube work is licensed under the **BSD 3-Clause License**:
 
