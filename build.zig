@@ -202,20 +202,20 @@ pub fn build(b: *std.Build) void {
         .switch_icon = if (is_switch) b.path("assets/icon-switch.jpg") else null,
     });
 
-    const server_overrides: Aether.config.Config.Overrides = .{
-        .use_cwd = true,
-    };
-    const server_exe = Aether.modules.addHeadless(ae_dep.builder, b, .{
-        .name = "CrossCraft-Classic-Server",
-        .root_source_file = b.path("src/server/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .overrides = server_overrides,
-    });
-    const server_root = Aether.modules.userRootModule(server_exe);
-    server_root.addImport("core", core);
-
     if (is_pc_server) {
+        const server_overrides: Aether.config.Config.Overrides = .{
+            .use_cwd = true,
+        };
+        const server_exe = Aether.modules.addHeadless(ae_dep.builder, b, .{
+            .name = "CrossCraft-Classic-Server",
+            .root_source_file = b.path("src/server/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .overrides = server_overrides,
+        });
+        const server_root = Aether.modules.userRootModule(server_exe);
+        server_root.addImport("core", core);
+
         const build_server_step = b.step("server", "Build the server");
         build_server_step.dependOn(&b.addInstallArtifact(server_exe, .{}).step);
 
