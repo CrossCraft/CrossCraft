@@ -8,11 +8,11 @@ const std = @import("std");
 const ae = @import("aether");
 const Audio = ae.Audio;
 const Math = ae.Math;
-const c = @import("common").consts;
+const c = @import("game").consts;
+const BlockRegistry = @import("game").BlockRegistry;
 const Block = c.Block;
 const Options = @import("Options.zig");
 const ResourcePack = @import("ResourcePack.zig");
-const BlockRegistry = @import("common").BlockRegistry;
 const Zip = @import("util/Zip.zig");
 
 const flate = std.compress.flate;

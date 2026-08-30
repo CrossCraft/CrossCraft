@@ -10,10 +10,9 @@
 /// ClassicWorld writer so generated `.cw` files stay format-compatible with
 /// CrossCraft.
 const std = @import("std");
-const common = @import("common");
 const game = @import("game");
 
-const c = common.consts;
+const c = game.consts;
 const World = game.World;
 const WorldData = World.WorldData;
 const SaveFormat = World.SaveFormat;
@@ -54,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
     };
     const output_path = args[3];
 
-    common.BlockRegistry.init();
+    game.BlockRegistry.init();
     try CompressWorker.init(gpa, io);
     defer CompressWorker.deinit();
 

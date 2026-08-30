@@ -16,7 +16,7 @@
 const std = @import("std");
 const ae = @import("aether");
 const input = ae.Core.input;
-const proto = @import("common").protocol;
+const proto = @import("game").protocol;
 
 const Player = @import("../player/Player.zig");
 const FontBatcher = ae.UI.FontBatcher;

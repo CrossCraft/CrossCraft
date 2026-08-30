@@ -3,8 +3,9 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const World = @import("game").World;
-const c = @import("common").consts;
+const game = @import("game");
+const World = game.World;
+const c = game.consts;
 
 const Vertex = @import("aether").Rendering.Vertex;
 const Colors = @import("../graphics/Color.zig");

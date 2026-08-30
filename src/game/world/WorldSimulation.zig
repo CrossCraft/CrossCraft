@@ -11,8 +11,8 @@
 // scheduler and call `WorldData.apply_block` directly.
 
 const std = @import("std");
-const common = @import("common");
-const c = common.consts;
+const c = @import("../consts.zig");
+const BlockRegistry = @import("../BlockRegistry.zig");
 const assert = std.debug.assert;
 
 const WorldData = @import("WorldData.zig");
@@ -647,7 +647,7 @@ const TestChangeRecorder = struct {
 };
 
 test "tick defers an overflow-sized fluid batch without buffering or dropping" {
-    common.BlockRegistry.init();
+    BlockRegistry.init();
 
     var data: WorldData = undefined;
     try data.init_in_place(std.testing.allocator, 0x1234);
@@ -696,7 +696,7 @@ test "tick defers an overflow-sized fluid batch without buffering or dropping" {
 }
 
 test "tick defers a multi-change update rather than partially committing it" {
-    common.BlockRegistry.init();
+    BlockRegistry.init();
 
     var data: WorldData = undefined;
     try data.init_in_place(std.testing.allocator, 0x1234);

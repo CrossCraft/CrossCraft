@@ -1,6 +1,6 @@
 const std = @import("std");
-const consts = @import("common").consts;
-const protocol = @import("common").protocol;
+const consts = @import("consts.zig");
+const protocol = @import("protocol.zig");
 pub const Client = @import("client.zig");
 const OutboundQueue = @import("outbound_queue.zig").OutboundQueue;
 const StaticAllocator = @import("static_allocator.zig");

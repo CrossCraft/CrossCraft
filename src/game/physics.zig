@@ -20,10 +20,9 @@
 //!      clipped) entity, project to contact, pick one face, and clip.
 //!      Horizontal clips try step-up first when the entity was grounded.
 //!
-//! The module lives in `common` and is generic over a caller-provided world
-//! type (`anytype`) exposing `get_block(u16, u16, u16) Block`, so it doesn't
-//! pull `game` into `common`. Block AABBs come from
-//! `BlockRegistry.global.bounds`.
+//! The module lives in `game` and is generic over a caller-provided world
+//! type (`anytype`) exposing `get_block(u16, u16, u16) Block`. Block AABBs
+//! come from `BlockRegistry.global.bounds`.
 const std = @import("std");
 const consts = @import("consts.zig");
 const BlockRegistry = @import("BlockRegistry.zig");

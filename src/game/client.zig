@@ -1,10 +1,9 @@
 const std = @import("std");
 const zb = @import("protocol");
 const Protocol = zb.Protocol;
-const common = @import("common");
-const c = common.consts;
+const c = @import("consts.zig");
 const world = @import("world.zig");
-const proto = common.protocol;
+const proto = @import("protocol.zig");
 
 const Server = @import("server.zig");
 const compress_worker = @import("compress_worker.zig");

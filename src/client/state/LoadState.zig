@@ -11,12 +11,13 @@ const FontBatcher = ae.UI.FontBatcher;
 const Scaling = ae.UI.Scaling;
 const Colors = @import("../graphics/Color.zig");
 const ResourcePack = @import("../ResourcePack.zig");
-const Server = @import("game").Server;
-const World = @import("game").World;
+const game = @import("game");
+const Server = game.Server;
+const World = game.World;
 const GameState = @import("GameState.zig");
 const DisconnectState = @import("DisconnectState.zig");
 const Session = @import("Session.zig");
-const proto = @import("common").protocol;
+const proto = game.protocol;
 const flate = std.compress.flate;
 
 const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;

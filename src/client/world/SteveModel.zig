@@ -16,7 +16,7 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const c = @import("common").consts;
+const c = @import("game").consts;
 const collision = @import("../player/collision.zig");
 const Vertex = @import("aether").Rendering.Vertex;
 const Colors = @import("../graphics/Color.zig");

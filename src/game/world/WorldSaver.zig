@@ -20,8 +20,7 @@ const SaveFormat = fmt_mod.SaveFormat;
 const SaveContext = fmt_mod.SaveContext;
 const LoadOutcome = fmt_mod.LoadOutcome;
 const compress_worker = @import("../compress_worker.zig");
-const common = @import("common");
-const c = common.consts;
+const c = @import("../consts.zig");
 
 const log = std.log.scoped(.world);
 

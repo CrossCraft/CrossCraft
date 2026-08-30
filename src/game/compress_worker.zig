@@ -15,7 +15,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const common = @import("common");
 const flate = std.compress.flate;
 
 pub const Job = struct {

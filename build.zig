@@ -33,14 +33,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const common = b.addModule("common", .{
-        .root_source_file = b.path("src/common/root.zig"),
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "protocol", .module = protocol },
-        },
-    });
-
     const worldgen = b.addModule("worldgen", .{
         .root_source_file = b.path("src/game/worldgen/root.zig"),
         .optimize = .ReleaseFast,
@@ -53,7 +45,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "protocol", .module = protocol },
             .{ .name = "worldgen", .module = worldgen },
-            .{ .name = "common", .module = common },
         },
     });
 
@@ -163,7 +154,6 @@ pub fn build(b: *std.Build) void {
     }
     const client_root = Aether.modules.userRootModule(client_exe);
     client_root.addImport("game", game);
-    client_root.addImport("common", common);
     client_root.addImport("protocol", protocol);
 
     // Embed pack.zip directly in the binary on Linux/Windows release builds.
@@ -225,7 +215,6 @@ pub fn build(b: *std.Build) void {
         });
         const server_root = Aether.modules.userRootModule(server_exe);
         server_root.addImport("game", game);
-        server_root.addImport("common", common);
 
         const build_server_step = b.step("server", "Build the server");
         build_server_step.dependOn(&b.addInstallArtifact(server_exe, .{}).step);
@@ -347,7 +336,6 @@ pub fn build(b: *std.Build) void {
             });
             root.addImport("aether", client_root.import_table.get("aether").?);
             root.addImport("protocol", protocol);
-            root.addImport("common", common);
             root.addImport("game", game);
             break :unit_tests_root root;
         },
@@ -385,7 +373,6 @@ pub fn build(b: *std.Build) void {
             .target = b.graph.host,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "common", .module = common },
                 .{ .name = "game", .module = game },
             },
         }),
@@ -406,7 +393,6 @@ pub fn build(b: *std.Build) void {
     });
     const web_root = Aether.modules.userRootModule(web_exe);
     web_root.addImport("game", game);
-    web_root.addImport("common", common);
     web_root.addImport("protocol", protocol);
 
     const web_build_options = b.addOptions();

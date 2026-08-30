@@ -13,9 +13,9 @@
 // block-change sink to `world.tick()` directly.
 
 const std = @import("std");
-const common = @import("common");
 const worldgen = @import("worldgen");
-const c = common.consts;
+const c = @import("consts.zig");
+const BlockRegistry = @import("BlockRegistry.zig");
 
 pub const WorldData = @import("world/WorldData.zig");
 pub const WorldSimulation = @import("world/WorldSimulation.zig");
@@ -95,7 +95,7 @@ pub fn init_empty(
     seed: u64,
     format: SaveFormat,
 ) !void {
-    common.BlockRegistry.init();
+    BlockRegistry.init();
     try data.init_in_place(allocator, seed);
     errdefer data.deinit();
     sim = try WorldSimulation.init(allocator, seed);

@@ -28,9 +28,9 @@ const ControlsScreen = @import("../ui/screens/Controls.zig");
 const GameplayBindings = @import("../player/bindings.zig");
 const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
-const common = @import("common");
-const c = common.consts;
 const game = @import("game");
+const c = game.consts;
+const BlockRegistry = game.BlockRegistry;
 const Server = game.Server;
 const World = game.World;
 const CompressWorker = game.CompressWorker;
@@ -276,7 +276,7 @@ fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.
         return;
     };
 
-    common.BlockRegistry.init();
+    BlockRegistry.init();
     const data = alloc.create(World.WorldData) catch |err| {
         log.warn("legacy save migration: failed to allocate world data object: {}", .{err});
         return;

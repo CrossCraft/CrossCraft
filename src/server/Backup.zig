@@ -3,7 +3,7 @@ const ae = @import("aether");
 const game = @import("game");
 
 const scheme = @import("BackupScheme.zig");
-const c = @import("common").consts;
+const c = game.consts;
 const Block = c.Block;
 
 const log = std.log.scoped(.backup);

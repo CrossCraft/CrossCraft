@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ae = @import("aether");
 const game = @import("game");
-const common = @import("common");
 
 const Util = ae.Util;
 const Engine = ae.Engine;
@@ -17,7 +16,7 @@ const PlayersDb = game.PlayersDb;
 const AccessControl = game.AccessControl;
 const Commands = game.Commands;
 const outbound_queue = game.OutboundQueue;
-const Consts = common.consts;
+const Consts = game.consts;
 
 const log = std.log.scoped(.server);
 const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
@@ -356,7 +355,7 @@ fn release_slot_locked(self: *Self, slot: *ConnectionSlot, engine: *Engine) void
 
 fn reject_slot_locked(slot: *ConnectionSlot, engine: *Engine, reason: []const u8) void {
     if (slot.data.closed) return;
-    common.protocol.send_disconnect_to_client(&slot.data.writer.interface, reason) catch {};
+    game.protocol.send_disconnect_to_client(&slot.data.writer.interface, reason) catch {};
     slot.data.stream.close(engine.io);
     slot.data.closed = true;
     slot.data.transport.store(.closed, .release);
@@ -645,7 +644,7 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
 fn reject_connection(conn: std.Io.net.Stream, engine: *Engine, reason: []const u8) void {
     var write_buf: [128]u8 = undefined;
     var writer = std.Io.net.Stream.Writer.init(conn, engine.io, &write_buf);
-    common.protocol.send_disconnect_to_client(&writer.interface, reason) catch {};
+    game.protocol.send_disconnect_to_client(&writer.interface, reason) catch {};
     var c = conn;
     c.close(engine.io);
 }

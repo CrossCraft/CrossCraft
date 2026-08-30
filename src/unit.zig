@@ -1,14 +1,18 @@
 comptime {
+    const game = @import("game");
     _ = @import("client/util/Zip.zig");
     _ = @import("client/graphics/TextureAtlas.zig");
     _ = @import("client/world/chunk/face.zig");
-    _ = @import("game/world/DumpName.zig");
-    _ = @import("game/world/CreateName.zig");
-    _ = @import("game/world/WorldSimulation.zig");
-    _ = @import("game/client.zig");
-    _ = @import("game/outbound_queue.zig");
-    _ = @import("game/players_db.zig");
-    _ = @import("game/access_control.zig");
+    // Game files are reachable only through the `game` module: importing them
+    // by path here would place them in two modules (this test root and `game`),
+    // which Zig forbids.
+    _ = game.World.DumpName;
+    _ = game.World.CreateName;
+    _ = game.World.WorldSimulation;
+    _ = game.Client;
+    _ = game.OutboundQueue;
+    _ = game.PlayersDb;
+    _ = game.AccessControl;
     _ = @import("client/state/Session.zig");
     _ = @import("client/state/BundledSave.zig");
     _ = @import("client/Options.zig");

@@ -13,8 +13,7 @@
 // on PSP.
 
 const std = @import("std");
-const common = @import("common");
-const c = common.consts;
+const c = @import("../../consts.zig");
 
 const Block = c.Block;
 

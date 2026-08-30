@@ -5,7 +5,7 @@ Inspired by [NASA's Power of Ten](https://spinroot.com/gerard/pdf/P10.pdf) and [
 ## Scope
 
 These rules are the strict baseline for `src/server` and shared simulation code in
-`src/common` and `src/game`. The client follows the same spirit, but rendering,
+`src/game`. The client follows the same spirit, but rendering,
 audio, UI, and platform integration may allocate or block during setup, loading,
 resource-pack changes, and other non-frame-critical paths.
 

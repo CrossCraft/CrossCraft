@@ -2,8 +2,7 @@ const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 const Transform = Rendering.Transform;
-const common = @import("common");
-const SubvoxelBounds = common.BlockRegistry.SubvoxelBounds;
+const SubvoxelBounds = @import("game").BlockRegistry.SubvoxelBounds;
 
 const Vertex = @import("aether").Rendering.Vertex;
 

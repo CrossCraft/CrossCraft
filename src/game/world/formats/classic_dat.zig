@@ -14,8 +14,7 @@
 // timestamps); LoadOutcome is filled with defaults on load.
 
 const std = @import("std");
-const common = @import("common");
-const c = common.consts;
+const c = @import("../../consts.zig");
 
 const Block = c.Block;
 const SaveContext = @import("../SaveFormat.zig").SaveContext;

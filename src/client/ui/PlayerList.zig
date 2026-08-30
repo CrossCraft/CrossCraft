@@ -9,7 +9,7 @@ const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 
-const c = @import("common").consts;
+const c = @import("game").consts;
 
 const UiDrawList = @import("UiDrawList.zig");
 const Scaling = ae.UI.Scaling;

@@ -4,7 +4,7 @@ const Rendering = ae.Rendering;
 const input_api = ae.Core.input;
 const log = std.log.scoped(.ui);
 
-const common = @import("common");
+const game = @import("game");
 const layout_mod = ae.UI.layout;
 const texture_region = ae.UI.texture_region;
 const button_style_mod = @import("ButtonStyle.zig");
@@ -496,7 +496,7 @@ pub const SlotGridOpts = struct {
     cols: u8,
     rows: u8,
     cell: i16 = 24,
-    blocks: []const common.consts.Block,
+    blocks: []const game.consts.Block,
     cursor: *u8,
     show_tooltip: bool = true,
     interactive: bool = true,
