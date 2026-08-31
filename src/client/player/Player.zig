@@ -17,7 +17,7 @@ const input = ae.Core.input;
 const core = @import("core");
 const World = core.World;
 const c = core.consts;
-const Block = c.Block;
+const Block = core.blocks.Block;
 const proto = core.protocol;
 
 const Camera = @import("Camera.zig");
@@ -29,7 +29,7 @@ const layout = ae.UI.layout;
 const Colors = @import("../graphics/Color.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
-const BlockRegistry = core.BlockRegistry;
+const blocks = core.blocks;
 const SoundManager = @import("../SoundManager.zig");
 const Face = @import("../world/chunk/face.zig").Face;
 const Options = @import("../Options.zig");
@@ -85,15 +85,15 @@ pub const HOTBAR_SLOTS: u8 = 9;
 
 /// Default hotbar contents in slot order.
 const DEFAULT_HOTBAR: [HOTBAR_SLOTS]Block = .{
-    .{ .id = .stone },
-    .{ .id = .cobblestone },
-    .{ .id = .brick },
-    .{ .id = .dirt },
-    .{ .id = .planks },
-    .{ .id = .log },
-    .{ .id = .leaves },
-    .{ .id = .glass },
-    .{ .id = .slab },
+    .stone,
+    .cobblestone,
+    .brick,
+    .dirt,
+    .planks,
+    .log,
+    .leaves,
+    .glass,
+    .slab,
 };
 
 // gui.png layout (Minecraft Classic): hotbar bg at (0,0) 182x22; selector
@@ -807,9 +807,9 @@ fn block_under_feet(self: *const Self) Block {
     const by_f = @floor(self.pos_y - 0.01);
     const bx_f = @floor(self.pos_x);
     const bz_f = @floor(self.pos_z);
-    if (by_f < 0 or by_f >= @as(f32, @floatFromInt(c.WorldHeight))) return .{ .id = .air };
-    if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(c.WorldLength))) return .{ .id = .air };
-    if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(c.WorldDepth))) return .{ .id = .air };
+    if (by_f < 0 or by_f >= @as(f32, @floatFromInt(c.WorldHeight))) return .air;
+    if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(c.WorldLength))) return .air;
+    if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(c.WorldDepth))) return .air;
     return World.data.get_block(
         @intCast(@as(i32, @intFromFloat(bx_f))),
         @intCast(@as(i32, @intFromFloat(by_f))),
@@ -1094,7 +1094,7 @@ fn is_selectable(x: u16, y: u16, z: u16) bool {
 // --- Subvoxel helpers (all integer) ---
 
 /// Point-in-bounds test using FP8 local coordinates directly.
-fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: BlockRegistry.SubvoxelBounds) bool {
+fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: blocks.SubvoxelBounds) bool {
     // Bounds are in 1/16th-block units. In FP8: 1/16 block = 16 units.
     const STEP = ONE / 16;
     return lx >= @as(i32, b.min_x) * STEP and
@@ -1117,7 +1117,7 @@ fn ray_sub_aabb_fp(
     bx: i32,
     by: i32,
     bz: i32,
-    bounds: BlockRegistry.SubvoxelBounds,
+    bounds: blocks.SubvoxelBounds,
     max_t_fp: i32,
 ) ?Face {
     const STEP = ONE / 16;
@@ -1594,7 +1594,7 @@ fn do_break(self: *Self) void {
         }
         SoundManager.play_dig(block_id, hit.x, hit.y, hit.z);
     }
-    send_block_change(self.writer, hit.x, hit.y, hit.z, 0, .{ .id = .air });
+    send_block_change(self.writer, hit.x, hit.y, hit.z, 0, .air);
 }
 
 /// Recover which face the player struck from the raycast result. The
@@ -1625,11 +1625,11 @@ fn do_pick_block(self: *Self) void {
     if (!block.in_inventory()) return;
 
     std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
-    if (self.hotbar[self.selected_slot].id == block.id) return;
+    if (self.hotbar[self.selected_slot] == block) return;
 
     var i: u8 = 0;
     while (i < HOTBAR_SLOTS) : (i += 1) {
-        if (self.hotbar[i].id == block.id) {
+        if (self.hotbar[i] == block) {
             self.selected_slot = i;
             return;
         }
@@ -1647,14 +1647,14 @@ fn do_place(self: *Self) void {
     if (block.is_air()) return;
     const target = World.data.get_block(hit.place_x, hit.place_y, hit.place_z);
     const target_replaceable = target.is_place_replaceable();
-    const promotes_to_double_slab = block.id == .slab and
-        (target.id == .slab or (target_replaceable and hit.place_y > 0 and
-            World.data.get_block(hit.place_x, hit.place_y - 1, hit.place_z).id == .slab));
+    const promotes_to_double_slab = block == .slab and
+        (target == .slab or (target_replaceable and hit.place_y > 0 and
+            World.data.get_block(hit.place_x, hit.place_y - 1, hit.place_z) == .slab));
     if (!target_replaceable and !promotes_to_double_slab) return;
     const bx0: f32 = @floatFromInt(hit.place_x);
     const by0: f32 = @floatFromInt(hit.place_y);
     const bz0: f32 = @floatFromInt(hit.place_z);
-    const bh: f32 = if (target.id == .slab and promotes_to_double_slab) 1.0 else collision.block_height(block);
+    const bh: f32 = if (target == .slab and promotes_to_double_slab) 1.0 else collision.block_height(block);
     const overlaps = bh > 0 and
         self.pos_x + collision.HALF_W > bx0 and
         self.pos_x - collision.HALF_W < bx0 + 1.0 and

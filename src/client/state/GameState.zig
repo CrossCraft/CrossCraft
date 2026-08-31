@@ -31,7 +31,7 @@ const BlockHand = @import("../player/BlockHand.zig");
 const SpriteBatcher = ae.UI.SpriteBatcher;
 const FontBatcher = ae.UI.FontBatcher;
 const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
-const BlockRegistry = core.BlockRegistry;
+const blocks = core.blocks;
 const PlayerList = @import("../ui/PlayerList.zig");
 const Chat = @import("../ui/Chat.zig");
 const Buttons = @import("../ui/Buttons.zig");
@@ -82,7 +82,7 @@ inventory_open: bool,
 inventory_slot: u8,
 inventory_ui_state: UiState,
 inventory_repeat: ui_input.Repeat,
-inventory_blocks: [BlockRegistry.INVENTORY_SLOTS]c.Block,
+inventory_blocks: [core.blocks.INVENTORY_SLOTS]core.blocks.Block,
 player_list: PlayerList,
 chat: Chat,
 /// Controller social overlay: true while the Select/Back-toggled player
@@ -272,8 +272,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.inventory_ui_state = .{};
     self.inventory_repeat = .{};
     var inv_i: u8 = 0;
-    while (inv_i < BlockRegistry.INVENTORY_SLOTS) : (inv_i += 1) {
-        self.inventory_blocks[inv_i] = BlockRegistry.inventory_block(inv_i);
+    while (inv_i < blocks.INVENTORY_SLOTS) : (inv_i += 1) {
+        self.inventory_blocks[inv_i] = blocks.inventory_block(inv_i);
     }
     // Multiplayer already initialised player_list and chat before the
     // read-loop thread was spawned (to avoid losing initial spawn packets).
@@ -715,7 +715,7 @@ fn open_inventory(self: *@This(), engine: *Engine) void {
     // Seed the cursor from the player's current hotbar pick when it
     // refers to a filled slot; otherwise drop to the first cell so the
     // overlay always opens with a selectable highlight.
-    self.inventory_slot = if (self.player.selected_slot < BlockRegistry.INVENTORY_FILLED)
+    self.inventory_slot = if (self.player.selected_slot < blocks.INVENTORY_FILLED)
         self.player.selected_slot
     else
         0;
@@ -749,7 +749,7 @@ fn update_inventory_tree(self: *@This(), engine: *Engine, in: *const ui_input.Ui
         .none => {},
         .select => {
             std.debug.assert(self.player.selected_slot < Player.HOTBAR_SLOTS);
-            self.player.hotbar[self.player.selected_slot] = BlockRegistry.inventory_block(self.inventory_slot);
+            self.player.hotbar[self.player.selected_slot] = blocks.inventory_block(self.inventory_slot);
             close_inventory(self, engine);
         },
         .back => close_inventory(self, engine),

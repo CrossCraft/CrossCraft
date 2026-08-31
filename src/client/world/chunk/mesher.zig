@@ -10,7 +10,7 @@ const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 
 const SECTION_H: u32 = 16;
-const Block = c.Block;
+const Block = core.blocks.Block;
 
 /// Check sunlight at the neighbor block this face looks into.
 fn face_sunlit(wx: u16, y: u32, wz: u16, face: Face) bool {
@@ -305,7 +305,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     // Empty-row early-out: with no visible blocks and no cross blocks in this
     // row, no face can originate here. vis covers fluids and (solid_)leaf, but
     // cross blocks (saplings, flowers, mushrooms) are flagged visible=false in
-    // BlockRegistry, so they must be checked separately or they vanish from
+    // blocks.zig, so they must be checked separately or they vanish from
     // the mesh in otherwise-empty rows. Common in sections above the surface
     // where most cells are pure air.
     if (cur.vis == 0 and cur.cross == 0) return std.mem.zeroes(FaceMasks);

@@ -7,9 +7,10 @@
 
 const std = @import("std");
 const c = @import("../consts.zig");
+const b = @import("../blocks.zig");
 const assert = std.debug.assert;
 
-const Block = c.Block;
+const Block = b.Block;
 
 pub const CHUNK_COUNT: u32 = c.ChunksX * c.ChunksZ * c.ChunksY;
 
@@ -166,9 +167,9 @@ pub fn compute_chunk_counts(self: *WorldData) void {
         const base = ci * c.ChunkVolume;
         var non_air: u16 = 0;
         var non_opq: u16 = 0;
-        for (self.blocks[base..][0..c.ChunkVolume]) |b| {
-            if (!b.is_air()) non_air += 1;
-            if (!b.is_opaque()) non_opq += 1;
+        for (self.blocks[base..][0..c.ChunkVolume]) |blk| {
+            if (!blk.is_air()) non_air += 1;
+            if (!blk.is_opaque()) non_opq += 1;
         }
         self.chunk_counts[ci] = non_air;
         self.chunk_non_opaque[ci] = non_opq;
@@ -241,7 +242,7 @@ pub fn find_spawn(self: *const WorldData, io: std.Io) [3]u16 {
         while (by > 0) : (by -= 1) {
             const blk = self.get_block(bx, by, bz);
             if (!blk.is_air() and !blk.is_fluid()) {
-                const above: Block = if (by + 1 < c.WorldHeight) self.get_block(bx, by + 1, bz) else .{ .id = .air };
+                const above: Block = if (by + 1 < c.WorldHeight) self.get_block(bx, by + 1, bz) else .air;
                 if (above.is_fluid() and attempt < 9) break;
                 return .{
                     @intCast(@as(u32, bx) * 32 + 16),
@@ -422,7 +423,7 @@ test "copy_blocks_yzx_band preserves wire row order" {
         const z: u16 = z_start + @as(u16, @intCast(z_offset));
         for (0..c.WorldLength) |x| {
             const value: u8 = @truncate(x + z_offset * 17);
-            data.blocks[data.get_index(@intCast(x), y, z)] = .{ .id = @enumFromInt(value) };
+            data.blocks[data.get_index(@intCast(x), y, z)] = @enumFromInt(value);
         }
     }
 

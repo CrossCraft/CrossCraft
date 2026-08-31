@@ -15,7 +15,7 @@
 const std = @import("std");
 const worldgen = @import("worldgen");
 const c = @import("consts.zig");
-const BlockRegistry = @import("BlockRegistry.zig");
+const blocks = @import("blocks.zig");
 
 pub const WorldData = @import("world/WorldData.zig");
 pub const WorldSimulation = @import("world/WorldSimulation.zig");
@@ -29,7 +29,7 @@ pub const ClassicDat = fmt_mod.ClassicDat;
 pub const BlockChange = WorldSimulation.BlockChange;
 pub const BlockChangeSink = WorldSimulation.BlockChangeSink;
 
-const Block = c.Block;
+const Block = blocks.Block;
 const log = std.log.scoped(.world);
 
 pub const LoadStatus = union(enum) {
@@ -95,7 +95,7 @@ pub fn init_empty(
     seed: u64,
     format: SaveFormat,
 ) !void {
-    BlockRegistry.init();
+    blocks.init();
     try data.init_in_place(allocator, seed);
     errdefer data.deinit();
     sim = try WorldSimulation.init(allocator, seed);

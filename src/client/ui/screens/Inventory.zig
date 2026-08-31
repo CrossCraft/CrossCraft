@@ -15,7 +15,7 @@ pub fn wid(w: Widget) widget_id.WidgetId {
     return widget_id.from(Widget, w);
 }
 
-pub fn run(ui: *Ui, blocks: []const core.consts.Block, slot: *u8) Action {
+pub fn run(ui: *Ui, blocks: []const core.blocks.Block, slot: *u8) Action {
     var col = ui.stack(.{ .axis = .vertical, .anchor = .middle_center, .cross_align = .center });
     var action: Action = .none;
     if (ui.slot_grid(wid(.grid), .{

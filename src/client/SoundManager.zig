@@ -9,8 +9,8 @@ const ae = @import("aether");
 const Audio = ae.Audio;
 const Math = ae.Math;
 const c = @import("core").consts;
-const BlockRegistry = @import("core").BlockRegistry;
-const Block = c.Block;
+const blocks = @import("core").blocks;
+const Block = blocks.Block;
 const Options = @import("Options.zig");
 const ResourcePack = @import("ResourcePack.zig");
 const Zip = @import("util/Zip.zig");
@@ -23,7 +23,7 @@ const log = std.log.scoped(.audio);
 
 // --- material classification ---
 
-pub const Material = BlockRegistry.Material;
+pub const Material = blocks.Material;
 
 const material_count = @typeInfo(Material).@"enum".fields.len;
 const max_variants = 4;

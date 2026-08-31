@@ -1,5 +1,6 @@
 const std = @import("std");
 const consts = @import("consts.zig");
+const blocks = @import("blocks.zig");
 const protocol = @import("protocol.zig");
 pub const Client = @import("client.zig");
 const OutboundQueue = @import("outbound_queue.zig").OutboundQueue;
@@ -822,18 +823,18 @@ pub fn broadcast_chat_message(id: i8, message: []u8) void {
     if (on_broadcast_chat) |hook| hook(std.mem.trimEnd(u8, message, " \x00"));
 }
 
-pub fn broadcast_block_change(x: u16, y: u16, z: u16, block: consts.Block) void {
+pub fn broadcast_block_change(x: u16, y: u16, z: u16, block: blocks.Block) void {
     broadcast_block_change_impl(x, y, z, block);
 }
 
-fn broadcast_block_change_buffered(x: u16, y: u16, z: u16, block: consts.Block) void {
+fn broadcast_block_change_buffered(x: u16, y: u16, z: u16, block: blocks.Block) void {
     broadcast_block_change_impl(x, y, z, block);
 }
 
 // Sends only enqueue into each client's outbound queue (pure CPU work), so
 // the buffered/immediate split above no longer differs in flush behavior;
 // both wrappers are kept so call sites stay put.
-fn broadcast_block_change_impl(x: u16, y: u16, z: u16, block: consts.Block) void {
+fn broadcast_block_change_impl(x: u16, y: u16, z: u16, block: blocks.Block) void {
     var catchup_packet: [8]u8 = undefined;
     var fixed = std.Io.Writer.fixed(&catchup_packet);
     protocol.send_block_change_to_client(&fixed, x, y, z, block) catch unreachable;

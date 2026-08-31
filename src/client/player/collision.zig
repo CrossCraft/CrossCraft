@@ -7,7 +7,7 @@ const core = @import("core");
 const World = core.World;
 const physics = core.physics;
 const c = core.consts;
-const Block = c.Block;
+const Block = core.blocks.Block;
 
 // --- Player dimensions ---
 

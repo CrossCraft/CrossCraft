@@ -10,8 +10,9 @@
 
 const std = @import("std");
 const c = @import("../consts.zig");
+const b = @import("../blocks.zig");
 
-const Block = c.Block;
+const Block = b.Block;
 
 const classic_dat_mod = @import("formats/classic_dat.zig");
 const classic_cw_mod = @import("formats/classic_cw.zig");

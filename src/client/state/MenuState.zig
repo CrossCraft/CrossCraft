@@ -30,7 +30,6 @@ const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
 const core = @import("core");
 const c = core.consts;
-const BlockRegistry = core.BlockRegistry;
 const Server = core.Server;
 const World = core.World;
 const CompressWorker = core.CompressWorker;
@@ -276,7 +275,7 @@ fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.
         return;
     };
 
-    BlockRegistry.init();
+    core.blocks.init();
     const data = alloc.create(World.WorldData) catch |err| {
         log.warn("legacy save migration: failed to allocate world data object: {}", .{err});
         return;

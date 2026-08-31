@@ -12,12 +12,12 @@
 
 const std = @import("std");
 const c = @import("../consts.zig");
-const BlockRegistry = @import("../BlockRegistry.zig");
+const blocks = @import("../blocks.zig");
 const assert = std.debug.assert;
 
 const WorldData = @import("WorldData.zig");
 
-const Block = c.Block;
+const Block = blocks.Block;
 const Location = c.Location;
 
 const log = std.log.scoped(.world);
@@ -188,27 +188,27 @@ fn process_block_update(
     const z: u16 = loc.z;
     const block = data.get_block(x, y, z);
 
-    if ((block.id == .sand or block.id == .gravel) and y > 0) {
+    if ((block == .sand or block == .gravel) and y > 0) {
         const below = data.get_block(x, y - 1, z);
         if (below.is_air() or below.is_fluid()) {
-            self.queue_block_change(data, sink, emitted, x, y, z, .{ .id = .air });
+            self.queue_block_change(data, sink, emitted, x, y, z, .air);
             self.queue_block_change(data, sink, emitted, x, y - 1, z, block);
         }
-    } else if (block.id == .dirt and data.has_direct_sunlight(x, y, z)) {
-        self.queue_block_change(data, sink, emitted, x, y, z, .{ .id = .grass });
-    } else if (block.id == .grass and !data.has_direct_sunlight(x, y, z)) {
-        self.queue_block_change(data, sink, emitted, x, y, z, .{ .id = .dirt });
-    } else if (block.id == .sapling and data.has_direct_sunlight(x, y, z)) {
+    } else if (block == .dirt and data.has_direct_sunlight(x, y, z)) {
+        self.queue_block_change(data, sink, emitted, x, y, z, .grass);
+    } else if (block == .grass and !data.has_direct_sunlight(x, y, z)) {
+        self.queue_block_change(data, sink, emitted, x, y, z, .dirt);
+    } else if (block == .sapling and data.has_direct_sunlight(x, y, z)) {
         const height: u32 = @intCast(self.rng.next() % 3 + 4);
         self.grow_tree(data, sink, emitted, x, y, z, height);
-    } else if ((block.id == .sapling or block.id == .flower_1 or block.id == .flower_2) and
+    } else if ((block == .sapling or block == .flower_1 or block == .flower_2) and
         !data.has_direct_sunlight(x, y, z))
     {
-        self.queue_block_change(data, sink, emitted, x, y, z, .{ .id = .air });
-    } else if ((block.id == .mushroom_1 or block.id == .mushroom_2) and
+        self.queue_block_change(data, sink, emitted, x, y, z, .air);
+    } else if ((block == .mushroom_1 or block == .mushroom_2) and
         data.has_direct_sunlight(x, y, z))
     {
-        self.queue_block_change(data, sink, emitted, x, y, z, .{ .id = .air });
+        self.queue_block_change(data, sink, emitted, x, y, z, .air);
     } else if (block.is_fluid()) {
         self.process_fluid(data, sink, emitted, x, y, z, block);
     }
@@ -329,7 +329,7 @@ fn block_update_change_bound(data: *const WorldData, loc: Location) u32 {
     const z: u16 = loc.z;
     const block = data.get_block(x, y, z);
 
-    return switch (block.id) {
+    return switch (block) {
         .sand, .gravel => if (y > 0 and (data.get_block(x, y - 1, z).is_air() or data.get_block(x, y - 1, z).is_fluid())) 2 else 0,
         .dirt => if (data.has_direct_sunlight(x, y, z)) 1 else 0,
         .grass => if (!data.has_direct_sunlight(x, y, z)) 1 else 0,
@@ -352,14 +352,14 @@ comptime {
 
 fn water_change_bound(data: *const WorldData, x: u16, y: u16, z: u16, block: Block) u32 {
     const lava_neighbors = count_lava_neighbors(data, x, y, z);
-    if (block.id == .flowing_water and !has_fluid_neighbor(data, x, y, z, true)) return lava_neighbors + 1;
+    if (block == .flowing_water and !has_fluid_neighbor(data, x, y, z, true)) return lava_neighbors + 1;
     if (y > 0 and data.get_block(x, y - 1, z).is_air() and !is_near_sponge(data, x, y - 1, z)) return lava_neighbors + 1;
     return lava_neighbors + count_horizontal_air_neighbors(data, x, y, z);
 }
 
 fn lava_change_bound(data: *const WorldData, x: u16, y: u16, z: u16, block: Block) u32 {
     if (has_fluid_neighbor(data, x, y, z, true)) return 1;
-    if (block.id == .flowing_lava and !has_fluid_neighbor(data, x, y, z, false)) return 1;
+    if (block == .flowing_lava and !has_fluid_neighbor(data, x, y, z, false)) return 1;
     if (y > 0 and data.get_block(x, y - 1, z).is_air()) return 1;
     return count_horizontal_air_neighbors(data, x, y, z);
 }
@@ -397,14 +397,14 @@ fn process_fluid(
     block: Block,
 ) void {
     const water = block.is_water();
-    const flow: Block = if (water) .{ .id = .flowing_water } else .{ .id = .flowing_lava };
+    const flow: Block = if (water) .flowing_water else .flowing_lava;
 
     if (self.check_lava_water(data, sink, emitted, x, y, z, water)) return;
 
-    if ((block.id == .flowing_water or block.id == .flowing_lava) and
+    if ((block == .flowing_water or block == .flowing_lava) and
         !has_fluid_neighbor(data, x, y, z, water))
     {
-        self.queue_block_change(data, sink, emitted, x, y, z, .{ .id = .air });
+        self.queue_block_change(data, sink, emitted, x, y, z, .air);
         return;
     }
 
@@ -430,12 +430,12 @@ fn check_lava_water(
     water: bool,
 ) bool {
     if (water) {
-        if (x > 0 and data.get_block(x - 1, y, z).is_lava()) self.queue_block_change(data, sink, emitted, x - 1, y, z, .{ .id = .stone });
-        if (x + 1 < c.WorldLength and data.get_block(x + 1, y, z).is_lava()) self.queue_block_change(data, sink, emitted, x + 1, y, z, .{ .id = .stone });
-        if (y > 0 and data.get_block(x, y - 1, z).is_lava()) self.queue_block_change(data, sink, emitted, x, y - 1, z, .{ .id = .stone });
-        if (y + 1 < c.WorldHeight and data.get_block(x, y + 1, z).is_lava()) self.queue_block_change(data, sink, emitted, x, y + 1, z, .{ .id = .stone });
-        if (z > 0 and data.get_block(x, y, z - 1).is_lava()) self.queue_block_change(data, sink, emitted, x, y, z - 1, .{ .id = .stone });
-        if (z + 1 < c.WorldDepth and data.get_block(x, y, z + 1).is_lava()) self.queue_block_change(data, sink, emitted, x, y, z + 1, .{ .id = .stone });
+        if (x > 0 and data.get_block(x - 1, y, z).is_lava()) self.queue_block_change(data, sink, emitted, x - 1, y, z, .stone);
+        if (x + 1 < c.WorldLength and data.get_block(x + 1, y, z).is_lava()) self.queue_block_change(data, sink, emitted, x + 1, y, z, .stone);
+        if (y > 0 and data.get_block(x, y - 1, z).is_lava()) self.queue_block_change(data, sink, emitted, x, y - 1, z, .stone);
+        if (y + 1 < c.WorldHeight and data.get_block(x, y + 1, z).is_lava()) self.queue_block_change(data, sink, emitted, x, y + 1, z, .stone);
+        if (z > 0 and data.get_block(x, y, z - 1).is_lava()) self.queue_block_change(data, sink, emitted, x, y, z - 1, .stone);
+        if (z + 1 < c.WorldDepth and data.get_block(x, y, z + 1).is_lava()) self.queue_block_change(data, sink, emitted, x, y, z + 1, .stone);
         return false;
     } else {
         if ((x > 0 and data.get_block(x - 1, y, z).is_water()) or
@@ -445,7 +445,7 @@ fn check_lava_water(
             (z > 0 and data.get_block(x, y, z - 1).is_water()) or
             (z + 1 < c.WorldDepth and data.get_block(x, y, z + 1).is_water()))
         {
-            self.queue_block_change(data, sink, emitted, x, y, z, .{ .id = .stone });
+            self.queue_block_change(data, sink, emitted, x, y, z, .stone);
             return true;
         }
         return false;
@@ -507,8 +507,8 @@ pub fn sponge_absorb(self: *WorldSimulation, data: *WorldData, sink: BlockChange
                 const uz: u16 = @intCast(nz);
                 const blk = data.get_block(ux, uy, uz);
                 if (blk.is_water()) {
-                    self.set_block(data, ux, uy, uz, .{ .id = .air });
-                    sink.emit(.{ .x = ux, .y = uy, .z = uz, .block = .{ .id = .air } });
+                    self.set_block(data, ux, uy, uz, .air);
+                    sink.emit(.{ .x = ux, .y = uy, .z = uz, .block = .air });
                     self.enqueue_neighbors_of(data, ux, uy, uz);
                 }
             }
@@ -546,7 +546,7 @@ fn is_near_sponge(data: *const WorldData, x: u16, y: u16, z: u16) bool {
                 const ny = @as(i32, y) + dy;
                 const nz = @as(i32, z) + dz;
                 if (nx < 0 or nx >= c.WorldLength or ny < 0 or ny >= c.WorldHeight or nz < 0 or nz >= c.WorldDepth) continue;
-                if (data.get_block(@intCast(nx), @intCast(ny), @intCast(nz)).id == .sponge) return true;
+                if (data.get_block(@intCast(nx), @intCast(ny), @intCast(nz)) == .sponge) return true;
             }
         }
     }
@@ -594,7 +594,7 @@ fn grow_tree(
 
     for (0..height) |i| {
         const ty: u32 = base_y + 1 + @as(u32, @intCast(i));
-        if (ty < c.WorldHeight) self.queue_block_change(data, sink, emitted, x, @intCast(ty), z, .{ .id = .log });
+        if (ty < c.WorldHeight) self.queue_block_change(data, sink, emitted, x, @intCast(ty), z, .log);
     }
 
     self.grow_tree_leaves(data, sink, emitted, x, base_y, z, height);
@@ -628,7 +628,7 @@ fn grow_tree_leaves(
                 const ux: u16 = @intCast(lx);
                 const uz: u16 = @intCast(lz);
                 if (data.get_block(ux, @intCast(ly), uz).is_air()) {
-                    self.queue_block_change(data, sink, emitted, ux, @intCast(ly), uz, .{ .id = .leaves });
+                    self.queue_block_change(data, sink, emitted, ux, @intCast(ly), uz, .leaves);
                 }
             }
         }
@@ -647,7 +647,7 @@ const TestChangeRecorder = struct {
 };
 
 test "tick defers an overflow-sized fluid batch without buffering or dropping" {
-    BlockRegistry.init();
+    blocks.init();
 
     var data: WorldData = undefined;
     try data.init_in_place(std.testing.allocator, 0x1234);
@@ -665,7 +665,7 @@ test "tick defers an overflow-sized fluid batch without buffering or dropping" {
     while (i < source_count) : (i += 1) {
         const x: u16 = @intCast(i % c.WorldLength);
         const z: u16 = @intCast(i / c.WorldLength);
-        data.apply_block(x, 1, z, .{ .id = .still_water });
+        data.apply_block(x, 1, z, .still_water);
         sim.try_enqueue(&data, x, 1, z);
     }
 
@@ -686,7 +686,7 @@ test "tick defers an overflow-sized fluid batch without buffering or dropping" {
     try std.testing.expectEqual(source_count, recorder.count);
     try std.testing.expectEqual(SENTINEL, sim.ready_tail);
     const first = recorder.first orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(first.block.id, data.get_block(first.x, first.y, first.z).id);
+    try std.testing.expectEqual(first.block, data.get_block(first.x, first.y, first.z));
 
     sim.reset_scheduler();
     try std.testing.expectEqual(@as(u32, 0), sim.pool_used);
@@ -696,7 +696,7 @@ test "tick defers an overflow-sized fluid batch without buffering or dropping" {
 }
 
 test "tick defers a multi-change update rather than partially committing it" {
-    BlockRegistry.init();
+    blocks.init();
 
     var data: WorldData = undefined;
     try data.init_in_place(std.testing.allocator, 0x1234);
@@ -711,7 +711,7 @@ test "tick defers a multi-change update rather than partially committing it" {
     const tree_x: u16 = 128;
     const tree_y: u16 = 1;
     const tree_z: u16 = 128;
-    data.apply_block(tree_x, tree_y, tree_z, .{ .id = .sapling });
+    data.apply_block(tree_x, tree_y, tree_z, .sapling);
 
     // Put the tree at the tail of the same due bucket. The water entries are
     // exact one-change updates, leaving 66 slots -- one less than a full tree
@@ -725,7 +725,7 @@ test "tick defers a multi-change update rather than partially committing it" {
     while (i < water_count) : (i += 1) {
         const x: u16 = @intCast(i % c.WorldLength);
         const z: u16 = @intCast(i / c.WorldLength);
-        data.apply_block(x, 1, z, .{ .id = .still_water });
+        data.apply_block(x, 1, z, .still_water);
         sim.try_enqueue(&data, x, 1, z);
     }
 
@@ -734,11 +734,11 @@ test "tick defers a multi-change update rather than partially committing it" {
     }
 
     try std.testing.expectEqual(water_count, sim.tick(&data, sink));
-    try std.testing.expectEqual(@as(c.Block.Type, .sapling), data.get_block(tree_x, tree_y, tree_z).id);
+    try std.testing.expectEqual(blocks.Block.sapling, data.get_block(tree_x, tree_y, tree_z));
     try std.testing.expect(sim.ready_tail != SENTINEL);
 
     const tree_changes = sim.tick(&data, sink);
     try std.testing.expect(tree_changes > 0);
     try std.testing.expect(tree_changes <= MAX_TREE_CHANGES);
-    try std.testing.expectEqual(@as(c.Block.Type, .log), data.get_block(tree_x, tree_y, tree_z).id);
+    try std.testing.expectEqual(blocks.Block.log, data.get_block(tree_x, tree_y, tree_z));
 }

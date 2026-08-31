@@ -2,7 +2,7 @@ const std = @import("std");
 const zb = @import("protocol");
 const core = @import("core");
 const proto = core.protocol;
-const Block = core.consts.Block;
+const Block = core.blocks.Block;
 
 const World = core.World;
 const WorldRenderer = @import("../world/world.zig");
@@ -191,7 +191,7 @@ fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
     // Apply the change locally. Singleplayer's in-process server already
     // wrote it to the shared World singleton, so this is a no-op echo there;
     // for real multiplayer it is the only path that updates the client world.
-    const block: Block = .{ .id = @enumFromInt(event.block) };
+    const block: Block = @enumFromInt(event.block);
     World.set_block(event.x, event.y, event.z, block);
     // Translate world block coords to (cx, sy, cz) section indices.
     const cx: u8 = @intCast(event.x >> 4);

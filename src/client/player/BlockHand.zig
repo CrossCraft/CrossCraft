@@ -12,8 +12,7 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const c = @import("core").consts;
-const Block = c.Block;
+const Block = @import("core").blocks.Block;
 
 const Vertex = @import("aether").Rendering.Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
@@ -64,7 +63,7 @@ const QUAD_CAPACITY: usize = 6;
 const VERT_CAPACITY: usize = QUAD_CAPACITY * 6;
 // Sentinel distinct from any real block id. Classic block ids occupy 0..49;
 // 50..255 are unused, so 0xFF is safely outside the assigned range.
-const SENTINEL: Block = .{ .id = @enumFromInt(0xFF) };
+const SENTINEL: Block = @enumFromInt(0xFF);
 
 const SwingKind = enum { idle, place, dig };
 
@@ -142,7 +141,7 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     std.debug.assert(dt >= 0);
 
     // First frame: bootstrap cache without an animation.
-    if (self.cached_block.id == SENTINEL.id) {
+    if (self.cached_block == SENTINEL) {
         self.rebuild(current_block, shadowed);
         self.cached_block = current_block;
         self.pending_block = current_block;
@@ -167,7 +166,7 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     // lowest point of the block on screen) so the visible block drops
     // the rest of the way down and then rises with the new block --
     // avoids a hard snap back to the top of the arc.
-    if (current_block.id != self.pending_block.id) {
+    if (current_block != self.pending_block) {
         self.pending_block = current_block;
         if (self.swing_kind == .idle) {
             self.swing_kind = .place;
@@ -190,7 +189,7 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     if (self.swing_time >= self.swing_period) {
         // End of swing: force-sync the cache if a pending swap (or a tint
         // change deferred during a dig) never landed.
-        if (self.cached_block.id != self.pending_block.id or self.cached_shadowed != shadowed) {
+        if (self.cached_block != self.pending_block or self.cached_shadowed != shadowed) {
             self.rebuild(self.pending_block, shadowed);
             self.cached_block = self.pending_block;
             self.cached_shadowed = shadowed;
@@ -207,7 +206,7 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     if (self.swing_kind == .place) {
         const t = self.swing_time / self.swing_period;
         const swing_y = SWING_AMPLITUDE_Y * @sin(t * std.math.pi);
-        if (swing_y > self.prev_swing_y and self.cached_block.id != self.pending_block.id) {
+        if (swing_y > self.prev_swing_y and self.cached_block != self.pending_block) {
             self.rebuild(self.pending_block, shadowed);
             self.cached_block = self.pending_block;
             self.cached_shadowed = shadowed;

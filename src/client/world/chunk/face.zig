@@ -1,12 +1,12 @@
 const std = @import("std");
 const core = @import("core");
-const BlockRegistry = core.BlockRegistry;
+const blocks = core.blocks;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Rendering = @import("aether").Rendering;
 const Vertex = Rendering.Vertex;
 const BatchMesh = Rendering.MeshDataType(Vertex);
 
-pub const Face = core.consts.Face;
+pub const Face = blocks.Face;
 
 /// Map local coordinate [0, 16] to SNORM16 [0, 32767].
 pub fn encode_pos(local: u32) i16 {
@@ -41,7 +41,7 @@ pub fn apply_shadow(color: u32) u32 {
 
 const UVRect = struct { tu0: i16, tv0: i16, tu1: i16, tv1: i16 };
 
-fn tile_uvs(tile: BlockRegistry.Tile, atlas: *const TextureAtlas) UVRect {
+fn tile_uvs(tile: blocks.Tile, atlas: *const TextureAtlas) UVRect {
     const base_u = atlas.tileU(tile.col);
     const base_v = atlas.tileV(tile.row);
     return .{
@@ -145,7 +145,7 @@ pub fn emit_face(
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
 ) void {
@@ -176,7 +176,7 @@ pub fn emit_face_colors(
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     colors: [4]u32,
 ) void {
@@ -205,7 +205,7 @@ pub fn emit_slab_face(
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
 ) void {
@@ -252,7 +252,7 @@ pub fn emit_fluid_side_face(
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
     above_is_fluid: bool,
@@ -286,7 +286,7 @@ pub fn emit_fluid_top(
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
 ) void {
@@ -319,7 +319,7 @@ pub fn emit_fluid_overlay(
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
 ) void {
@@ -391,7 +391,7 @@ pub fn emit_cross(
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
 ) void {

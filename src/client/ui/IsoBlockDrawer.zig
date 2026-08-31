@@ -27,8 +27,7 @@ const UI = ae.UI;
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const c = @import("core").consts;
-const Block = c.Block;
+const Block = @import("core").blocks.Block;
 
 const Vertex = @import("aether").Rendering.Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;

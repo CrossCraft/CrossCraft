@@ -496,7 +496,7 @@ pub const SlotGridOpts = struct {
     cols: u8,
     rows: u8,
     cell: i16 = 24,
-    blocks: []const core.consts.Block,
+    blocks: []const core.blocks.Block,
     cursor: *u8,
     show_tooltip: bool = true,
     interactive: bool = true,

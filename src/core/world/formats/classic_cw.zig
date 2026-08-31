@@ -14,8 +14,9 @@
 
 const std = @import("std");
 const c = @import("../../consts.zig");
+const b = @import("../../blocks.zig");
 
-const Block = c.Block;
+const Block = b.Block;
 
 const fmt_mod = @import("../SaveFormat.zig");
 const SaveContext = fmt_mod.SaveContext;

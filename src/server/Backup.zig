@@ -4,7 +4,7 @@ const core = @import("core");
 
 const scheme = @import("BackupScheme.zig");
 const c = core.consts;
-const Block = c.Block;
+const Block = core.blocks.Block;
 
 const log = std.log.scoped(.backup);
 

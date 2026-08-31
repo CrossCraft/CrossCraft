@@ -13,6 +13,7 @@ const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const face_mod = @import("chunk/face.zig");
 const Face = face_mod.Face;
 const collision = @import("../player/collision.zig");
+const Block = core.blocks.Block;
 
 // --- Tunables ---
 
@@ -70,8 +71,8 @@ const Particle = struct {
     gravity: f32,
 };
 
-fn gravity_for(block_id: c.Block) f32 {
-    return switch (block_id.id) {
+fn gravity_for(block_id: Block) f32 {
+    return switch (block_id) {
         .leaves => GRAVITY_LEAVES,
         else => GRAVITY,
     };
@@ -115,7 +116,7 @@ pub fn deinit(self: *Self) void {
 /// Emit a burst of particles for a block that just got broken.
 /// `bx/by/bz` are world block coordinates; `face` selects which atlas tile
 /// (top/bottom/side) the shards sample from.
-pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, _: Face) void {
+pub fn spawn_break(self: *Self, block_id: Block, bx: u16, by: u16, bz: u16, _: Face) void {
     std.debug.assert(!block_id.is_air());
 
     const face: Face = .x_neg;

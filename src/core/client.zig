@@ -2,6 +2,7 @@ const std = @import("std");
 const zb = @import("protocol");
 const Protocol = zb.Protocol;
 const c = @import("consts.zig");
+const blocks = @import("blocks.zig");
 const world = @import("world.zig");
 const proto = @import("protocol.zig");
 
@@ -448,7 +449,7 @@ pub fn send_despawn(self: *Self, id: i8) !void {
     try self.send_packet(proto.send_despawn_to_client, .{id});
 }
 
-pub fn send_block_change(self: *Self, x: u16, y: u16, z: u16, block: c.Block) !void {
+pub fn send_block_change(self: *Self, x: u16, y: u16, z: u16, block: blocks.Block) !void {
     try self.send_packet(proto.send_block_change_to_client, .{ x, y, z, block });
 }
 
@@ -798,7 +799,7 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
         return;
 
     // Convert wire-format u8 to the typed Block at the protocol boundary.
-    const block: c.Block = .{ .id = @enumFromInt(event.block) };
+    const block: blocks.Block = @enumFromInt(event.block);
 
     if (mode == .create and block.is_fluid()) {
         return;
@@ -807,14 +808,14 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     const old_block = world.data.get_block(event.x, event.y, event.z);
 
     if (mode == .destroy) {
-        world.set_block(event.x, event.y, event.z, .{ .id = .air });
-        Server.broadcast_block_change(event.x, event.y, event.z, .{ .id = .air });
+        world.set_block(event.x, event.y, event.z, .air);
+        Server.broadcast_block_change(event.x, event.y, event.z, .air);
     } else {
         // Partial blocks can be targeted through their empty subvolume. Only
         // air and fluids are replaceable, except slab + slab promotes in-place.
-        if (old_block.id == .slab and block.id == .slab) {
-            world.set_block(event.x, event.y, event.z, .{ .id = .double_slab });
-            Server.broadcast_block_change(event.x, event.y, event.z, .{ .id = .double_slab });
+        if (old_block == .slab and block == .slab) {
+            world.set_block(event.x, event.y, event.z, .double_slab);
+            Server.broadcast_block_change(event.x, event.y, event.z, .double_slab);
             world.enqueue_neighbors_of(event.x, event.y, event.z);
             return;
         }
@@ -828,12 +829,12 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
         // slab into (x, y, z); re-assert whatever block actually lives at
         // that cell so those predictions are reverted, then upgrade the
         // slab below.
-        if (block.id == .slab and event.y > 0) {
+        if (block == .slab and event.y > 0) {
             const below = world.data.get_block(event.x, event.y - 1, event.z);
-            if (below.id == .slab) {
+            if (below == .slab) {
                 Server.broadcast_block_change(event.x, event.y, event.z, old_block);
-                world.set_block(event.x, event.y - 1, event.z, .{ .id = .double_slab });
-                Server.broadcast_block_change(event.x, event.y - 1, event.z, .{ .id = .double_slab });
+                world.set_block(event.x, event.y - 1, event.z, .double_slab);
+                Server.broadcast_block_change(event.x, event.y - 1, event.z, .double_slab);
                 world.enqueue_neighbors_of(event.x, event.y - 1, event.z);
                 return;
             }
@@ -843,10 +844,10 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     }
     world.enqueue_neighbors_of(event.x, event.y, event.z);
 
-    if (mode == .create and block.id == .sponge) {
+    if (mode == .create and block == .sponge) {
         world.sponge_absorb(Server.immediate_block_change_sink, event.x, event.y, event.z);
     }
-    if (mode == .destroy and old_block.id == .sponge) {
+    if (mode == .destroy and old_block == .sponge) {
         world.sponge_release(event.x, event.y, event.z);
     }
 }
