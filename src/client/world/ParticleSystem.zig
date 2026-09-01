@@ -5,7 +5,6 @@ const Rendering = ae.Rendering;
 
 const core = @import("core");
 const World = core.World;
-const c = core.consts;
 
 const Vertex = @import("aether").Rendering.Vertex;
 const Camera = @import("../player/Camera.zig");
@@ -270,15 +269,20 @@ fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
     const bz0: i32 = @intFromFloat(@floor(wz - COLLISION_RADIUS));
     const bz1: i32 = @intFromFloat(@floor(wz + COLLISION_RADIUS));
 
+    const dims = World.data.dims;
+    const max_x: i32 = @intCast(dims.length);
+    const max_y: i32 = @intCast(dims.height);
+    const max_z: i32 = @intCast(dims.depth);
+
     var bx = bx0;
     while (bx <= bx1) : (bx += 1) {
-        if (bx < 0 or bx >= c.WorldLength) continue;
+        if (bx < 0 or bx >= max_x) continue;
         var by = by0;
         while (by <= by1) : (by += 1) {
-            if (by < 0 or by >= c.WorldHeight) continue;
+            if (by < 0 or by >= max_y) continue;
             var bz = bz0;
             while (bz <= bz1) : (bz += 1) {
-                if (bz < 0 or bz >= c.WorldDepth) continue;
+                if (bz < 0 or bz >= max_z) continue;
                 const id = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
                 if (collision.block_height(id) > 0.0) return true;
             }
@@ -293,9 +297,10 @@ fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
     const bx: i32 = @intFromFloat(@floor(wx));
     const by: i32 = @intFromFloat(@floor(wy));
     const bz: i32 = @intFromFloat(@floor(wz));
-    if (bx < 0 or bx >= c.WorldLength) return true;
-    if (by < 0 or by >= c.WorldHeight) return true;
-    if (bz < 0 or bz >= c.WorldDepth) return true;
+    const dims = World.data.dims;
+    if (bx < 0 or bx >= @as(i32, @intCast(dims.length))) return true;
+    if (by < 0 or by >= @as(i32, @intCast(dims.height))) return true;
+    if (bz < 0 or bz >= @as(i32, @intCast(dims.depth))) return true;
     return World.is_sunlit(@intCast(bx), @intCast(by), @intCast(bz));
 }
 

@@ -14,10 +14,11 @@
 
 const std = @import("std");
 const worldgen = @import("worldgen");
-const c = @import("consts.zig");
+const wd = @import("world_dims.zig");
 const blocks = @import("blocks.zig");
 
 pub const WorldData = @import("world/WorldData.zig");
+pub const WorldDims = wd.WorldDims;
 pub const WorldSimulation = @import("world/WorldSimulation.zig");
 pub const WorldSaver = @import("world/WorldSaver.zig");
 pub const DumpName = @import("world/DumpName.zig");
@@ -92,11 +93,12 @@ pub fn init_empty(
     io: std.Io,
     save_dir: std.Io.Dir,
     save_file_name: []const u8,
+    geometry: WorldDims,
     seed: u64,
     format: SaveFormat,
 ) !void {
     blocks.init();
-    try data.init_in_place(allocator, seed);
+    try data.init_in_place(allocator, geometry, seed);
     errdefer data.deinit();
     sim = try WorldSimulation.init(allocator, seed);
     errdefer sim.deinit(allocator);
@@ -112,10 +114,11 @@ pub fn init(
     io: std.Io,
     save_dir: std.Io.Dir,
     save_file_name: []const u8,
+    geometry: WorldDims,
     seed: u64,
     format: SaveFormat,
 ) !void {
-    try init_empty(allocator, io, save_dir, save_file_name, seed, format);
+    try init_empty(allocator, io, save_dir, save_file_name, geometry, seed, format);
     var initialized_empty = true;
     errdefer if (initialized_empty) {
         const backing_allocator = data.backing_allocator;
@@ -133,8 +136,8 @@ pub fn init(
         set_load_status(.generating);
         const start = std.Io.Clock.Timestamp.now(io, .boot);
 
-        const visited_len = comptime (c.WorldDepth * c.WorldHeight * c.WorldLength / c.ChunkSize + 7) / 8;
-        const lookaside = try scratch.alloc(u8, c.ChunkVolume);
+        const visited_len = (data.dims.volume() / wd.chunk_size + 7) / 8;
+        const lookaside = try scratch.alloc(u8, wd.chunk_volume);
         const visited = try scratch.alloc(u8, visited_len);
         @memset(visited, 0);
 
@@ -143,9 +146,9 @@ pub fn init(
             data.backing_allocator,
             scratch,
             @bitCast(data.seed),
-            .{ .width = c.WorldLength, .height = c.WorldHeight, .depth = c.WorldDepth },
+            .{ .width = data.dims.length, .height = data.dims.height, .depth = data.dims.depth },
         );
-        WorldData.remap_yzx_to_chunk_aware(generated.blocks, lookaside[0..c.ChunkVolume], visited);
+        WorldData.remap_yzx_to_chunk_aware(data.dims, generated.blocks, lookaside[0..wd.chunk_volume], visited);
         data.adopt_blocks(generated.blocks);
 
         const end = std.Io.Clock.Timestamp.now(io, .boot);

@@ -24,6 +24,9 @@ const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
 
 const log = std.log.scoped(.game);
 
+const max_compressed_bytes: usize = core.world_dims.max_length *
+    core.world_dims.max_height * core.world_dims.max_depth + 64 * 1024;
+
 // Module-level: only one LoadState instance may exist at a time.
 var server_ready: std.atomic.Value(bool) = .init(false);
 var session_error: ?anyerror = null;
@@ -193,20 +196,9 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
         return err;
     };
 
-    // Multiplayer never persists (owned_locally stays false), so the
-    // save filename is unused; pass the convention for symmetry.
-    try World.init_empty(alloc, io, data_dir, "world.dat", seed, World.default_format);
-    var world_owned_by_load = true;
-    errdefer if (world_owned_by_load) World.deinit();
-
-    // Accumulate the gzipped LevelDataChunk payloads into a scratch buffer,
-    // then decompress once on LevelFinalize. A 2 MiB bound is comfortable
-    // for any reasonable 4 MiB Classic world (typical compression ratio is
-    // 4-8x) and keeps the peak the same size as `raw_blocks` itself.
-    const compressed_cap: usize = 2 * 1024 * 1024;
-    const compressed = try alloc.alloc(u8, compressed_cap);
-    defer alloc.free(compressed);
-    var compressed_end: usize = 0;
+    var compressed: std.ArrayList(u8) = .empty;
+    defer compressed.deinit(alloc);
+    var announced: ?World.WorldDims = null;
 
     done: while (true) {
         const packet_id = try reader.peekByte();
@@ -225,13 +217,21 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
                 // LevelDataChunk: [id][u16 length BE][1024 bytes data][u8 percent]
                 const length = std.mem.readInt(u16, buf[1..3], .big);
                 if (length > 1024) return error.InvalidChunkLength;
-                if (compressed_end + length > compressed.len) return error.LevelDataOverflow;
-                @memcpy(compressed[compressed_end..][0..length], buf[3 .. 3 + @as(usize, length)]);
-                compressed_end += length;
+                if (compressed.items.len + length > max_compressed_bytes) return error.LevelDataOverflow;
+                try compressed.appendSlice(alloc, buf[3 .. 3 + @as(usize, length)]);
                 const percent = buf[1027];
                 World.set_load_status(.{ .downloading = percent });
             },
             0x04 => {
+                // LevelFinalize: [id][x][y][z], each u16 big-endian.
+                announced = World.WorldDims.from_array(.{
+                    std.mem.readInt(u16, buf[1..3], .big),
+                    std.mem.readInt(u16, buf[3..5], .big),
+                    std.mem.readInt(u16, buf[5..7], .big),
+                }) orelse {
+                    log.err("server offers a world size this build cannot represent", .{});
+                    return error.UnsupportedServerWorldSize;
+                };
                 reader.toss(len);
                 break :done;
             },
@@ -244,19 +244,38 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
         reader.toss(len);
     }
 
+    const dims = announced orelse return error.MissingLevelFinalize;
+
     // Decompress the accumulated gzip stream. The server uses `.gzip` in
     // core/client.zig:reset_compressor, so match here. Wire format is
     // contiguous YZX (Java Classic compatible); scatter into chunk-aware layout.
-    var src = std.Io.Reader.fixed(compressed[0..compressed_end]);
+    var src = std.Io.Reader.fixed(compressed.items);
     const window_buf = try alloc.alloc(u8, flate.max_window_len);
     defer alloc.free(window_buf);
     var decompress = flate.Decompress.init(&src, .gzip, window_buf);
 
+    // The stream opens with the raw level size. Trusting it only as a check:
+    // the announced geometry is what the world is sized from, and a mismatch
+    // means the level would not fit.
     var wire_header: [4]u8 = undefined;
     decompress.reader.readSliceAll(&wire_header) catch |err| {
         log.err("level decompress header failed: {}", .{err});
         return err;
     };
+    const raw_volume: usize = std.mem.readInt(u32, &wire_header, .big);
+    if (raw_volume != dims.volume()) {
+        log.err("server level is {d} blocks, which is not {}x{}x{}", .{
+            raw_volume, dims.length, dims.height, dims.depth,
+        });
+        return error.UnsupportedServerWorldSize;
+    }
+
+    // Multiplayer never persists (owned_locally stays false), so the
+    // save filename is unused; pass the convention for symmetry.
+    try World.init_empty(alloc, io, data_dir, "world.dat", dims, seed, World.default_format);
+    var world_owned_by_load = true;
+    errdefer if (world_owned_by_load) World.deinit();
+
     World.data.read_blocks_yzx(&decompress.reader) catch |err| {
         log.err("level decompress failed: {}", .{err});
         return err;

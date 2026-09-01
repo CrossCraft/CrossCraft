@@ -28,6 +28,17 @@ pub fn parse_autosave_seconds(content: []const u8) u32 {
     return autosave_default_seconds;
 }
 
+pub fn find_world_size(content: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        const key = "world-size:";
+        if (!std.mem.startsWith(u8, line, key)) continue;
+        return std.mem.trim(u8, line[key.len..], " \t");
+    }
+    return null;
+}
+
 pub const Epoch = struct {
     name: []const u8,
     interval_s: u32,

@@ -16,7 +16,6 @@ const PlayersDb = core.PlayersDb;
 const AccessControl = core.AccessControl;
 const Commands = core.Commands;
 const outbound_queue = core.OutboundQueue;
-const Consts = core.consts;
 
 const log = std.log.scoped(.server);
 const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
@@ -125,7 +124,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     Backup.pre_init_validate_and_restore(engine.io, engine.dirs.data, alloc);
     try Server.init(alloc, alloc, engine.io, engine.dirs.data, config);
 
-    self.conn_handles = try alloc.alloc(?*ConnectionSlot, Consts.MAX_PLAYERS);
+    self.conn_handles = try alloc.alloc(?*ConnectionSlot, core.Server.MaxPlayers);
     errdefer alloc.free(self.conn_handles);
     @memset(self.conn_handles, null);
 
@@ -134,7 +133,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     errdefer alloc.free(self.pending_handles);
     @memset(self.pending_handles, null);
 
-    self.connection_pool = try alloc.alloc(ConnectionSlot, Consts.MAX_PLAYERS + pending_len);
+    self.connection_pool = try alloc.alloc(ConnectionSlot, core.Server.MaxPlayers + pending_len);
     errdefer alloc.free(self.connection_pool);
     for (self.connection_pool) |*slot| slot.* = .{};
 
@@ -586,7 +585,7 @@ fn heartbeat_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
             .server_name = &Server.server_name,
             .port = SERVER_PORT,
             .users = self.heartbeat_users.load(.acquire),
-            .max_players = Consts.MAX_PLAYERS,
+            .max_players = core.Server.MaxPlayers,
             .salt = &self.heartbeat_salt,
         };
 
@@ -741,7 +740,7 @@ fn console_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
         } else {
             // Server chat: prefix and broadcast. The broadcast hook will
             // also echo to stdout, so no need to print locally first.
-            var msg_buf: Consts.Message = @splat(' ');
+            var msg_buf: core.protocol.Message = @splat(' ');
             const prefix = "&4[Server]: ";
             const n_pre = @min(prefix.len, msg_buf.len);
             @memcpy(msg_buf[0..n_pre], prefix[0..n_pre]);

@@ -5,7 +5,6 @@ const Rendering = ae.Rendering;
 
 const core = @import("core");
 const World = core.World;
-const c = core.consts;
 
 const Vertex = @import("aether").Rendering.Vertex;
 const Colors = @import("../graphics/Color.zig");
@@ -94,13 +93,20 @@ const MODEL_SCALE: f32 = 256.0;
 const QUADS_PER_SECTION: u32 = 2; // crossed X-plane + Z-plane per section
 const COLUMNS_DIAM: u32 = 2 * EXTENT_U + 1;
 const MAX_COLUMNS: u32 = COLUMNS_DIAM * COLUMNS_DIAM;
+const SPLASH_MAX_QUADS: u32 = @as(u32, SPLASH_MAX);
+
 /// Upper bound on sections per column. Each section may be split once at the
 /// SNORM V wrap to keep stored UVs monotonic, so budget 2x after the base
-/// world-height count.
-const MAX_SECTIONS_BASE: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(c.WorldHeight)) / SECTION_HEIGHT));
-const MAX_SECTIONS_PER_COLUMN: u32 = MAX_SECTIONS_BASE * 2;
-const STREAK_MAX_QUADS: u32 = MAX_COLUMNS * MAX_SECTIONS_PER_COLUMN * QUADS_PER_SECTION;
-const SPLASH_MAX_QUADS: u32 = @as(u32, SPLASH_MAX);
+/// world-height count. World height is a property of the live world rather
+/// than a compile-time constant, so the budget is computed, not declared.
+fn max_sections_per_column() u32 {
+    const base: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(World.data.dims.height)) / SECTION_HEIGHT));
+    return base * 2;
+}
+
+fn streak_max_quads() u32 {
+    return MAX_COLUMNS * max_sections_per_column() * QUADS_PER_SECTION;
+}
 
 // --- Types ---
 
@@ -150,7 +156,7 @@ pub fn init(allocator: std.mem.Allocator) !Self {
         .rng = std.Random.DefaultPrng.init(0xDA1ADA1ADA1ADA1A),
         .allocator = allocator,
     };
-    try self.streak_data.ensure_quad_capacity(allocator, STREAK_MAX_QUADS);
+    try self.streak_data.ensure_quad_capacity(allocator, streak_max_quads());
     try self.splash_data.ensure_quad_capacity(allocator, SPLASH_MAX_QUADS);
     return self;
 }
@@ -231,11 +237,11 @@ fn maybe_spawn_splash(self: *Self, camera: *const Camera) void {
     const dz = @as(i32, @intCast(rand.intRangeLessThan(u32, 0, COLUMNS_DIAM))) - EXTENT;
     const gx = cam_tile_x + dx;
     const gz = cam_tile_z + dz;
-    if (gx < 0 or gx >= c.WorldLength) return;
-    if (gz < 0 or gz >= c.WorldDepth) return;
+    if (gx < 0 or gx >= World.data.dims.length) return;
+    if (gz < 0 or gz >= World.data.dims.depth) return;
 
     const surface: i32 = rain_surface_at(gx, gz);
-    if (surface <= 0 or surface >= c.WorldHeight) return;
+    if (surface <= 0 or surface >= World.data.dims.height) return;
     if (camera.y < @as(f32, @floatFromInt(surface))) return; // camera under a roof here
 
     self.splashes[self.splash_count] = .{
@@ -352,7 +358,7 @@ fn streak_v_offset(scroll_v: i32) f32 {
 // --- Streak mesh build ---
 
 fn build_streaks(mesh: *Rendering.MeshDataType(Vertex), cam_tile_x: i32, cam_tile_z: i32) void {
-    const world_ceiling: f32 = @as(f32, @floatFromInt(c.WorldHeight));
+    const world_ceiling: f32 = @as(f32, @floatFromInt(World.data.dims.height));
 
     var dz: i32 = -EXTENT;
     while (dz <= EXTENT) : (dz += 1) {
@@ -360,11 +366,11 @@ fn build_streaks(mesh: *Rendering.MeshDataType(Vertex), cam_tile_x: i32, cam_til
         while (dx <= EXTENT) : (dx += 1) {
             const gx = cam_tile_x + dx;
             const gz = cam_tile_z + dz;
-            if (gx < 0 or gx >= c.WorldLength) continue;
-            if (gz < 0 or gz >= c.WorldDepth) continue;
+            if (gx < 0 or gx >= World.data.dims.length) continue;
+            if (gz < 0 or gz >= World.data.dims.depth) continue;
 
             const surface_i: i32 = rain_surface_at(gx, gz);
-            if (surface_i >= c.WorldHeight) continue; // sky-blocked to ceiling
+            if (surface_i >= World.data.dims.height) continue; // sky-blocked to ceiling
             const surface_f: f32 = @as(f32, @floatFromInt(surface_i));
             if (world_ceiling <= surface_f) continue;
 
@@ -616,9 +622,9 @@ fn encode(world: f32) i16 {
 /// Updated by the world on every block change (src/core/world.zig:424) so we
 /// get invalidation for free by reading it directly.
 fn light_map_at(x: i32, z: i32) i32 {
-    std.debug.assert(x >= 0 and x < c.WorldLength);
-    std.debug.assert(z >= 0 and z < c.WorldDepth);
-    const idx: u32 = @intCast(z * @as(i32, @intCast(c.WorldLength)) + x);
+    std.debug.assert(x >= 0 and x < World.data.dims.length);
+    std.debug.assert(z >= 0 and z < World.data.dims.depth);
+    const idx: u32 = @intCast(z * @as(i32, @intCast(World.data.dims.length)) + x);
     return @intCast(World.data.light_map[idx]);
 }
 
@@ -630,7 +636,7 @@ fn light_map_at(x: i32, z: i32) i32 {
 /// already covered by a light-blocker above it.
 fn rain_surface_at(x: i32, z: i32) i32 {
     const light_surface: i32 = light_map_at(x, z);
-    var y: i32 = @as(i32, @intCast(c.WorldHeight)) - 1;
+    var y: i32 = @as(i32, @intCast(World.data.dims.height)) - 1;
     while (y >= light_surface) : (y -= 1) {
         const id = World.data.get_block(@intCast(x), @intCast(y), @intCast(z));
         if (collision.block_height(id) > 0.0) return y + 1;
@@ -639,9 +645,9 @@ fn rain_surface_at(x: i32, z: i32) i32 {
 }
 
 fn out_of_world(wx: f32, wy: f32, wz: f32) bool {
-    if (wy < 0.0 or wy >= @as(f32, @floatFromInt(c.WorldHeight))) return true;
-    if (wx < 0.0 or wx >= @as(f32, @floatFromInt(c.WorldLength))) return true;
-    if (wz < 0.0 or wz >= @as(f32, @floatFromInt(c.WorldDepth))) return true;
+    if (wy < 0.0 or wy >= @as(f32, @floatFromInt(World.data.dims.height))) return true;
+    if (wx < 0.0 or wx >= @as(f32, @floatFromInt(World.data.dims.length))) return true;
+    if (wz < 0.0 or wz >= @as(f32, @floatFromInt(World.data.dims.depth))) return true;
     return false;
 }
 
@@ -659,13 +665,13 @@ fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
     const bz1: i32 = @intFromFloat(@floor(wz + r));
     var bx = bx0;
     while (bx <= bx1) : (bx += 1) {
-        if (bx < 0 or bx >= c.WorldLength) continue;
+        if (bx < 0 or bx >= World.data.dims.length) continue;
         var by = by0;
         while (by <= by1) : (by += 1) {
-            if (by < 0 or by >= c.WorldHeight) continue;
+            if (by < 0 or by >= World.data.dims.height) continue;
             var bz = bz0;
             while (bz <= bz1) : (bz += 1) {
-                if (bz < 0 or bz >= c.WorldDepth) continue;
+                if (bz < 0 or bz >= World.data.dims.depth) continue;
                 const id = World.data.get_block(@intCast(bx), @intCast(by), @intCast(bz));
                 if (collision.block_height(id) > 0.0) return true;
             }

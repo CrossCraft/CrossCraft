@@ -1,16 +1,18 @@
 const std = @import("std");
-const consts = @import("consts.zig");
 const blocks = @import("blocks.zig");
 const protocol = @import("protocol.zig");
 pub const Client = @import("client.zig");
 const OutboundQueue = @import("outbound_queue.zig").OutboundQueue;
 const world = @import("world.zig");
+const world_dims = @import("world_dims.zig");
 const compress_worker = @import("compress_worker.zig");
 const players_db = @import("players_db.zig");
 const access_control = @import("access_control.zig");
 const zb = @import("protocol");
 
 const log = std.log.scoped(.server);
+
+pub const MaxPlayers = 128;
 
 // --- Boot configuration ---
 
@@ -27,6 +29,7 @@ pub const WorldConfig = struct {
     seed: u64,
     save_location: []const u8,
     save_format: world.SaveFormat = world.default_format,
+    dims: world.WorldDims = world_dims.default,
 };
 
 /// The default save path. Used by both standalone and embedded
@@ -102,8 +105,8 @@ pub var max_connections_per_ip: u32 = default_max_connections_per_ip;
 /// directly, so it goes through this hook instead.
 pub var on_broadcast_chat: ?*const fn ([]const u8) void = null;
 
-pub var players: FirstAvailableBuffer(Client, consts.MAX_PLAYERS) = .init();
-var player_generations: [consts.MAX_PLAYERS]u32 = @splat(0);
+pub var players: FirstAvailableBuffer(Client, MaxPlayers) = .init();
+var player_generations: [MaxPlayers]u32 = @splat(0);
 
 /// Synchronization domains for the standalone server. They are intentionally
 /// separate: world simulation never contends with chat or position traffic,
@@ -258,9 +261,11 @@ pub fn init(
         io,
         save_dir,
         save_file_name,
+        wcfg.dims,
         wcfg.seed,
         wcfg.save_format,
     );
+    log.info("World geometry: {}x{}x{}", .{ wcfg.dims.length, wcfg.dims.height, wcfg.dims.depth });
     errdefer world.deinit_after_init_error();
 
     // Both persistent stores allocate from raw `alloc`, not the static
@@ -466,6 +471,12 @@ fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
                 } else {
                     log.warn("server.properties save-format '{s}' unknown; using default", .{value});
                 }
+            } else if (std.mem.eql(u8, key, "world-size")) {
+                if (world_dims.parse(value)) |dims| {
+                    wcfg.dims = dims;
+                } else {
+                    log.warn("server.properties world-size '{s}' is not a supported LxHxD; ignoring", .{value});
+                }
             } else if (std.mem.eql(u8, key, "login-timeout-ms")) {
                 if (std.fmt.parseInt(u32, value, 10)) |parsed| {
                     login_timeout_ms = std.math.clamp(parsed, 1_000, 60_000);
@@ -474,13 +485,13 @@ fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
                 }
             } else if (std.mem.eql(u8, key, "max-pending-logins")) {
                 if (std.fmt.parseInt(u32, value, 10)) |parsed| {
-                    max_pending_logins = std.math.clamp(parsed, 1, @as(u32, consts.MAX_PLAYERS));
+                    max_pending_logins = std.math.clamp(parsed, 1, @as(u32, MaxPlayers));
                 } else |_| {
                     log.warn("server.properties max-pending-logins value '{s}' is not a u32; ignoring", .{value});
                 }
             } else if (std.mem.eql(u8, key, "max-connections-per-ip")) {
                 if (std.fmt.parseInt(u32, value, 10)) |parsed| {
-                    max_connections_per_ip = std.math.clamp(parsed, 1, @as(u32, consts.MAX_PLAYERS));
+                    max_connections_per_ip = std.math.clamp(parsed, 1, @as(u32, MaxPlayers));
                 } else |_| {
                     log.warn("server.properties max-connections-per-ip value '{s}' is not a u32; ignoring", .{value});
                 }
@@ -515,12 +526,15 @@ fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
     var buf: [512]u8 = undefined;
     const contents = std.fmt.bufPrint(
         &buf,
-        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nsave-format:classic_cw\nlogin-timeout-ms:{d}\nmax-pending-logins:{d}\nmax-connections-per-ip:{d}\nwhitelist:false\nmax-players-saved:{d}\nmax-policy-records:{d}\nheartbeat-url:\n",
+        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nworld-size:{d}x{d}x{d}\nsave-format:classic_cw\nlogin-timeout-ms:{d}\nmax-pending-logins:{d}\nmax-connections-per-ip:{d}\nwhitelist:false\nmax-players-saved:{d}\nmax-policy-records:{d}\nheartbeat-url:\n",
         .{
             default_server_name,
             default_server_motd,
             wcfg.seed,
             wcfg.save_location,
+            wcfg.dims.length,
+            wcfg.dims.height,
+            wcfg.dims.depth,
             login_timeout_ms,
             max_pending_logins,
             max_connections_per_ip,
@@ -715,7 +729,7 @@ pub const ClientSnapshot = struct {
 pub fn find_client_by_name(name: []const u8) ?ClientSnapshot {
     lock_roster_shared();
     defer unlock_roster_shared();
-    for (0..consts.MAX_PLAYERS) |i| {
+    for (0..MaxPlayers) |i| {
         if (players.items[i]) |p| {
             if (!p.initialized) continue;
             if (std.mem.eql(u8, p.name[0..p.name_len], name)) return .{
@@ -754,7 +768,7 @@ pub fn grant_op_handle(handle: PlayerHandle) bool {
 /// check prevents a late worker completion from removing a newer occupant of
 /// the same player id.
 pub fn remove_client(handle: PlayerHandle) void {
-    var console_line: ?consts.Message = null;
+    var console_line: ?protocol.Message = null;
 
     lock_roster();
     const client = client_from_handle_locked(handle) orelse {
@@ -768,15 +782,15 @@ pub fn remove_client(handle: PlayerHandle) void {
     players.remove(handle.id);
 
     if (initialized) {
-        for (0..consts.MAX_PLAYERS) |i| {
+        for (0..MaxPlayers) |i| {
             const recipient = &(players.items[i] orelse continue);
             if (!recipient.initialized) continue;
             recipient.send_despawn(id) catch {};
         }
 
-        var msg: consts.Message = @splat(' ');
+        var msg: protocol.Message = @splat(' ');
         _ = std.fmt.bufPrint(&msg, "&e{s} left the game", .{name[0..name_len]}) catch unreachable;
-        for (0..consts.MAX_PLAYERS) |i| {
+        for (0..MaxPlayers) |i| {
             const recipient = &(players.items[i] orelse continue);
             if (!recipient.initialized) continue;
             recipient.send_message(id, &msg) catch {};
@@ -793,7 +807,7 @@ pub fn remove_client(handle: PlayerHandle) void {
 pub fn broadcast_spawn_player(sender_id: i8, packet: *zb.SpawnPlayer) void {
     lock_roster_shared();
     defer unlock_roster_shared();
-    for (0..consts.MAX_PLAYERS) |i| {
+    for (0..MaxPlayers) |i| {
         if (players.items[i] != null and players.items[i].?.initialized and players.items[i].?.id != sender_id) {
             players.items[i].?.send_spawn(packet) catch continue;
         }
@@ -803,7 +817,7 @@ pub fn broadcast_spawn_player(sender_id: i8, packet: *zb.SpawnPlayer) void {
 pub fn broadcast_despawn_player(id: i8) void {
     lock_roster_shared();
     defer unlock_roster_shared();
-    for (0..consts.MAX_PLAYERS) |i| {
+    for (0..MaxPlayers) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
             players.items[i].?.send_despawn(id) catch continue;
         }
@@ -812,7 +826,7 @@ pub fn broadcast_despawn_player(id: i8) void {
 
 pub fn broadcast_chat_message(id: i8, message: []u8) void {
     lock_roster_shared();
-    for (0..consts.MAX_PLAYERS) |i| {
+    for (0..MaxPlayers) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
             players.items[i].?.send_message(id, message) catch continue;
         }
@@ -841,7 +855,7 @@ fn broadcast_block_change_impl(x: u16, y: u16, z: u16, block: blocks.Block) void
 
     lock_roster_shared();
     defer unlock_roster_shared();
-    for (0..consts.MAX_PLAYERS) |i| {
+    for (0..MaxPlayers) |i| {
         const client = &(players.items[i] orelse continue);
         if (client.initialized or client.catchup_mode.load(.acquire) == .direct) {
             client.send_block_change(x, y, z, block) catch continue;
@@ -855,11 +869,11 @@ fn broadcast_block_change_impl(x: u16, y: u16, z: u16, block: blocks.Block) void
 pub fn broadcast_player_positions() void {
     lock_roster_shared();
     defer unlock_roster_shared();
-    for (0..consts.MAX_PLAYERS) |i| {
+    for (0..MaxPlayers) |i| {
         if (players.items[i] == null or !players.items[i].?.initialized)
             continue;
 
-        for (0..consts.MAX_PLAYERS) |j| {
+        for (0..MaxPlayers) |j| {
             if (i == j)
                 continue;
 
@@ -875,7 +889,7 @@ pub fn broadcast_player_positions() void {
 /// Process all pending packets from local (singleplayer) clients.
 /// Called each tick instead of running a blocking read_loop thread.
 pub fn drain_local_packets() void {
-    for (0..consts.MAX_PLAYERS) |i| {
+    for (0..MaxPlayers) |i| {
         if (players.items[i] != null and players.items[i].?.local) {
             players.items[i].?.drain_packets();
         }
@@ -901,7 +915,7 @@ pub fn tick() void {
 fn broadcast_ping() void {
     lock_roster_shared();
     defer unlock_roster_shared();
-    for (0..consts.MAX_PLAYERS) |i| {
+    for (0..MaxPlayers) |i| {
         if (players.items[i] != null and players.items[i].?.initialized) {
             players.items[i].?.send_ping() catch continue;
         }

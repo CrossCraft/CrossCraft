@@ -8,7 +8,6 @@ const std = @import("std");
 const ae = @import("aether");
 const Audio = ae.Audio;
 const Math = ae.Math;
-const c = @import("core").consts;
 const blocks = @import("core").blocks;
 const Block = blocks.Block;
 const Options = @import("Options.zig");

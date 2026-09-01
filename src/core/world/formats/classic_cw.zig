@@ -13,10 +13,11 @@
 // on PSP.
 
 const std = @import("std");
-const c = @import("../../consts.zig");
 const b = @import("../../blocks.zig");
+const wd = @import("../../world_dims.zig");
 
 const Block = b.Block;
+const WorldDims = wd.WorldDims;
 
 const fmt_mod = @import("../SaveFormat.zig");
 const SaveContext = fmt_mod.SaveContext;
@@ -52,13 +53,14 @@ pub const ClassicCw = struct {
     pub fn load_world(
         _: ClassicCw,
         scratch: std.mem.Allocator,
+        dims: WorldDims,
         blocks: []Block,
         reader: *std.Io.Reader,
     ) !LoadOutcome {
         const window_buf = try scratch.alloc(u8, std.compress.flate.max_window_len);
         defer scratch.free(window_buf);
         var decompress = std.compress.flate.Decompress.init(reader, .gzip, window_buf);
-        return try read_classic_world_compound(&decompress.reader, blocks);
+        return try read_classic_world_compound(&decompress.reader, dims, blocks);
     }
 };
 
@@ -96,9 +98,9 @@ fn write_classic_world_compound(ctx: SaveContext, out: *std.Io.Writer) !void {
         leaf_byte("FormatVersion", FORMAT_VERSION),
         leaf_string("Name", ctx.name),
         named("UUID", .{ .byte_array = .{ .value = &uuid_copy } }),
-        leaf_short("X", @intCast(ctx.world_size[0])),
-        leaf_short("Y", @intCast(ctx.world_size[1])),
-        leaf_short("Z", @intCast(ctx.world_size[2])),
+        leaf_short("X", @intCast(ctx.dims.length)),
+        leaf_short("Y", @intCast(ctx.dims.height)),
+        leaf_short("Z", @intCast(ctx.dims.depth)),
         named("CreatedBy", .{ .compound = .{ .value = created_by_children } }),
         named("MapGenerator", .{ .compound = .{ .value = map_gen_children } }),
         leaf_long("TimeCreated", ctx.time_created),
@@ -115,24 +117,25 @@ fn write_classic_world_compound(ctx: SaveContext, out: *std.Io.Writer) !void {
     // helper writes the tag/name/length header; BlockBody streams the
     // bytes via WorldData.write_blocks_yzx so no contiguous scratch
     // is needed.
-    const total_len: u32 = @as(u32, c.WorldLength) * @as(u32, c.WorldHeight) * @as(u32, c.WorldDepth);
+    const total_len: u32 = @intCast(ctx.dims.volume());
     const BlockBody = struct {
+        dims: WorldDims,
         blocks: []const Block,
         pub fn write_into(self: @This(), w: *std.Io.Writer) nbt.WriteError!void {
             // Mirror of WorldData.write_blocks_yzx, inlined to avoid the
             // dependency on a *WorldData (we have a flat slice from ctx).
-            for (0..c.WorldHeight) |yi| {
-                for (0..c.WorldDepth) |zi| {
-                    for (0..c.ChunksX) |cxi| {
-                        const base = c.block_index(@intCast(cxi * c.ChunkSize), @intCast(yi), @intCast(zi));
-                        const slice: *const [c.ChunkSize]u8 = @ptrCast(self.blocks[base..][0..c.ChunkSize]);
+            for (0..self.dims.height) |yi| {
+                for (0..self.dims.depth) |zi| {
+                    for (0..self.dims.chunks_x) |cxi| {
+                        const base = self.dims.block_index(@intCast(cxi * wd.chunk_size), @intCast(yi), @intCast(zi));
+                        const slice: *const [wd.chunk_size]u8 = @ptrCast(self.blocks[base..][0..wd.chunk_size]);
                         try w.writeAll(slice);
                     }
                 }
             }
         }
     };
-    try nbt.write_named_byte_array_stream(out, "BlockArray", total_len, BlockBody{ .blocks = ctx.blocks });
+    try nbt.write_named_byte_array_stream(out, "BlockArray", total_len, BlockBody{ .dims = ctx.dims, .blocks = ctx.blocks });
 
     // Empty Metadata compound: tag + name + immediate TAG_End.
     try out.writeInt(u8, @intFromEnum(nbt.Tag.compound), .big);
@@ -172,6 +175,7 @@ fn leaf_string(name: []const u8, value: []const u8) nbt.NBT {
 
 fn read_classic_world_compound(
     reader: *std.Io.Reader,
+    dims: WorldDims,
     blocks: []Block,
 ) !LoadOutcome {
     // Outer tag must be a compound named "ClassicWorld".
@@ -182,7 +186,7 @@ fn read_classic_world_compound(
     if (!std.mem.eql(u8, name, "ClassicWorld")) return error.UnexpectedName;
 
     var outcome: LoadOutcome = .{
-        .dimensions = .{ c.WorldLength, c.WorldHeight, c.WorldDepth },
+        .dimensions = dims.to_array(),
         .seed = 0,
         .tick_count = 0,
     };
@@ -200,9 +204,10 @@ fn read_classic_world_compound(
             // i32 length and stream into the chunk-major layout.
             if (t != .byte_array) return error.InvalidTag;
             const len = try reader.takeInt(i32, .big);
-            const expected: u32 = @as(u32, c.WorldLength) * @as(u32, c.WorldHeight) * @as(u32, c.WorldDepth);
+            if (!dims.matches(outcome.dimensions)) return error.DimensionMismatch;
+            const expected: u32 = @intCast(dims.volume());
             if (len < 0 or @as(u32, @intCast(len)) != expected) return error.UnexpectedByteArrayLength;
-            try read_blocks_yzx_into(blocks, reader);
+            try read_blocks_yzx_into(dims, blocks, reader);
         } else if (std.mem.eql(u8, child_name, "X") and t == .short) {
             outcome.dimensions[0] = @intCast(try reader.takeInt(i16, .big));
         } else if (std.mem.eql(u8, child_name, "Y") and t == .short) {
@@ -239,12 +244,12 @@ fn take_string(reader: *std.Io.Reader, buf: []u8) ![]u8 {
     return buf[0..len];
 }
 
-fn read_blocks_yzx_into(blocks: []Block, reader: *std.Io.Reader) !void {
-    for (0..c.WorldHeight) |yi| {
-        for (0..c.WorldDepth) |zi| {
-            for (0..c.ChunksX) |cxi| {
-                const base = c.block_index(@intCast(cxi * c.ChunkSize), @intCast(yi), @intCast(zi));
-                const slice: *[c.ChunkSize]u8 = @ptrCast(blocks[base..][0..c.ChunkSize]);
+fn read_blocks_yzx_into(dims: WorldDims, blocks: []Block, reader: *std.Io.Reader) !void {
+    for (0..dims.height) |yi| {
+        for (0..dims.depth) |zi| {
+            for (0..dims.chunks_x) |cxi| {
+                const base = dims.block_index(@intCast(cxi * wd.chunk_size), @intCast(yi), @intCast(zi));
+                const slice: *[wd.chunk_size]u8 = @ptrCast(blocks[base..][0..wd.chunk_size]);
                 try reader.readSliceAll(slice);
             }
         }

@@ -22,7 +22,7 @@ A file for [guiding coding agents](https://agents.md/).
 - Zig source: `src/`
   - Game client: `src/client`
   - Server wrapper: `src/server`
-  - World, gameplay & shared logic (consts, block registry, protocol helpers, physics): `src/core`
+  - World, gameplay & shared logic (world geometry, block registry, protocol helpers, physics): `src/core`
 
 ## Commit, Issue, and PR Guidelines
 

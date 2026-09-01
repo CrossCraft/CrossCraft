@@ -167,11 +167,10 @@ pub fn main_memory_bytes() usize {
     return @as(usize, profile.total_memory_mb) * MB;
 }
 
-/// Max chunks that fit within the radius (circular, clamped to 16x16 world).
-/// Uses the bounding square (2r+1)^2 as upper bound for array sizing.
 pub fn max_sections() u32 {
     const diameter = max_chunk_radius() * 2 + 1;
-    return diameter * diameter * 4; // * SECTIONS_Y
+    // TODO: WorldDim Aware
+    return diameter * diameter * 4;
 }
 
 pub fn init_memory() Util.MemoryConfig {

@@ -1,4 +1,4 @@
-pub const consts = @import("consts.zig");
+pub const world_dims = @import("world_dims.zig");
 pub const blocks = @import("blocks.zig");
 pub const protocol = @import("protocol.zig");
 pub const physics = @import("physics.zig");

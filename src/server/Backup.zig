@@ -3,7 +3,6 @@ const ae = @import("aether");
 const core = @import("core");
 
 const scheme = @import("BackupScheme.zig");
-const c = core.consts;
 const Block = core.blocks.Block;
 
 const log = std.log.scoped(.backup);
@@ -60,7 +59,7 @@ fn resolve_parent_dir(io: std.Io, data_dir: std.Io.Dir, sub_path: []const u8) ?O
     return .{ .dir = dir, .owned = true };
 }
 
-fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratch: std.mem.Allocator) bool {
+fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, dims: core.World.WorldDims, scratch: std.mem.Allocator) bool {
     const file = dir.openFile(io, file_name, .{}) catch return false;
     defer file.close(io);
 
@@ -90,7 +89,7 @@ fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratc
         return false;
     }
 
-    const volume: usize = c.WorldLength * c.WorldHeight * c.WorldDepth;
+    const volume: usize = dims.volume();
     const raw = scratch.alloc(u8, volume) catch |err| {
         log.err("Failed to allocate world scratch for save validation: {}", .{err});
         return false;
@@ -98,19 +97,20 @@ fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratc
     defer scratch.free(raw);
     const blocks: []Block = @ptrCast(raw);
 
-    const outcome = sniff.load_world(scratch, blocks, &reader.interface) catch |err| {
+    const outcome = sniff.load_world(scratch, dims, blocks, &reader.interface) catch |err| {
         log.warn("'{s}' failed to parse as {s}: {}", .{ file_name, @tagName(sniff), err });
         return false;
     };
 
-    if (outcome.dimensions[0] != c.WorldLength or
-        outcome.dimensions[1] != c.WorldHeight or
-        outcome.dimensions[2] != c.WorldDepth)
-    {
-        log.warn("'{s}' has dimensions {}x{}x{}, expected {}x{}x{}", .{
-            file_name,             outcome.dimensions[0], outcome.dimensions[1],
-            outcome.dimensions[2], c.WorldLength,         c.WorldHeight,
-            c.WorldDepth,
+    if (!dims.matches(outcome.dimensions)) {
+        log.warn("'{s}' has dimensions {d}x{d}x{d}, expected {d}x{d}x{d}", .{
+            file_name,
+            outcome.dimensions[0],
+            outcome.dimensions[1],
+            outcome.dimensions[2],
+            dims.length,
+            dims.height,
+            dims.depth,
         });
         return false;
     }
@@ -140,8 +140,15 @@ pub fn pre_init_validate_and_restore(io: std.Io, data_dir: std.Io.Dir, alloc: st
     const save_dir = resolve_parent_dir(io, data_dir, loc.parent) orelse return;
     defer if (save_dir.owned) save_dir.dir.close(io);
 
+    const dims = blk: {
+        if (scheme.find_world_size(props)) |raw_size| {
+            break :blk core.world_dims.parse(raw_size) orelse core.world_dims.default;
+        }
+        break :blk core.world_dims.default;
+    };
+
     const exists = file_exists(io, save_dir.dir, loc.file_name);
-    if (exists and validate_save_file(io, save_dir.dir, loc.file_name, scratch)) return;
+    if (exists and validate_save_file(io, save_dir.dir, loc.file_name, dims, scratch)) return;
 
     if (exists) {
         log.warn("Save '{s}' failed validation; attempting backup restore", .{loc.file_name});
@@ -149,14 +156,14 @@ pub fn pre_init_validate_and_restore(io: std.Io, data_dir: std.Io.Dir, alloc: st
         log.info("Save '{s}' not found; checking backups", .{loc.file_name});
     }
 
-    if (restore_newest_valid(io, save_dir.dir, loc.file_name, scratch)) {
+    if (restore_newest_valid(io, save_dir.dir, loc.file_name, dims, scratch)) {
         log.info("Backup restore complete; the restored save will be loaded", .{});
     } else if (exists) {
         log.err("No valid backup found; the world will be regenerated", .{});
     }
 }
 
-fn restore_newest_valid(io: std.Io, save_dir: std.Io.Dir, save_file_name: []const u8, scratch: std.mem.Allocator) bool {
+fn restore_newest_valid(io: std.Io, save_dir: std.Io.Dir, save_file_name: []const u8, dims: core.World.WorldDims, scratch: std.mem.Allocator) bool {
     for (epochs) |epoch| {
         var bucket = open_bucket(io, save_dir, epoch.name) orelse continue;
         defer bucket.close(io);
@@ -167,7 +174,7 @@ fn restore_newest_valid(io: std.Io, save_dir: std.Io.Dir, save_file_name: []cons
         scheme.sort_entries_desc(entries[0..count]);
 
         for (entries[0..count]) |entry| {
-            if (!validate_save_file(io, bucket, entry.name_slice(), scratch)) {
+            if (!validate_save_file(io, bucket, entry.name_slice(), dims, scratch)) {
                 log.warn("Backup '{s}/{s}' failed validation; trying older", .{ epoch.name, entry.name_slice() });
                 continue;
             }

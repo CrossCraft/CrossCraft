@@ -29,7 +29,6 @@ const GameplayBindings = @import("../player/bindings.zig");
 const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
 const core = @import("core");
-const c = core.consts;
 const Server = core.Server;
 const World = core.World;
 const CompressWorker = core.CompressWorker;
@@ -282,7 +281,7 @@ fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.
     };
     defer alloc.destroy(data);
 
-    data.init_in_place(alloc, 0) catch |err| {
+    data.init_in_place(alloc, legacy_dims, 0) catch |err| {
         log.warn("legacy save migration: failed to allocate world data: {}", .{err});
         return;
     };
@@ -302,6 +301,11 @@ fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.
     });
 }
 
+/// Legacy `world.dat` files predate the size setting entirely, so they are
+/// always the shipped default geometry. Read from `world_dims` rather than
+/// `World.data`: the menu runs before any world exists.
+const legacy_dims = core.world_dims.default;
+
 fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldData) bool {
     const file = data_dir.openFile(io, Server.legacy_save_file_name, .{}) catch return false;
     defer file.close(io);
@@ -309,25 +313,11 @@ fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldDat
     var read_buf: [32768]u8 = undefined;
     var reader = file.reader(io, &read_buf);
     const load_format: World.SaveFormat = .{ .classic_dat = .{} };
-    const outcome = load_format.load_world(data.backing_allocator, data.blocks, &reader.interface) catch |err| {
+    const outcome = load_format.load_world(data.backing_allocator, data.dims, data.blocks, &reader.interface) catch |err| {
         log.warn("legacy save migration: failed to load {s}: {}", .{ Server.legacy_save_file_name, err });
         return false;
     };
 
-    if (outcome.dimensions[0] != c.WorldLength or
-        outcome.dimensions[1] != c.WorldHeight or
-        outcome.dimensions[2] != c.WorldDepth)
-    {
-        log.warn("legacy save migration: {s} dimensions mismatch: {}x{}x{}", .{
-            Server.legacy_save_file_name,
-            outcome.dimensions[0],
-            outcome.dimensions[1],
-            outcome.dimensions[2],
-        });
-        return false;
-    }
-
-    data.world_size = outcome.dimensions;
     data.seed = outcome.seed;
     data.tick_count = outcome.tick_count;
     if (outcome.name_len > 0) {

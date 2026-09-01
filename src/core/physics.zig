@@ -20,12 +20,13 @@
 //!      clipped) entity, project to contact, pick one face, and clip.
 //!      Horizontal clips try step-up first when the entity was grounded.
 //!
-//! The module lives in `core` and is generic over a caller-provided world
-//! type (`anytype`) exposing `get_block(u16, u16, u16) Block`. Block AABBs
-//! come from `blocks.global.bounds`.
+//! The module lives in `core` and resolves against the `WorldData` handed to
+//! it: block lookups and the world bounds both come from that value, so there
+//! is one source of truth for the geometry. Block AABBs come from
+//! `blocks.global.bounds`.
 const std = @import("std");
-const consts = @import("consts.zig");
 const blocks = @import("blocks.zig");
+const WorldData = @import("world/WorldData.zig");
 const Block = blocks.Block;
 
 /// Separation epsilon. Absorbs floating-point slop in face classification
@@ -95,7 +96,7 @@ const ResolveState = struct {
 /// `step_size` > 0 enables in-loop step-up when `was_on_ground` is true;
 /// pass 0 to disable.
 pub fn move_and_wall_slide(
-    comptime WorldT: type,
+    data: *const WorldData,
     pos: [3]f32,
     vel: [3]f32,
     half_w: f32,
@@ -137,12 +138,12 @@ pub fn move_and_wall_slide(
 
     var buf: [MAX_CANDIDATES]Candidate = undefined;
     var count: u32 = 0;
-    broadphase(WorldT, state.entity, state.vel, buf[0..], &count);
+    broadphase(data, state.entity, state.vel, buf[0..], &count);
     insertion_sort(buf[0..count]);
 
     var i: u32 = 0;
     while (i < count) : (i += 1) {
-        resolve_candidate(WorldT, &state, buf[i]);
+        resolve_candidate(data, &state, buf[i]);
     }
 
     // Integrate remaining velocity. Axes that collided are zero (the clip
@@ -175,7 +176,7 @@ pub fn move_and_wall_slide(
 /// crossed. Used by callers that want to opt in to a step-up outside the
 /// normal grounded-DidSlide path (e.g. water-to-land exit).
 pub fn try_step_up(
-    comptime WorldT: type,
+    data: *const WorldData,
     pos: [3]f32,
     dx: f32,
     dz: f32,
@@ -188,15 +189,15 @@ pub fn try_step_up(
 
     // Clearance at raised height, before horizontal motion.
     const raised = entity_aabb(pos[0], raised_y, pos[2], half_w, height);
-    if (overlaps_any_solid(WorldT, raised)) return null;
+    if (overlaps_any_solid(data, raised)) return null;
 
     // Horizontal slide at raised height. Disable further step-up here
     // (step_size = 0) so probes don't recurse.
-    const moved = move_and_wall_slide(WorldT, .{ pos[0], raised_y, pos[2] }, .{ dx, 0.0, dz }, half_w, height, 0.0, false);
+    const moved = move_and_wall_slide(data, .{ pos[0], raised_y, pos[2] }, .{ dx, 0.0, dz }, half_w, height, 0.0, false);
     if (moved.x == pos[0] and moved.z == pos[2]) return null;
 
     // Drop-down to find the surface under the stepped-to position.
-    const landed_y = find_landing_y(WorldT, moved.x, raised_y, moved.z, half_w, height, step_size) orelse return null;
+    const landed_y = find_landing_y(data, moved.x, raised_y, moved.z, half_w, height, step_size) orelse return null;
     if (landed_y < pos[1]) return null;
 
     return .{ moved.x, landed_y, moved.z };
@@ -207,7 +208,7 @@ pub fn try_step_up(
 /// grounded-state refresh outside the main move (rare -- prefer
 /// MoveResult.on_ground).
 pub fn is_on_ground(
-    comptime WorldT: type,
+    data: *const WorldData,
     pos: [3]f32,
     half_w: f32,
     height: f32,
@@ -216,7 +217,7 @@ pub fn is_on_ground(
     var box = entity_aabb(pos[0], pos[1], pos[2], half_w, height);
     box.min_y -= EPSILON;
     box.max_y -= EPSILON;
-    return overlaps_any_solid(WorldT, box);
+    return overlaps_any_solid(data, box);
 }
 
 // --- Broadphase ---
@@ -244,7 +245,7 @@ fn extent_of(entity: Aabb, vel: [3]f32) Aabb {
 }
 
 fn broadphase(
-    comptime WorldT: type,
+    data: *const WorldData,
     entity: Aabb,
     vel: [3]f32,
     out: []Candidate,
@@ -267,7 +268,7 @@ fn broadphase(
         while (bz <= bz_max) : (bz += 1) {
             var bx: i32 = bx_min;
             while (bx <= bx_max) : (bx += 1) {
-                const bb = solid_block_aabb(WorldT, bx, by, bz) orelse continue;
+                const bb = solid_block_aabb(data, bx, by, bz) orelse continue;
                 // Non-full block bounds may not touch the extent even if
                 // the unit cell did; guard the intersection explicitly.
                 if (!intersects(extent, bb)) continue;
@@ -291,19 +292,19 @@ fn broadphase(
 /// if the cell is passable. Out-of-bounds treatment:
 ///
 ///   y < 0            -> full solid cube (bedrock floor / world bottom).
-///   y >= WorldHeight -> passable (no ceiling; entities can jump above).
+///   y >= world height -> passable (no ceiling; entities can jump above).
 ///   x/z OOB          -> full solid cube (world-edge walls).
 ///
 /// In-bounds cells consult the shared block registry for both solidity
 /// (`sim_props.solid`) and geometry (`bounds`), so slabs, flowers, and any
 /// future partial shapes automatically get the right AABB.
-fn solid_block_aabb(comptime WorldT: type, bx: i32, by: i32, bz: i32) ?Aabb {
+fn solid_block_aabb(data: *const WorldData, bx: i32, by: i32, bz: i32) ?Aabb {
     if (by < 0) return full_cube(bx, by, bz);
-    if (by >= consts.WorldHeight) return null;
-    if (bx < 0 or bx >= consts.WorldLength) return full_cube(bx, by, bz);
-    if (bz < 0 or bz >= consts.WorldDepth) return full_cube(bx, by, bz);
+    if (by >= data.dims.height) return null;
+    if (bx < 0 or bx >= data.dims.length) return full_cube(bx, by, bz);
+    if (bz < 0 or bz >= data.dims.depth) return full_cube(bx, by, bz);
 
-    const block = WorldT.get_block(
+    const block = data.get_block(
         @as(u16, @intCast(bx)),
         @as(u16, @intCast(by)),
         @as(u16, @intCast(bz)),
@@ -376,7 +377,7 @@ fn insertion_sort(buf: []Candidate) void {
 // --- Resolution ---
 
 fn resolve_candidate(
-    comptime WorldT: type,
+    data: *const WorldData,
     state: *ResolveState,
     cand: Candidate,
 ) void {
@@ -400,10 +401,10 @@ fn resolve_candidate(
         .none => {},
         .y_max => clip_y_max(state, cand.bounds),
         .y_min => clip_y_min(state, cand.bounds),
-        .x_min => if (!try_step(WorldT, state, final, cand.bounds)) clip_x_min(state, cand.bounds),
-        .x_max => if (!try_step(WorldT, state, final, cand.bounds)) clip_x_max(state, cand.bounds),
-        .z_min => if (!try_step(WorldT, state, final, cand.bounds)) clip_z_min(state, cand.bounds),
-        .z_max => if (!try_step(WorldT, state, final, cand.bounds)) clip_z_max(state, cand.bounds),
+        .x_min => if (!try_step(data, state, final, cand.bounds)) clip_x_min(state, cand.bounds),
+        .x_max => if (!try_step(data, state, final, cand.bounds)) clip_x_max(state, cand.bounds),
+        .z_min => if (!try_step(data, state, final, cand.bounds)) clip_z_min(state, cand.bounds),
+        .z_max => if (!try_step(data, state, final, cand.bounds)) clip_z_max(state, cand.bounds),
     }
 }
 
@@ -494,7 +495,7 @@ fn clip_z_min(state: *ResolveState, block: Aabb) void {
 /// velocity. Returns true if the step succeeded, so the caller can skip
 /// the horizontal clip for this candidate.
 fn try_step(
-    comptime WorldT: type,
+    data: *const WorldData,
     state: *ResolveState,
     final: Aabb,
     block: Aabb,
@@ -516,7 +517,7 @@ fn try_step(
         .max_y = new_y + height,
         .max_z = @max(final.max_z, block.max_z - EPSILON),
     };
-    if (overlaps_any_solid(WorldT, adj)) return false;
+    if (overlaps_any_solid(data, adj)) return false;
 
     state.entity.min_y = new_y;
     state.entity.max_y = new_y + height;
@@ -527,7 +528,7 @@ fn try_step(
 
 // --- Overlap / landing helpers ---
 
-fn overlaps_any_solid(comptime WorldT: type, box: Aabb) bool {
+fn overlaps_any_solid(data: *const WorldData, box: Aabb) bool {
     const bx_min: i32 = floor_i32(box.min_x);
     const by_min: i32 = floor_i32(box.min_y);
     const bz_min: i32 = floor_i32(box.min_z);
@@ -541,7 +542,7 @@ fn overlaps_any_solid(comptime WorldT: type, box: Aabb) bool {
         while (bz <= bz_max) : (bz += 1) {
             var bx: i32 = bx_min;
             while (bx <= bx_max) : (bx += 1) {
-                const bb = solid_block_aabb(WorldT, bx, by, bz) orelse continue;
+                const bb = solid_block_aabb(data, bx, by, bz) orelse continue;
                 if (intersects(box, bb)) return true;
             }
         }
@@ -553,7 +554,7 @@ fn overlaps_any_solid(comptime WorldT: type, box: Aabb) bool {
 /// block top under the entity's XZ footprint. Used by `try_step_up` to
 /// settle the feet onto a surface after a raised horizontal move.
 fn find_landing_y(
-    comptime WorldT: type,
+    data: *const WorldData,
     px: f32,
     start_y: f32,
     pz: f32,
@@ -579,7 +580,7 @@ fn find_landing_y(
         while (bz <= bz_max) : (bz += 1) {
             var bx: i32 = bx_min;
             while (bx <= bx_max) : (bx += 1) {
-                const bb = solid_block_aabb(WorldT, bx, by, bz) orelse continue;
+                const bb = solid_block_aabb(data, bx, by, bz) orelse continue;
                 if (!overlaps_xz(box, bb)) continue;
                 if (bb.max_y < target_y or bb.max_y > start_y) continue;
                 if (landed == null or bb.max_y > landed.?) landed = bb.max_y;

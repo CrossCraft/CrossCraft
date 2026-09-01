@@ -9,8 +9,8 @@
 // signatures.
 
 const std = @import("std");
-const c = @import("../consts.zig");
 const b = @import("../blocks.zig");
+const WorldDims = @import("../world_dims.zig").WorldDims;
 
 const Block = b.Block;
 
@@ -22,10 +22,10 @@ pub const ClassicCw = classic_cw_mod.ClassicCw;
 
 /// Everything a format may need to write a save. Formats are free to
 /// ignore the metadata fields they don't carry on disk -- classic_dat
-/// uses only world_size/seed/tick_count/blocks; classic_cw consumes all
+/// uses only dims/seed/tick_count/blocks; classic_cw consumes all
 /// of them.
 pub const SaveContext = struct {
-    world_size: [3]u16,
+    dims: WorldDims,
     seed: u64,
     tick_count: u64,
     blocks: []const Block,
@@ -108,14 +108,18 @@ pub const SaveFormat = union(enum) {
         }
     }
 
+    /// Load a save into `blocks`, which the caller allocated for `dims`. A
+    /// format must reject a file whose recorded dimensions differ before
+    /// writing into that buffer.
     pub fn load_world(
         self: SaveFormat,
         scratch: std.mem.Allocator,
+        dims: WorldDims,
         blocks: []Block,
         reader: *std.Io.Reader,
     ) !LoadOutcome {
         return switch (self) {
-            inline else => |arm| try arm.load_world(scratch, blocks, reader),
+            inline else => |arm| try arm.load_world(scratch, dims, blocks, reader),
         };
     }
 };

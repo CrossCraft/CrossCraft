@@ -1,6 +1,5 @@
 const std = @import("std");
 const core = @import("core");
-const c = core.consts;
 const World = core.World;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Rendering = @import("aether").Rendering;
@@ -9,7 +8,7 @@ const BatchMesh = Rendering.MeshDataType(Vertex);
 const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 
-const SECTION_H: u32 = 16;
+const SECTION_H: u32 = core.world_dims.chunk_size;
 const Block = core.blocks.Block;
 
 /// Check sunlight at the neighbor block this face looks into.
@@ -30,19 +29,19 @@ fn face_sunlit(wx: u16, y: u32, wz: u16, face: Face) bool {
         else => @as(i32, 0),
     };
     // Out-of-bounds neighbors are treated as sunlit (sky above / world edge)
-    if (nx < 0 or nx >= c.WorldLength or
-        nz < 0 or nz >= c.WorldDepth or
-        ny < 0 or ny >= c.WorldHeight)
+    const dims = World.data.dims;
+    const max_x: i32 = @intCast(dims.length);
+    const max_y: i32 = @intCast(dims.height);
+    const max_z: i32 = @intCast(dims.depth);
+    if (nx < 0 or nx >= max_x or
+        nz < 0 or nz >= max_z or
+        ny < 0 or ny >= max_y)
         return true;
     return World.is_sunlit(@intCast(nx), @intCast(ny), @intCast(nz));
 }
 
-const WORLD_H: u32 = c.WorldHeight;
-const WORLD_W: u32 = c.WorldLength;
-const WORLD_D: u32 = c.WorldDepth;
-
 /// Bits 1..16 set: the 16 inner columns of the 18-wide padded row.
-const SECTION_MASK: u32 = ((1 << 16) - 1) << 1;
+const SECTION_MASK: u32 = ((@as(u32, 1) << SECTION_H) - 1) << 1;
 
 const Row = struct {
     opq: u32,
@@ -60,8 +59,10 @@ const Row = struct {
 };
 
 /// 18 Y levels x 18 Z rows (section + borders).
-pub const BUF_Y: u32 = 18;
-pub const BUF_Z: u32 = 18;
+/// One section plus a one-block pad on each side, so greedy meshing can
+/// read the faces of its neighbours.
+pub const BUF_Y: u32 = SECTION_H + 2;
+pub const BUF_Z: u32 = SECTION_H + 2;
 pub const SectionBuf = [BUF_Y][BUF_Z]Row;
 
 pub const SectionCounts = struct {
@@ -73,10 +74,12 @@ pub const SectionCounts = struct {
 // --- Pack ---
 
 fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
+    const dims = World.data.dims;
     const AIR: Row = .{ .opq = 0, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
     const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
-    if (y >= @as(i32, WORLD_H)) return AIR;
-    if (wz_raw < 0 or wz_raw >= @as(i32, WORLD_D)) return BOUNDARY;
+    const world_h: i32 = @intCast(dims.height);
+    if (y >= world_h) return AIR;
+    if (wz_raw < 0 or wz_raw >= @as(i32, @intCast(dims.depth))) return BOUNDARY;
     if (y < 0) return BOUNDARY;
 
     var opq: u32 = 0;
@@ -92,11 +95,11 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     // The 16 inner blocks (bits 1..16) share a chunk and are contiguous in
     // the chunk-aware layout. Read them as a single slice to avoid 16
     // individual block_index computations on the hot path.
-    const chunk_row = World.data.get_chunk_row(@intCast(cx * 16), wy, wz);
+    const chunk_row = World.data.get_chunk_row(@intCast(cx * SECTION_H), wy, wz);
 
-    for (0..18) |i| {
-        const wx_raw: i32 = @as(i32, @intCast(cx)) * 16 + @as(i32, @intCast(i)) - 1;
-        if (wx_raw < 0 or wx_raw >= @as(i32, WORLD_W)) {
+    for (0..BUF_Z) |i| {
+        const wx_raw: i32 = @as(i32, @intCast(cx)) * SECTION_H + @as(i32, @intCast(i)) - 1;
+        if (wx_raw < 0 or wx_raw >= @as(i32, @intCast(dims.length))) {
             opq |= @as(u32, 1) << @intCast(i);
             continue;
         }
@@ -182,13 +185,13 @@ fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
 /// large mask buffer across the count -> emit boundary.
 pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf) SectionCounts {
     const all_opaque = World.data.is_chunk_all_opaque(cx, sy, cz);
-    const base_y: i32 = @as(i32, @intCast(sy)) * 16 - 1;
+    const base_y: i32 = @as(i32, @intCast(sy)) * SECTION_H - 1;
 
     for (0..BUF_Y) |by| {
         const wy: i32 = base_y + @as(i32, @intCast(by));
 
         for (0..BUF_Z) |bz| {
-            const wz_raw: i32 = @as(i32, @intCast(cz)) * 16 + @as(i32, @intCast(bz)) - 1;
+            const wz_raw: i32 = @as(i32, @intCast(cz)) * SECTION_H + @as(i32, @intCast(bz)) - 1;
             buf[by][bz] = if (all_opaque and by >= 1 and by <= 16 and bz >= 1 and bz <= 16)
                 pack_row_opaque(cx, wy, wz_raw)
             else
@@ -205,6 +208,7 @@ pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf)
 /// known to be opaque+visible with no other flags, so we only need to
 /// classify the 2 boundary blocks from neighboring chunks.
 fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
+    const dims = World.data.dims;
     var opq: u32 = SECTION_MASK; // bits 1..16
     var vis: u32 = SECTION_MASK;
     var flu: u32 = 0;
@@ -216,7 +220,7 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     const wz: u16 = @intCast(wz_raw);
 
     // Left boundary (bit 0)
-    const left_x: i32 = @as(i32, @intCast(cx)) * 16 - 1;
+    const left_x: i32 = @as(i32, @intCast(cx)) * SECTION_H - 1;
     if (left_x < 0) {
         opq |= 1;
     } else {
@@ -224,8 +228,8 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     }
 
     // Right boundary (bit 17)
-    const right_x: u32 = cx * 16 + 16;
-    if (right_x >= WORLD_W) {
+    const right_x: u32 = (cx + 1) * SECTION_H;
+    if (right_x >= dims.length) {
         opq |= @as(u32, 1) << 17;
     } else {
         classify_block(World.get_block(@intCast(right_x), wy, wz), 17, &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
@@ -618,7 +622,7 @@ fn emit_mask(
     face: Face,
     m: Meshes,
     atlas: *const TextureAtlas,
-    chunk_row: *const [c.ChunkSize]Block,
+    chunk_row: *const [SECTION_H]Block,
     buf: *const SectionBuf,
     by: u32,
     bz: u32,
@@ -631,8 +635,8 @@ fn emit_mask(
         bits &= bits - 1;
 
         const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * 16 + lx);
-        const wz: u16 = @intCast(cz * 16 + lz);
+        const wx: u16 = @intCast(cx * SECTION_H + lx);
+        const wz: u16 = @intCast(cz * SECTION_H + lz);
         const block = chunk_row[lx];
         const tile = block.face_tile(face);
 
@@ -682,7 +686,7 @@ fn emit_opaque_leaf_mask(
     face: Face,
     opaque_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
-    chunk_row: *const [c.ChunkSize]Block,
+    chunk_row: *const [SECTION_H]Block,
     buf: *const SectionBuf,
     by: u32,
     bz: u32,
@@ -696,8 +700,8 @@ fn emit_opaque_leaf_mask(
         assert_has_room(opaque_mesh, 1);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * 16 + lx);
-        const wz: u16 = @intCast(cz * 16 + lz);
+        const wx: u16 = @intCast(cx * SECTION_H + lx);
+        const wz: u16 = @intCast(cz * SECTION_H + lz);
         const block = chunk_row[lx];
         const tile = block.face_tile(face);
         const shadowed = !face_sunlit(wx, y, wz, face);
@@ -718,7 +722,7 @@ fn emit_cross_mask(
     cz: u32,
     transparent_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
-    chunk_row: *const [c.ChunkSize]Block,
+    chunk_row: *const [SECTION_H]Block,
 ) void {
     const local_y: u32 = y % SECTION_H;
     var bits = mask;
@@ -728,8 +732,8 @@ fn emit_cross_mask(
         assert_has_room(transparent_mesh, 4);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * 16 + lx);
-        const wz: u16 = @intCast(cz * 16 + lz);
+        const wx: u16 = @intCast(cx * SECTION_H + lx);
+        const wz: u16 = @intCast(cz * SECTION_H + lz);
         const block = chunk_row[lx];
         const tile = block.face_tile(.y_pos);
         face_mod.emit_cross(transparent_mesh, lx, local_y, lz, tile, atlas, !World.is_sunlit(wx, @intCast(y), wz));
@@ -772,8 +776,8 @@ fn emit_fluid_overlay_mask(
         assert_has_room(fluid_mesh, 1);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * 16 + lx);
-        const wz: u16 = @intCast(cz * 16 + lz);
+        const wx: u16 = @intCast(cx * SECTION_H + lx);
+        const wz: u16 = @intCast(cz * SECTION_H + lz);
         // Look up the neighboring fluid block's texture.
         const nx: u16 = @intCast(@as(i32, wx) + dx);
         const ny: u16 = @intCast(@as(i32, @intCast(y)) + dy);
@@ -813,7 +817,7 @@ pub fn emit_section(
                 f.tfl_xp | f.tfl_xn | f.tfl_yp | f.tfl_yn | f.tfl_zp | f.tfl_zn;
             if (any == 0) continue;
 
-            const chunk_row = World.data.get_chunk_row(@intCast(cx * 16), @intCast(world_y), @intCast(cz * 16 + lz));
+            const chunk_row = World.data.get_chunk_row(@intCast(cx * SECTION_H), @intCast(world_y), @intCast(cz * SECTION_H + lz));
 
             // Standard faces - emit_mask routes opaque blocks to the opaque
             // mesh and outer leaves / glass / fluids to the transparent mesh.

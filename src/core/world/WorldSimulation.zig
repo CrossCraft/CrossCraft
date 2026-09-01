@@ -11,14 +11,31 @@
 // scheduler and call `WorldData.apply_block` directly.
 
 const std = @import("std");
-const c = @import("../consts.zig");
+const wd = @import("../world_dims.zig");
 const blocks = @import("../blocks.zig");
 const assert = std.debug.assert;
 
 const WorldData = @import("WorldData.zig");
 
 const Block = blocks.Block;
-const Location = c.Location;
+
+const LocY = std.meta.Int(.unsigned, 7);
+const LocZ = std.meta.Int(.unsigned, 9);
+const LocX = std.meta.Int(.unsigned, 9);
+
+const Location = packed struct(u32) {
+    y: LocY,
+    z: LocZ,
+    x: LocX,
+    _reserved: u7 = 0,
+};
+
+comptime {
+    assert(std.math.maxInt(LocY) + 1 >= wd.max_height);
+    assert(std.math.maxInt(LocZ) + 1 >= wd.max_depth);
+    assert(std.math.maxInt(LocX) + 1 >= wd.max_length);
+    assert(std.math.maxInt(LocY) + 1 <= std.math.maxInt(u16));
+}
 
 const log = std.log.scoped(.world);
 
@@ -182,10 +199,10 @@ fn process_block_update(
     emitted: *u32,
     loc: Location,
 ) void {
-    self.enqueued_remove(loc.to_index());
     const x: u16 = loc.x;
     const y: u16 = loc.y;
     const z: u16 = loc.z;
+    self.enqueued_remove(data.get_index(x, y, z));
     const block = data.get_block(x, y, z);
 
     if ((block == .sand or block == .gravel) and y > 0) {
@@ -285,11 +302,11 @@ fn wheel_insert(self: *WorldSimulation, loc: Location, delay: u32) void {
 pub fn enqueue_neighbors_of(self: *WorldSimulation, data: *const WorldData, x: u16, y: u16, z: u16) void {
     self.try_enqueue(data, x, y, z);
     if (x > 0) self.try_enqueue(data, x - 1, y, z);
-    if (x + 1 < c.WorldLength) self.try_enqueue(data, x + 1, y, z);
+    if (x + 1 < data.dims.length) self.try_enqueue(data, x + 1, y, z);
     if (y > 0) self.try_enqueue(data, x, y - 1, z);
-    if (y + 1 < c.WorldHeight) self.try_enqueue(data, x, y + 1, z);
+    if (y + 1 < data.dims.height) self.try_enqueue(data, x, y + 1, z);
     if (z > 0) self.try_enqueue(data, x, y, z - 1);
-    if (z + 1 < c.WorldDepth) self.try_enqueue(data, x, y, z + 1);
+    if (z + 1 < data.dims.depth) self.try_enqueue(data, x, y, z + 1);
 }
 
 /// Tick delay per block type: fluids and gravity use 4 ticks, vegetation is random.
@@ -367,20 +384,20 @@ fn lava_change_bound(data: *const WorldData, x: u16, y: u16, z: u16, block: Bloc
 fn count_lava_neighbors(data: *const WorldData, x: u16, y: u16, z: u16) u32 {
     var count: u32 = 0;
     if (x > 0 and data.get_block(x - 1, y, z).is_lava()) count += 1;
-    if (x + 1 < c.WorldLength and data.get_block(x + 1, y, z).is_lava()) count += 1;
+    if (x + 1 < data.dims.length and data.get_block(x + 1, y, z).is_lava()) count += 1;
     if (y > 0 and data.get_block(x, y - 1, z).is_lava()) count += 1;
-    if (y + 1 < c.WorldHeight and data.get_block(x, y + 1, z).is_lava()) count += 1;
+    if (y + 1 < data.dims.height and data.get_block(x, y + 1, z).is_lava()) count += 1;
     if (z > 0 and data.get_block(x, y, z - 1).is_lava()) count += 1;
-    if (z + 1 < c.WorldDepth and data.get_block(x, y, z + 1).is_lava()) count += 1;
+    if (z + 1 < data.dims.depth and data.get_block(x, y, z + 1).is_lava()) count += 1;
     return count;
 }
 
 fn count_horizontal_air_neighbors(data: *const WorldData, x: u16, y: u16, z: u16) u32 {
     var count: u32 = 0;
     if (x > 0 and data.get_block(x - 1, y, z).is_air()) count += 1;
-    if (x + 1 < c.WorldLength and data.get_block(x + 1, y, z).is_air()) count += 1;
+    if (x + 1 < data.dims.length and data.get_block(x + 1, y, z).is_air()) count += 1;
     if (z > 0 and data.get_block(x, y, z - 1).is_air()) count += 1;
-    if (z + 1 < c.WorldDepth and data.get_block(x, y, z + 1).is_air()) count += 1;
+    if (z + 1 < data.dims.depth and data.get_block(x, y, z + 1).is_air()) count += 1;
     return count;
 }
 
@@ -431,19 +448,19 @@ fn check_lava_water(
 ) bool {
     if (water) {
         if (x > 0 and data.get_block(x - 1, y, z).is_lava()) self.queue_block_change(data, sink, emitted, x - 1, y, z, .stone);
-        if (x + 1 < c.WorldLength and data.get_block(x + 1, y, z).is_lava()) self.queue_block_change(data, sink, emitted, x + 1, y, z, .stone);
+        if (x + 1 < data.dims.length and data.get_block(x + 1, y, z).is_lava()) self.queue_block_change(data, sink, emitted, x + 1, y, z, .stone);
         if (y > 0 and data.get_block(x, y - 1, z).is_lava()) self.queue_block_change(data, sink, emitted, x, y - 1, z, .stone);
-        if (y + 1 < c.WorldHeight and data.get_block(x, y + 1, z).is_lava()) self.queue_block_change(data, sink, emitted, x, y + 1, z, .stone);
+        if (y + 1 < data.dims.height and data.get_block(x, y + 1, z).is_lava()) self.queue_block_change(data, sink, emitted, x, y + 1, z, .stone);
         if (z > 0 and data.get_block(x, y, z - 1).is_lava()) self.queue_block_change(data, sink, emitted, x, y, z - 1, .stone);
-        if (z + 1 < c.WorldDepth and data.get_block(x, y, z + 1).is_lava()) self.queue_block_change(data, sink, emitted, x, y, z + 1, .stone);
+        if (z + 1 < data.dims.depth and data.get_block(x, y, z + 1).is_lava()) self.queue_block_change(data, sink, emitted, x, y, z + 1, .stone);
         return false;
     } else {
         if ((x > 0 and data.get_block(x - 1, y, z).is_water()) or
-            (x + 1 < c.WorldLength and data.get_block(x + 1, y, z).is_water()) or
+            (x + 1 < data.dims.length and data.get_block(x + 1, y, z).is_water()) or
             (y > 0 and data.get_block(x, y - 1, z).is_water()) or
-            (y + 1 < c.WorldHeight and data.get_block(x, y + 1, z).is_water()) or
+            (y + 1 < data.dims.height and data.get_block(x, y + 1, z).is_water()) or
             (z > 0 and data.get_block(x, y, z - 1).is_water()) or
-            (z + 1 < c.WorldDepth and data.get_block(x, y, z + 1).is_water()))
+            (z + 1 < data.dims.depth and data.get_block(x, y, z + 1).is_water()))
         {
             self.queue_block_change(data, sink, emitted, x, y, z, .stone);
             return true;
@@ -454,11 +471,11 @@ fn check_lava_water(
 
 fn has_fluid_neighbor(data: *const WorldData, x: u16, y: u16, z: u16, water: bool) bool {
     if (x > 0 and is_same_fluid(data.get_block(x - 1, y, z), water)) return true;
-    if (x + 1 < c.WorldLength and is_same_fluid(data.get_block(x + 1, y, z), water)) return true;
+    if (x + 1 < data.dims.length and is_same_fluid(data.get_block(x + 1, y, z), water)) return true;
     if (y > 0 and is_same_fluid(data.get_block(x, y - 1, z), water)) return true;
-    if (y + 1 < c.WorldHeight and is_same_fluid(data.get_block(x, y + 1, z), water)) return true;
+    if (y + 1 < data.dims.height and is_same_fluid(data.get_block(x, y + 1, z), water)) return true;
     if (z > 0 and is_same_fluid(data.get_block(x, y, z - 1), water)) return true;
-    if (z + 1 < c.WorldDepth and is_same_fluid(data.get_block(x, y, z + 1), water)) return true;
+    if (z + 1 < data.dims.depth and is_same_fluid(data.get_block(x, y, z + 1), water)) return true;
     return false;
 }
 
@@ -479,11 +496,11 @@ fn spread_horizontal(
 ) void {
     if (x > 0 and data.get_block(x - 1, y, z).is_air() and (!water or !is_near_sponge(data, x - 1, y, z)))
         self.queue_block_change(data, sink, emitted, x - 1, y, z, flow);
-    if (x + 1 < c.WorldLength and data.get_block(x + 1, y, z).is_air() and (!water or !is_near_sponge(data, x + 1, y, z)))
+    if (x + 1 < data.dims.length and data.get_block(x + 1, y, z).is_air() and (!water or !is_near_sponge(data, x + 1, y, z)))
         self.queue_block_change(data, sink, emitted, x + 1, y, z, flow);
     if (z > 0 and data.get_block(x, y, z - 1).is_air() and (!water or !is_near_sponge(data, x, y, z - 1)))
         self.queue_block_change(data, sink, emitted, x, y, z - 1, flow);
-    if (z + 1 < c.WorldDepth and data.get_block(x, y, z + 1).is_air() and (!water or !is_near_sponge(data, x, y, z + 1)))
+    if (z + 1 < data.dims.depth and data.get_block(x, y, z + 1).is_air() and (!water or !is_near_sponge(data, x, y, z + 1)))
         self.queue_block_change(data, sink, emitted, x, y, z + 1, flow);
 }
 
@@ -501,7 +518,7 @@ pub fn sponge_absorb(self: *WorldSimulation, data: *WorldData, sink: BlockChange
                 const nx = @as(i32, cx) + dx;
                 const ny = @as(i32, cy) + dy;
                 const nz = @as(i32, cz) + dz;
-                if (nx < 0 or nx >= c.WorldLength or ny < 0 or ny >= c.WorldHeight or nz < 0 or nz >= c.WorldDepth) continue;
+                if (nx < 0 or nx >= data.dims.length or ny < 0 or ny >= data.dims.height or nz < 0 or nz >= data.dims.depth) continue;
                 const ux: u16 = @intCast(nx);
                 const uy: u16 = @intCast(ny);
                 const uz: u16 = @intCast(nz);
@@ -528,7 +545,7 @@ pub fn sponge_release(self: *WorldSimulation, data: *const WorldData, cx: u16, c
                 const nx = @as(i32, cx) + dx;
                 const ny = @as(i32, cy) + dy;
                 const nz = @as(i32, cz) + dz;
-                if (nx < 0 or nx >= c.WorldLength or ny < 0 or ny >= c.WorldHeight or nz < 0 or nz >= c.WorldDepth) continue;
+                if (nx < 0 or nx >= data.dims.length or ny < 0 or ny >= data.dims.height or nz < 0 or nz >= data.dims.depth) continue;
                 self.enqueue_neighbors_of(data, @intCast(nx), @intCast(ny), @intCast(nz));
             }
         }
@@ -545,7 +562,7 @@ fn is_near_sponge(data: *const WorldData, x: u16, y: u16, z: u16) bool {
                 const nx = @as(i32, x) + dx;
                 const ny = @as(i32, y) + dy;
                 const nz = @as(i32, z) + dz;
-                if (nx < 0 or nx >= c.WorldLength or ny < 0 or ny >= c.WorldHeight or nz < 0 or nz >= c.WorldDepth) continue;
+                if (nx < 0 or nx >= data.dims.length or ny < 0 or ny >= data.dims.height or nz < 0 or nz >= data.dims.depth) continue;
                 if (data.get_block(@intCast(nx), @intCast(ny), @intCast(nz)) == .sponge) return true;
             }
         }
@@ -584,17 +601,17 @@ fn grow_tree(
 ) void {
     if (y == 0) return;
     const base_y: u32 = @as(u32, y) - 1;
-    if (base_y + height + 2 >= c.WorldHeight) return;
+    if (base_y + height + 2 >= data.dims.height) return;
 
     var check_y: u32 = @as(u32, y) + 1;
     while (check_y <= base_y + height + 2) : (check_y += 1) {
-        if (check_y >= c.WorldHeight) return;
+        if (check_y >= data.dims.height) return;
         if (!data.get_block(x, @intCast(check_y), z).is_air()) return;
     }
 
     for (0..height) |i| {
         const ty: u32 = base_y + 1 + @as(u32, @intCast(i));
-        if (ty < c.WorldHeight) self.queue_block_change(data, sink, emitted, x, @intCast(ty), z, .log);
+        if (ty < data.dims.height) self.queue_block_change(data, sink, emitted, x, @intCast(ty), z, .log);
     }
 
     self.grow_tree_leaves(data, sink, emitted, x, base_y, z, height);
@@ -612,7 +629,7 @@ fn grow_tree_leaves(
 ) void {
     for (0..4) |layer| {
         const ly: u32 = base_y + height - 2 + @as(u32, @intCast(layer));
-        if (ly >= c.WorldHeight) continue;
+        if (ly >= data.dims.height) continue;
         const r: i32 = if (layer < 2) 2 else 1;
         var dx: i32 = -r;
         while (dx <= r) : (dx += 1) {
@@ -624,7 +641,7 @@ fn grow_tree_leaves(
                 }
                 const lx = @as(i32, @intCast(x)) + dx;
                 const lz = @as(i32, @intCast(z)) + dz;
-                if (lx < 0 or lx >= c.WorldLength or lz < 0 or lz >= c.WorldDepth) continue;
+                if (lx < 0 or lx >= data.dims.length or lz < 0 or lz >= data.dims.depth) continue;
                 const ux: u16 = @intCast(lx);
                 const uz: u16 = @intCast(lz);
                 if (data.get_block(ux, @intCast(ly), uz).is_air()) {
@@ -650,7 +667,7 @@ test "tick defers an overflow-sized fluid batch without buffering or dropping" {
     blocks.init();
 
     var data: WorldData = undefined;
-    try data.init_in_place(std.testing.allocator, 0x1234);
+    try data.init_in_place(std.testing.allocator, wd.default, 0x1234);
     defer data.deinit();
     data.compute_chunk_counts();
 
@@ -663,8 +680,8 @@ test "tick defers an overflow-sized fluid batch without buffering or dropping" {
 
     var i: u32 = 0;
     while (i < source_count) : (i += 1) {
-        const x: u16 = @intCast(i % c.WorldLength);
-        const z: u16 = @intCast(i / c.WorldLength);
+        const x: u16 = @intCast(i % data.dims.length);
+        const z: u16 = @intCast(i / data.dims.length);
         data.apply_block(x, 1, z, .still_water);
         sim.try_enqueue(&data, x, 1, z);
     }
@@ -699,7 +716,7 @@ test "tick defers a multi-change update rather than partially committing it" {
     blocks.init();
 
     var data: WorldData = undefined;
-    try data.init_in_place(std.testing.allocator, 0x1234);
+    try data.init_in_place(std.testing.allocator, wd.default, 0x1234);
     defer data.deinit();
     data.compute_chunk_counts();
 
@@ -723,8 +740,8 @@ test "tick defers a multi-change update rather than partially committing it" {
     const water_count = MAX_BLOCK_CHANGES_PER_TICK - MAX_TREE_CHANGES + 1;
     var i: u32 = 0;
     while (i < water_count) : (i += 1) {
-        const x: u16 = @intCast(i % c.WorldLength);
-        const z: u16 = @intCast(i / c.WorldLength);
+        const x: u16 = @intCast(i % data.dims.length);
+        const z: u16 = @intCast(i / data.dims.length);
         data.apply_block(x, 1, z, .still_water);
         sim.try_enqueue(&data, x, 1, z);
     }

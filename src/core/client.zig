@@ -1,9 +1,9 @@
 const std = @import("std");
 const zb = @import("protocol");
 const Protocol = zb.Protocol;
-const c = @import("consts.zig");
 const blocks = @import("blocks.zig");
 const world = @import("world.zig");
+const wd = @import("world_dims.zig");
 const proto = @import("protocol.zig");
 
 const Server = @import("server.zig");
@@ -12,6 +12,7 @@ const players_db = @import("players_db.zig");
 const commands = @import("commands.zig");
 const outbound_queue = @import("outbound_queue.zig");
 const OutboundQueue = outbound_queue.OutboundQueue;
+const Message = proto.Message;
 
 /// Largest to-client packet is the 1028-byte LevelDataChunk; round up so
 /// any serialized packet fits the staging buffer.
@@ -34,7 +35,7 @@ const WorldSendJob = struct {
     base: compress_worker.Job,
     client: *Self,
 };
-var jobs: [c.MAX_PLAYERS]WorldSendJob = undefined;
+var jobs: [Server.MaxPlayers]WorldSendJob = undefined;
 
 const Self = @This();
 
@@ -463,7 +464,8 @@ fn send_world(self: *Self) !void {
 
     if (self.local) {
         // Local client reads World.blocks directly - no chunks needed.
-        try proto.send_level_finalize_to_client(self.writer, c.WorldLength, c.WorldHeight, c.WorldDepth);
+        const size = world.data.dims.to_array();
+        try proto.send_level_finalize_to_client(self.writer, size[0], size[1], size[2]);
         try self.writer.flush();
         return;
     }
@@ -507,7 +509,8 @@ fn send_world_impl(self: *Self) !void {
     var chunk_buf: [1024]u8 = @splat(0);
 
     const out = self.out orelse return error.WriteFailed;
-    const volume: usize = c.WorldLength * c.WorldHeight * c.WorldDepth;
+    const dims = world.data.dims;
+    const volume: usize = dims.volume();
     var sender = ChunkSender.init(out, &chunk_buf, @intCast(volume + 4));
     try compress_worker.reset(&sender.interface);
 
@@ -524,17 +527,15 @@ fn send_world_impl(self: *Self) !void {
     try compress_worker.compressor.writer.writeAll(&size_header);
     sender.raw_written = 4;
 
-    // Copy a 4 KiB wire-contiguous band under a shared lock, then release the
-    // world before doing any compression. A full level uses 1,024 short read
-    // sections instead of freezing simulation for the whole gzip operation.
-    var band: [c.WorldLength * c.ChunkSize]u8 = undefined;
-    for (0..c.WorldHeight) |y| {
+    var band_buf: [wd.max_length * wd.chunk_size]u8 = undefined;
+    const band = band_buf[0..dims.band_len()];
+    for (0..dims.height) |y| {
         var z: usize = 0;
-        while (z < c.WorldDepth) : (z += c.ChunkSize) {
+        while (z < dims.depth) : (z += wd.chunk_size) {
             Server.lock_world_shared();
-            world.data.copy_blocks_yzx_band(@intCast(y), @intCast(z), &band);
+            world.data.copy_blocks_yzx_band(@intCast(y), @intCast(z), band);
             Server.unlock_world_shared();
-            try compress_worker.compressor.writer.writeAll(&band);
+            try compress_worker.compressor.writer.writeAll(band);
         }
     }
     sender.raw_written = @intCast(volume + 4);
@@ -550,7 +551,8 @@ fn send_world_impl(self: *Self) !void {
         out.append(Server.io, packet_writer.buffered()) catch return error.WriteFailed;
     }
 
-    try self.send_packet(proto.send_level_finalize_to_client, .{ c.WorldLength, c.WorldHeight, c.WorldDepth });
+    const size = dims.to_array();
+    try self.send_packet(proto.send_level_finalize_to_client, .{ size[0], size[1], size[2] });
 
     // LevelFinalize is now in the normal queue. Close the capture gap while
     // mutations are excluded, promote journaled packets behind it, then let
@@ -572,7 +574,7 @@ pub fn handshake(self: *Self) !void {
 
     try self.send_world();
 
-    var name_buf: c.Message = @splat(' ');
+    var name_buf: Message = @splat(' ');
     std.mem.copyForwards(u8, &name_buf, self.name[0..self.name_len]);
 
     Server.lock_world_shared();
@@ -628,7 +630,7 @@ pub fn handshake(self: *Self) !void {
     // Skip welcome + join-broadcast chat in singleplayer: the lone local
     // player would just be seeing themselves "join" their own world.
     if (!Server.internal_use) {
-        var msg_buf: c.Message = @splat(' ');
+        var msg_buf: Message = @splat(' ');
         std.mem.copyForwards(u8, &msg_buf, "&eWelcome to the world!");
 
         try self.send_message(self.id, &msg_buf);
@@ -766,7 +768,7 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
 
 fn slash_sink_write(ctx: *anyopaque, line: []const u8) void {
     const self: *Self = @ptrCast(@alignCast(ctx));
-    var msg_buf: c.Message = @splat(' ');
+    var msg_buf: Message = @splat(' ');
     const n = @min(line.len, msg_buf.len);
     @memcpy(msg_buf[0..n], line[0..n]);
     self.send_message(self.id, &msg_buf) catch return;
@@ -787,7 +789,8 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     defer Server.unlock_world();
     if (!require_active(self)) return;
 
-    if (event.x >= c.WorldLength or event.y >= c.WorldHeight or event.z >= c.WorldDepth)
+    const dims = world.data.dims;
+    if (event.x >= dims.length or event.y >= dims.height or event.z >= dims.depth)
         return;
 
     // Wire byte to typed mode at the protocol boundary. Bare `@enumFromInt`

@@ -3,6 +3,7 @@ const ae = @import("aether");
 const Util = ae.Util;
 const Rendering = ae.Rendering;
 
+const core = @import("core");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Colors = @import("../graphics/Color.zig");
 const Color = Colors.Color;
@@ -20,6 +21,12 @@ const SECTIONS_Y: u32 = 4;
 const WORLD_CX: u32 = 16;
 const WORLD_CZ: u32 = 16;
 const MAX_ACTIVE: u32 = @import("../config.zig").max_sections();
+
+comptime {
+    std.debug.assert(WORLD_CX * core.world_dims.chunk_size >= core.world_dims.default.length);
+    std.debug.assert(WORLD_CZ * core.world_dims.chunk_size >= core.world_dims.default.depth);
+    std.debug.assert(SECTIONS_Y * core.world_dims.chunk_size >= core.world_dims.default.height);
+}
 
 /// Maximum sections tracked incrementally in dirty_buf before falling back to
 /// a full queue rescan. Sized for 4 simultaneous block changes * 7 neighbors.

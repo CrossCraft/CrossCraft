@@ -12,13 +12,15 @@
 const std = @import("std");
 const core = @import("core");
 
-const c = core.consts;
 const World = core.World;
 const WorldData = World.WorldData;
 const SaveFormat = World.SaveFormat;
 const CompressWorker = core.CompressWorker;
 
-const WORLD_VOLUME: usize = c.WorldLength * c.WorldHeight * c.WorldDepth;
+/// Legacy `.ccc` saves predate any size setting entirely: they are always
+/// Classic's 256x64x256, which is the geometry this tool writes.
+const legacy_dims = core.world_dims.default;
+const WORLD_VOLUME: usize = legacy_dims.length * legacy_dims.height * legacy_dims.depth;
 const LEGACY_VERSION_BYTES: usize = @sizeOf(u32);
 const LEGACY_DIMENSIONS_BYTES: usize = 3 * @sizeOf(u32);
 const LEGACY_V1_BYTES: usize = WORLD_VOLUME + LEGACY_VERSION_BYTES;
@@ -53,12 +55,12 @@ pub fn main(init: std.process.Init) !void {
     };
     const output_path = args[3];
 
-    core.BlockRegistry.init();
+    core.blocks.init();
     try CompressWorker.init(gpa, io);
     defer CompressWorker.deinit();
 
     var data: WorldData = undefined;
-    try data.init_in_place(gpa, 0);
+    try data.init_in_place(gpa, legacy_dims, 0);
     defer data.deinit();
 
     try load_legacy_ccc(io, gpa, input_path, &data);
@@ -137,19 +139,19 @@ fn validate_legacy_dimensions(raw_dimensions: []const u8) !void {
     const length = std.mem.readInt(u32, raw_dimensions[0..4], .little);
     const height = std.mem.readInt(u32, raw_dimensions[4..8], .little);
     const depth = std.mem.readInt(u32, raw_dimensions[8..12], .little);
-    if (length != c.WorldLength or height != c.WorldHeight or depth != c.WorldDepth) {
+    if (length != legacy_dims.length or height != legacy_dims.height or depth != legacy_dims.depth) {
         return error.UnsupportedLegacyDimensions;
     }
 }
 
 fn scatter_legacy_blocks(legacy_blocks: []const u8, data: *WorldData) void {
     std.debug.assert(legacy_blocks.len == WORLD_VOLUME);
-    for (0..c.WorldLength) |x| {
-        for (0..c.WorldHeight) |y| {
-            for (0..c.WorldDepth) |z| {
-                const source_idx = (x * c.WorldDepth * c.WorldHeight) + (z * c.WorldHeight) + y;
-                const dest_idx = c.block_index(@intCast(x), @intCast(y), @intCast(z));
-                data.blocks[dest_idx] = .{ .id = @enumFromInt(legacy_blocks[source_idx]) };
+    for (0..data.dims.length) |x| {
+        for (0..data.dims.height) |y| {
+            for (0..data.dims.depth) |z| {
+                const source_idx = (x * data.dims.depth * data.dims.height) + (z * data.dims.height) + y;
+                const dest_idx = data.dims.block_index(@intCast(x), @intCast(y), @intCast(z));
+                data.blocks[dest_idx] = @enumFromInt(legacy_blocks[source_idx]);
             }
         }
     }
@@ -160,11 +162,11 @@ fn scatter_legacy_blocks(legacy_blocks: []const u8, data: *WorldData) void {
 fn scatter_yzx_blocks(legacy_blocks: []const u8, data: *WorldData) void {
     std.debug.assert(legacy_blocks.len == WORLD_VOLUME);
     var source_idx: usize = 0;
-    for (0..c.WorldHeight) |y| {
-        for (0..c.WorldDepth) |z| {
-            for (0..c.WorldLength) |x| {
-                const dest_idx = c.block_index(@intCast(x), @intCast(y), @intCast(z));
-                data.blocks[dest_idx] = .{ .id = @enumFromInt(legacy_blocks[source_idx]) };
+    for (0..data.dims.height) |y| {
+        for (0..data.dims.depth) |z| {
+            for (0..data.dims.length) |x| {
+                const dest_idx = data.dims.block_index(@intCast(x), @intCast(y), @intCast(z));
+                data.blocks[dest_idx] = @enumFromInt(legacy_blocks[source_idx]);
                 source_idx += 1;
             }
         }
@@ -212,7 +214,7 @@ fn save_classic_world(io: std.Io, output_path: []const u8, data: *const WorldDat
     const format: SaveFormat = .{ .classic_cw = .{} };
 
     try format.save_world(.{
-        .world_size = data.world_size,
+        .dims = data.dims,
         .seed = data.seed,
         .tick_count = data.tick_count,
         .blocks = data.blocks,

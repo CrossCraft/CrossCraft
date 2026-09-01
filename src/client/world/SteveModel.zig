@@ -16,7 +16,7 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const c = @import("core").consts;
+const core = @import("core");
 const collision = @import("../player/collision.zig");
 const Vertex = @import("aether").Rendering.Vertex;
 const Colors = @import("../graphics/Color.zig");
@@ -84,9 +84,9 @@ right_leg_data: BatchMeshData,
 right_leg: BatchMesh,
 left_leg_data: BatchMeshData,
 left_leg: BatchMesh,
-states: [c.MAX_PLAYERS]PlayerState,
-name_tags: [c.MAX_PLAYERS]?FontBatcher.TextMesh,
-name_aspects: [c.MAX_PLAYERS]f32,
+states: [core.Server.MaxPlayers]PlayerState,
+name_tags: [core.Server.MaxPlayers]?FontBatcher.TextMesh,
+name_aspects: [core.Server.MaxPlayers]f32,
 anim_time: f32,
 allocator: std.mem.Allocator,
 
@@ -104,9 +104,9 @@ pub fn init(allocator: std.mem.Allocator) !Self {
         .right_leg = try BatchMesh.init(&.{}),
         .left_leg_data = try BatchMeshData.init(allocator),
         .left_leg = try BatchMesh.init(&.{}),
-        .states = std.mem.zeroes([c.MAX_PLAYERS]PlayerState),
-        .name_tags = .{null} ** c.MAX_PLAYERS,
-        .name_aspects = .{1.0} ** c.MAX_PLAYERS,
+        .states = std.mem.zeroes([core.Server.MaxPlayers]PlayerState),
+        .name_tags = .{null} ** core.Server.MaxPlayers,
+        .name_aspects = .{1.0} ** core.Server.MaxPlayers,
         .anim_time = 0,
         .allocator = allocator,
     };

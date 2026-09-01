@@ -9,7 +9,7 @@ const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 
-const c = @import("core").consts;
+const core = @import("core");
 
 const UiDrawList = @import("UiDrawList.zig");
 const Scaling = ae.UI.Scaling;
@@ -52,12 +52,12 @@ const Entry = struct {
     pitch: u8,
 };
 
-entries: [c.MAX_PLAYERS]Entry,
+entries: [core.Server.MaxPlayers]Entry,
 
 // --- Lifecycle ---
 
 pub fn init() Self {
-    return .{ .entries = std.mem.zeroes([c.MAX_PLAYERS]Entry) };
+    return .{ .entries = std.mem.zeroes([core.Server.MaxPlayers]Entry) };
 }
 
 // --- Data mutations (called from ClientConn packet handlers) ---
@@ -67,7 +67,7 @@ pub fn init() Self {
 pub fn spawn(self: *Self, pid: i8, raw: []const u8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) void {
     if (pid < 0) return;
     const idx: usize = @intCast(pid);
-    if (idx >= c.MAX_PLAYERS) return;
+    if (idx >= core.Server.MaxPlayers) return;
     const copy_len = @min(raw.len, 16);
     var len: u8 = 0;
     var i: usize = 0;
@@ -88,7 +88,7 @@ pub fn spawn(self: *Self, pid: i8, raw: []const u8, x: u16, y: u16, z: u16, yaw:
 pub fn despawn(self: *Self, pid: i8) void {
     if (pid < 0) return;
     const idx: usize = @intCast(pid);
-    if (idx >= c.MAX_PLAYERS) return;
+    if (idx >= core.Server.MaxPlayers) return;
     self.entries[idx].active = false;
 }
 
@@ -96,7 +96,7 @@ pub fn despawn(self: *Self, pid: i8) void {
 pub fn update_position(self: *Self, pid: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) void {
     if (pid < 0) return;
     const idx: usize = @intCast(pid);
-    if (idx >= c.MAX_PLAYERS) return;
+    if (idx >= core.Server.MaxPlayers) return;
     if (!self.entries[idx].active) return;
     self.entries[idx].x = x;
     self.entries[idx].y = y;

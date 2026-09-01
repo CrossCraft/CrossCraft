@@ -349,6 +349,25 @@ pub fn build(b: *std.Build) void {
     }
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
+    const core_tests = b.addTest(.{
+        .root_module = core_tests_root: {
+            const root = b.createModule(.{
+                .root_source_file = b.path("src/core/unit.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            root.addImport("protocol", protocol);
+            root.addImport("worldgen", worldgen);
+            break :core_tests_root root;
+        },
+        .filters = test_filters,
+    });
+    if (target.result.os.tag == .linux and target.result.isGnuLibC()) {
+        core_tests.use_llvm = true;
+        core_tests.use_lld = true;
+    }
+    test_step.dependOn(&b.addRunArtifact(core_tests).step);
+
     // Standalone build step for the pack_zip host tool.
     // Usage: zig build pack-tool
     // Produces zig-out/bin/pack_zip (host-native binary).

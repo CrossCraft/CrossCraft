@@ -1,12 +1,8 @@
 /// Player-facing collision facade. Delegates the swept-AABB core to
-/// `core.physics` (generic over the world) and keeps the things that
-/// are player-specific: body dimensions, liquid classification, and the
-/// small `on_ground` spot probe used outside the main tick path.
 const std = @import("std");
 const core = @import("core");
 const World = core.World;
 const physics = core.physics;
-const c = core.consts;
 const Block = core.blocks.Block;
 
 // --- Player dimensions ---
@@ -34,11 +30,12 @@ pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
     const fx = @floor(px);
     const fy = @floor(py);
     const fz = @floor(pz);
+    const dims = World.data.dims;
     // Bounds-check as floats first so NaN / extreme values never reach
     // @intFromFloat (which would panic on un-representable values).
-    if (fx < 0.0 or fx >= @as(f32, @floatFromInt(c.WorldLength))) return null;
-    if (fy < 0.0 or fy >= @as(f32, @floatFromInt(c.WorldHeight))) return null;
-    if (fz < 0.0 or fz >= @as(f32, @floatFromInt(c.WorldDepth))) return null;
+    if (fx < 0.0 or fx >= @as(f32, @floatFromInt(dims.length))) return null;
+    if (fy < 0.0 or fy >= @as(f32, @floatFromInt(dims.height))) return null;
+    if (fz < 0.0 or fz >= @as(f32, @floatFromInt(dims.depth))) return null;
     const bx: i32 = @intFromFloat(fx);
     const by: i32 = @intFromFloat(fy);
     const bz: i32 = @intFromFloat(fz);
@@ -70,16 +67,20 @@ fn zone_liquid(px: f32, pz: f32, by0: i32, by1: i32) ?Liquid {
     const max_bx = world_coord(px + HALF_W);
     const min_bz = world_coord(pz - HALF_W);
     const max_bz = world_coord(pz + HALF_W);
+    const dims = World.data.dims;
+    const height: i32 = @intCast(dims.height);
+    const length: i32 = @intCast(dims.length);
+    const depth: i32 = @intCast(dims.depth);
 
     var by: i32 = by0;
     while (by <= by1) : (by += 1) {
-        if (by < 0 or by >= c.WorldHeight) continue;
+        if (by < 0 or by >= height) continue;
         var bx: i32 = min_bx;
         while (bx <= max_bx) : (bx += 1) {
-            if (bx < 0 or bx >= c.WorldLength) continue;
+            if (bx < 0 or bx >= length) continue;
             var bz: i32 = min_bz;
             while (bz <= max_bz) : (bz += 1) {
-                if (bz < 0 or bz >= c.WorldDepth) continue;
+                if (bz < 0 or bz >= depth) continue;
                 const block = World.data.get_block(@intCast(bx), @intCast(by), @intCast(bz));
                 if (classify_liquid(block)) |liq| return liq;
             }
@@ -113,7 +114,7 @@ pub fn move_and_collide(
     was_on_ground: bool,
 ) MoveResult {
     return physics.move_and_wall_slide(
-        World,
+        &World.data,
         .{ px, py, pz },
         .{ dx, dy, dz },
         HALF_W,
@@ -127,7 +128,7 @@ pub fn move_and_collide(
 /// spot-check paths (e.g. pending-block invariants); the main tick path
 /// consumes `MoveResult.on_ground` instead.
 pub fn on_ground(px: f32, py: f32, pz: f32) bool {
-    return physics.is_on_ground(World, .{ px, py, pz }, HALF_W, HEIGHT);
+    return physics.is_on_ground(&World.data, .{ px, py, pz }, HALF_W, HEIGHT);
 }
 
 /// Attempt a one-shot step-up at the given horizontal velocity. Independent
@@ -141,7 +142,7 @@ pub fn try_step_up(
     dx: f32,
     dz: f32,
 ) ?struct { x: f32, y: f32, z: f32 } {
-    const p = physics.try_step_up(World, .{ px, py, pz }, dx, dz, HALF_W, HEIGHT, STEP_HEIGHT) orelse return null;
+    const p = physics.try_step_up(&World.data, .{ px, py, pz }, dx, dz, HALF_W, HEIGHT, STEP_HEIGHT) orelse return null;
     return .{ .x = p[0], .y = p[1], .z = p[2] };
 }
 

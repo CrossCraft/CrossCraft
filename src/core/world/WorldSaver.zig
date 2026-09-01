@@ -18,9 +18,7 @@ const WorldData = @import("WorldData.zig");
 const fmt_mod = @import("SaveFormat.zig");
 const SaveFormat = fmt_mod.SaveFormat;
 const SaveContext = fmt_mod.SaveContext;
-const LoadOutcome = fmt_mod.LoadOutcome;
 const compress_worker = @import("../compress_worker.zig");
-const c = @import("../consts.zig");
 
 const log = std.log.scoped(.world);
 
@@ -220,7 +218,7 @@ fn save_worker(self: *WorldSaver) void {
     const last_modified_ms = @divTrunc(real_ns, std.time.ns_per_ms);
     const spawn = data.find_spawn(self.io);
     const ctx: SaveContext = .{
-        .world_size = data.world_size,
+        .dims = data.dims,
         .seed = data.seed,
         .tick_count = data.tick_count,
         .blocks = data.blocks,
@@ -307,7 +305,7 @@ pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator)
         break :blk sniff;
     };
 
-    const outcome = load_format.load_world(scratch, data.blocks, &reader.interface) catch |err| {
+    const outcome = load_format.load_world(scratch, data.dims, data.blocks, &reader.interface) catch |err| {
         // Surface the failure so a misnamed/foreign-size save doesn't
         // silently fall through to worldgen with no explanation.
         log.err("Failed to load world from {s} as {s}: {}", .{
@@ -316,18 +314,6 @@ pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator)
         return false;
     };
 
-    if (outcome.dimensions[0] != c.WorldLength or
-        outcome.dimensions[1] != c.WorldHeight or
-        outcome.dimensions[2] != c.WorldDepth)
-    {
-        log.err("World dimensions mismatch: expected {}x{}x{}, got {}x{}x{}", .{
-            c.WorldLength,         c.WorldHeight,         c.WorldDepth,
-            outcome.dimensions[0], outcome.dimensions[1], outcome.dimensions[2],
-        });
-        return false;
-    }
-
-    data.world_size = outcome.dimensions;
     data.seed = outcome.seed;
     data.tick_count = outcome.tick_count;
     if (outcome.name_len > 0) {

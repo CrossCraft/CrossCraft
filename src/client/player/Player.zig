@@ -16,7 +16,6 @@ const input = ae.Core.input;
 
 const core = @import("core");
 const World = core.World;
-const c = core.consts;
 const Block = core.blocks.Block;
 const proto = core.protocol;
 
@@ -807,9 +806,10 @@ fn block_under_feet(self: *const Self) Block {
     const by_f = @floor(self.pos_y - 0.01);
     const bx_f = @floor(self.pos_x);
     const bz_f = @floor(self.pos_z);
-    if (by_f < 0 or by_f >= @as(f32, @floatFromInt(c.WorldHeight))) return .air;
-    if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(c.WorldLength))) return .air;
-    if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(c.WorldDepth))) return .air;
+    const dims = World.data.dims;
+    if (by_f < 0 or by_f >= @as(f32, @floatFromInt(dims.height))) return .air;
+    if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(dims.length))) return .air;
+    if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(dims.depth))) return .air;
     return World.data.get_block(
         @intCast(@as(i32, @intFromFloat(bx_f))),
         @intCast(@as(i32, @intFromFloat(by_f))),
@@ -1083,8 +1083,11 @@ fn tExceedsRange(dx: i32, adx: i32, dy: i32, ady: i32, dz: i32, adz: i32, range_
 }
 
 fn in_world(x: i32, y: i32, z: i32) bool {
+    const dims = World.data.dims;
     return x >= 0 and y >= 0 and z >= 0 and
-        x < c.WorldLength and y < c.WorldHeight and z < c.WorldDepth;
+        x < @as(i32, @intCast(dims.length)) and
+        y < @as(i32, @intCast(dims.height)) and
+        z < @as(i32, @intCast(dims.depth));
 }
 
 fn is_selectable(x: u16, y: u16, z: u16) bool {

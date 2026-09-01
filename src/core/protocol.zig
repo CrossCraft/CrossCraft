@@ -4,6 +4,8 @@ const Block = @import("blocks.zig").Block;
 
 const Writer = std.Io.Writer;
 
+pub const Message = @FieldType(zb.Message, "message");
+
 // --- Packet lengths ---
 
 pub fn packet_length_to_server(packet_id: u8) !u8 {
