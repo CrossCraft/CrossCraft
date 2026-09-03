@@ -2,6 +2,7 @@ const ae = @import("aether");
 const Util = ae.Util;
 const Engine = ae.Engine;
 const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
+const core = @import("core");
 
 const Profile = @This();
 
@@ -44,7 +45,11 @@ const desktop_profile: Profile = .{
     .init_render = 8 * MB,
     .init_audio = 2 * MB,
     .init_game = 2 * MB,
-    .init_user = 12 * MB,
+    // Sized to host the largest supported world embedded (512x128x512:
+    // 32 MiB of blocks plus worldgen scratch), not the common 4 MiB
+    // default. The tracker budget is a cap over the shared slab, so the
+    // unused headroom costs nothing for normal worlds.
+    .init_user = 48 * MB,
     .rt_render = 88 * MB,
     .rt_audio = 512 * KB,
     .rt_game = 512 * KB,
@@ -169,8 +174,11 @@ pub fn main_memory_bytes() usize {
 
 pub fn max_sections() u32 {
     const diameter = max_chunk_radius() * 2 + 1;
-    // TODO: WorldDim Aware
-    return diameter * diameter * 4;
+    // Sections per column in the tallest world the lattice allows
+    // (world_dims.max_height / chunk_size = 8). Only loaded columns are ever
+    // queued, so this bounds the build queue and visibility list.
+    const max_sections_per_column = core.world_dims.max_height / core.world_dims.chunk_size;
+    return diameter * diameter * max_sections_per_column;
 }
 
 pub fn init_memory() Util.MemoryConfig {

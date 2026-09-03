@@ -19,6 +19,7 @@ comptime {
     _ = @import("client/player/bindings.zig");
     _ = @import("client/ui/Ui.zig");
     _ = @import("client/ui/TextWrap.zig");
+    _ = @import("client/ui/screens/CreateWorld.zig");
     _ = @import("server/Heartbeat.zig");
     _ = @import("server/BackupScheme.zig");
 }

@@ -4,6 +4,7 @@ const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const core = @import("core");
+const World = core.World;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Colors = @import("../graphics/Color.zig");
 const Color = Colors.Color;
@@ -17,15 +18,13 @@ const Sky = @import("sky/sky.zig");
 const ParticleSystem = @import("ParticleSystem.zig");
 const Rain = @import("Rain.zig");
 
-const SECTIONS_Y: u32 = 4;
-const WORLD_CX: u32 = 16;
-const WORLD_CZ: u32 = 16;
 const MAX_ACTIVE: u32 = @import("../config.zig").max_sections();
-
 comptime {
-    std.debug.assert(WORLD_CX * core.world_dims.chunk_size >= core.world_dims.default.length);
-    std.debug.assert(WORLD_CZ * core.world_dims.chunk_size >= core.world_dims.default.depth);
-    std.debug.assert(SECTIONS_Y * core.world_dims.chunk_size >= core.world_dims.default.height);
+    // GridRef carries each chunk coord in a u8; the supported world lattice
+    // never exceeds that.
+    std.debug.assert(core.world_dims.max_length / core.world_dims.chunk_size <= std.math.maxInt(u8));
+    std.debug.assert(core.world_dims.max_depth / core.world_dims.chunk_size <= std.math.maxInt(u8));
+    std.debug.assert(core.world_dims.max_height / core.world_dims.chunk_size <= std.math.maxInt(u8));
 }
 
 /// Maximum sections tracked incrementally in dirty_buf before falling back to
@@ -34,14 +33,28 @@ const MAX_DIRTY_BUF: u32 = 32;
 
 const Self = @This();
 
-/// Grid of sections. Only valid where loaded[cx][cz] is true.
-grid: [WORLD_CX][WORLD_CZ][SECTIONS_Y]ChunkMesh,
-/// Per-column: all 4 sections have GPU handles allocated.
-loaded: [WORLD_CX][WORLD_CZ]bool,
+/// Grid geometry from the live world (`World.data.dims`), set in
+/// init_in_place. Every axis is a power of two, so flat indexing into the
+/// grids below is pure shift math.
+grid_cx: u32,
+grid_cz: u32,
+grid_sy: u32,
+log2_cx: u5,
+log2_cz: u5,
+log2_sy: u5,
+
+/// Flat section storage, indexed by section_index(). Slots of columns that
+/// are not `loaded` hold undefined ChunkMeshes; init_column initializes a
+/// whole column at once, mirroring the old inline 3-D array.
+grid: []ChunkMesh,
+/// Per-column: all sections have GPU handles allocated.
+loaded: []bool,
 /// Per-section: mesh has been built via rebuild().
-built: [WORLD_CX][WORLD_CZ][SECTIONS_Y]bool,
+built: []bool,
 /// Per-section: currently present in build_queue[build_cursor..build_end].
-in_queue: [WORLD_CX][WORLD_CZ][SECTIONS_Y]bool,
+in_queue: []bool,
+/// Scratch for recollect's needed-column pass, reused between calls.
+needed: []bool,
 /// Sections marked dirty since the last flush, for incremental queue insert.
 /// dirty_overflow is set when the buffer is full; triggers a full rescan.
 dirty_buf: [MAX_DIRTY_BUF]GridRef,
@@ -90,6 +103,16 @@ io: std.Io,
 
 const GridRef = packed struct { cx: u8, cz: u8, sy: u8 };
 
+/// Flat column id from chunk coords: (cz << log2_cx) | cx.
+fn column_index(self: *const Self, cx: usize, cz: usize) u32 {
+    return @intCast((cz << self.log2_cx) | cx);
+}
+
+/// Flat section id from chunk coords and Y section.
+fn section_index(self: *const Self, cx: usize, cz: usize, sy: usize) u32 {
+    return @intCast((@as(usize, self.column_index(cx, cz)) << self.log2_sy) | sy);
+}
+
 pub fn init_in_place(
     self: *Self,
     allocator: std.mem.Allocator,
@@ -101,13 +124,33 @@ pub fn init_in_place(
     atlas: TextureAtlas,
     camera: *const Camera,
 ) !void {
-    const row_false = [_]bool{false} ** WORLD_CZ;
-    const section_false = [_]bool{false} ** SECTIONS_Y;
-    const col_section_false = [_][SECTIONS_Y]bool{section_false} ** WORLD_CZ;
-    self.grid = undefined;
-    self.loaded = .{row_false} ** WORLD_CX;
-    self.built = .{col_section_false} ** WORLD_CX;
-    self.in_queue = .{col_section_false} ** WORLD_CX;
+    // Size the grid from the live world geometry. GameState initializes the
+    // renderer only after the world exists (SP server generated, MP level
+    // downloaded), so the dims are final here.
+    const dims = World.data.dims;
+    self.grid_cx = dims.chunks_x;
+    self.grid_cz = dims.chunks_z;
+    self.grid_sy = dims.chunks_y;
+    self.log2_cx = @intCast(@ctz(dims.chunks_x));
+    self.log2_cz = @intCast(@ctz(dims.chunks_z));
+    self.log2_sy = @intCast(@ctz(dims.chunks_y));
+
+    const column_count = self.grid_cx * self.grid_cz;
+    const section_count = column_count * self.grid_sy;
+    self.grid = try allocator.alloc(ChunkMesh, section_count);
+    errdefer allocator.free(self.grid);
+    self.loaded = try allocator.alloc(bool, column_count);
+    errdefer allocator.free(self.loaded);
+    self.built = try allocator.alloc(bool, section_count);
+    errdefer allocator.free(self.built);
+    self.in_queue = try allocator.alloc(bool, section_count);
+    errdefer allocator.free(self.in_queue);
+    self.needed = try allocator.alloc(bool, column_count);
+    errdefer allocator.free(self.needed);
+    @memset(self.loaded, false);
+    @memset(self.built, false);
+    @memset(self.in_queue, false);
+
     self.dirty_buf = undefined;
     self.dirty_buf_len = 0;
     self.dirty_overflow = false;
@@ -147,12 +190,13 @@ pub fn init_in_place(
     // Warm up the estimator
     while (self.build_cursor < self.build_end and self.build_estimator.is_warming_up()) {
         const ref = self.build_queue[self.build_cursor];
+        const idx = self.section_index(ref.cx, ref.cz, ref.sy);
         self.build_estimator.begin(io);
-        self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas) catch break;
+        self.grid[idx].rebuild(&self.atlas) catch break;
         self.build_estimator.end(io);
-        mark_first_built(&self.grid[ref.cx][ref.cz][ref.sy]);
-        self.built[ref.cx][ref.cz][ref.sy] = true;
-        self.in_queue[ref.cx][ref.cz][ref.sy] = false;
+        mark_first_built(&self.grid[idx]);
+        self.built[idx] = true;
+        self.in_queue[idx] = false;
         self.build_cursor += 1;
     }
 }
@@ -161,12 +205,17 @@ pub fn deinit(self: *Self) void {
     self.rain.deinit();
     self.particles.deinit();
     self.sky.deinit();
-    for (0..WORLD_CX) |cx| {
-        for (0..WORLD_CZ) |cz| {
-            if (!self.loaded[cx][cz]) continue;
+    for (0..self.grid_cx) |cx| {
+        for (0..self.grid_cz) |cz| {
+            if (!self.loaded[self.column_index(cx, cz)]) continue;
             self.deinit_column(@intCast(cx), @intCast(cz));
         }
     }
+    self.allocator.free(self.grid);
+    self.allocator.free(self.loaded);
+    self.allocator.free(self.built);
+    self.allocator.free(self.in_queue);
+    self.allocator.free(self.needed);
 }
 
 pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
@@ -177,11 +226,11 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
     // Advance the bouncy-rise animation for every loaded section. Runs before
     // the early-return below so the animation keeps ticking even when there
     // are no pending rebuilds. Sections already at rest short-circuit.
-    for (0..WORLD_CX) |cx| {
-        for (0..WORLD_CZ) |cz| {
-            if (!self.loaded[cx][cz]) continue;
-            for (0..SECTIONS_Y) |sy| {
-                self.grid[cx][cz][sy].update_animation(dt);
+    for (0..self.grid_cx) |cx| {
+        for (0..self.grid_cz) |cz| {
+            if (!self.loaded[self.column_index(cx, cz)]) continue;
+            for (0..self.grid_sy) |sy| {
+                self.grid[self.section_index(cx, cz, sy)].update_animation(dt);
             }
         }
     }
@@ -243,8 +292,9 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
 
     for (self.build_cursor..end) |i| {
         const ref = self.build_queue[i];
+        const idx = self.section_index(ref.cx, ref.cz, ref.sy);
         self.build_estimator.begin(self.io);
-        if (self.grid[ref.cx][ref.cz][ref.sy].rebuild(&self.atlas)) {
+        if (self.grid[idx].rebuild(&self.atlas)) {
             self.build_estimator.end(self.io);
         } else |_| {
             self.build_estimator.end(self.io);
@@ -257,9 +307,9 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
             self.build_cursor = @intCast(i);
             return;
         }
-        mark_first_built(&self.grid[ref.cx][ref.cz][ref.sy]);
-        self.built[ref.cx][ref.cz][ref.sy] = true;
-        self.in_queue[ref.cx][ref.cz][ref.sy] = false;
+        mark_first_built(&self.grid[idx]);
+        self.built[idx] = true;
+        self.in_queue[idx] = false;
     }
     self.build_cursor = end;
 }
@@ -286,11 +336,11 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     Rendering.gfx.api.bind_texture(self.terrain.handle);
 
     self.frame_visible_count = 0;
-    for (0..WORLD_CX) |cx| {
-        for (0..WORLD_CZ) |cz| {
-            if (!self.loaded[cx][cz]) continue;
-            for (0..SECTIONS_Y) |sy| {
-                const sec = &self.grid[cx][cz][sy];
+    for (0..self.grid_cx) |cx| {
+        for (0..self.grid_cz) |cz| {
+            if (!self.loaded[self.column_index(cx, cz)]) continue;
+            for (0..self.grid_sy) |sy| {
+                const sec = &self.grid[self.section_index(cx, cz, sy)];
                 if (!camera.section_visible(sec.cx, sec.sy, sec.cz)) continue;
                 self.frame_visible[self.frame_visible_count] = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
                 self.frame_visible_count += 1;
@@ -312,12 +362,12 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     if (clip_count > 0) {
         Rendering.gfx.api.set_clip_planes(true);
         for (visible[0..clip_count]) |ref| {
-            self.grid[ref.cx][ref.cz][ref.sy].draw_opaque();
+            self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque();
         }
         Rendering.gfx.api.set_clip_planes(false);
     }
     for (visible[clip_count..]) |ref| {
-        self.grid[ref.cx][ref.cz][ref.sy].draw_opaque();
+        self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque();
     }
 
     // Clouds are a physical layer at Y=72. Draw after opaque (so terrain
@@ -334,13 +384,13 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
         ri -= 1;
-        self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_transparent();
+        self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_transparent();
     }
     if (clip_count > 0) {
         Rendering.gfx.api.set_clip_planes(true);
         while (ri > 0) {
             ri -= 1;
-            self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_transparent();
+            self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_transparent();
         }
         Rendering.gfx.api.set_clip_planes(false);
     }
@@ -378,13 +428,13 @@ pub fn draw_fluid_pass(self: *Self) void {
     var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
         ri -= 1;
-        self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_fluid();
+        self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_fluid();
     }
     if (clip_count > 0) {
         Rendering.gfx.api.set_clip_planes(true);
         while (ri > 0) {
             ri -= 1;
-            self.grid[visible[ri].cx][visible[ri].cz][visible[ri].sy].draw_fluid();
+            self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_fluid();
         }
         Rendering.gfx.api.set_clip_planes(false);
     }
@@ -402,8 +452,7 @@ fn recollect(self: *Self, camera: *const Camera) void {
     const radius_blocks: f32 = @as(f32, @floatFromInt(rd)) * 16.0 + 11.5;
     const radius_blocks_sq = radius_blocks * radius_blocks;
 
-    const row_false = [_]bool{false} ** WORLD_CZ;
-    var needed: [WORLD_CX][WORLD_CZ]bool = .{row_false} ** WORLD_CX;
+    @memset(self.needed, false);
 
     var dz: i32 = -r;
     while (dz <= r) : (dz += 1) {
@@ -411,31 +460,34 @@ fn recollect(self: *Self, camera: *const Camera) void {
         while (dx <= r) : (dx += 1) {
             const cx_i = self.cam_cx + dx;
             const cz_i = self.cam_cz + dz;
-            if (cx_i < 0 or cx_i > 15 or cz_i < 0 or cz_i > 15) continue;
+            if (cx_i < 0 or cx_i >= @as(i32, @intCast(self.grid_cx)) or
+                cz_i < 0 or cz_i >= @as(i32, @intCast(self.grid_cz))) continue;
             const ccx: f32 = @as(f32, @floatFromInt(cx_i)) * 16.0 + 8.0;
             const ccz: f32 = @as(f32, @floatFromInt(cz_i)) * 16.0 + 8.0;
             const dist_sq = (ccx - camera.x) * (ccx - camera.x) +
                 (ccz - camera.z) * (ccz - camera.z);
             if (dist_sq > radius_blocks_sq) continue;
-            needed[@intCast(cx_i)][@intCast(cz_i)] = true;
+            self.needed[self.column_index(@intCast(cx_i), @intCast(cz_i))] = true;
         }
     }
 
     // Phase 2: deinit columns leaving radius
-    for (0..WORLD_CX) |cx| {
-        for (0..WORLD_CZ) |cz| {
-            if (self.loaded[cx][cz] and !needed[cx][cz]) {
+    for (0..self.grid_cx) |cx| {
+        for (0..self.grid_cz) |cz| {
+            const col = self.column_index(cx, cz);
+            if (self.loaded[col] and !self.needed[col]) {
                 self.deinit_column(@intCast(cx), @intCast(cz));
             }
         }
     }
 
     // Phase 3: init columns entering radius
-    for (0..WORLD_CX) |cx| {
-        for (0..WORLD_CZ) |cz| {
-            if (!self.loaded[cx][cz] and needed[cx][cz]) {
+    for (0..self.grid_cx) |cx| {
+        for (0..self.grid_cz) |cz| {
+            const col = self.column_index(cx, cz);
+            if (!self.loaded[col] and self.needed[col]) {
                 if (self.init_column(@intCast(cx), @intCast(cz), camera)) {
-                    self.loaded[cx][cz] = true;
+                    self.loaded[col] = true;
                 }
                 // If init fails, loaded stays false; will retry next crossing
             }
@@ -456,53 +508,53 @@ fn recollect(self: *Self, camera: *const Camera) void {
 
 fn init_column(self: *Self, cx: u8, cz: u8, cam: *const Camera) bool {
     var count: u32 = 0;
-    for (0..SECTIONS_Y) |sy| {
-        self.grid[cx][cz][sy] = ChunkMesh.init(
+    for (0..self.grid_sy) |sy| {
+        self.grid[self.section_index(cx, cz, sy)] = ChunkMesh.init(
             self.allocator,
-            @intCast(cx),
+            cx,
             @intCast(sy),
-            @intCast(cz),
+            cz,
         ) catch {
             // Rollback: deinit already-initialized sections
-            for (0..count) |prev| self.grid[cx][cz][prev].deinit();
+            for (0..count) |prev| self.grid[self.section_index(cx, cz, prev)].deinit();
             return false;
         };
         // Set the LOD state up front so the first build uses the correct
         // detail level rather than the default and immediately rebuilding.
-        self.grid[cx][cz][sy].near_lod = target_near_lod(cx, @intCast(sy), cz, cam);
-        self.grid[cx][cz][sy].ao_enabled = Options.current.ambient_occlusion;
+        self.grid[self.section_index(cx, cz, sy)].near_lod = target_near_lod(cx, @intCast(sy), cz, cam);
+        self.grid[self.section_index(cx, cz, sy)].ao_enabled = Options.current.ambient_occlusion;
         count += 1;
     }
     return true;
 }
 
 fn deinit_column(self: *Self, cx: u8, cz: u8) void {
-    for (0..SECTIONS_Y) |sy| {
-        self.grid[cx][cz][sy].deinit();
-        self.built[cx][cz][sy] = false;
-        self.in_queue[cx][cz][sy] = false;
+    for (0..self.grid_sy) |sy| {
+        const idx = self.section_index(cx, cz, sy);
+        self.grid[idx].deinit();
+        self.built[idx] = false;
+        self.in_queue[idx] = false;
     }
-    self.loaded[cx][cz] = false;
+    self.loaded[self.column_index(cx, cz)] = false;
 }
 
 fn queue_unbuilt_sections(self: *Self, cam: *const Camera) void {
     // Reset in-queue tracking before rebuilding the queue from scratch.
-    for (&self.in_queue) |*cx_row| {
-        for (cx_row) |*cz_row| @memset(cz_row, false);
-    }
+    @memset(self.in_queue, false);
     var build_idx: u32 = 0;
-    for (0..WORLD_CX) |cx| {
-        for (0..WORLD_CZ) |cz| {
-            if (!self.loaded[cx][cz]) continue;
-            for (0..SECTIONS_Y) |sy| {
-                if (!self.built[cx][cz][sy]) {
+    for (0..self.grid_cx) |cx| {
+        for (0..self.grid_cz) |cz| {
+            if (!self.loaded[self.column_index(cx, cz)]) continue;
+            for (0..self.grid_sy) |sy| {
+                const idx = self.section_index(cx, cz, sy);
+                if (!self.built[idx]) {
                     std.debug.assert(build_idx < MAX_ACTIVE);
                     self.build_queue[build_idx] = .{
                         .cx = @intCast(cx),
                         .cz = @intCast(cz),
                         .sy = @intCast(sy),
                     };
-                    self.in_queue[cx][cz][sy] = true;
+                    self.in_queue[idx] = true;
                     build_idx += 1;
                 }
             }
@@ -525,15 +577,15 @@ fn flush_dirty_sections(self: *Self, cam: *const Camera) void {
 
     var added: u32 = 0;
     for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
-        if (self.built[ref.cx][ref.cz][ref.sy]) continue; // already rebuilt
-        if (self.in_queue[ref.cx][ref.cz][ref.sy]) continue; // already queued
+        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)]) continue; // already rebuilt
+        if (self.in_queue[self.section_index(ref.cx, ref.cz, ref.sy)]) continue; // already queued
         if (self.build_end >= MAX_ACTIVE) {
             // No room - compact via a full rescan which resets the queue.
             self.queue_unbuilt_sections(cam);
             return;
         }
         self.build_queue[self.build_end] = ref;
-        self.in_queue[ref.cx][ref.cz][ref.sy] = true;
+        self.in_queue[self.section_index(ref.cx, ref.cz, ref.sy)] = true;
         self.build_end += 1;
         added += 1;
     }
@@ -552,7 +604,7 @@ fn flush_ordered_dirty_sections(self: *Self, cam: *const Camera) void {
     var front_len: u32 = 0;
 
     for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
-        if (self.built[ref.cx][ref.cz][ref.sy]) continue;
+        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)]) continue;
         if (contains_grid_ref(front[0..front_len], ref)) continue;
         front[front_len] = ref;
         front_len += 1;
@@ -568,7 +620,7 @@ fn flush_ordered_dirty_sections(self: *Self, cam: *const Camera) void {
             return;
         }
         reordered[count] = ref;
-        self.in_queue[ref.cx][ref.cz][ref.sy] = true;
+        self.in_queue[self.section_index(ref.cx, ref.cz, ref.sy)] = true;
         count += 1;
     }
 
@@ -595,12 +647,13 @@ fn try_evict_farthest(self: *Self, cam: *const Camera) bool {
     var best_cz: u8 = 0;
     var best_sy: u8 = 0;
 
-    for (0..WORLD_CX) |cx| {
-        for (0..WORLD_CZ) |cz| {
-            if (!self.loaded[cx][cz]) continue;
-            for (0..SECTIONS_Y) |sy| {
-                if (!self.built[cx][cz][sy]) continue;
-                const sec = &self.grid[cx][cz][sy];
+    for (0..self.grid_cx) |cx| {
+        for (0..self.grid_cz) |cz| {
+            if (!self.loaded[self.column_index(cx, cz)]) continue;
+            for (0..self.grid_sy) |sy| {
+                const idx = self.section_index(cx, cz, sy);
+                if (!self.built[idx]) continue;
+                const sec = &self.grid[idx];
                 const d = cam.distance_sq(sec.center_x(), sec.center_y(), sec.center_z());
                 if (d > best_dist) {
                     best_dist = d;
@@ -614,8 +667,9 @@ fn try_evict_farthest(self: *Self, cam: *const Camera) bool {
 
     if (best_dist < 0.0) return false;
 
-    self.grid[best_cx][best_cz][best_sy].clear();
-    self.built[best_cx][best_cz][best_sy] = false;
+    const best = self.section_index(best_cx, best_cz, best_sy);
+    self.grid[best].clear();
+    self.built[best] = false;
     return true;
 }
 
@@ -648,13 +702,15 @@ fn mark_block_neighbor_sections_dirty(self: *Self, cx: u8, sy: u8, cz: u8, lx: u
 }
 
 fn mark_section_dirty_impl(self: *Self, cx: u8, sy: u8, cz: u8, track_queued: bool, preserve_order: bool) void {
-    if (cx >= WORLD_CX or cz >= WORLD_CZ or sy >= SECTIONS_Y) return;
+    if (cx >= self.grid_cx or cz >= self.grid_cz or sy >= self.grid_sy) return;
+    const idx = self.section_index(cx, cz, sy);
+    const col = self.column_index(cx, cz);
     self.rain.mark_dirty();
-    if (!self.loaded[cx][cz]) return;
-    self.built[cx][cz][sy] = false;
+    if (!self.loaded[col]) return;
+    self.built[idx] = false;
     // Section already in the build queue; it will be rebuilt when the queue
     // reaches it - no need to track it again.
-    if (self.in_queue[cx][cz][sy] and !track_queued) return;
+    if (self.in_queue[idx] and !track_queued) return;
     // Track for incremental insert on the next update(). On overflow, flag a
     // full rescan so no dirty sections are silently dropped.
     self.record_dirty_ref(.{ .cx = cx, .cz = cz, .sy = sy }, preserve_order);
@@ -690,11 +746,12 @@ fn contains_grid_ref(haystack: []const GridRef, needle: GridRef) bool {
 /// actually changes.
 fn apply_ao_toggle(self: *Self) void {
     const target = Options.current.ambient_occlusion;
-    for (0..WORLD_CX) |cx| {
-        for (0..WORLD_CZ) |cz| {
-            if (!self.loaded[cx][cz]) continue;
-            for (0..SECTIONS_Y) |sy| {
-                const sec = &self.grid[cx][cz][sy];
+    for (0..self.grid_cx) |cx| {
+        for (0..self.grid_cz) |cz| {
+            if (!self.loaded[self.column_index(cx, cz)]) continue;
+            for (0..self.grid_sy) |sy| {
+                const idx = self.section_index(cx, cz, sy);
+                const sec = &self.grid[idx];
                 if (sec.ao_enabled != target) {
                     sec.ao_enabled = target;
                     self.mark_section_dirty(@intCast(cx), @intCast(sy), @intCast(cz));
@@ -719,12 +776,12 @@ fn apply_fancy_leaves_toggle(self: *Self, cam: *const Camera) void {
 /// the configured near-LOD boundary in either direction get marked
 /// dirty so they re-mesh with the new detail level.
 fn refresh_lod_states(self: *Self, cam: *const Camera) void {
-    for (0..WORLD_CX) |cx| {
-        for (0..WORLD_CZ) |cz| {
-            if (!self.loaded[cx][cz]) continue;
-            for (0..SECTIONS_Y) |sy| {
+    for (0..self.grid_cx) |cx| {
+        for (0..self.grid_cz) |cz| {
+            if (!self.loaded[self.column_index(cx, cz)]) continue;
+            for (0..self.grid_sy) |sy| {
                 const target = target_near_lod(@intCast(cx), @intCast(sy), @intCast(cz), cam);
-                const sec = &self.grid[cx][cz][sy];
+                const sec = &self.grid[self.section_index(cx, cz, sy)];
                 if (sec.near_lod != target) {
                     sec.near_lod = target;
                     self.mark_section_dirty(@intCast(cx), @intCast(sy), @intCast(cz));

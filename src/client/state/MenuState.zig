@@ -31,6 +31,7 @@ const Session = @import("Session.zig");
 const core = @import("core");
 const Server = core.Server;
 const World = core.World;
+const wd = core.world_dims;
 const CompressWorker = core.CompressWorker;
 const CompressorThread = @import("CompressorThread.zig");
 
@@ -93,6 +94,8 @@ cw_name: [CreateWorld.NAME_MAX]u8,
 cw_name_len: u8,
 cw_seed: [CreateWorld.SEED_MAX]u8,
 cw_seed_len: u8,
+cw_size: wd.WorldSize,
+cw_height: wd.WorldHeight,
 cw_create_enabled: bool,
 
 dirt: *const Rendering.Texture,
@@ -172,6 +175,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.sw_delete_mode = false;
     self.cw_name_len = 0;
     self.cw_seed_len = 0;
+    self.cw_size = .normal;
+    self.cw_height = .normal;
     self.cw_create_enabled = false;
 
     ui_input.ensure_registered(&engine.input) catch |err|
@@ -483,6 +488,8 @@ fn prepare_batches(self: *@This(), _: *Engine) !void {
                 .name_len = &self.cw_name_len,
                 .seed = &self.cw_seed,
                 .seed_len = &self.cw_seed_len,
+                .size = &self.cw_size,
+                .height = &self.cw_height,
                 .create_enabled = self.cw_create_enabled,
             };
             _ = CreateWorld.run(&ui, &cw);
@@ -591,6 +598,8 @@ fn update_create_world(self: *@This(), engine: *Engine, in: *const ui_input.UiIn
         .name_len = &self.cw_name_len,
         .seed = &self.cw_seed,
         .seed_len = &self.cw_seed_len,
+        .size = &self.cw_size,
+        .height = &self.cw_height,
         .create_enabled = self.cw_create_enabled,
     };
     const action = CreateWorld.run(&ui, &cw);
@@ -620,6 +629,7 @@ fn sw_select_row(self: *@This(), engine: *Engine, row: u8) void {
     Session.set_username("Player");
     Session.set_singleplayer_save(entry.path());
     Session.clear_singleplayer_seed_override();
+    Session.clear_singleplayer_size_height();
     LoadState.transition_here(engine);
 }
 
@@ -654,6 +664,8 @@ fn create_world(self: *@This(), engine: *Engine) void {
     Session.set_username("Player");
     Session.set_singleplayer_save(result.path);
     Session.set_singleplayer_seed_override(Session.seed_from_text(self.create_world_seed_slice()));
+    Session.set_singleplayer_size(self.cw_size);
+    Session.set_singleplayer_height(self.cw_height);
     LoadState.transition_here(engine);
 }
 
@@ -733,6 +745,7 @@ fn enter_select_world(self: *@This(), engine: *Engine) void {
     self.sw_entry_count = SelectWorld.scan(engine.io, engine.dirs.data, &self.sw_entries);
     self.sw_delete_mode = false;
     Session.clear_singleplayer_seed_override();
+    Session.clear_singleplayer_size_height();
     self.active_screen = .select_world;
     self.sw_ui_state.open(ui_input.seed_focus_on_open());
 }

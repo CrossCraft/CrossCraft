@@ -43,8 +43,11 @@ pub fn main(init: std.process.Init) !void {
     defer if (builtin.os.tag == .psp) sdk.extra.net.deinit();
 
     // PSP-1000 has ~24 MiB of user RAM after the kernel's reservation;
-    // desktop has plenty so cap at a comfortable working set.
-    const total_mb: usize = if (ae.platform == .psp) 18 else 32;
+    // desktop sizes for the largest supported world (512x128x512: 32 MiB of
+    // blocks plus worldgen scratch), so server.properties world-size presets
+    // are never budget-limited. The slab is lazily mapped, so unused
+    // headroom costs nothing for normal worlds.
+    const total_mb: usize = if (ae.platform == .psp) 18 else 96;
     const total_bytes = total_mb * 1024 * 1024;
     const render_budget = 4 * 1024;
     const game_budget = 512 * 1024;

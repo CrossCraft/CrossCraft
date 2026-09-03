@@ -222,7 +222,16 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             player_writer,
         );
     } else {
-        try self.player.init(128.0, 44.0, 128.0, player_writer);
+        // Handshake has not landed yet. Fall back to the world center at
+        // eye-level-ish rather than a fixed position, so tiny worlds do not
+        // start on their edge; the spawn packet corrects this on arrival.
+        const dims = World.data.dims;
+        try self.player.init(
+            @as(f32, @floatFromInt(dims.length / 2)),
+            @as(f32, @floatFromInt(dims.height - 20)),
+            @as(f32, @floatFromInt(dims.depth / 2)),
+            player_writer,
+        );
     }
     self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
 

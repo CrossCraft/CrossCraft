@@ -72,6 +72,18 @@ pub const ClassicDat = struct {
             .tick_count = saved_tick[0],
         };
     }
+
+    /// Dimensions announced in the 3 x u16 little-endian header, without
+    /// reading the block payload. Null when the prefix is truncated or the
+    /// dims fall outside the supported lattice.
+    pub fn sniff_dims(_: ClassicDat, prefix: []const u8, _: std.mem.Allocator) ?WorldDims {
+        if (prefix.len < 6) return null;
+        var dims: [3]u16 = undefined;
+        for (0..3) |i| {
+            dims[i] = std.mem.readInt(u16, prefix[i * 2 ..][0..2], .little);
+        }
+        return WorldDims.from_array(dims);
+    }
 };
 
 fn write_blocks_yzx(dims: WorldDims, blocks: []const Block, writer: *std.Io.Writer) !void {
@@ -96,4 +108,28 @@ fn read_blocks_yzx(dims: WorldDims, blocks: []Block, reader: *std.Io.Reader) !vo
             }
         }
     }
+}
+
+test "sniff_dims reads the 3 x u16 header" {
+    var prefix: [8]u8 = @splat(0);
+    std.mem.writeInt(u16, prefix[0..2], 512, .little);
+    std.mem.writeInt(u16, prefix[2..4], 128, .little);
+    std.mem.writeInt(u16, prefix[4..6], 512, .little);
+
+    const dims = ClassicDat.sniff_dims(.{}, &prefix, std.testing.allocator).?;
+    try std.testing.expectEqual(@as(u32, 512), dims.length);
+    try std.testing.expectEqual(@as(u32, 128), dims.height);
+    try std.testing.expectEqual(@as(u32, 512), dims.depth);
+}
+
+test "sniff_dims rejects truncation and unsupported dims" {
+    var prefix: [8]u8 = @splat(0);
+    std.mem.writeInt(u16, prefix[0..2], 256, .little);
+    try std.testing.expect(ClassicDat.sniff_dims(.{}, prefix[0..5], std.testing.allocator) == null);
+
+    std.mem.writeInt(u16, prefix[0..2], 192, .little); // not a power of two
+    try std.testing.expect(ClassicDat.sniff_dims(.{}, &prefix, std.testing.allocator) == null);
+
+    std.mem.writeInt(u16, prefix[0..2], 1024, .little); // above max_length
+    try std.testing.expect(ClassicDat.sniff_dims(.{}, &prefix, std.testing.allocator) == null);
 }

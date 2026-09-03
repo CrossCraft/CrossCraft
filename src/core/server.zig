@@ -25,11 +25,22 @@ pub const MaxPlayers = 128;
 /// gzip-NBT ClassicWorld format and the default; classic_dat is the
 /// legacy CrossCraft custom binary, retained for backward compatibility
 /// and selectable via server.properties `save-format:` in standalone mode.
+///
+/// `size`/`height` come from server.properties `world-size:`/`world-height:`
+/// preset names in standalone mode. Like `seed`, they apply to first
+/// generation only: an existing save always boots at its own dimensions
+/// (sniffed from its header in `world.init`).
 pub const WorldConfig = struct {
     seed: u64,
     save_location: []const u8,
     save_format: world.SaveFormat = world.default_format,
-    dims: world.WorldDims = world_dims.default,
+    size: world_dims.WorldSize = .normal,
+    height: world_dims.WorldHeight = .normal,
+
+    /// The geometry new worlds are generated with.
+    pub fn dims(self: WorldConfig) world.WorldDims {
+        return world_dims.from_presets(self.size, self.height);
+    }
 };
 
 /// The default save path. Used by both standalone and embedded
@@ -261,11 +272,11 @@ pub fn init(
         io,
         save_dir,
         save_file_name,
-        wcfg.dims,
+        wcfg.dims(),
         wcfg.seed,
         wcfg.save_format,
     );
-    log.info("World geometry: {}x{}x{}", .{ wcfg.dims.length, wcfg.dims.height, wcfg.dims.depth });
+    log.info("World geometry: {}x{}x{}", .{ wcfg.dims().length, wcfg.dims().height, wcfg.dims().depth });
     errdefer world.deinit_after_init_error();
 
     // Both persistent stores allocate from raw `alloc`, not the static
@@ -472,10 +483,16 @@ fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
                     log.warn("server.properties save-format '{s}' unknown; using default", .{value});
                 }
             } else if (std.mem.eql(u8, key, "world-size")) {
-                if (world_dims.parse(value)) |dims| {
-                    wcfg.dims = dims;
+                if (world_dims.WorldSize.parse(value)) |size| {
+                    wcfg.size = size;
                 } else {
-                    log.warn("server.properties world-size '{s}' is not a supported LxHxD; ignoring", .{value});
+                    log.warn("server.properties world-size '{s}' is not tiny|normal|huge; ignoring", .{value});
+                }
+            } else if (std.mem.eql(u8, key, "world-height")) {
+                if (world_dims.WorldHeight.parse(value)) |height| {
+                    wcfg.height = height;
+                } else {
+                    log.warn("server.properties world-height '{s}' is not normal|tall; ignoring", .{value});
                 }
             } else if (std.mem.eql(u8, key, "login-timeout-ms")) {
                 if (std.fmt.parseInt(u32, value, 10)) |parsed| {
@@ -526,15 +543,14 @@ fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
     var buf: [512]u8 = undefined;
     const contents = std.fmt.bufPrint(
         &buf,
-        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nworld-size:{d}x{d}x{d}\nsave-format:classic_cw\nlogin-timeout-ms:{d}\nmax-pending-logins:{d}\nmax-connections-per-ip:{d}\nwhitelist:false\nmax-players-saved:{d}\nmax-policy-records:{d}\nheartbeat-url:\n",
+        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nworld-size:{s}\nworld-height:{s}\nsave-format:classic_cw\nlogin-timeout-ms:{d}\nmax-pending-logins:{d}\nmax-connections-per-ip:{d}\nwhitelist:false\nmax-players-saved:{d}\nmax-policy-records:{d}\nheartbeat-url:\n",
         .{
             default_server_name,
             default_server_motd,
             wcfg.seed,
             wcfg.save_location,
-            wcfg.dims.length,
-            wcfg.dims.height,
-            wcfg.dims.depth,
+            @tagName(wcfg.size),
+            @tagName(wcfg.height),
             login_timeout_ms,
             max_pending_logins,
             max_connections_per_ip,

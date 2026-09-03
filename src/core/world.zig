@@ -118,7 +118,22 @@ pub fn init(
     seed: u64,
     format: SaveFormat,
 ) !void {
-    try init_empty(allocator, io, save_dir, save_file_name, geometry, seed, format);
+    // An existing save always boots at its own geometry: sniff the dims from
+    // its header before allocating block storage. The configured geometry
+    // (server.properties world-size/world-height, or the embedded default)
+    // applies to first generation only -- the same contract as `seed`.
+    const sniffed = SaveFormat.sniff_dims(io, save_dir, save_file_name, scratch);
+    const load_geometry = sniffed orelse geometry;
+    if (sniffed) |s| {
+        if (s.length != geometry.length or s.height != geometry.height or s.depth != geometry.depth) {
+            log.info("Save is {d}x{d}x{d}; configured {d}x{d}x{d} applies to new worlds only", .{
+                s.length,        s.height,        s.depth,
+                geometry.length, geometry.height, geometry.depth,
+            });
+        }
+    }
+
+    try init_empty(allocator, io, save_dir, save_file_name, load_geometry, seed, format);
     var initialized_empty = true;
     errdefer if (initialized_empty) {
         const backing_allocator = data.backing_allocator;

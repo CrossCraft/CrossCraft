@@ -13,4 +13,7 @@ comptime {
     _ = @import("world/CreateName.zig");
     _ = @import("world/WorldData.zig");
     _ = @import("world/WorldSimulation.zig");
+    _ = @import("world/SaveFormat.zig");
+    _ = @import("world/formats/classic_cw.zig");
+    _ = @import("world/formats/classic_dat.zig");
 }

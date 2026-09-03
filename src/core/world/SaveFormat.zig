@@ -5,8 +5,8 @@
 // (NBT tag stack, gzip ring) without growing the call signature.
 //
 // Adding a format: add an arm here, add a file under `formats/`. Both arms
-// must expose `save_world(...)` and `load_world(...)` with matching
-// signatures.
+// must expose `save_world(...)`, `load_world(...)` and `sniff_dims(...)`
+// with matching signatures.
 
 const std = @import("std");
 const b = @import("../blocks.zig");
@@ -98,6 +98,48 @@ pub const SaveFormat = union(enum) {
         return first == 0x0A;
     }
 
+    /// Prefix length a sniff needs. Covers the gzip header plus enough
+    /// deflate output to inflate past the classic_cw X/Y/Z header tags;
+    /// short files fall back to shorter peeks.
+    const sniff_prefix_len: usize = 16384;
+
+    /// Read the dimensions a save file announces in its header, without
+    /// touching the block payload. Existing saves boot at their own
+    /// geometry regardless of the configured world size, so `world.init`
+    /// and the backup validator call this before any buffer is allocated.
+    /// Returns null when the file is missing, unrecognized, or announces
+    /// dims outside the supported lattice.
+    pub fn sniff_dims(
+        io: std.Io,
+        dir: std.Io.Dir,
+        file_name: []const u8,
+        scratch: std.mem.Allocator,
+    ) ?WorldDims {
+        const file = dir.openFile(io, file_name, .{}) catch return null;
+        defer file.close(io);
+
+        const read_buf = scratch.alloc(u8, sniff_prefix_len) catch return null;
+        defer scratch.free(read_buf);
+        var reader = file.reader(io, read_buf);
+
+        // Walk down the peek size on failure, mirroring WorldSaver.try_load:
+        // a shorter file only yields a shorter peek. The 6-byte floor is the
+        // classic_dat dimension header.
+        const peek_sizes = [_]usize{ sniff_prefix_len, 8192, 4096, 1024, 256, 64, 12, 6 };
+        var prefix: []const u8 = &.{};
+        inline for (peek_sizes) |sz| {
+            if (reader.interface.peek(sz)) |s| {
+                prefix = s;
+                break;
+            } else |_| {}
+        }
+
+        const sniff = detect(prefix) orelse return null;
+        return switch (sniff) {
+            inline else => |arm| arm.sniff_dims(prefix, scratch),
+        };
+    }
+
     pub fn save_world(
         self: SaveFormat,
         ctx: SaveContext,
@@ -123,3 +165,86 @@ pub const SaveFormat = union(enum) {
         };
     }
 };
+
+/// Minimal ClassicWorld NBT header: compound + X/Y/Z short leaves, no
+/// payload tags. Written as raw bytes so this module stays nbt-free.
+const test_header_nbt = [_]u8{
+    0x0A, // TAG_Compound
+    0x00,
+    0x0C,
+    'C',
+    'l',
+    'a',
+    's',
+    's',
+    'i',
+    'c',
+    'W',
+    'o',
+    'r',
+    'l',
+    'd',
+    0x02, 0x00, 0x01, 'X', 0x02, 0x00, // TAG_Short 512
+    0x02, 0x00, 0x01, 'Y', 0x00, 0x80, // TAG_Short 128
+    0x02, 0x00, 0x01, 'Z', 0x02, 0x00, // TAG_Short 512
+};
+
+test "sniff_dims reads the announced geometry from both formats" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // classic_dat: dims are the raw little-endian header.
+    {
+        var dat: [8]u8 = @splat(0);
+        std.mem.writeInt(u16, dat[0..2], 128, .little);
+        std.mem.writeInt(u16, dat[2..4], 64, .little);
+        std.mem.writeInt(u16, dat[4..6], 128, .little);
+        const file = try tmp.dir.createFile(io, "world.dat", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, &dat);
+
+        const dims = SaveFormat.sniff_dims(io, tmp.dir, "world.dat", std.testing.allocator).?;
+        try std.testing.expectEqual(@as(u32, 128), dims.length);
+        try std.testing.expectEqual(@as(u32, 64), dims.height);
+        try std.testing.expectEqual(@as(u32, 128), dims.depth);
+    }
+
+    // classic_cw: gzip the header NBT with std flate directly (the real
+    // writer goes through the shared compress worker). The file is padded
+    // past the sniff prefix because the peek walk must be able to hand the
+    // sniffer its full window, as it can for every real (megabyte) save.
+    {
+        var gz_buf: [512]u8 = undefined;
+        var out = std.Io.Writer.fixed(&gz_buf);
+        var window: [std.compress.flate.max_window_len]u8 = undefined;
+        var comp = try std.compress.flate.Compress.init(&out, &window, .gzip, .fastest);
+        try comp.writer.writeAll(&test_header_nbt);
+        try comp.finish();
+
+        var file_bytes: [16384 + 256]u8 = @splat(0);
+        @memcpy(file_bytes[0..out.buffered().len], out.buffered());
+
+        const file = try tmp.dir.createFile(io, "world.cw", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, &file_bytes);
+
+        const dims = SaveFormat.sniff_dims(io, tmp.dir, "world.cw", std.testing.allocator).?;
+        try std.testing.expectEqual(@as(u32, 512), dims.length);
+        try std.testing.expectEqual(@as(u32, 128), dims.height);
+        try std.testing.expectEqual(@as(u32, 512), dims.depth);
+    }
+}
+
+test "sniff_dims returns null for missing and unrecognized files" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try std.testing.expect(SaveFormat.sniff_dims(io, tmp.dir, "missing.cw", std.testing.allocator) == null);
+
+    const file = try tmp.dir.createFile(io, "garbage.dat", .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, "not a save at all");
+    try std.testing.expect(SaveFormat.sniff_dims(io, tmp.dir, "garbage.dat", std.testing.allocator) == null);
+}

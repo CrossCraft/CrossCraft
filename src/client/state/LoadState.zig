@@ -126,7 +126,15 @@ fn serverTask(
     const selected_save = if (save_location.len > 0) save_location else Server.default_save_location;
     const config: Server.GameConfig = .{
         .embedded = .{
-            .world = .{ .seed = seed, .save_location = selected_save },
+            .world = .{
+                .seed = seed,
+                .save_location = selected_save,
+                // CreateWorld presets. Cleared when loading an existing save,
+                // and only shape first generation regardless (world.init
+                // respects the save's own dimensions).
+                .size = Session.singleplayer_size orelse .normal,
+                .height = Session.singleplayer_height orelse .normal,
+            },
         },
     };
     Server.init(alloc, scratch, task_io, data_dir, config) catch |err| {

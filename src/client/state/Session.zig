@@ -5,6 +5,9 @@
 /// opened the socket - the live TCP stream plus its Reader/Writer that
 /// GameState picks up.
 const std = @import("std");
+const core = @import("core");
+
+const wd = core.world_dims;
 
 pub const Mode = enum { singleplayer, multiplayer };
 
@@ -24,6 +27,8 @@ pub var server_len: u8 = 0;
 pub var singleplayer_save_buf: [SAVE_PATH_MAX]u8 = undefined;
 pub var singleplayer_save_len: u16 = 0;
 pub var singleplayer_seed_override: ?u64 = null;
+pub var singleplayer_size: ?wd.WorldSize = null;
+pub var singleplayer_height: ?wd.WorldHeight = null;
 
 // Live TCP stream carried from LoadState into GameState. Null in SP, or
 // before a successful connect(), or after a disconnect. GameState spawns
@@ -106,6 +111,22 @@ pub fn clear_singleplayer_seed_override() void {
 
 pub fn singleplayer_seed(random_seed: u64) u64 {
     return singleplayer_seed_override orelse random_seed;
+}
+
+/// CreateWorld size/height presets for the embedded server. Like the seed
+/// override they only shape first generation; loading an existing save
+/// clears them and the save boots at its own dimensions.
+pub fn set_singleplayer_size(size: wd.WorldSize) void {
+    singleplayer_size = size;
+}
+
+pub fn set_singleplayer_height(height: wd.WorldHeight) void {
+    singleplayer_height = height;
+}
+
+pub fn clear_singleplayer_size_height() void {
+    singleplayer_size = null;
+    singleplayer_height = null;
 }
 
 pub fn seed_from_text(input: []const u8) ?u64 {

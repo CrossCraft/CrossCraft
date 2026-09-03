@@ -62,6 +62,19 @@ pub const ClassicCw = struct {
         var decompress = std.compress.flate.Decompress.init(reader, .gzip, window_buf);
         return try read_classic_world_compound(&decompress.reader, dims, blocks);
     }
+
+    /// Dimensions announced by the ClassicWorld NBT header, sniffed from an
+    /// inflated prefix. Null when the prefix is not a ClassicWorld compound,
+    /// the X/Y/Z shorts do not all appear before BlockArray, or the dims
+    /// fall outside the supported lattice.
+    pub fn sniff_dims(_: ClassicCw, prefix: []const u8, scratch: std.mem.Allocator) ?WorldDims {
+        if (!fmt_mod.SaveFormat.verify_classic_cw(prefix, scratch)) return null;
+        const window_buf = scratch.alloc(u8, std.compress.flate.max_window_len) catch return null;
+        defer scratch.free(window_buf);
+        var src = std.Io.Reader.fixed(prefix);
+        var decompress = std.compress.flate.Decompress.init(&src, .gzip, window_buf);
+        return peek_classic_world_dims(&decompress.reader);
+    }
 };
 
 // --- Save: NBT writer ---
@@ -244,6 +257,45 @@ fn take_string(reader: *std.Io.Reader, buf: []u8) ![]u8 {
     return buf[0..len];
 }
 
+/// Walk the outer compound capturing the X/Y/Z shorts. Stops at BlockArray:
+/// its payload is the bulk of the file, and a header that places it before
+/// the dims gives the sniff nothing to read.
+fn peek_classic_world_dims(reader: *std.Io.Reader) ?WorldDims {
+    const tag = reader.takeInt(u8, .big) catch return null;
+    if (tag != @intFromEnum(nbt.Tag.compound)) return null;
+    var name_buf: [64]u8 = undefined;
+    const name = take_string(reader, &name_buf) catch return null;
+    if (!std.mem.eql(u8, name, "ClassicWorld")) return null;
+
+    var dims: [3]u16 = undefined;
+    var seen_x = false;
+    var seen_y = false;
+    var seen_z = false;
+    while (!(seen_x and seen_y and seen_z)) {
+        const child_tag = reader.takeInt(u8, .big) catch return null;
+        if (child_tag == @intFromEnum(nbt.Tag.end)) return null;
+        const child_name = take_string(reader, &name_buf) catch return null;
+        const t: nbt.Tag = @enumFromInt(child_tag);
+
+        if (std.mem.eql(u8, child_name, "BlockArray")) return null;
+        // Bitcast keeps a hostile negative short from panicking; an
+        // implausible value simply fails the from_array validation below.
+        if (std.mem.eql(u8, child_name, "X") and t == .short and !seen_x) {
+            dims[0] = @bitCast(reader.takeInt(i16, .big) catch return null);
+            seen_x = true;
+        } else if (std.mem.eql(u8, child_name, "Y") and t == .short and !seen_y) {
+            dims[1] = @bitCast(reader.takeInt(i16, .big) catch return null);
+            seen_y = true;
+        } else if (std.mem.eql(u8, child_name, "Z") and t == .short and !seen_z) {
+            dims[2] = @bitCast(reader.takeInt(i16, .big) catch return null);
+            seen_z = true;
+        } else {
+            skip_payload(reader, t) catch return null;
+        }
+    }
+    return WorldDims.from_array(dims);
+}
+
 fn read_blocks_yzx_into(dims: WorldDims, blocks: []Block, reader: *std.Io.Reader) !void {
     for (0..dims.height) |yi| {
         for (0..dims.depth) |zi| {
@@ -300,5 +352,51 @@ fn skip_compound(reader: *std.Io.Reader) SkipError!void {
         const name_len = try reader.takeInt(u16, .big);
         try reader.discardAll64(name_len);
         try skip_payload(reader, @enumFromInt(t_byte));
+    }
+}
+
+test "sniff_dims reads X/Y/Z shorts past earlier tags" {
+    var buf: [512]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    try w.writeInt(u8, @intFromEnum(nbt.Tag.compound), .big);
+    try write_string_payload(&w, "ClassicWorld");
+    try leaf_byte("FormatVersion", FORMAT_VERSION).write(&w);
+    try leaf_string("Name", "test world").write(&w);
+    try named("Spawn", .{ .compound = .{ .value = &.{} } }).write(&w);
+    try leaf_short("X", 512).write(&w);
+    try leaf_short("Y", 128).write(&w);
+    try leaf_short("Z", 512).write(&w);
+    try named("CreatedBy", .{ .compound = .{ .value = &.{} } }).write(&w);
+
+    var r = std.Io.Reader.fixed(w.buffered());
+    const dims = peek_classic_world_dims(&r).?;
+    try std.testing.expectEqual(@as(u32, 512), dims.length);
+    try std.testing.expectEqual(@as(u32, 128), dims.height);
+    try std.testing.expectEqual(@as(u32, 512), dims.depth);
+}
+
+test "sniff_dims rejects non-ClassicWorld and dims after BlockArray" {
+    var buf: [256]u8 = undefined;
+
+    {
+        var w = std.Io.Writer.fixed(&buf);
+        try w.writeInt(u8, @intFromEnum(nbt.Tag.compound), .big);
+        try write_string_payload(&w, "MinecraftLevel");
+        var r = std.Io.Reader.fixed(w.buffered());
+        try std.testing.expect(peek_classic_world_dims(&r) == null);
+    }
+
+    {
+        // A foreign writer may place BlockArray before the dims; there is
+        // nothing to sniff without inflating the whole payload.
+        var w = std.Io.Writer.fixed(&buf);
+        try w.writeInt(u8, @intFromEnum(nbt.Tag.compound), .big);
+        try write_string_payload(&w, "ClassicWorld");
+        try named("BlockArray", .{ .byte_array = .{ .value = &.{} } }).write(&w);
+        try leaf_short("X", 256).write(&w);
+        try leaf_short("Y", 64).write(&w);
+        try leaf_short("Z", 256).write(&w);
+        var r = std.Io.Reader.fixed(w.buffered());
+        try std.testing.expect(peek_classic_world_dims(&r) == null);
     }
 }

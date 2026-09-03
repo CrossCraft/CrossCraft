@@ -59,7 +59,14 @@ fn resolve_parent_dir(io: std.Io, data_dir: std.Io.Dir, sub_path: []const u8) ?O
     return .{ .dir = dir, .owned = true };
 }
 
-fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, dims: core.World.WorldDims, scratch: std.mem.Allocator) bool {
+fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratch: std.mem.Allocator) bool {
+    // Validate at the file's own announced dimensions, not the configured
+    // world size: a valid save of any supported geometry must restore.
+    const dims = core.World.SaveFormat.sniff_dims(io, dir, file_name, scratch) orelse {
+        log.warn("'{s}' has no recognizable save header; failing validation", .{file_name});
+        return false;
+    };
+
     const file = dir.openFile(io, file_name, .{}) catch return false;
     defer file.close(io);
 
@@ -140,15 +147,8 @@ pub fn pre_init_validate_and_restore(io: std.Io, data_dir: std.Io.Dir, alloc: st
     const save_dir = resolve_parent_dir(io, data_dir, loc.parent) orelse return;
     defer if (save_dir.owned) save_dir.dir.close(io);
 
-    const dims = blk: {
-        if (scheme.find_world_size(props)) |raw_size| {
-            break :blk core.world_dims.parse(raw_size) orelse core.world_dims.default;
-        }
-        break :blk core.world_dims.default;
-    };
-
     const exists = file_exists(io, save_dir.dir, loc.file_name);
-    if (exists and validate_save_file(io, save_dir.dir, loc.file_name, dims, scratch)) return;
+    if (exists and validate_save_file(io, save_dir.dir, loc.file_name, scratch)) return;
 
     if (exists) {
         log.warn("Save '{s}' failed validation; attempting backup restore", .{loc.file_name});
@@ -156,14 +156,14 @@ pub fn pre_init_validate_and_restore(io: std.Io, data_dir: std.Io.Dir, alloc: st
         log.info("Save '{s}' not found; checking backups", .{loc.file_name});
     }
 
-    if (restore_newest_valid(io, save_dir.dir, loc.file_name, dims, scratch)) {
+    if (restore_newest_valid(io, save_dir.dir, loc.file_name, scratch)) {
         log.info("Backup restore complete; the restored save will be loaded", .{});
     } else if (exists) {
         log.err("No valid backup found; the world will be regenerated", .{});
     }
 }
 
-fn restore_newest_valid(io: std.Io, save_dir: std.Io.Dir, save_file_name: []const u8, dims: core.World.WorldDims, scratch: std.mem.Allocator) bool {
+fn restore_newest_valid(io: std.Io, save_dir: std.Io.Dir, save_file_name: []const u8, scratch: std.mem.Allocator) bool {
     for (epochs) |epoch| {
         var bucket = open_bucket(io, save_dir, epoch.name) orelse continue;
         defer bucket.close(io);
@@ -174,7 +174,7 @@ fn restore_newest_valid(io: std.Io, save_dir: std.Io.Dir, save_file_name: []cons
         scheme.sort_entries_desc(entries[0..count]);
 
         for (entries[0..count]) |entry| {
-            if (!validate_save_file(io, bucket, entry.name_slice(), dims, scratch)) {
+            if (!validate_save_file(io, bucket, entry.name_slice(), scratch)) {
                 log.warn("Backup '{s}/{s}' failed validation; trying older", .{ epoch.name, entry.name_slice() });
                 continue;
             }

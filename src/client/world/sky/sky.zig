@@ -8,6 +8,8 @@ const Colors = @import("../../graphics/Color.zig");
 const Color = Colors.Color;
 const Camera = @import("../../player/Camera.zig");
 
+const World = @import("core").World;
+
 const BatchMesh = Rendering.MeshType(Vertex);
 const BatchMeshData = Rendering.MeshDataType(Vertex);
 
@@ -24,9 +26,11 @@ const CLOUD_UV_REPEATS: u32 = 1;
 /// UVs span 1/CLOUD_TEX_SCALE of the texture across the grid.
 const CLOUD_TEX_SCALE: u32 = 2;
 const CLOUD_UV_PERIOD: f32 = PLANE_SIZE * @as(f32, @floatFromInt(CLOUD_TEX_SCALE)) / @as(f32, @floatFromInt(CLOUD_UV_REPEATS));
-const CLOUD_Y: f32 = 72.0;
+/// Clouds float this far above the world ceiling so tall worlds keep their
+/// cloud plane clear of terrain. Normal-height worlds land on the classic
+/// fixed Y=72 (64 + 8).
+const CLOUD_Y_MARGIN: u32 = 8;
 const CLOUD_SPEED: f32 = 0.175;
-const WORLD_CENTER: f32 = 128.0;
 
 const Self = @This();
 
@@ -91,16 +95,20 @@ pub fn draw_plane(self: *Self, camera: *const Camera, submerged: ?collision.Liqu
     self.plane_mesh.draw(&m);
 }
 
-/// Draw cloud layer at fixed Y=72 anchored to the world center.
-/// The UV offset slides clouds along +X over time without touching the mesh.
+/// Draw the cloud layer above the world ceiling, anchored to the world
+/// center. The UV offset slides clouds along +X over time without touching
+/// the mesh.
 pub fn draw_clouds(self: *Self, _: *const Camera, submerged: ?collision.Liquid) void {
     set_sky_fog(submerged);
     Rendering.gfx.api.set_alpha_blend(true);
+    const dims = World.data.dims;
+    const center: f32 = @floatFromInt(dims.length / 2);
+    const cloud_y: f32 = @floatFromInt(dims.height + CLOUD_Y_MARGIN);
     const m = Math.Mat4.scaling(PLANE_SIZE, 1.0, PLANE_SIZE)
         .mul(Math.Mat4.translation(
-        WORLD_CENTER - HALF_SIZE,
-        CLOUD_Y,
-        WORLD_CENTER - HALF_SIZE,
+        center - HALF_SIZE,
+        cloud_y,
+        center - HALF_SIZE,
     ));
     Rendering.gfx.api.set_uv_offset(-self.scroll / CLOUD_UV_PERIOD, 0.0);
     Rendering.gfx.api.set_culling(false);

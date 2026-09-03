@@ -122,25 +122,115 @@ pub const WorldDims = struct {
 
 pub const default: WorldDims = WorldDims.init(256, 64, 256);
 
-pub fn parse(text: []const u8) ?WorldDims {
-    var parts: [3]u16 = undefined;
-    var it = std.mem.splitScalar(u8, text, 'x');
-    for (&parts) |*slot| {
-        const token = it.next() orelse return null;
-        slot.* = std.fmt.parseInt(u16, std.mem.trim(u8, token, " "), 10) catch return null;
+/// Named X/Z footprint presets. The discriminant doubles as an offset from
+/// log2 128, so preset geometry is pure shift math: `edge()` is one `shl`.
+pub const WorldSize = enum(u8) {
+    tiny,
+    normal,
+    huge,
+
+    /// log2 of the edge length: tiny = 7 (128), normal = 8 (256), huge = 9 (512).
+    pub fn log2_edge(self: WorldSize) u5 {
+        return 7 + @as(u5, @intCast(@intFromEnum(self)));
     }
-    if (it.rest().len != 0) return null;
-    return WorldDims.from_array(parts);
+
+    /// Edge length in blocks: 128, 256, or 512 (applied to both X and Z).
+    pub fn edge(self: WorldSize) u32 {
+        return @as(u32, 1) << self.log2_edge();
+    }
+
+    pub fn label(self: WorldSize) []const u8 {
+        return switch (self) {
+            .tiny => "Tiny",
+            .normal => "Normal",
+            .huge => "Huge",
+        };
+    }
+
+    /// Parse a `world-size` value from server.properties.
+    pub fn parse(text: []const u8) ?WorldSize {
+        inline for (@typeInfo(WorldSize).@"enum".fields) |field| {
+            if (std.mem.eql(u8, text, field.name)) return @enumFromInt(field.value);
+        }
+        return null;
+    }
+};
+
+/// Named height presets. Normal matches Classic's 64-block worlds; tall doubles it.
+pub const WorldHeight = enum(u8) {
+    normal,
+    tall,
+
+    /// log2 of the height: normal = 6 (64), tall = 7 (128).
+    pub fn log2_height(self: WorldHeight) u5 {
+        return 6 + @as(u5, @intCast(@intFromEnum(self)));
+    }
+
+    /// Height in blocks: 64 or 128.
+    pub fn height(self: WorldHeight) u32 {
+        return @as(u32, 1) << self.log2_height();
+    }
+
+    pub fn label(self: WorldHeight) []const u8 {
+        return switch (self) {
+            .normal => "Normal",
+            .tall => "Tall",
+        };
+    }
+
+    /// Parse a `world-height` value from server.properties.
+    pub fn parse(text: []const u8) ?WorldHeight {
+        inline for (@typeInfo(WorldHeight).@"enum".fields) |field| {
+            if (std.mem.eql(u8, text, field.name)) return @enumFromInt(field.value);
+        }
+        return null;
+    }
+};
+
+/// Geometry for a size x height pair: a square footprint crossed with the
+/// preset height. The image is exactly the supported world lattice -- the
+/// same six geometries `WorldDims.valid` accepts.
+pub fn from_presets(size: WorldSize, height: WorldHeight) WorldDims {
+    return WorldDims.init(size.edge(), height.height(), size.edge());
 }
 
-test "parse accepts only supported LxHxD" {
-    try std.testing.expectEqual(default, parse("256x64x256").?);
-    try std.testing.expectEqual(@as(u32, 512), parse(" 512 x 128 x 512 ").?.length);
-    try std.testing.expect(parse("256x64") == null);
-    try std.testing.expect(parse("256x64x256x8") == null);
-    try std.testing.expect(parse("256x64x0") == null);
-    try std.testing.expect(parse("192x64x128") == null);
-    try std.testing.expect(parse("banana") == null);
+test "presets cover the supported lattice" {
+    const cases = [_]struct { size: WorldSize, height: WorldHeight, dims: [3]u16 }{
+        .{ .size = .tiny, .height = .normal, .dims = .{ 128, 64, 128 } },
+        .{ .size = .tiny, .height = .tall, .dims = .{ 128, 128, 128 } },
+        .{ .size = .normal, .height = .normal, .dims = .{ 256, 64, 256 } },
+        .{ .size = .normal, .height = .tall, .dims = .{ 256, 128, 256 } },
+        .{ .size = .huge, .height = .normal, .dims = .{ 512, 64, 512 } },
+        .{ .size = .huge, .height = .tall, .dims = .{ 512, 128, 512 } },
+    };
+    for (cases) |case| {
+        const dims = from_presets(case.size, case.height);
+        try std.testing.expectEqualStrings(case.size.label(), switch (dims.length) {
+            128 => "Tiny",
+            256 => "Normal",
+            512 => "Huge",
+            else => unreachable,
+        });
+        try std.testing.expectEqual(WorldDims.from_array(case.dims).?, dims);
+    }
+    try std.testing.expectEqual(default, from_presets(.normal, .normal));
+    try std.testing.expectEqual(@as(u32, 128), WorldSize.tiny.edge());
+    try std.testing.expectEqual(@as(u5, 9), WorldSize.huge.log2_edge());
+    try std.testing.expectEqual(@as(u32, 128), WorldHeight.tall.height());
+}
+
+test "preset parse is exact" {
+    try std.testing.expectEqual(WorldSize.tiny, WorldSize.parse("tiny").?);
+    try std.testing.expectEqual(WorldSize.normal, WorldSize.parse("normal").?);
+    try std.testing.expectEqual(WorldSize.huge, WorldSize.parse("huge").?);
+    try std.testing.expectEqual(WorldHeight.normal, WorldHeight.parse("normal").?);
+    try std.testing.expectEqual(WorldHeight.tall, WorldHeight.parse("tall").?);
+
+    try std.testing.expect(WorldSize.parse("256x64x256") == null);
+    try std.testing.expect(WorldSize.parse("Tiny") == null);
+    try std.testing.expect(WorldSize.parse("") == null);
+    try std.testing.expect(WorldHeight.parse("huge") == null);
+    try std.testing.expect(WorldHeight.parse("banana") == null);
 }
 
 test "block_index" {
