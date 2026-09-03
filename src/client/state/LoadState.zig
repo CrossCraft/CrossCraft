@@ -24,6 +24,12 @@ const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
 
 const log = std.log.scoped(.game);
 
+// Upper bound on the MP level download: the compressed stream is buffered
+// whole because the dims only arrive at LevelFinalize, after the last
+// chunk. Peak user-pool usage is this buffer plus the world allocated
+// beside it (~65 MiB for 512x128x512), which desktop-class init_user
+// covers. TODO(world-streaming): PSP & 3DS cannot hold that peak and fail
+// at the load screen instead.
 const max_compressed_bytes: usize = core.world_dims.max_length *
     core.world_dims.max_height * core.world_dims.max_depth + 64 * 1024;
 
@@ -122,7 +128,10 @@ fn serverTask(
     data_dir: std.Io.Dir,
     save_location: []const u8,
 ) void {
-    // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
+    // The embedded server allocates the world and worldgen scratch from the
+    // user pool under the init_user budget (sized in config.zig).
+    // TODO(world-streaming): PSP & 3DS hold that budget at 12 MiB, so
+    // geometries needing more fail here with OutOfMemory.
     const selected_save = if (save_location.len > 0) save_location else Server.default_save_location;
     const config: Server.GameConfig = .{
         .embedded = .{

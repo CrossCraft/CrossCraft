@@ -1,8 +1,11 @@
+const std = @import("std");
 const ae = @import("aether");
 const Util = ae.Util;
 const Engine = ae.Engine;
 const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
 const core = @import("core");
+
+const log = std.log.scoped(.client);
 
 const Profile = @This();
 
@@ -39,18 +42,14 @@ rt_user: u32,
 
 const desktop_profile: Profile = .{
     .hardware = .desktop,
-    .total_memory_mb = 96,
+    .total_memory_mb = 480,
     .chunk_radius = 16,
     .lod_near_radius_blocks = 96,
     .init_render = 8 * MB,
     .init_audio = 2 * MB,
     .init_game = 2 * MB,
-    // Sized to host the largest supported world embedded (512x128x512:
-    // 32 MiB of blocks plus worldgen scratch), not the common 4 MiB
-    // default. The tracker budget is a cap over the shared slab, so the
-    // unused headroom costs nothing for normal worlds.
-    .init_user = 48 * MB,
-    .rt_render = 88 * MB,
+    .init_user = 72 * MB,
+    .rt_render = 384 * MB,
     .rt_audio = 512 * KB,
     .rt_game = 512 * KB,
     .rt_user = 4 * MB + 512 * KB,
@@ -192,24 +191,41 @@ pub fn init_memory() Util.MemoryConfig {
     };
 }
 
+const gameplay_user_slack: u32 = 4 * MB;
+
+pub fn gameplay_user_budget(dims: core.world_dims.WorldDims) u32 {
+    switch (ae.platform) {
+        .psp, .nintendo_3ds => return 0,
+        else => {},
+    }
+    const world_bytes: u64 = dims.volume() +
+        dims.length * dims.depth + // light_map
+        4 * dims.chunk_count(); // chunk_counts + chunk_non_opaque (2 x u16)
+    return @intCast(world_bytes + gameplay_user_slack);
+}
+
 pub fn apply_runtime_budgets(engine: *Engine) void {
     const profile = current();
-    engine.set_budget(.render, profile.rt_render) catch unreachable;
-    engine.set_budget(.audio, profile.rt_audio) catch unreachable;
-    engine.set_budget(.game, profile.rt_game) catch unreachable;
-    engine.set_budget(.user, profile.rt_user) catch unreachable;
+    set_budget_clamped(engine, .render, profile.rt_render);
+    set_budget_clamped(engine, .audio, profile.rt_audio);
+    set_budget_clamped(engine, .game, profile.rt_game);
+    const want = @max(profile.rt_user, gameplay_user_budget(core.World.data.dims));
+    set_budget_clamped(engine, .user, want);
 }
 
 /// Restore the startup pool layout. Called on entry to MenuState so the next
-/// LoadState connect/load has the larger init_user budget back -- after a
-/// GameState session the user pool is shrunk to rt_user, which is too tight
-/// for the MP connect path's 2 MiB scratch + 4 MiB world allocation.
 pub fn apply_init_budgets(engine: *Engine) void {
     const profile = current();
-    engine.set_budget(.render, profile.init_render) catch unreachable;
-    engine.set_budget(.audio, profile.init_audio) catch unreachable;
-    engine.set_budget(.game, profile.init_game) catch unreachable;
-    engine.set_budget(.user, profile.init_user) catch unreachable;
+    set_budget_clamped(engine, .render, profile.init_render);
+    set_budget_clamped(engine, .audio, profile.init_audio);
+    set_budget_clamped(engine, .game, profile.init_game);
+    set_budget_clamped(engine, .user, profile.init_user);
+}
+
+fn set_budget_clamped(engine: *Engine, pool: Util.Pool, want: u32) void {
+    const target = @max(want, engine.pool_used(pool));
+    engine.set_budget(pool, target) catch |err|
+        log.err("set_budget({s}, {d}) failed after clamp: {}", .{ @tagName(pool), target, err });
 }
 
 fn render_remainder(
