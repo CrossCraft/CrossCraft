@@ -11,6 +11,12 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .optimize = .ReleaseSafe,
     });
+    const lint_roots: []const []const u8 = &.{
+        ".",
+        "src/unit.zig",
+        "src/client/web_main.zig",
+    };
+
     const run_lint = b.addRunArtifact(lint_dep.artifact("lint"));
     run_lint.setCwd(b.path("."));
     if (b.graph.environ_map.get("CI") != null) {
@@ -18,11 +24,22 @@ pub fn build(b: *std.Build) void {
     }
     // Build-system roots are not reached through Zig @imports, so identify
     // them explicitly for the linter's dead-file analysis.
-    run_lint.addArgs(&.{ ".", "src/unit.zig", "src/client/web_main.zig" });
+    run_lint.addArgs(lint_roots);
 
     const lint_step = b.step("lint", "Lint the codebase with tiger_lint");
     lint_step.dependOn(&run_lint.step);
     b.getInstallStep().dependOn(lint_step);
+
+    const run_lint_metrics = b.addRunArtifact(lint_dep.artifact("lint"));
+    run_lint_metrics.setCwd(b.path("."));
+    run_lint_metrics.addArgs(&.{ "--check-only", "--metrics" });
+    run_lint_metrics.addArgs(lint_roots);
+
+    const lint_metrics_step = b.step(
+        "lint-metrics",
+        "Lint the codebase and print AST metrics as JSON",
+    );
+    lint_metrics_step.dependOn(&run_lint_metrics.step);
 
     const overrides: Aether.config.Config.Overrides = .{
         .gfx = b.option(Aether.config.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
