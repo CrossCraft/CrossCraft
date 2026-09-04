@@ -29,7 +29,6 @@ pub const ClassicCw = struct {
         ctx: SaveContext,
         writer: *std.Io.Writer,
     ) !void {
-        // Wrap the file writer in gzip via the shared compressor.
         try compress_worker.reset(writer);
         const out = &compress_worker.compressor.writer;
 
@@ -67,31 +66,24 @@ pub const ClassicCw = struct {
 };
 
 fn write_classic_world_compound(ctx: SaveContext, out: *std.Io.Writer) !void {
-    // Outer compound header: tag + name "ClassicWorld". The TAG_End that
-    // closes the compound is written at the bottom of this function.
     try out.writeInt(u8, @intFromEnum(nbt.Tag.compound), .big);
     try write_string_payload(out, "ClassicWorld");
 
-    // Build the metadata children in a stack arena. Each leaf is a slice
-    // reference -- no copies of `ctx.name` or `ctx.uuid`.
-    var scratch: [4096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&scratch);
-    const a = fba.allocator();
-
-    const spawn_children = try a.alloc(nbt.NBT, 5);
-    spawn_children[0] = leaf_short("X", @intCast(@as(i32, ctx.spawn[0]) >> 5));
-    spawn_children[1] = leaf_short("Y", @intCast(@as(i32, ctx.spawn[1]) >> 5));
-    spawn_children[2] = leaf_short("Z", @intCast(@as(i32, ctx.spawn[2]) >> 5));
-    spawn_children[3] = leaf_byte("H", 0);
-    spawn_children[4] = leaf_byte("P", 0);
-
-    const created_by_children = try a.alloc(nbt.NBT, 2);
-    created_by_children[0] = leaf_string("Service", CREATED_BY_SERVICE);
-    created_by_children[1] = leaf_string("Username", CREATED_BY_USERNAME);
-
-    const map_gen_children = try a.alloc(nbt.NBT, 2);
-    map_gen_children[0] = leaf_string("Software", MAP_GENERATOR_SOFTWARE);
-    map_gen_children[1] = leaf_string("MapGeneratorName", MAP_GENERATOR_NAME);
+    const spawn_children = [_]nbt.NBT{
+        leaf_short("X", @intCast(@as(i32, ctx.spawn[0]) >> 5)),
+        leaf_short("Y", @intCast(@as(i32, ctx.spawn[1]) >> 5)),
+        leaf_short("Z", @intCast(@as(i32, ctx.spawn[2]) >> 5)),
+        leaf_byte("H", 0),
+        leaf_byte("P", 0),
+    };
+    const created_by_children = [_]nbt.NBT{
+        leaf_string("Service", CREATED_BY_SERVICE),
+        leaf_string("Username", CREATED_BY_USERNAME),
+    };
+    const map_gen_children = [_]nbt.NBT{
+        leaf_string("Software", MAP_GENERATOR_SOFTWARE),
+        leaf_string("MapGeneratorName", MAP_GENERATOR_NAME),
+    };
 
     var uuid_copy = ctx.uuid;
     const meta_children = [_]nbt.NBT{
@@ -101,12 +93,12 @@ fn write_classic_world_compound(ctx: SaveContext, out: *std.Io.Writer) !void {
         leaf_short("X", @intCast(ctx.dims.length)),
         leaf_short("Y", @intCast(ctx.dims.height)),
         leaf_short("Z", @intCast(ctx.dims.depth)),
-        named("CreatedBy", .{ .compound = created_by_children }),
-        named("MapGenerator", .{ .compound = map_gen_children }),
+        named("CreatedBy", .{ .compound = &created_by_children }),
+        named("MapGenerator", .{ .compound = &map_gen_children }),
         leaf_long("TimeCreated", ctx.time_created),
         leaf_long("LastAccessed", ctx.last_modified),
         leaf_long("LastModified", ctx.last_modified),
-        named("Spawn", .{ .compound = spawn_children }),
+        named("Spawn", .{ .compound = &spawn_children }),
     };
 
     for (meta_children) |child| {
@@ -126,12 +118,10 @@ fn write_classic_world_compound(ctx: SaveContext, out: *std.Io.Writer) !void {
     };
     try nbt.write_named_byte_array_stream(out, "BlockArray", total_len, BlockBody{ .world = ctx.world, .io = ctx.io });
 
-    // Empty Metadata compound: tag + name + immediate TAG_End.
     try out.writeInt(u8, @intFromEnum(nbt.Tag.compound), .big);
     try write_string_payload(out, "Metadata");
     try out.writeInt(u8, @intFromEnum(nbt.Tag.end), .big);
 
-    // Close outer ClassicWorld compound.
     try out.writeInt(u8, @intFromEnum(nbt.Tag.end), .big);
 }
 
@@ -165,7 +155,6 @@ fn read_classic_world_compound(
     dims: WorldDims,
     blocks: []Block,
 ) !LoadOutcome {
-    // Outer tag must be a compound named "ClassicWorld".
     if (try nbt.read_tag(reader) != .compound) return error.InvalidTag;
     var name_buf: [64]u8 = undefined;
     const name = try take_string(reader, &name_buf);
@@ -180,7 +169,6 @@ fn read_classic_world_compound(
     var seen_dimensions: u3 = 0;
     var seen_block_array = false;
 
-    // Walk children until TAG_End. Recognise known names; skip unknown.
     while (true) {
         const t = try nbt.read_tag(reader);
         if (t == .end) break;

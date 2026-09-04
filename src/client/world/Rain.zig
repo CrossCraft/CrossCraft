@@ -40,7 +40,6 @@ const SPLASH_HALF_SIZE: f32 = 0.12;
 // Must exceed the collision radius to avoid an immediate floor hit.
 const SPLASH_SPAWN_OFFSET: f32 = 0.18;
 
-const PARTICLE_ATLAS_SIZE: u32 = 128;
 const PARTICLE_ATLAS_TILES: u32 = 16;
 const DROP_TILE_COL: u32 = 0;
 const DROP_TILE_ROW: u32 = 1;
@@ -92,7 +91,7 @@ pub fn init(allocator: std.mem.Allocator) !Self {
         .streak_mesh = try Rendering.MeshType(Vertex).init(&.{}),
         .splash_data = try Rendering.MeshDataType(Vertex).init(allocator),
         .splash_mesh = try Rendering.MeshType(Vertex).init(&.{}),
-        .particle_atlas = TextureAtlas.init(PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_SIZE, PARTICLE_ATLAS_TILES, PARTICLE_ATLAS_TILES),
+        .particle_atlas = TextureAtlas.init(PARTICLE_ATLAS_TILES, PARTICLE_ATLAS_TILES),
         .scroll_v = 0,
         .streak_mesh_dirty = true,
         .streak_cam_tile_x = 0,
@@ -213,7 +212,7 @@ pub fn draw_streaks(self: *Self, camera: *const Camera) void {
     defer Rendering.gfx.api.set_clip_planes(false);
     Rendering.gfx.api.set_culling(false);
     defer Rendering.gfx.api.set_culling(true);
-    Rendering.gfx.api.set_uv_offset(0.0, streak_v_offset(self.scroll_v));
+    Rendering.gfx.api.set_uv_offset(0.0, @as(f32, @floatFromInt(@mod(self.scroll_v, 32768))) / 32768.0);
     defer Rendering.gfx.api.set_uv_offset(0.0, 0.0);
 
     const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE)
@@ -278,10 +277,6 @@ fn rebuild_splash_mesh(self: *Self, camera: *const Camera) void {
         emit_splash(&self.splash_data, &self.splashes[i], rx, rz, upx, upy, upz, tu0, tv0, tu1, tv1, color);
     }
     self.splash_mesh.update(&self.splash_data);
-}
-
-fn streak_v_offset(scroll_v: i32) f32 {
-    return @as(f32, @floatFromInt(@mod(scroll_v, 32768))) / 32768.0;
 }
 
 fn build_streaks(mesh: *Rendering.MeshDataType(Vertex), cam_tile_x: i32, cam_tile_z: i32) void {
@@ -475,7 +470,7 @@ fn rain_surface_at(x: i32, z: i32) i32 {
     var y: i32 = @as(i32, @intCast(World.data.dims.height)) - 1;
     while (y >= light_surface) : (y -= 1) {
         const id = World.data.get_block(@intCast(x), @intCast(y), @intCast(z));
-        if (collision.block_height(id) > 0.0) return y + 1;
+        if (id.collision_height() > 0.0) return y + 1;
     }
     return light_surface;
 }
@@ -505,7 +500,7 @@ fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
             while (bz <= bz1) : (bz += 1) {
                 if (bz < 0 or bz >= World.data.dims.depth) continue;
                 const id = World.data.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-                if (collision.block_height(id) > 0.0) return true;
+                if (id.collision_height() > 0.0) return true;
             }
         }
     }

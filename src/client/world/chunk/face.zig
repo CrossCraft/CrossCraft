@@ -20,7 +20,6 @@ pub fn encode_pos_frac(local: u32, frac256: u32) i16 {
     return @intCast(@min(@as(i32, @intCast(local)) * 2048 + @as(i32, @intCast(frac256)) * 8, 32767));
 }
 
-/// Directional face shading.
 pub fn face_color(face: Face) u32 {
     return switch (face) {
         .y_pos => 0xFFFFFFFF,
@@ -52,7 +51,6 @@ fn tile_uvs(tile: blocks.Tile, atlas: *const TextureAtlas) UVRect {
     };
 }
 
-/// Four identical corner colors for paths without per-vertex AO.
 pub fn uniform_colors(c: u32) [4]u32 {
     return .{ c, c, c, c };
 }
@@ -110,18 +108,13 @@ fn brighter_along_02(verts: [4]Vertex) bool {
 
 fn emit_quad(mesh: *BatchMesh, verts: [4]Vertex) void {
     if (brighter_along_02(verts)) {
-        // Diagonal 0-2 (original winding).
         mesh.add_quad_assume_capacity(verts[0], verts[3], verts[2], verts[1]);
     } else {
-        // Diagonal 1-3 (flipped, same winding orientation).
         mesh.add_quad_assume_capacity(verts[3], verts[2], verts[1], verts[0]);
     }
 }
 
-/// Specialization of emit_quad for uniform corner colors. brighter_along_02
-/// always picks diagonal 0-2 when the four greens match, so the per-quad
-/// 4 byte-extracts + add + compare are pure waste on the non-AO path. Any
-/// caller that builds verts via uniform_colors should use this.
+/// Uniform colors always select diagonal 0-2, so bypass the AO comparison.
 fn emit_quad_uniform(mesh: *BatchMesh, verts: [4]Vertex) void {
     mesh.add_quad_assume_capacity(verts[0], verts[3], verts[2], verts[1]);
 }
@@ -135,10 +128,6 @@ fn emit_quad_uniform_double_sided(mesh: *BatchMesh, verts: [4]Vertex) void {
     emit_quad_reversed(mesh, verts);
 }
 
-// --- Public emission functions ---
-
-/// Emit one block face (6 vertices). All 4 corners share `color`, so the
-/// AO-aware brighter-diagonal pick is skipped.
 pub fn emit_face(
     mesh: *BatchMesh,
     face: Face,
@@ -168,8 +157,7 @@ pub fn emit_face(
     ));
 }
 
-/// Emit one block face (6 vertices) with per-corner colors. Used by the AO
-/// path; `colors[i]` is applied to vertex `i` as laid out by `make_quad`.
+/// `colors` follows the vertex order produced by `make_quad`.
 pub fn emit_face_colors(
     mesh: *BatchMesh,
     face: Face,
@@ -212,7 +200,6 @@ pub fn emit_slab_face(
     const base = face_color(face);
     const color = if (shadowed) apply_shadow(base) else base;
     const uv = tile_uvs(tile, atlas);
-    // 128/256 = 0.5 block. Top face sits at y + 0.5; sides span [y, y+0.5].
     const py_top: i16 = encode_pos_frac(y, 128);
     const py_bot: i16 = encode_pos(y);
     // make_quad uses only py1 for y_pos and only py for y_neg, so the
@@ -334,9 +321,7 @@ pub fn emit_fluid_overlay(
     var pz = encode_pos(z);
     var pz1 = encode_pos(z + 1);
 
-    // Shift the face plane 1/256 block past the boundary (toward the fluid)
-    // and expand perpendicular axes by the same amount to close corner seams.
-    const INSET: i16 = 8; // 1/256 block in SNORM16 encoding
+    const INSET: i16 = 8;
     switch (face) {
         .x_pos => {
             px1 = px1 +| INSET;
@@ -385,7 +370,6 @@ pub fn emit_fluid_overlay(
     emit_quad_uniform(mesh, make_quad(face, px, px1, py, py1, pz, pz1, uv.tu0, uv.tv0, uv.tu1, uv.tv1, uniform_colors(color)));
 }
 
-/// Emit two intersecting diagonal planes for cross-plants (24 vertices).
 pub fn emit_cross(
     mesh: *BatchMesh,
     x: u32,

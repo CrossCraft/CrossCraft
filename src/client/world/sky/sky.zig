@@ -13,17 +13,14 @@ const World = @import("core").World;
 const BatchMesh = Rendering.MeshType(Vertex);
 const BatchMeshData = Rendering.MeshDataType(Vertex);
 
-/// Sky plane: 64x64 grid of 16-unit tiles (1024x1024 total).
 const PLANE_GRID: u32 = 64;
 const PLANE_SIZE: f32 = 1024.0;
 const HALF_SIZE: f32 = 512.0;
 const SKY_Y_OFFSET: f32 = 48.0;
 
-/// Clouds: 64x64 vertex grid, UV tiles at 0.5x (one repeat per 512 units).
 const CLOUD_GRID: u32 = 64;
 const CLOUD_UV_REPEATS: u32 = 1;
-/// Texture appears this many times larger on screen without changing mesh;
-/// UVs span 1/CLOUD_TEX_SCALE of the texture across the grid.
+/// Scales cloud UV density without changing the mesh.
 const CLOUD_TEX_SCALE: u32 = 2;
 const CLOUD_UV_PERIOD: f32 = PLANE_SIZE * @as(f32, @floatFromInt(CLOUD_TEX_SCALE)) / @as(f32, @floatFromInt(CLOUD_UV_REPEATS));
 /// Clouds float this far above the world ceiling so tall worlds keep their
@@ -71,7 +68,6 @@ pub fn update(self: *Self, dt: f32) void {
 
 const collision = @import("../../player/collision.zig");
 
-/// Set the clear color based on whether the camera is submerged.
 pub fn clear(submerged: ?collision.Liquid) void {
     const c = fog_color(submerged);
     Rendering.gfx.api.set_clear_color(
@@ -82,7 +78,6 @@ pub fn clear(submerged: ?collision.Liquid) void {
     );
 }
 
-/// Draw sky "dome". Call before terrain
 pub fn draw_plane(self: *Self, camera: *const Camera, submerged: ?collision.Liquid) void {
     set_sky_fog(submerged);
     Rendering.gfx.api.set_alpha_blend(false);
@@ -95,9 +90,6 @@ pub fn draw_plane(self: *Self, camera: *const Camera, submerged: ?collision.Liqu
     self.plane_mesh.draw(&m);
 }
 
-/// Draw the cloud layer above the world ceiling, anchored to the world
-/// center. The UV offset slides clouds along +X over time without touching
-/// the mesh.
 pub fn draw_clouds(self: *Self, _: *const Camera, submerged: ?collision.Liquid) void {
     set_sky_fog(submerged);
     Rendering.gfx.api.set_alpha_blend(true);
@@ -116,8 +108,6 @@ pub fn draw_clouds(self: *Self, _: *const Camera, submerged: ?collision.Liquid) 
     Rendering.gfx.api.set_culling(true);
     Rendering.gfx.api.set_uv_offset(0.0, 0.0);
 }
-
-// --- Fog ---
 
 fn set_sky_fog(submerged: ?collision.Liquid) void {
     const c = fog_color(submerged);
@@ -147,8 +137,6 @@ fn fog_params(submerged: ?collision.Liquid) [2]f32 {
         .lava => .{ 0.0, 2.0 },
     };
 }
-
-// --- Mesh building ---
 
 /// Map sky grid index [0, PLANE_GRID] to SNORM16 [0, 32767].
 fn encode_plane(i: u32) i16 {

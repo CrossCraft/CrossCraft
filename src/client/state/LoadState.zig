@@ -8,9 +8,9 @@ const State = Core.State;
 
 const SpriteBatcher = ae.UI.SpriteBatcher;
 const FontBatcher = ae.UI.FontBatcher;
-const Scaling = ae.UI.Scaling;
 const Colors = @import("../graphics/Color.zig");
 const ResourcePack = @import("../ResourcePack.zig");
+const Screen = @import("../ui/Screen.zig");
 const core = @import("core");
 const Server = core.Server;
 const World = core.World;
@@ -24,16 +24,11 @@ const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
 
 const log = std.log.scoped(.game);
 
-// Upper bound on the MP level download: the compressed stream is buffered
-// whole because the dims only arrive at LevelFinalize, after the last
-// chunk. Peak user-pool usage is this buffer plus the world allocated
-// beside it (~65 MiB for 512x128x512), which desktop-class init_user
-// covers. TODO(world-streaming): PSP & 3DS cannot hold that peak and fail
-// at the load screen instead.
+// Level dimensions arrive after the compressed stream, so the client must
+// buffer it whole. PSP and 3DS cannot hold the maximum level beside the world.
 const max_compressed_bytes: usize = core.world_dims.max_length *
     core.world_dims.max_height * core.world_dims.max_depth + 64 * 1024;
 
-// Module-level: only one LoadState instance may exist at a time.
 var server_ready: std.atomic.Value(bool) = .init(false);
 var session_error: ?anyerror = null;
 var mp_server_name: [64]u8 = @splat(' ');
@@ -45,8 +40,6 @@ var mp_server_motd: [64]u8 = @splat(' ');
 // it in module storage and publish it before spawning the one load task.
 var task_io: std.Io = undefined;
 
-/// Empty action set; exists only so push_context has a valid installed
-/// set during the loading screen.
 var loading_set: ?ae.Core.input.ActionSetHandle = null;
 
 const TaskHandle = union(enum) {
@@ -138,9 +131,6 @@ fn serverTask(
             .world = .{
                 .seed = seed,
                 .save_location = selected_save,
-                // CreateWorld presets. Cleared when loading an existing save,
-                // and only shape first generation regardless (world.init
-                // respects the save's own dimensions).
                 .size = Session.singleplayer_size orelse .normal,
                 .height = Session.singleplayer_height orelse .normal,
             },
@@ -167,7 +157,6 @@ fn connectTask(alloc: std.mem.Allocator, seed: u64, data_dir: std.Io.Dir) void {
 fn cleanup_failed_multiplayer_connect(io: std.Io) void {
     Session.mp_connected.store(false, .release);
 
-    // Close any partially-opened socket so GameState never tries to use it.
     if (Session.mp_stream) |*s| {
         s.close(io);
         Session.mp_stream = null;
@@ -263,9 +252,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
 
     const dims = announced orelse return error.MissingLevelFinalize;
 
-    // Decompress the accumulated gzip stream. The server uses `.gzip` in
-    // core/client.zig:reset_compressor, so match here. Wire format is
-    // contiguous YZX (Java Classic compatible); scatter into chunk-aware layout.
+    // The server sends gzip-compressed, Java Classic-compatible YZX data.
     var src = std.Io.Reader.fixed(compressed.items);
     const window_buf = try alloc.alloc(u8, flate.max_window_len);
     defer alloc.free(window_buf);
@@ -338,10 +325,7 @@ inited: bool,
 var game_state: GameState = undefined;
 var state_inst: State = undefined;
 
-// Keep the LoadState instance itself out of MenuState so the root app state
-// stays small on PSP and other memory-constrained targets. Both the
-// singleplayer and multiplayer entry points call `transition_here` to land
-// in this state.
+// Keep the large state outside MenuState for memory-constrained targets.
 var load_state: @This() = undefined;
 var load_state_inst: State = undefined;
 
@@ -383,7 +367,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         std.heap.wasm_allocator
     else
         engine.allocator(.user);
-    // TODO: allocator pool budget may need tuning for server + client coexistence
     self.server_task = switch (Session.mode) {
         .singleplayer => start_server_task(
             engine.allocator(.user),
@@ -438,24 +421,9 @@ fn update(ctx: *anyopaque, _: *Engine, dt: f32, _: *const Util.BudgetContext) an
 }
 
 fn prepare_batches(self: *@This()) !void {
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const scale = Scaling.compute(screen_w, screen_h);
-    const extent_x: i16 = @intCast((screen_w + scale - 1) / scale);
-    const extent_y: i16 = @intCast((screen_h + scale - 1) / scale);
-
     self.batcher.clear();
-    var y: i16 = 0;
-    const tile_size = 32;
-    while (y < extent_y) : (y += tile_size) {
-        var x: i16 = 0;
-        while (x < extent_x) : (x += tile_size) {
-            const dirt = ResourcePack.get_tex(.dirt);
-            add_dirt_tile(self, dirt, x, y, tile_size);
-        }
-    }
+    Screen.add_dirt_background(&self.batcher, ResourcePack.get_tex(.dirt));
 
-    // Loading bar
     const bar_width: i16 = 100;
     const bar_height: i16 = 2;
     const bar_y: i16 = 16;
@@ -565,18 +533,6 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (ae.platform != .nintendo_3ds and ae.platform != .nintendo_switch) {
         try std.Io.sleep(engine.io, .fromMilliseconds(50), .real);
     }
-}
-
-fn add_dirt_tile(self: *@This(), dirt: *const Rendering.Texture, x: i16, y: i16, tile_size: i16) void {
-    self.batcher.add_sprite(&.{
-        .texture = dirt,
-        .pos_offset = .{ .x = x, .y = y },
-        .pos_extent = .{ .x = tile_size, .y = tile_size },
-        .tex_offset = .{ .x = 0, .y = 0 },
-        .tex_extent = .{ .x = @intCast(dirt.width), .y = @intCast(dirt.height) },
-        .color = Colors.menu_tiles,
-        .layer = 0,
-    });
 }
 
 pub fn state(self: *@This()) State {

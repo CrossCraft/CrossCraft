@@ -1,5 +1,3 @@
-// Save formats share the save, load, and dimension-sniffing interface below.
-
 const std = @import("std");
 const b = @import("../blocks.zig");
 const WorldDims = @import("../world_dims.zig").WorldDims;

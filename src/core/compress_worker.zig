@@ -138,7 +138,6 @@ pub fn signal_exit() void {
     worker_exit.store(true, .release);
 }
 
-/// Drain one batch of pending jobs. Returns true if at least one job ran.
 fn drain_once() bool {
     const head = queue_head.swap(null, .acquire) orelse return false;
     var node: ?*Job = head;

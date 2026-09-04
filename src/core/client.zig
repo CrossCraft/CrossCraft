@@ -3,7 +3,6 @@ const zb = @import("protocol");
 const Protocol = zb.Protocol;
 const blocks = @import("blocks.zig");
 const world = @import("world.zig");
-const wd = @import("world_dims.zig");
 const proto = @import("protocol.zig");
 
 const Server = @import("server.zig");
@@ -14,13 +13,10 @@ const outbound_queue = @import("outbound_queue.zig");
 const OutboundQueue = outbound_queue.OutboundQueue;
 const Message = proto.Message;
 
-/// Largest to-client packet is the 1028-byte LevelDataChunk; round up so
-/// any serialized packet fits the staging buffer.
+/// Rounded above the 1028-byte LevelDataChunk packet.
 const packet_buf_bytes = 1100;
-/// Stack buffer used when draining the outbound queue to the socket.
 const drain_buf_bytes = 64 * 1024;
-/// Caps how long queued outbound data waits while the client is silent;
-/// aligned with the 20 Hz (50 ms) tick.
+/// Keeps outbound latency below the 20 Hz tick interval.
 const recv_poll_timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(25), .clock = .real } };
 /// Inbound accumulation buffer for the connection loop. The largest
 /// to-server packet is the 131-byte login frame and any invalid byte
@@ -460,7 +456,6 @@ fn send_world(self: *Self) !void {
     self.drain_outbound();
 
     if (self.local) {
-        // Local client reads World.blocks directly - no chunks needed.
         const size = world.data.dims.to_array();
         try proto.send_level_finalize_to_client(self.writer, size[0], size[1], size[2]);
         try self.writer.flush();
@@ -515,30 +510,19 @@ fn send_world_impl(self: *Self) !void {
     // between capture activation and the first snapshot copy.
     var size_header: [4]u8 = undefined;
     std.mem.writeInt(u32, &size_header, @intCast(volume), .big);
-    Server.lock_world();
+    world.lock_world();
     Server.lock_roster_shared();
     self.catchup_mode.store(.capturing, .release);
     Server.unlock_roster_shared();
-    Server.unlock_world();
+    world.unlock_world();
 
     try compress_worker.compressor.writer.writeAll(&size_header);
     sender.raw_written = 4;
 
-    var band_buf: [wd.max_length * wd.chunk_size]u8 = undefined;
-    const band = band_buf[0..dims.band_len()];
-    for (0..dims.height) |y| {
-        var z: usize = 0;
-        while (z < dims.depth) : (z += wd.chunk_size) {
-            Server.lock_world_shared();
-            world.data.copy_blocks_yzx_band(@intCast(y), @intCast(z), band);
-            Server.unlock_world_shared();
-            try compress_worker.compressor.writer.writeAll(band);
-        }
-    }
+    try world.data.write_blocks_yzx(Server.io, &compress_worker.compressor.writer);
     sender.raw_written = @intCast(volume + 4);
     try compress_worker.compressor.finish();
 
-    // Send any remaining partial chunk as the final packet.
     if (sender.interface.end > 0) {
         var final_chunk: [1024]u8 = @splat(0);
         @memcpy(final_chunk[0..sender.interface.end], sender.interface.buffer[0..sender.interface.end]);
@@ -554,12 +538,12 @@ fn send_world_impl(self: *Self) !void {
     // LevelFinalize is now in the normal queue. Close the capture gap while
     // mutations are excluded, promote journaled packets behind it, then let
     // future edits append directly even if the peer is still downloading.
-    Server.lock_world();
+    world.lock_world();
     Server.lock_roster_shared();
     out.promoteCatchup(Server.io);
     self.catchup_mode.store(.direct, .release);
     Server.unlock_roster_shared();
-    Server.unlock_world();
+    world.unlock_world();
 }
 
 pub fn ip_slice(self: *const Self) []const u8 {
@@ -574,9 +558,9 @@ pub fn handshake(self: *Self) !void {
     var name_buf: Message = @splat(' ');
     std.mem.copyForwards(u8, &name_buf, self.name[0..self.name_len]);
 
-    Server.lock_world_shared();
+    world.lock_world_shared();
     const spawn = world.find_spawn();
-    Server.unlock_world_shared();
+    world.unlock_world_shared();
     var initial_spawn = zb.SpawnPlayer{
         .pid = -1,
         .name = name_buf,
@@ -591,18 +575,19 @@ pub fn handshake(self: *Self) !void {
     self.drain_outbound();
 
     // Send existing players to the new joiner before broadcasting the new joiner to others.
-    Server.lock_roster_shared();
-    for (0..Server.players.items.len) |i| {
-        if (Server.players.items[i]) |p| {
-            if (p.id == self.id or !p.initialized)
-                continue;
+    {
+        Server.lock_roster_shared();
+        defer Server.unlock_roster_shared();
+        for (0..Server.players.items.len) |i| {
+            const player = &(Server.players.items[i] orelse continue);
+            if (player.id == self.id or !player.initialized) continue;
 
             var name_cpy = [_]u8{' '} ** 64;
-            std.mem.copyForwards(u8, &name_cpy, &p.name);
+            std.mem.copyForwards(u8, &name_cpy, &player.name);
 
-            const pose = p.load_pose();
+            const pose = player.load_pose();
             var player_spawn = zb.SpawnPlayer{
-                .pid = p.id,
+                .pid = player.id,
                 .name = name_cpy,
                 .x = pose.x,
                 .y = pose.y,
@@ -614,7 +599,6 @@ pub fn handshake(self: *Self) !void {
             self.drain_outbound();
         }
     }
-    Server.unlock_roster_shared();
 
     initial_spawn.pid = self.id;
 
@@ -657,18 +641,14 @@ pub fn prepare_login(self: *Self, request: LoginRequest) bool {
     }
 
     const name = login_name(request);
-    for (Server.players.items) |maybe_client| {
-        if (maybe_client) |p| {
-            // Awaiting clients have not chosen a name yet. Handshaking
-            // clients do count: their name is reserved until their world
-            // transfer succeeds or fails.
-            const phase = p.phase.load(.acquire);
-            if (p.id == self.id or phase == .awaiting_login or phase == .closing)
-                continue;
-            if (p.name_len == name.len and std.mem.eql(u8, p.name[0..p.name_len], name.value[0..name.len])) {
-                self.reject_protocol("A player with that name is already connected!");
-                return false;
-            }
+    for (0..Server.players.items.len) |i| {
+        const player = &(Server.players.items[i] orelse continue);
+        // Handshaking clients reserve their name; awaiting/closing clients do not.
+        const phase = player.phase.load(.acquire);
+        if (player.id == self.id or phase == .awaiting_login or phase == .closing) continue;
+        if (player.name_len == name.len and std.mem.eql(u8, player.name[0..player.name_len], name.value[0..name.len])) {
+            self.reject_protocol("A player with that name is already connected!");
+            return false;
         }
     }
 
@@ -719,9 +699,7 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
     const self = ctx_to_client(ctx);
     if (!require_active(self)) return;
 
-    // Strip the trailing space-padding the wire format mandates so
-    // command parsing sees clean tokens. Done before the dup_buf rewrite
-    // below, which mangles the message into "&fname: <text>".
+    // Strip wire padding before command parsing and chat formatting.
     const trimmed = std.mem.trimEnd(u8, &event.message, " \x00");
     if (trimmed.len > 0 and trimmed[0] == '/') {
         handle_slash_command(self, trimmed[1..]);
@@ -751,8 +729,7 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
         dup_buf[i] = event.message[j];
     }
 
-    // Translate Minecraft's alternate '%' color code prefix to '&'
-    // when followed by a valid color code character [0-9a-f].
+    // Translate Minecraft's alternate '%' color prefix.
     for (0..dup_buf.len - 1) |i| {
         if (dup_buf[i] != '%') continue;
         const next = dup_buf[i + 1];
@@ -782,8 +759,8 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     const self = ctx_to_client(ctx);
     if (!require_active(self)) return;
 
-    Server.lock_world();
-    defer Server.unlock_world();
+    world.lock_world();
+    defer world.unlock_world();
     if (!require_active(self)) return;
 
     const dims = world.data.dims;
@@ -798,7 +775,6 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     if (mode == .destroy and event.y == 0)
         return;
 
-    // Convert wire-format u8 to the typed Block at the protocol boundary.
     const block: blocks.Block = @enumFromInt(event.block);
 
     if (mode == .create and block.is_fluid()) {
@@ -824,11 +800,8 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
             return;
         }
 
-        // Slab-on-slab -> double slab. The originating client (and any other
-        // client doing optimistic placement, e.g. ClassiCube) already drew a
-        // slab into (x, y, z); re-assert whatever block actually lives at
-        // that cell so those predictions are reverted, then upgrade the
-        // slab below.
+        // Reassert this cell to undo optimistic client placement before
+        // upgrading the slab below.
         if (block == .slab and event.y > 0) {
             const below = world.data.get_block(event.x, event.y - 1, event.z);
             if (below == .slab) {
@@ -862,14 +835,10 @@ pub fn init(self: *Self) void {
     };
 }
 
-/// Non-blocking: read and process one packet if available. Returns true
-/// if a packet was processed. Used for singleplayer (same-process) mode
-/// where there is no dedicated read thread.
+/// Process one buffered singleplayer packet without blocking.
 pub fn try_process_packet(self: *Self) bool {
     return self.process_packet(self.reader) catch |err| switch (err) {
-        // Non-blocking local reader (FakeConn ring): ReadFailed just means
-        // no complete packet is buffered right now -- the normal idle case,
-        // not an error.
+        // An empty FakeConn ring is the normal idle case.
         error.ReadFailed => false,
         else => {
             log.err("process packet failed for client id={d}: {}", .{ self.id, err });
@@ -887,8 +856,6 @@ pub fn drain_packets(self: *Self) void {
 /// peer only ever stalls this one thread; returns when the connection ends.
 pub fn read_loop(self: *Self) void {
     const stream = self.stream orelse {
-        // Only remote clients have a connection loop; without a socket
-        // there is nothing to interleave reads with.
         self.mark_closed();
         return;
     };
@@ -920,7 +887,6 @@ pub fn read_loop(self: *Self) void {
             },
         };
         if (msg.data.len == 0) {
-            // Orderly EOF.
             self.mark_closed();
             return;
         }
@@ -946,7 +912,6 @@ pub fn read_loop(self: *Self) void {
         if (!self.is_connected()) return;
         if (!self.accepts_packets()) continue;
 
-        // Compact the incomplete-packet remainder to the front.
         const remaining = fixed.bufferedLen();
         std.mem.copyForwards(u8, inbuf[0..remaining], inbuf[in_len - remaining .. in_len]);
         in_len = remaining;
@@ -964,31 +929,14 @@ test "connection phase accepts only phase-valid client packets" {
     try std.testing.expect(!packet_allowed(.closing, 0x0D));
 }
 
-test "duplicate player id disconnects before handshake dispatch" {
-    var packet: [131]u8 = @splat(0);
-    packet[0] = 0x00;
-    var reader = std.Io.Reader.fixed(&packet);
-    var output: [256]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&output);
-    var connected = true;
-    var client: Self = undefined;
-    client.reader = &reader;
-    client.writer = &writer;
-    client.connected = &connected;
-    client.transport = null;
-    client.out = null;
-    client.stream = null;
-    client.initialized = true;
-    client.phase = .init(.active);
-
-    try std.testing.expect(!(try client.process_packet(&reader)));
-    try std.testing.expect(!connected);
-    try std.testing.expectEqual(@as(u8, 0x0E), writer.buffered()[0]);
-}
-
-test "pre-login mutation and chat packets disconnect before dispatch" {
-    for ([_]u8{ 0x05, 0x0D }) |packet_id| {
-        const packet = [_]u8{packet_id};
+test "phase-invalid packets disconnect before dispatch" {
+    const cases = [_]struct { phase: ConnectionPhase, packet_id: u8 }{
+        .{ .phase = .active, .packet_id = 0x00 },
+        .{ .phase = .awaiting_login, .packet_id = 0x05 },
+        .{ .phase = .awaiting_login, .packet_id = 0x0D },
+    };
+    for (cases) |case| {
+        const packet = [_]u8{case.packet_id};
         var reader = std.Io.Reader.fixed(&packet);
         var output: [256]u8 = undefined;
         var writer = std.Io.Writer.fixed(&output);
@@ -999,9 +947,7 @@ test "pre-login mutation and chat packets disconnect before dispatch" {
         client.connected = &connected;
         client.transport = null;
         client.out = null;
-        client.stream = null;
-        client.initialized = false;
-        client.phase = .init(.awaiting_login);
+        client.phase = .init(case.phase);
 
         try std.testing.expect(!(try client.process_packet(&reader)));
         try std.testing.expect(!connected);
@@ -1009,10 +955,11 @@ test "pre-login mutation and chat packets disconnect before dispatch" {
     }
 }
 
-test "player pose publishes all coordinates as one atomic snapshot" {
-    const expected: PlayerPose = .{ .x = 123, .y = 456, .z = 789, .yaw = 42, .pitch = 99 };
-    var atomic_pose = AtomicPlayerPose.init(@bitCast(@as(u64, 0)));
-    atomic_pose.store(expected);
-    const actual = atomic_pose.load();
-    try std.testing.expectEqual(expected, actual);
+test "atomic player pose round trips packed fields" {
+    const initial: PlayerPose = .{ .x = 123, .y = 456, .z = 789, .yaw = 42, .pitch = 99 };
+    const updated: PlayerPose = .{ .x = 0xffff, .y = 1, .z = 0xabcd, .yaw = 0xff, .pitch = 0 };
+    var pose = AtomicPlayerPose.init(initial);
+    try std.testing.expectEqual(initial, pose.load());
+    pose.store(updated);
+    try std.testing.expectEqual(updated, pose.load());
 }

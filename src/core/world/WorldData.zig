@@ -71,9 +71,7 @@ pub fn init_in_place(self: *WorldData, allocator: std.mem.Allocator, geometry: W
     self.name_len = @intCast(default_name.len);
 }
 
-/// Stamp the world with a fresh random UUID and the current real-clock
-/// time. Called on first generation; load paths instead populate these
-/// fields from the save file.
+/// Set creation metadata for a newly generated world.
 pub fn stamp_creation_metadata(self: *WorldData, io: std.Io) void {
     const real_ns: i64 = @truncate(std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds);
     var rng = std.Random.DefaultPrng.init(@bitCast(real_ns));
@@ -107,15 +105,12 @@ pub fn unlock_shared(self: *WorldData, io: std.Io) void {
     self.access_lock.unlockShared(io);
 }
 
-/// Free the block storage. Used on the generate path, where the generator
-/// returns its own full-volume buffer that is adopted afterwards.
 pub fn release_blocks(self: *WorldData) void {
     if (self.blocks.len == 0) return;
     self.backing_allocator.free(self.blocks);
     self.blocks = &.{};
 }
 
-/// Take ownership of a full-volume block buffer.
 pub fn adopt_blocks(self: *WorldData, blocks: []u8) void {
     assert(blocks.len == self.dims.volume());
     self.blocks = @ptrCast(blocks);
@@ -177,8 +172,7 @@ pub fn apply_block(self: *WorldData, x: u16, y: u16, z: u16, block: Block) void 
     self.update_height_column(x, y, z, block);
 }
 
-/// Scan each 4 KiB chunk and count non-air / non-opaque blocks. Called once
-/// after generation or load; maintained incrementally by `apply_block` thereafter.
+/// Rebuild counts later maintained by `apply_block`.
 pub fn compute_chunk_counts(self: *WorldData) void {
     for (0..self.chunk_counts.len) |ci| {
         const base = ci * wd.chunk_volume;
@@ -193,7 +187,6 @@ pub fn compute_chunk_counts(self: *WorldData) void {
     }
 }
 
-/// Build the full light map. Called once after generation or load.
 pub fn compute_light_map(self: *WorldData) void {
     for (0..self.dims.depth) |z| {
         for (0..self.dims.length) |x| {
@@ -207,7 +200,6 @@ fn column_index(self: *const WorldData, z: u16, x: u16) u32 {
     return (@as(u32, z) << self.dims.log2_length) | x;
 }
 
-/// Scan a single column top-down; return Y+1 of highest light-blocking block (0 if none).
 fn column_height(self: *const WorldData, x: u16, z: u16) u8 {
     var y: u32 = self.dims.height;
     while (y > 0) {
@@ -220,7 +212,6 @@ fn column_height(self: *const WorldData, x: u16, z: u16) u8 {
     return 0;
 }
 
-/// Incrementally update height map after a block change at (x,y,z).
 fn update_height_column(self: *WorldData, x: u16, y: u16, z: u16, block: Block) void {
     const col_idx = self.column_index(z, x);
     const cur = self.light_map[col_idx];
@@ -239,7 +230,6 @@ pub fn is_sunlit(self: *const WorldData, x: u16, y: u16, z: u16) bool {
     return y + 1 >= self.light_map[self.column_index(z, x)];
 }
 
-/// True when sunlight cannot pass through this block type.
 pub fn blocks_light(block: Block) bool {
     return !block.light_passes();
 }
@@ -348,14 +338,14 @@ pub fn read_blocks_yzx_into(dims: WorldDims, blocks: []Block, reader: *std.Io.Re
 /// Convert a contiguous YZX buffer (worldgen/wire order) to the chunk-aware
 /// layout, in place. The move unit is a chunk_size-byte x-row; destinations
 /// overlap not-yet-moved sources, so cycles are followed with one bit of
-/// `visited` per row and the carry row is staged through `lookaside`.
+/// `visited` per row and the carry row is staged through a lookaside buffer.
 /// `visited.len * 8` must cover `blocks.len / chunk_size` rows.
 pub fn remap_yzx_to_chunk_aware(
     dims: WorldDims,
     blocks: []u8,
-    lookaside: *[wd.chunk_volume]u8,
     visited: []u8,
 ) void {
+    var lookaside: [2 * wd.chunk_size]u8 = undefined;
     const rows = blocks.len / wd.chunk_size;
     const rows_per_slab_shift = dims.shift_slab;
     const rows_per_chunk = wd.chunk_size * wd.chunk_size;
@@ -413,7 +403,6 @@ test "remap_yzx_to_chunk_aware matches row scatter" {
     defer std.testing.allocator.free(chunked);
     const visited = try std.testing.allocator.alloc(u8, rows / 8);
     defer std.testing.allocator.free(visited);
-    var lookaside: [wd.chunk_volume]u8 = undefined;
 
     var prng = std.Random.DefaultPrng.init(0xC0FFEE);
     prng.random().bytes(yzx);
@@ -430,7 +419,7 @@ test "remap_yzx_to_chunk_aware matches row scatter" {
     }
 
     @memset(visited, 0);
-    remap_yzx_to_chunk_aware(dims, yzx, &lookaside, visited);
+    remap_yzx_to_chunk_aware(dims, yzx, visited);
 
     try std.testing.expectEqualSlices(u8, chunked, yzx);
 }

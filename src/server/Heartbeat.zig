@@ -1,39 +1,8 @@
 const std = @import("std");
-
-const log = std.log.scoped(.heartbeat);
-
-pub const max_urls: usize = 8;
-pub const max_url_len: usize = 512;
-const max_config_len: usize = 4096;
+const max_url_len = @import("Config.zig").max_heartbeat_url_len;
 const request_buffer_len = max_url_len + 384;
 const redirect_buffer_len = 8 * 1024;
 const retry_delays_ms = [_]i64{ 1_000, 2_000, 4_000 };
-
-pub const Config = struct {
-    urls: [max_urls][max_url_len]u8 = undefined,
-    lens: [max_urls]u16 = @splat(0),
-    count: usize = 0,
-
-    pub fn load(io: std.Io, data_dir: std.Io.Dir) Config {
-        const file = data_dir.openFile(io, "server.properties", .{}) catch return .{};
-        defer file.close(io);
-
-        var buf: [max_config_len]u8 = undefined;
-        const len = file.readPositionalAll(io, &buf, 0) catch |err| {
-            log.warn("Failed to read heartbeat configuration: {}", .{err});
-            return .{};
-        };
-        if (len == buf.len) log.warn("server.properties may exceed the heartbeat configuration buffer", .{});
-
-        var lines = std.mem.splitScalar(u8, buf[0..len], '\n');
-        while (lines.next()) |raw_line| {
-            const line = std.mem.trim(u8, raw_line, " \t\r");
-            const key = "heartbeat-url:";
-            if (std.mem.startsWith(u8, line, key)) return parse_url_list(line[key.len..]);
-        }
-        return .{};
-    }
-};
 
 pub const RequestData = struct {
     server_name: []const u8,
@@ -42,39 +11,6 @@ pub const RequestData = struct {
     max_players: u32,
     salt: []const u8,
 };
-
-pub fn parse_url_list(value: []const u8) Config {
-    var config: Config = .{};
-    var parts = std.mem.splitScalar(u8, value, ',');
-
-    while (parts.next()) |part| {
-        const endpoint = std.mem.trim(u8, part, " \t\r");
-        if (endpoint.len == 0) continue;
-        if (endpoint.len > max_url_len) {
-            log.warn("Ignoring heartbeat URL longer than {d} bytes", .{max_url_len});
-            continue;
-        }
-
-        const uri = std.Uri.parse(endpoint) catch {
-            log.warn("Ignoring invalid or non-HTTP heartbeat URL", .{});
-            continue;
-        };
-        if (!std.ascii.eqlIgnoreCase(uri.scheme, "http") or uri.host == null) {
-            log.warn("Ignoring invalid or non-HTTP heartbeat URL", .{});
-            continue;
-        }
-        if (config.count == max_urls) {
-            log.warn("Ignoring heartbeat URLs after the first {d}", .{max_urls});
-            break;
-        }
-
-        @memcpy(config.urls[config.count][0..endpoint.len], endpoint);
-        config.lens[config.count] = @intCast(endpoint.len);
-        config.count += 1;
-    }
-
-    return config;
-}
 
 pub fn send(
     io: std.Io,
@@ -128,13 +64,6 @@ fn write_query_value(writer: *std.Io.Writer, value: []const u8) std.Io.Writer.Er
         'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => try writer.writeByte(byte),
         else => try writer.print("%{X:0>2}", .{byte}),
     };
-}
-
-test "heartbeat URL lists accept comma-separated HTTP endpoints" {
-    const config = parse_url_list(" http://localhost:3000/api/v1/heartbeat, http://example.test/heartbeat ");
-    try std.testing.expectEqual(@as(usize, 2), config.count);
-    try std.testing.expectEqualStrings("http://localhost:3000/api/v1/heartbeat", config.urls[0][0..config.lens[0]]);
-    try std.testing.expectEqualStrings("http://example.test/heartbeat", config.urls[1][0..config.lens[1]]);
 }
 
 test "heartbeat query values are escaped and existing queries are preserved" {

@@ -1,8 +1,4 @@
 //! Persisted user preferences.
-//!
-//! `Options.current` is the live singleton.  Call `load` on startup and
-//! `save` whenever settings change.  Both operate on `options.json` in the
-//! application data directory (`engine.dirs.data`).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -66,8 +62,7 @@ pub const Options = struct {
     active_texturepack_buf: [max_pack_path]u8 = [_]u8{0} ** max_pack_path,
     active_texturepack_len: u8 = 0,
 
-    /// Chunk render radius. PSP defaults to 4; desktop defaults to 8.
-    /// Capped to the active runtime profile via `capped_render_distance`.
+    /// Consumers must use `capped_render_distance` to honor the runtime profile.
     render_distance: u8 = if (@import("aether").platform == .psp)
         4
     else
@@ -79,7 +74,6 @@ pub const Options = struct {
 
     fov: f32 = 70.0,
 
-    /// True = full leaf transparency (fancy); false = opaque leaves (fast).
     /// Defaults off on PSP to keep meshing within budget.  Profiles with
     /// `lod_near_radius_blocks == 0` cannot render fancy leaves at all.
     fancy_leaves: bool = @import("aether").platform != .psp,
@@ -88,19 +82,12 @@ pub const Options = struct {
 
     ambient_occlusion: bool = false,
 
-    /// Newly-meshed chunk sections rise from -16 blocks over 1 second.
-    /// Rebuilt sections are unaffected.
+    /// Animate only a section's first mesh build.
     bouncy_chunks: bool = false,
 
-    /// Cap frames to the display refresh rate.  Applied via
-    /// `engine.set_vsync` on load and whenever the options menu is dismissed.
-    /// PSP defaults to off; the 60 Hz cap costs more than it's worth given the
-    /// platform's frame-time budget.
+    /// Applied on load and when the options menu closes.
     vsync: bool = @import("aether").platform != .psp and @import("aether").platform != .nintendo_3ds,
 
-    /// In-game controller prompt style.  `auto` picks glyphs from the
-    /// connected controller on desktop, or the fixed platform layout on
-    /// PSP / Nintendo consoles.
     controller_tooltips: ControllerTooltips = .auto,
 
     rain: bool = false,
@@ -178,37 +165,25 @@ pub const Options = struct {
     }
 };
 
-/// Effective render distance, capped to the active runtime profile.
-/// Always use this instead of `current.render_distance` directly so we
-/// never ask the renderer to load more sections than its arrays can hold.
+/// Cap render distance to the renderer's allocated section capacity.
 pub fn capped_render_distance() u8 {
     const max: u8 = @intCast(@min(@as(u32, 255), cfg.current().chunk_radius));
     return @min(current.render_distance, max);
 }
 
-/// True when the build can render fancy (transparent) leaves at all.
-/// PSP-1000 forces opaque leaves via `lod_near_radius_blocks = 0`; this
-/// helper centralises the detection so the UI and load path agree.
+/// A zero near-LOD radius forces opaque leaves on constrained profiles.
 pub fn fancy_leaves_supported() bool {
     return cfg.current().lod_near_radius_blocks > 0;
 }
 
-/// True when the platform has one built-in controller glyph family.
-/// The options menu treats this as an on/off choice.
 pub fn fixed_controller_glyph_style() bool {
     return ae.platform == .psp or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
 }
 
-/// True when the active control layout is the Old 3DS single-stick scheme.
-/// New 3DS users can opt into this layout when their right-side input is
-/// unavailable; physical Old 3DS hardware always uses it.
 pub fn uses_old_3ds_controls() bool {
     return uses_old_3ds_controls_for(ae.platform, cfg.current().hardware, current.new_3ds_use_old_controls);
 }
 
-/// True when the controls screen has settings available on this platform.
-/// Both 3DS hardware classes expose their relevant control settings; Switch
-/// remains fixed.
 pub fn controls_rebinding_supported() bool {
     return controls_rebinding_supported_for(ae.platform, cfg.current().hardware);
 }
@@ -221,8 +196,6 @@ fn controls_rebinding_supported_for(platform: ae.Platform, hardware: cfg.Hardwar
     };
 }
 
-/// True only on New 3DS hardware, where the user may select the Old 3DS
-/// fallback layout.
 pub fn new_3ds_old_controls_supported() bool {
     return new_3ds_old_controls_supported_for(ae.platform, cfg.current().hardware);
 }
@@ -343,9 +316,7 @@ pub fn sensitivity_from_percent(percent: u32) f32 {
     return std.math.pow(f32, 10.0, lmin + (lmax - lmin) * pct);
 }
 
-// Field names match the JSON keys.  `active_texturepack` is a `[]const u8`
-// so the JSON parser can allocate it into the per-call arena; the caller
-// copies the value into the fixed buffer before the arena is freed.
+// The parser owns active_texturepack only until its per-call arena is freed.
 
 const JsonNumber = struct {
     value: f64 = 0.0,
@@ -440,8 +411,7 @@ const SaveJsonOptions = struct {
     new_3ds_use_old_controls: bool,
 };
 
-/// Load options from `options.json` in `dir`.  Falls back to defaults when
-/// the file does not exist or cannot be parsed.
+/// Invalid or missing files leave defaults intact.
 pub fn load(io: Io, dir: std.Io.Dir) void {
     const file = dir.openFile(io, options_file, .{}) catch return;
     defer file.close(io);
@@ -520,11 +490,7 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
     current.new_3ds_use_old_controls = j.new_3ds_use_old_controls;
 }
 
-/// Write current options to `options.json` in `dir`.
-/// Uses a direct `createFile` on every platform.  Atomic temp-file replace
-/// is unimplemented on PSP and the partial-write risk is negligible here:
-/// options.json is ~300 bytes, and `load`'s parse-error fallback to
-/// defaults already covers a torn write.
+/// PSP lacks atomic replacement; torn writes fall back to defaults on load.
 pub fn save(io: Io, dir: std.Io.Dir) void {
     const j = SaveJsonOptions{
         .active_texturepack = current.active_texturepack(),

@@ -1,6 +1,4 @@
-//! Per-screen UI command buffer. Widgets emit typed commands; `flush_into`
-//! replays them in order, lowering each into the SpriteBatcher / FontBatcher
-//! / IsoBlockDrawer. The buffer is a value type built fresh per draw.
+//! Per-screen UI command buffer lowered into the rendering batchers.
 
 const std = @import("std");
 const ae = @import("aether");
@@ -17,8 +15,6 @@ pub const Anchor = layout.Anchor;
 pub const Point = layout.Point;
 
 const Self = @This();
-
-// --- Command types ---
 
 pub const SpriteCmd = SpriteBatcher.Sprite;
 pub const ElidedSpriteCmd = SpriteBatcher.ElidedSprite;
@@ -45,16 +41,10 @@ pub const DrawCmd = union(enum) {
     clip_pop: void,
 };
 
-// --- Capacity ---
-
 pub const MAX_CMDS: u16 = if (ae.platform == .psp) 96 else 192;
-
-// --- Fields ---
 
 cmds: [MAX_CMDS]DrawCmd = undefined,
 count: u16 = 0,
-
-// --- Producers ---
 
 pub fn add_sprite(self: *Self, cmd: *const SpriteCmd) void {
     std.debug.assert(self.count < MAX_CMDS);
@@ -137,10 +127,7 @@ pub fn offset_range(self: *Self, start: u16, end: u16, dx: i16, dy: i16) void {
     }
 }
 
-// --- Backend adapter ---
-
-/// `iso` is optional: screens that never emit `iso_block` commands (menus,
-/// pause) pass null. Lists carrying an `iso_block` require it.
+/// `iso` is required only when the list contains an `iso_block` command.
 pub fn flush_into(
     self: *const Self,
     sprites: *SpriteBatcher,
@@ -179,8 +166,7 @@ pub fn flush_into(
                     fonts.add_text(t);
                 }
             },
-            // Iso blocks bypass CPU clipping; the iso drawer flushes as
-            // its own pass, with no Z interaction with sprite/text.
+            // Iso blocks form a separate pass and bypass CPU clipping.
             .iso_block => |*b| {
                 const drawer = iso.?;
                 drawer.add_payload(b.*);
@@ -206,10 +192,7 @@ fn intersect(a: layout.LogicalRect, b: layout.LogicalRect) layout.LogicalRect {
     };
 }
 
-/// Trim a sprite to the active clip rect, scaling its UV span to match the
-/// kept fraction of the destination. Returns null when fully outside.
-/// Only top_left/top_left anchored sprites are clipped; others fall through
-/// unclipped (no scroll-listed widget emits a different anchor today).
+/// Scale UVs with the clipped destination. Non-top-left anchors bypass clipping.
 fn clip_sprite(s: SpriteCmd, clip: ?layout.LogicalRect) ?SpriteCmd {
     const c = clip orelse return s;
     if (c.x1 <= c.x0 or c.y1 <= c.y0) return null;
@@ -295,8 +278,7 @@ fn flush_elided(sprites: *SpriteBatcher, e: *const ElidedSpriteCmd, clip: ?layou
     if (clip_sprite(right_sprite, clip)) |out| sprites.add_sprite(&out);
 }
 
-/// All-or-nothing text clipping against a conservative bbox; partial-glyph
-/// trimming is not needed since row sprites are already clipped above.
+/// Text uses conservative all-or-nothing clipping rather than trimming glyphs.
 fn text_inside(t: *const TextCmd, clip: ?layout.LogicalRect) bool {
     const c = clip orelse return true;
 

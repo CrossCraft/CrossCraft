@@ -212,7 +212,7 @@ fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
             while (bz <= bz1) : (bz += 1) {
                 if (bz < 0 or bz >= max_z) continue;
                 const id = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-                if (collision.block_height(id) > 0.0) return true;
+                if (id.collision_height() > 0.0) return true;
             }
         }
     }

@@ -42,9 +42,7 @@ fn help_for(name: []const u8) ?[]const u8 {
     return null;
 }
 
-/// `line` is the raw text after the leading '/'. `is_op` is true for the
-/// console (always) and for in-game players whose record has op = true
-/// (or for singleplayer, where the local player is implicitly op).
+/// Dispatch text after the leading '/', gated by console/player privileges.
 pub fn dispatch(sink: Sink, line: []const u8, is_op: bool) void {
     if (!is_op) {
         sink.write("&cFailed to process command: Insufficient permission");

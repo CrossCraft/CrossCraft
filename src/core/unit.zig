@@ -10,8 +10,7 @@ comptime {
     _ = @import("server.zig");
     _ = @import("nbt/nbt.zig");
     _ = @import("world.zig");
-    _ = @import("world/DumpName.zig");
-    _ = @import("world/CreateName.zig");
+    _ = @import("world/SaveName.zig");
     _ = @import("world/WorldData.zig");
     _ = @import("world/WorldSaver.zig");
     _ = @import("world/WorldSimulation.zig");

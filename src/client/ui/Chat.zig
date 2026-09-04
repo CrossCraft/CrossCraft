@@ -1,17 +1,4 @@
-// Chat overlay.
-//
-// Stores up to 10 incoming messages (ring buffer) with per-entry age timers.
-// Each message is shown in full for 4.5 s, then fades out over 0.5 s.
-// When the input field is open all messages are held at full opacity.
-//
-// Text input is owned by Aether's TextInputSession. On desktop the player
-// types interactively via the OS text path; on PSP the platform backend's
-// `begin_text_input_session` hook invokes the system OSK synchronously and
-// the session returns in terminal state, which Chat services on the same
-// frame the overlay opens. There is no PSP branch in the text path itself.
-//
-// T opens a blank input field. / opens with '/' inserted into the input.
-// Enter (chat_send) submits, Escape (chat_cancel) discards.
+// PSP text sessions resolve synchronously through the system OSK.
 
 const std = @import("std");
 const ae = @import("aether");
@@ -28,8 +15,6 @@ const TextWrap = @import("TextWrap.zig");
 const ui_input = @import("input.zig");
 
 const Self = @This();
-
-// --- Configuration ---
 
 pub const MAX_MESSAGES: u8 = 10;
 const MSG_MAX_LEN: u8 = 96;
@@ -61,8 +46,6 @@ const MSG_TEXT_LAYER: u8 = 242;
 const INPUT_BG_LAYER: u8 = 243;
 const INPUT_TEXT_LAYER: u8 = 244;
 
-// --- Action set ---
-
 var chat_set: ?input.ActionSetHandle = null;
 var chat_send: input.ActionHandle = .none;
 var chat_cancel: input.ActionHandle = .none;
@@ -87,27 +70,18 @@ fn ensure_chat_set(sys: *input.InputSystem) !input.ActionSetHandle {
     return set;
 }
 
-// --- Data types ---
-
 const Entry = struct {
     text: [MSG_MAX_LEN]u8,
     text_len: u8,
     age: f32,
 };
 
-// --- Fields ---
-
 messages: [MAX_MESSAGES]Entry,
 msg_head: u8,
 msg_count: u8,
 
-/// True while the chat panel is visible (input field, even if no active
-/// text session yet -- e.g. controller social mode shows the panel before
-/// the user starts chat entry).
+/// The social overlay can be open before a text session starts.
 open: bool,
-/// Set when the chat overlay is open AND a TextInputSession is in flight.
-/// Distinct from `open` so controller social mode can show the panel without
-/// yet having armed text entry.
 session_active: bool,
 prev_send: input.ButtonState,
 prev_cancel: input.ButtonState,
@@ -116,8 +90,6 @@ prev_cancel: input.ButtonState,
 chat_was_active: bool,
 render_lines: [RENDER_LINE_MAX][WRAP_LINE_MAX_BYTES]u8,
 render_line_count: u8,
-
-// --- Init ---
 
 pub fn init() Self {
     return .{
@@ -133,8 +105,6 @@ pub fn init() Self {
         .render_line_count = 0,
     };
 }
-
-// --- Data mutations ---
 
 pub fn receive(self: *Self, raw: []const u8) void {
     var len: u8 = 0;
@@ -155,15 +125,6 @@ pub fn receive(self: *Self, raw: []const u8) void {
     if (self.msg_count < MAX_MESSAGES) self.msg_count += 1;
 }
 
-// --- Overlay control ---
-
-/// Open the chat input field and begin a TextInputSession. On PSP the
-/// platform's begin_text_input_session hook invokes the system OSK
-/// synchronously; on return the session is already terminal (submitted /
-/// cancelled). On desktop the session is left active for the user to type
-/// into; chat_send / chat_cancel are polled in `update`.
-///
-/// `slash_prefix = true` starts the editable input with '/'.
 pub fn open_overlay(self: *Self, sys: *input.InputSystem, player: *Player, slash_prefix: bool) void {
     if (self.open) return;
     self.open = true;
@@ -190,8 +151,7 @@ pub fn open_overlay(self: *Self, sys: *input.InputSystem, player: *Player, slash
     handle_terminal_if_done(self, sys, player);
 }
 
-/// Controller social mode: show the chat panel without arming text entry, so
-/// the player list can sit alongside it. Confirm starts text entry later.
+/// Open social mode without starting text entry; Confirm starts it later.
 pub fn open_overlay_social(self: *Self, sys: *input.InputSystem, _: *Player) void {
     if (self.open) return;
     self.open = true;
@@ -212,8 +172,6 @@ pub fn open_overlay_social(self: *Self, sys: *input.InputSystem, _: *Player) voi
         self.open = false;
         return;
     };
-    // session_active stays false; the panel is empty until confirm starts
-    // text entry.
 }
 
 fn begin_session(self: *Self, sys: *input.InputSystem, slash_prefix: bool) void {
@@ -249,8 +207,6 @@ pub fn close_overlay(self: *Self, sys: *input.InputSystem, player: *Player) void
     player.look_delta = .{ 0, 0 };
 }
 
-// --- Per-frame tick ---
-
 pub fn tick(self: *Self, dt: f32) void {
     if (self.open) return;
     var i: u8 = 0;
@@ -259,12 +215,9 @@ pub fn tick(self: *Self, dt: f32) void {
     }
 }
 
-// --- Update (called every frame while open) ---
-
 pub fn update(self: *Self, sys: *input.InputSystem, player: *Player) void {
     std.debug.assert(self.open);
 
-    // Walk frame events for Backspace; trim the session buffer in place.
     if (self.session_active) {
         const session_const = sys.current_text_session() orelse return;
         // Cast away const for the in-place shrink; the session pointer is
@@ -300,9 +253,7 @@ pub fn update(self: *Self, sys: *input.InputSystem, player: *Player) void {
             send_session(sys, player);
             self.close_overlay(sys, player);
         } else {
-            // Controller social mode: the panel is open without an active
-            // session. Confirm starts text entry; modal OSK platforms return
-            // synchronously and desktop keeps the session active.
+            // Modal OSKs finish here; desktop leaves the new session active.
             self.begin_session(sys, false);
             handle_terminal_if_done(self, sys, player);
         }
@@ -320,8 +271,6 @@ fn is_chat_set_active(sys: *input.InputSystem) bool {
     return @intFromEnum(top.actions) == @intFromEnum(set);
 }
 
-// --- Wire send ---
-
 fn send_session(sys: *input.InputSystem, player: *Player) void {
     const session = sys.current_text_session() orelse return;
     const body = session.buffer.items;
@@ -330,8 +279,6 @@ fn send_session(sys: *input.InputSystem, player: *Player) void {
     proto.send_message(player.writer, -1, body) catch {};
     player.writer.flush() catch {};
 }
-
-// --- Draw ---
 
 pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts: *const FontBatcher, y_shift: i16) void {
     self.render_line_count = 0;
@@ -343,8 +290,7 @@ pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts:
     var input_lens: [INPUT_WRAP_MAX_LINES]u8 = undefined;
     var input_line_count: u8 = 0;
 
-    // Read the live session buffer; in social mode the session may not yet
-    // be active -- show only the prompt in that state.
+    // Social mode has no session buffer until text entry starts.
     const body: []const u8 = if (self.open)
         if (sys.current_text_session()) |s| s.buffer.items else &.{}
     else
@@ -430,7 +376,6 @@ pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts:
 
     if (!self.open) return;
 
-    // Input field background.
     list.add_rect(&.{
         .pos_offset = .{ .x = LEFT_PAD, .y = -base },
         .pos_extent = .{ .x = MSG_W, .y = input_h },
@@ -524,8 +469,6 @@ pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts:
         .origin = .bottom_left,
     });
 }
-
-// --- Helpers ---
 
 fn store_render_line(self: *Self, line: []const u8) ?[]const u8 {
     if (line.len == 0 or line.len > WRAP_LINE_MAX_BYTES) return null;

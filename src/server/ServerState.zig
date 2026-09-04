@@ -9,7 +9,7 @@ const State = ae.Core.State;
 
 const Server = core.Server;
 const CompressWorker = core.CompressWorker;
-const CompressorThread = @import("CompressorThread.zig");
+const ServerConfig = @import("Config.zig");
 const Heartbeat = @import("Heartbeat.zig");
 const Backup = @import("Backup.zig");
 const PlayersDb = core.PlayersDb;
@@ -80,8 +80,8 @@ connection_pool: []ConnectionSlot,
 connections_mutex: std.Io.Mutex,
 tasks: std.Io.Group,
 listener: std.Io.net.Server,
-compressor_thread: CompressorThread.Thread,
-heartbeat_config: Heartbeat.Config,
+compressor_thread: Util.Thread,
+server_config: ServerConfig,
 heartbeat_salt: [16]u8,
 heartbeat_users: std.atomic.Value(u32),
 backup: Backup,
@@ -107,12 +107,14 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     stdout_mutex = .init;
 
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(engine.io, .boot).raw.nanoseconds)));
-    const config: Server.GameConfig = .{
-        .standalone = .{
-            .world = .{ .seed = seed, .save_location = Server.default_save_location },
-        },
-    };
-    Backup.pre_init_validate_and_restore(engine.io, engine.dirs.data, alloc);
+    self.server_config = ServerConfig.load(engine.io, engine.dirs.data, seed);
+    const config: Server.GameConfig = .{ .standalone = self.server_config.core_config() };
+    Backup.pre_init_validate_and_restore(
+        engine.io,
+        engine.dirs.data,
+        alloc,
+        self.server_config.save_location_slice(),
+    );
     try Server.init(alloc, alloc, engine.io, engine.dirs.data, config);
 
     self.conn_handles = try alloc.alloc(?*ConnectionSlot, core.Server.MaxPlayers);
@@ -128,13 +130,14 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     errdefer alloc.free(self.connection_pool);
     for (self.connection_pool) |*slot| slot.* = .{};
 
-    // Dedicated thread for world compression -- shared across world-send
-    // (network) and world-save (disk). Off-loads save dispatch from
-    // std.Io task spawning and keeps deep `flate` call frames out of small
-    // per-task IO stacks.
-    self.compressor_thread = try CompressorThread.spawn(alloc);
+    self.compressor_thread = try Util.Thread.spawn(.{
+        .name = "world_compress",
+        .stack_size = 512 * 1024,
+        .priority = .lowest,
+        .allocator = alloc,
+    }, CompressWorker.worker_main, .{});
 
-    self.backup = Backup.init(engine.io, engine.dirs.data);
+    self.backup = Backup.init(engine.io, self.server_config.autosave_seconds);
     self.tasks.concurrent(engine.io, Backup.loop, .{ &self.backup, engine }) catch |err| {
         log.err("Failed to start backup task: {}", .{err});
         return err;
@@ -142,11 +145,10 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     engine.report();
 
-    self.heartbeat_config = Heartbeat.Config.load(engine.io, engine.dirs.data);
-    if (self.heartbeat_config.count > 0) {
+    if (self.server_config.heartbeat.count > 0) {
         generate_salt(engine.io, &self.heartbeat_salt) catch |err| {
             log.warn("Heartbeat disabled: could not generate a salt: {}", .{err});
-            self.heartbeat_config.count = 0;
+            self.server_config.heartbeat.count = 0;
         };
     }
 
@@ -163,10 +165,10 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     const stdout_file = std.Io.File.stdout();
     stdout_writer = stdout_file.writer(engine.io, &stdout_buf);
     stdout_iface = &stdout_writer.interface;
-    Server.on_broadcast_chat = stdout_chat_hook;
+    Server.on_broadcast_chat = write_stripped_line;
 
     self.tasks.concurrent(engine.io, accept_loop, .{ self, engine }) catch unreachable;
-    if (self.heartbeat_config.count > 0) {
+    if (self.server_config.heartbeat.count > 0) {
         self.tasks.concurrent(engine.io, heartbeat_loop, .{ self, engine }) catch |err| {
             log.err("Failed to start heartbeat sender: {}", .{err});
             return err;
@@ -176,17 +178,11 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.tasks.concurrent(engine.io, console_loop, .{ self, engine }) catch unreachable;
 }
 
-fn stdout_chat_hook(line: []const u8) void {
-    write_stripped_line(line);
-}
-
 fn stdout_console_write(_: *anyopaque, line: []const u8) void {
     write_stripped_line(line);
 }
 
-/// Strip Minecraft color codes ('&' + [0-9a-fk-or]) before writing to a
-/// terminal. The codes are meaningful in-game but just show up as literal
-/// "&e" noise in the operator's console.
+/// Strip in-game color codes from console output.
 fn write_stripped_line(line: []const u8) void {
     const w = stdout_iface orelse return;
     const engine = global_engine orelse return;
@@ -201,7 +197,9 @@ fn write_without_color_codes(writer: *std.Io.Writer, line: []const u8) std.Io.Wr
     var start: usize = 0;
     var i: usize = 0;
     while (i < line.len) {
-        if (line[i] == '&' and i + 1 < line.len and is_color_code(line[i + 1])) {
+        if (line[i] == '&' and i + 1 < line.len and
+            std.mem.indexOfScalar(u8, "0123456789abcdefklmnor", line[i + 1]) != null)
+        {
             try writer.writeAll(line[start..i]);
             i += 2;
             start = i;
@@ -212,11 +210,6 @@ fn write_without_color_codes(writer: *std.Io.Writer, line: []const u8) std.Io.Wr
     try writer.writeAll(line[start..]);
 }
 
-fn is_color_code(c: u8) bool {
-    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or
-        (c >= 'k' and c <= 'o') or c == 'r';
-}
-
 fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(Self, ctx);
 
@@ -224,7 +217,7 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.reap_finished_connections(engine);
     self.promote_ready_logins(engine);
 
-    if (self.heartbeat_config.count > 0) {
+    if (self.server_config.heartbeat.count > 0) {
         self.heartbeat_users.store(count_initialized_users(), .release);
     }
 }
@@ -538,10 +531,9 @@ fn count_initialized_users() u32 {
     var count: u32 = 0;
     Server.lock_roster_shared();
     defer Server.unlock_roster_shared();
-    for (Server.players.items) |maybe_client| {
-        if (maybe_client) |client| {
-            if (client.initialized and client.is_connected()) count += 1;
-        }
+    for (0..Server.players.items.len) |i| {
+        const client = &(Server.players.items[i] orelse continue);
+        if (client.initialized and client.is_connected()) count += 1;
     }
     return count;
 }
@@ -562,9 +554,8 @@ fn heartbeat_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
             .salt = &self.heartbeat_salt,
         };
 
-        for (0..self.heartbeat_config.count) |index| {
-            const endpoint_len: usize = self.heartbeat_config.lens[index];
-            const endpoint = self.heartbeat_config.urls[index][0..endpoint_len];
+        for (0..self.server_config.heartbeat.count) |index| {
+            const endpoint = self.server_config.heartbeat.url(index);
             Heartbeat.send(engine.io, &client, endpoint, request) catch |err| switch (err) {
                 error.Canceled => return error.Canceled,
                 else => log.warn("Heartbeat endpoint {d} failed after retries: {}", .{ index + 1, err }),

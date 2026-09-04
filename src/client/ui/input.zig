@@ -1,7 +1,4 @@
-/// Per-frame UI input snapshot polled from the menu ActionSet. Pause,
-/// inventory, and the title-menu hierarchy all push contexts referencing
-/// this set. Text input is routed through TextInputSession instead of
-/// per-key char bindings.
+/// Per-frame snapshot of the shared menu action set.
 const std = @import("std");
 const ae = @import("aether");
 const Rendering = ae.Rendering;
@@ -17,9 +14,7 @@ pub const InputProfile = enum {
     pad_only,
 };
 
-/// First-press to autorepeat-start delay (seconds).
 const REPEAT_DELAY: f32 = 0.4;
-/// Repeat interval after delay elapses (seconds).
 const REPEAT_RATE: f32 = 0.08;
 
 pub const Repeat = struct {
@@ -61,7 +56,6 @@ pub const UiInput = struct {
     text_events: bool,
 };
 
-/// Previous-frame button state for rising-edge detection.
 const Prev = struct {
     click: input.ButtonState = .released,
     confirm: input.ButtonState = .released,
@@ -135,8 +129,7 @@ fn title_exit_enabled_for(platform: ae.Platform) bool {
     };
 }
 
-/// Idempotent: registers and installs the menu ActionSet on first call.
-/// The set persists for the lifetime of the process.
+/// Register the process-wide menu action set once.
 pub fn ensure_registered(sys: *input.InputSystem) !void {
     if (runtime.set != null) return;
     const set = try sys.register_action_set("menu");
@@ -242,10 +235,7 @@ fn refresh_active_context(sys: *input.InputSystem, previous: input.ActionSetHand
     _ = try sys.replace_top(&ctx);
 }
 
-/// Builds the per-frame UI snapshot. `dt` is in seconds. `repeat` is
-/// caller-owned state that survives across frames; one instance per active
-/// screen owner. When menu_set is not the top context all reads return
-/// released/zero, yielding an effectively empty snapshot.
+/// `repeat` is owned by the active screen and persists across frames.
 pub fn build_frame(sys: *input.InputSystem, dt: f32, repeat: *Repeat) UiInput {
     std.debug.assert(dt >= 0);
     Buttons.note_input_mode(sys.last_input_mode());
@@ -285,10 +275,10 @@ pub fn build_frame(sys: *input.InputSystem, dt: f32, repeat: *Repeat) UiInput {
     runtime.prev.inventory = inventory;
 
     const held = [4]bool{
-        nav_button_held(sys.button(actions.up)),
-        nav_button_held(sys.button(actions.down)),
-        nav_button_held(sys.button(actions.left)),
-        nav_button_held(sys.button(actions.right)),
+        sys.button(actions.up).down(),
+        sys.button(actions.down).down(),
+        sys.button(actions.left).down(),
+        sys.button(actions.right).down(),
     };
     const nav = resolve_nav(held, dt, repeat);
 
@@ -330,10 +320,6 @@ fn read_wheel_dy(sys: *input.InputSystem) i8 {
 
 fn rising_edge(prev: input.ButtonState, cur: input.ButtonState) bool {
     return prev == .released and cur == .pressed;
-}
-
-fn nav_button_held(button: input.ButtonQuery) bool {
-    return button.down();
 }
 
 test "title exit is limited to handheld console targets" {
@@ -414,14 +400,4 @@ test "navigation resolves opposing directions once per frame" {
     var repeat: Repeat = .{};
     try std.testing.expectEqual(NavDir.up, resolve_nav(.{ true, true, true, true }, 0, &repeat));
     try std.testing.expectEqual(NavDir.down, resolve_nav(.{ false, true, true, true }, 0, &repeat));
-}
-
-test "navigation treats a continued button press as held" {
-    const first: input.ButtonQuery = .{ .current = .pressed, .previous = .released };
-    const continued: input.ButtonQuery = .{ .current = .pressed, .previous = .pressed };
-    const released: input.ButtonQuery = .{ .current = .released, .previous = .pressed };
-
-    try std.testing.expect(nav_button_held(first));
-    try std.testing.expect(nav_button_held(continued));
-    try std.testing.expect(!nav_button_held(released));
 }

@@ -27,15 +27,12 @@ comptime {
     std.debug.assert(core.world_dims.max_height / core.world_dims.chunk_size <= std.math.maxInt(u8));
 }
 
-/// Maximum sections tracked incrementally in dirty_buf before falling back to
-/// a full queue rescan. Sized for 4 simultaneous block changes * 7 neighbors.
+/// Four simultaneous block changes and their six neighboring sections.
 const MAX_DIRTY_BUF: u32 = 32;
 
 const Self = @This();
 
-/// Grid geometry from the live world (`World.data.dims`), set in
-/// init_in_place. Every axis is a power of two, so flat indexing into the
-/// grids below is pure shift math.
+/// Power-of-two world geometry permits shift-based flat indexing.
 grid_cx: u32,
 grid_cz: u32,
 grid_sy: u32,
@@ -43,35 +40,23 @@ log2_cx: u5,
 log2_cz: u5,
 log2_sy: u5,
 
-/// Flat section storage, indexed by section_index(). Slots of columns that
-/// are not `loaded` hold undefined ChunkMeshes; init_column initializes a
-/// whole column at once, mirroring the old inline 3-D array.
+/// Unloaded columns contain undefined meshes and are initialized as a unit.
 grid: []ChunkMesh,
-/// Per-column: all sections have GPU handles allocated.
 loaded: []bool,
-/// Per-section: mesh has been built via rebuild().
 built: []bool,
-/// Per-section: currently present in build_queue[build_cursor..build_end].
 in_queue: []bool,
-/// Scratch for recollect's needed-column pass, reused between calls.
 needed: []bool,
-/// Sections marked dirty since the last flush, for incremental queue insert.
-/// dirty_overflow is set when the buffer is full; triggers a full rescan.
+/// Overflow falls back to a full queue rescan.
 dirty_buf: [MAX_DIRTY_BUF]GridRef,
 dirty_buf_len: u32,
 dirty_overflow: bool,
 /// Preserve dirty_buf order and move those sections ahead of background
 /// rebuilds. Used for block changes where edge rebuild order affects flicker.
 dirty_preserve_order: bool,
-/// Camera position at the last LOD check. refresh_lod_states only runs when
-/// the camera has moved at least 1 block since this was recorded.
 lod_check_x: f32,
 lod_check_y: f32,
 lod_check_z: f32,
-/// Last render-affecting option values applied to loaded sections. When one
-/// diverges from Options.current, update() kicks the same paths that normally
-/// run on camera movement so changes made from the options menu show up
-/// immediately.
+/// Last option values incorporated into loaded meshes.
 applied_render_distance: u8,
 applied_fancy_leaves: bool,
 applied_ao: bool,
@@ -81,9 +66,7 @@ build_cursor: u32,
 build_end: u32,
 build_estimator: Util.Estimator,
 
-/// Per-frame visibility list populated by draw_world_pass and consumed by
-/// draw_fluid_pass so the caller can slot overlays (selection outline, steve
-/// models) between the two passes without recomputing visibility.
+/// Shared across opaque and fluid passes so overlays can render between them.
 frame_visible: [MAX_ACTIVE]GridRef,
 frame_visible_count: u32,
 frame_clip_count: u32,
@@ -124,9 +107,7 @@ pub fn init_in_place(
     atlas: TextureAtlas,
     camera: *const Camera,
 ) !void {
-    // Size the grid from the live world geometry. GameState initializes the
-    // renderer only after the world exists (SP server generated, MP level
-    // downloaded), so the dims are final here.
+    // GameState creates the renderer only after world dimensions are final.
     const dims = World.data.dims;
     self.grid_cx = dims.chunks_x;
     self.grid_cz = dims.chunks_z;
@@ -187,7 +168,6 @@ pub fn init_in_place(
 
     self.recollect(camera);
 
-    // Warm up the estimator
     while (self.build_cursor < self.build_end and self.build_estimator.is_warming_up()) {
         const ref = self.build_queue[self.build_cursor];
         const idx = self.section_index(ref.cx, ref.cz, ref.sy);
@@ -223,9 +203,7 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
     self.particles.update(dt, camera);
     self.rain.update(dt, camera);
 
-    // Advance the bouncy-rise animation for every loaded section. Runs before
-    // the early-return below so the animation keeps ticking even when there
-    // are no pending rebuilds. Sections already at rest short-circuit.
+    // Animations must advance even when no rebuilds are pending.
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
             if (!self.loaded[self.column_index(cx, cz)]) continue;
@@ -241,21 +219,17 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
         self.recollect(camera);
     }
 
-    // AO toggle: one bool compare per frame; on mismatch, every loaded
-    // section needs a rebuild since AO is global.
+    // AO changes invalidate every loaded mesh.
     if (Options.current.ambient_occlusion != self.applied_ao) {
         self.apply_ao_toggle();
     }
 
-    // Fancy/fast leaves changes alter the near_lod target globally. Treat this
-    // like an LOD transition now instead of waiting for camera movement.
+    // Apply leaf-mode changes without waiting for camera movement.
     if (Options.current.fancy_leaves != self.applied_fancy_leaves) {
         self.apply_fancy_leaves_toggle(camera);
     }
 
-    // Catch LOD transitions mid-chunk only when the camera has moved at
-    // least 1 block since the last check. Skipped entirely on stationary
-    // frames, eliminating the previous O(1024) per-frame distance scan.
+    // Limit the full LOD scan to whole-block camera movement.
     const lod_dx = camera.x - self.lod_check_x;
     const lod_dy = camera.y - self.lod_check_y;
     const lod_dz = camera.z - self.lod_check_z;
@@ -266,10 +240,7 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
         self.lod_check_z = camera.z;
     }
 
-    // Re-queue dirty sections immediately so a player break/place shows up
-    // this frame even while a heavy LOD rebuild is in flight. When only a
-    // few sections changed, flush_dirty_sections inserts them directly into
-    // the live queue without a full rescan.
+    // Prioritize block changes over background LOD rebuilds.
     if (self.dirty_overflow) {
         self.queue_unbuilt_sections(camera);
         self.dirty_overflow = false;
@@ -298,11 +269,7 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
             self.build_estimator.end(self.io);
         } else |_| {
             self.build_estimator.end(self.io);
-            // Mesh allocation/indexing failure - evict the farthest built
-            // section to free GPU memory, then stop for this frame. The
-            // cursor stays at i so this section is retried first next frame
-            // rather than rebuilding it
-            // twice in one frame.
+            // Evict one distant mesh and retry this section next frame.
             _ = self.try_evict_farthest(camera);
             self.build_cursor = @intCast(i);
             return;
@@ -314,17 +281,13 @@ pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *
     self.build_cursor = end;
 }
 
-/// Clears first_build and, on the first build only, starts the bouncy-rise
-/// animation if the option is enabled. Called after a successful rebuild().
 fn mark_first_built(sec: *ChunkMesh) void {
     if (!sec.first_build) return;
     sec.first_build = false;
     if (Options.current.bouncy_chunks) sec.anim_progress = 0.0;
 }
 
-/// Draw everything up to and including particles; callers are expected to
-/// invoke draw_fluid_pass afterwards so water/lava draws over overlays like
-/// the block selection outline. Populates frame_visible/frame_clip_count.
+/// Populate visibility and draw every world layer preceding fluids.
 pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     const submerged = collision.liquid_at_point(camera.x, camera.y, camera.z);
 
@@ -357,7 +320,7 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
     self.frame_clip_count = @min(CLIP_SECTION_COUNT, self.frame_visible_count);
     const clip_count = self.frame_clip_count;
 
-    // Opaque pass (front-to-back): clip planes on for closest sections
+    // Opaque sections render front-to-back.
     Rendering.gfx.api.set_alpha_blend(false);
     if (clip_count > 0) {
         Rendering.gfx.api.set_clip_planes(true);
@@ -370,14 +333,11 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
         self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque();
     }
 
-    // Clouds are a physical layer at Y=72. Draw after opaque (so terrain
-    // occludes them) but before transparent/fluid (so leaves, glass, and
-    // water alpha-blend against the cloud layer behind them).
+    // Clouds follow opaque terrain and precede alpha-blended geometry.
     Rendering.gfx.api.bind_texture(self.clouds.handle);
     self.sky.draw_clouds(camera, submerged);
 
-    // Transparent pass (back-to-front): non-fluid (leaves, glass, cross-plants).
-    // Depth writes stay on so leaves properly occlude geometry behind them.
+    // Transparent blocks render back-to-front but retain depth writes.
     set_terrain_fog(submerged);
     Rendering.gfx.api.bind_texture(self.terrain.handle);
     Rendering.gfx.api.set_alpha_blend(true);
@@ -395,14 +355,11 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
         Rendering.gfx.api.set_clip_planes(false);
     }
 
-    // Particles between transparent and fluid so they depth-test against
-    // opaque + transparent geometry and blend before water is drawn.
+    // Particles depth-test before fluids overlay them.
     self.particles.draw();
 }
 
-/// Draw rain streaks + impact splashes.  Slots between draw_world_pass and
-/// the selection/fluid overlays so streaks depth-test against terrain and
-/// blend over particles.  No-op when the rain option is off.
+/// Rain renders after terrain and particles but before fluid overlays.
 pub fn draw_rain_pass(self: *Self, camera: *const Camera) void {
     if (!Options.current.rain) return;
     Rendering.gfx.api.bind_texture(self.rain_tex.handle);
@@ -411,10 +368,7 @@ pub fn draw_rain_pass(self: *Self, camera: *const Camera) void {
     self.rain.draw_splashes();
 }
 
-/// Draw the fluid (water/lava) pass. Must be called after draw_world_pass on
-/// the same frame; consumes the visibility list populated there. Kept
-/// separate so overlays (selection outline, remote players) drawn between
-/// the two passes are correctly occluded by fluid surfaces.
+/// Consume this frame's visibility list after callers insert world overlays.
 pub fn draw_fluid_pass(self: *Self) void {
     const visible = self.frame_visible[0..self.frame_visible_count];
     const clip_count = self.frame_clip_count;
@@ -446,7 +400,6 @@ fn recollect(self: *Self, camera: *const Camera) void {
     self.cam_cz = camera_chunk(camera.z);
     self.applied_render_distance = Options.capped_render_distance();
 
-    // Phase 1: compute needed columns
     const rd: u32 = self.applied_render_distance;
     const r: i32 = @intCast(rd);
     const radius_blocks: f32 = @as(f32, @floatFromInt(rd)) * 16.0 + 11.5;
@@ -471,7 +424,6 @@ fn recollect(self: *Self, camera: *const Camera) void {
         }
     }
 
-    // Phase 2: deinit columns leaving radius
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
             const col = self.column_index(cx, cz);
@@ -481,7 +433,6 @@ fn recollect(self: *Self, camera: *const Camera) void {
         }
     }
 
-    // Phase 3: init columns entering radius
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
             const col = self.column_index(cx, cz);
@@ -489,12 +440,10 @@ fn recollect(self: *Self, camera: *const Camera) void {
                 if (self.init_column(@intCast(cx), @intCast(cz), camera)) {
                     self.loaded[col] = true;
                 }
-                // If init fails, loaded stays false; will retry next crossing
             }
         }
     }
 
-    // Phase 4: queue ALL unbuilt sections (not just newly-loaded)
     self.dirty_buf_len = 0;
     self.dirty_overflow = false;
     self.dirty_preserve_order = false;
@@ -515,7 +464,6 @@ fn init_column(self: *Self, cx: u8, cz: u8, cam: *const Camera) bool {
             @intCast(sy),
             cz,
         ) catch {
-            // Rollback: deinit already-initialized sections
             for (0..count) |prev| self.grid[self.section_index(cx, cz, prev)].deinit();
             return false;
         };
@@ -539,7 +487,6 @@ fn deinit_column(self: *Self, cx: u8, cz: u8) void {
 }
 
 fn queue_unbuilt_sections(self: *Self, cam: *const Camera) void {
-    // Reset in-queue tracking before rebuilding the queue from scratch.
     @memset(self.in_queue, false);
     var build_idx: u32 = 0;
     for (0..self.grid_cx) |cx| {
@@ -567,8 +514,7 @@ fn queue_unbuilt_sections(self: *Self, cam: *const Camera) void {
     self.build_end = build_idx;
 }
 
-/// Insert sections from dirty_buf into the live build queue without a full
-/// rescan. Falls back to queue_unbuilt_sections if the queue would overflow.
+/// Insert dirty sections directly, falling back to a full rescan on overflow.
 fn flush_dirty_sections(self: *Self, cam: *const Camera) void {
     if (self.dirty_preserve_order) {
         self.flush_ordered_dirty_sections(cam);
@@ -577,10 +523,9 @@ fn flush_dirty_sections(self: *Self, cam: *const Camera) void {
 
     var added: u32 = 0;
     for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
-        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)]) continue; // already rebuilt
-        if (self.in_queue[self.section_index(ref.cx, ref.cz, ref.sy)]) continue; // already queued
+        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)]) continue;
+        if (self.in_queue[self.section_index(ref.cx, ref.cz, ref.sy)]) continue;
         if (self.build_end >= MAX_ACTIVE) {
-            // No room - compact via a full rescan which resets the queue.
             self.queue_unbuilt_sections(cam);
             return;
         }
@@ -589,16 +534,13 @@ fn flush_dirty_sections(self: *Self, cam: *const Camera) void {
         self.build_end += 1;
         added += 1;
     }
-    // Re-sort the unprocessed portion so newly-added sections are ordered
-    // closest-first alongside any sections already waiting to be built.
+    // Keep pending work nearest-first after inserting dirty sections.
     if (added > 0 and self.build_end - self.build_cursor > 1) {
         sort_build_queue(self.build_queue[self.build_cursor..self.build_end], cam);
     }
 }
 
-/// Move dirty sections to the front of the unprocessed queue while preserving
-/// dirty_buf order. Sections already queued by background work are removed
-/// from their old position; freshly-dirtied sections are inserted up front.
+/// Move dirty sections ahead of background work while preserving their order.
 fn flush_ordered_dirty_sections(self: *Self, cam: *const Camera) void {
     var front: [MAX_DIRTY_BUF]GridRef = undefined;
     var front_len: u32 = 0;
@@ -673,7 +615,6 @@ fn try_evict_farthest(self: *Self, cam: *const Camera) bool {
     return true;
 }
 
-/// Mark a section for rebuild (e.g. after a block change).
 pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
     self.mark_section_dirty_impl(cx, sy, cz, false, false);
 }
@@ -708,8 +649,6 @@ fn mark_section_dirty_impl(self: *Self, cx: u8, sy: u8, cz: u8, track_queued: bo
     self.rain.mark_dirty();
     if (!self.loaded[col]) return;
     self.built[idx] = false;
-    // Section already in the build queue; it will be rebuilt when the queue
-    // reaches it - no need to track it again.
     if (self.in_queue[idx] and !track_queued) return;
     // Track for incremental insert on the next update(). On overflow, flag a
     // full rescan so no dirty sections are silently dropped.
@@ -740,10 +679,7 @@ fn contains_grid_ref(haystack: []const GridRef, needle: GridRef) bool {
     return false;
 }
 
-/// Flip ao_enabled on every loaded section whose last-built state disagrees
-/// with Options.current.ambient_occlusion, and mark those sections dirty so
-/// they re-mesh with the new AO state. Only called on the frame the option
-/// actually changes.
+/// Invalidate loaded sections whose AO state changed.
 fn apply_ao_toggle(self: *Self) void {
     const target = Options.current.ambient_occlusion;
     for (0..self.grid_cx) |cx| {
@@ -762,8 +698,6 @@ fn apply_ao_toggle(self: *Self) void {
     self.applied_ao = target;
 }
 
-/// Recompute leaf LOD state after the Fancy Leaves option changes, and mark
-/// only sections whose effective leaf mesh needs to change.
 fn apply_fancy_leaves_toggle(self: *Self, cam: *const Camera) void {
     self.refresh_lod_states(cam);
     self.applied_fancy_leaves = Options.current.fancy_leaves;
@@ -772,9 +706,7 @@ fn apply_fancy_leaves_toggle(self: *Self, cam: *const Camera) void {
     self.lod_check_z = cam.z;
 }
 
-/// Walk loaded sections and update their LOD state. Sections that cross
-/// the configured near-LOD boundary in either direction get marked
-/// dirty so they re-mesh with the new detail level.
+/// Remesh loaded sections that cross the near-LOD boundary.
 fn refresh_lod_states(self: *Self, cam: *const Camera) void {
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
@@ -802,9 +734,7 @@ fn grid_ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
     return cam.distance_sq(wx, wy, wz);
 }
 
-/// True when a section's center is within the runtime near-LOD radius.
-/// Returns false immediately when fancy leaves are disabled so all sections
-/// get the fast/opaque-leaves mesh regardless of distance.
+/// Disabled fancy leaves force the fast mesh at every distance.
 fn target_near_lod(cx: u8, sy: u8, cz: u8, cam: *const Camera) bool {
     if (!Options.current.fancy_leaves) return false;
     const lod_near_radius: f32 = @floatFromInt(config.current().lod_near_radius_blocks);

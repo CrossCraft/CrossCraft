@@ -124,7 +124,6 @@ const Definition = struct {
     face_tiles: FaceTiles = .all(0, 0),
     material: Material = .grass,
     fluid_kind: FluidKind = .none,
-    collision_height_16: u8 = 0,
     bounds: SubvoxelBounds = .full,
     display_name: []const u8 = "",
     inventory_slot: ?u8 = null,
@@ -134,8 +133,7 @@ const Definition = struct {
             slot < INVENTORY_SLOTS
         else
             true;
-        return self.collision_height_16 <= 16 and self.bounds.valid() and
-            self.face_tiles.valid() and inventory_slot_valid and
+        return self.bounds.valid() and self.face_tiles.valid() and inventory_slot_valid and
             self.simulation.in_inventory == (self.inventory_slot != null);
     }
 };
@@ -232,8 +230,8 @@ pub const Block = enum(u8) {
     }
 
     pub inline fn collision_height(self: Block) f32 {
-        const height = global.collision_height_16[index(self)];
-        return @as(f32, @floatFromInt(height)) * (1.0 / 16.0);
+        if (!self.is_solid()) return 0;
+        return @as(f32, @floatFromInt(self.bounds().max_y)) * (1.0 / 16.0);
     }
 
     pub inline fn is_opaque(self: Block) bool {
@@ -242,10 +240,6 @@ pub const Block = enum(u8) {
 
     pub inline fn is_fluid(self: Block) bool {
         return self.mesh_props().fluid;
-    }
-
-    pub inline fn is_slab(self: Block) bool {
-        return self.mesh_props().slab;
     }
 
     pub inline fn emits_light(self: Block) bool {
@@ -304,7 +298,6 @@ const Registry = struct {
     face_tiles: [BLOCK_CAPACITY]FaceTiles,
     material: [BLOCK_CAPACITY]Material,
     fluid_kind: [BLOCK_CAPACITY]FluidKind,
-    collision_height_16: [BLOCK_CAPACITY]u8,
     bounds: [BLOCK_CAPACITY]SubvoxelBounds,
     display_name: [BLOCK_CAPACITY][]const u8,
     inventory_order: [INVENTORY_SLOTS]Block,
@@ -317,7 +310,6 @@ const Registry = struct {
             .face_tiles = @splat(FaceTiles.all(0, 0)),
             .material = @splat(.grass),
             .fluid_kind = @splat(.none),
-            .collision_height_16 = @splat(0),
             .bounds = @splat(.full),
             .display_name = @splat(""),
             .inventory_order = @splat(.air),
@@ -346,7 +338,6 @@ const Registry = struct {
         self.face_tiles[id] = def.face_tiles;
         self.material[id] = def.material;
         self.fluid_kind[id] = def.fluid_kind;
-        self.collision_height_16[id] = def.collision_height_16;
         self.bounds[id] = def.bounds;
         self.display_name[id] = def.display_name;
 
@@ -386,7 +377,6 @@ fn set_catalog(
     def.simulation.in_inventory = inventory_slot != null;
 }
 
-/// Assemble and validate one complete built-in definition before registration.
 fn classic_definition(value: Block) Definition {
     var def: Definition = if (value == .air)
         .{}
@@ -394,7 +384,6 @@ fn classic_definition(value: Block) Definition {
         .{
             .mesh = .{ .@"opaque" = true, .visible = true },
             .simulation = .{ .solid = true, .selectable = true, .breakable = true, .step_sound = true },
-            .collision_height_16 = 16,
         };
 
     switch (value) {
@@ -466,7 +455,6 @@ fn classic_definition(value: Block) Definition {
             def.simulation.solid = false;
             def.simulation.light_passes = true;
             def.simulation.ticks = true;
-            def.collision_height_16 = 0;
         },
         else => {},
     }
@@ -480,7 +468,6 @@ fn classic_definition(value: Block) Definition {
             def.simulation.step_sound = false;
             def.simulation.ticks = true;
             def.simulation.fast_tick = true;
-            def.collision_height_16 = 0;
         },
         else => {},
     }
@@ -500,7 +487,6 @@ fn classic_definition(value: Block) Definition {
         .slab => {
             def.mesh.@"opaque" = false;
             def.mesh.slab = true;
-            def.collision_height_16 = 8;
         },
         else => {},
     }

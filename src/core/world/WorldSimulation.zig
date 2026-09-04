@@ -1,12 +1,6 @@
-// Block physics, fluid spread, vegetation growth, gravity. Owns the timer-
-// wheel scheduler, the dedup set, the RNG used for stochastic timing, and
-// a streaming change sink for server-visible updates.
-//
-// Mutates WorldData via `apply_block` from `set_block` / `queue_block_change`.
-// `set_block` is the runtime mutation entry point: it does the data write
-// AND clears the enqueue dedup so a freshly placed block can re-enqueue at
-// the right tick delay. Bulk loaders (worldgen, save load) bypass the
-// scheduler and call `WorldData.apply_block` directly.
+// Block physics, fluid spread, vegetation growth, and gravity.
+// Runtime mutation goes through `set_block` to maintain scheduler dedup;
+// bulk loaders bypass scheduling with `WorldData.apply_block`.
 
 const std = @import("std");
 const wd = @import("../world_dims.zig");
@@ -89,10 +83,7 @@ pool_used: u32,
 pool_used_peak: u32,
 rng: std.Random.DefaultPrng,
 
-// At POOL_CAPACITY=8192 entries, a flat u32 array is 32 KiB and every op
-// fits in a single SIMD-friendly scan - faster and ~40x smaller than a
-// hashmap once the index table and load-factor padding are counted.
-// Pre-reserved at init; runtime ops never grow.
+// Flat, preallocated dedup storage keeps runtime operations allocation-free.
 enqueued: std.ArrayListUnmanaged(u32),
 
 tick_count: u64,
@@ -124,23 +115,6 @@ pub fn deinit(self: *WorldSimulation, allocator: std.mem.Allocator) void {
     allocator.free(self.node_pool);
     self.enqueued.deinit(allocator);
     self.* = undefined;
-}
-
-/// Reset the scheduler state without freeing. Used after load or after a
-/// fresh world is generated, to clear stale state from `init` before
-/// real ticks begin.
-pub fn reset_scheduler(self: *WorldSimulation) void {
-    @memset(&self.wheel_buckets, SENTINEL);
-    for (0..POOL_CAPACITY) |i| {
-        self.node_pool[i] = .{
-            .loc = .{ .x = 0, .z = 0, .y = 0 },
-            .next = if (i + 1 < POOL_CAPACITY) @intCast(i + 1) else SENTINEL,
-        };
-    }
-    self.free_head = 0;
-    self.pool_used = 0;
-    self.ready_tail = SENTINEL;
-    self.enqueued.clearRetainingCapacity();
 }
 
 /// Process due work within the fixed packet/work budget and return the number
@@ -177,14 +151,8 @@ pub fn tick(self: *WorldSimulation, data: *WorldData, sink: BlockChangeSink) u32
 /// Runtime block mutation entry point: data write + clear scheduler dedup.
 pub fn set_block(self: *WorldSimulation, data: *WorldData, x: u16, y: u16, z: u16, block: Block) void {
     data.apply_block(x, y, z, block);
-    // The enqueue dedup set is keyed by location, not block type. If the
-    // block at this loc was previously something with a slow tick (e.g.
-    // dirt/grass at 100-999 ticks) and is now something fast (water/lava
-    // at 4 ticks), a stale entry would prevent try_enqueue from scheduling
-    // the new block at its faster delay until the slow timer eventually
-    // fires (5-50s later). Clearing here lets the next neighbor pass insert
-    // at the correct delay; any orphan wheel entry just no-ops when it
-    // finally fires because process_block_update re-reads the block.
+    // Clear location-based dedup so replacing a slow-tick block with a fast
+    // one can schedule immediately. The orphaned old entry safely re-reads it.
     self.enqueued_remove(data.get_index(x, y, z));
 }
 
@@ -292,7 +260,6 @@ fn wheel_insert(self: *WorldSimulation, loc: Location, delay: u32) void {
     self.circular_push_head(&self.wheel_buckets[slot], node_idx);
 }
 
-/// Enqueue a block and its 6 face neighbors for deferred update.
 pub fn enqueue_neighbors_of(self: *WorldSimulation, data: *const WorldData, x: u16, y: u16, z: u16) void {
     self.try_enqueue(data, x, y, z);
     if (x > 0) self.try_enqueue(data, x - 1, y, z);
@@ -303,7 +270,6 @@ pub fn enqueue_neighbors_of(self: *WorldSimulation, data: *const WorldData, x: u
     if (z + 1 < data.dims.depth) self.try_enqueue(data, x, y, z + 1);
 }
 
-/// Tick delay per block type: fluids and gravity use 4 ticks, vegetation is random.
 fn tick_delay(self: *WorldSimulation, block: Block) u32 {
     if (block.fast_tick()) return 4;
     return @intCast(self.rng.next() % 900 + 100);
@@ -525,8 +491,6 @@ pub fn sponge_absorb(self: *WorldSimulation, data: *WorldData, sink: BlockChange
     }
 }
 
-/// Called when a sponge is destroyed: enqueue neighbors in a radius to
-/// re-evaluate water flow.
 pub fn sponge_release(self: *WorldSimulation, data: *const WorldData, cx: u16, cy: u16, cz: u16) void {
     var dx: i32 = -SPONGE_RADIUS;
     while (dx <= SPONGE_RADIUS) : (dx += 1) {
@@ -579,8 +543,6 @@ fn queue_block_change(
     self.enqueue_neighbors_of(data, x, y, z);
 }
 
-/// Grow a tree at sapling position (x, y, z). Trunk replaces the sapling
-/// and extends upward for `height` blocks total. Leaves surround the top.
 fn grow_tree(
     self: *WorldSimulation,
     data: *WorldData,
@@ -694,12 +656,6 @@ test "tick defers an overflow-sized fluid batch without buffering or dropping" {
     try std.testing.expectEqual(SENTINEL, sim.ready_tail);
     const first = recorder.first orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(first.block, data.get_block(first.x, first.y, first.z));
-
-    sim.reset_scheduler();
-    try std.testing.expectEqual(@as(u32, 0), sim.pool_used);
-    try std.testing.expectEqual(@as(usize, 0), sim.enqueued.items.len);
-    try std.testing.expectEqual(SENTINEL, sim.ready_tail);
-    for (sim.wheel_buckets) |tail| try std.testing.expectEqual(SENTINEL, tail);
 }
 
 test "tick defers a multi-change update rather than partially committing it" {

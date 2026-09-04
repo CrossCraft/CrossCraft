@@ -11,14 +11,12 @@ const MAX_GUARD: u16 = 2;
 pub const TextureAtlas = struct {
     col_log2: u5,
     row_log2: u5,
-    min_guard_u: u16, // left/top guard in SNORM16 units
+    min_guard_u: u16,
     min_guard_v: u16,
-    max_guard_u: u16, // right/bottom guard in SNORM16 units
+    max_guard_u: u16,
     max_guard_v: u16,
 
-    pub fn init(res_x: u32, res_y: u32, rows: u32, cols: u32) TextureAtlas {
-        std.debug.assert(std.math.isPowerOfTwo(res_x));
-        std.debug.assert(std.math.isPowerOfTwo(res_y));
+    pub fn init(rows: u32, cols: u32) TextureAtlas {
         std.debug.assert(std.math.isPowerOfTwo(rows));
         std.debug.assert(std.math.isPowerOfTwo(cols));
         return .{
@@ -31,23 +29,19 @@ pub const TextureAtlas = struct {
         };
     }
 
-    /// Width of one tile in SNORM16 units after applying edge guards.
     pub fn tileWidth(self: TextureAtlas) i16 {
         return @intCast(self.tileSpanU() - @as(i32, self.min_guard_u) - @as(i32, self.max_guard_u));
     }
 
-    /// Height of one tile in SNORM16 units after applying edge guards.
     pub fn tileHeight(self: TextureAtlas) i16 {
         return @intCast(self.tileSpanV() - @as(i32, self.min_guard_v) - @as(i32, self.max_guard_v));
     }
 
-    /// SNORM16 U coordinate for the left edge of tile column x.
     pub fn tileU(self: TextureAtlas, x: u32) i16 {
         std.debug.assert(x < (@as(u32, 1) << self.col_log2));
         return @intCast(@as(i32, @intCast(x)) * self.tileSpanU() + @as(i32, self.min_guard_u));
     }
 
-    /// SNORM16 V coordinate for the top edge of tile row y.
     pub fn tileV(self: TextureAtlas, y: u32) i16 {
         std.debug.assert(y < (@as(u32, 1) << self.row_log2));
         return @intCast(@as(i32, @intCast(y)) * self.tileSpanV() + @as(i32, self.min_guard_v));
@@ -63,7 +57,7 @@ pub const TextureAtlas = struct {
 };
 
 test "atlas tiles stay inside sampling boundaries" {
-    const atlas = TextureAtlas.init(256, 256, 16, 16);
+    const atlas = TextureAtlas.init(16, 16);
     const expected_min: i16 = MIN_GUARD;
     const expected_max: i16 = MAX_GUARD;
     const stride: i16 = 2048;

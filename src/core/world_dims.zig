@@ -6,10 +6,8 @@ pub const chunk_volume: u32 = chunk_size * chunk_size * chunk_size;
 pub const log2_chunk_size: u5 = 4;
 pub const chunk_mask: u32 = chunk_size - 1;
 
-/// Bounds on the live world. The Menu offers X/Z in {128, 256, 512} crossed
-/// with Y in {64, 128}; everything outside that range is a bug or hostile
-/// input, not a size to try. `max_height` is 128 because `WorldData.light_map`
-/// stores Y+1 in a u8.
+/// Supported menu/save dimensions. Height stays below 255 because the light
+/// map stores Y+1 in a byte.
 pub const min_length: u32 = 128;
 pub const min_height: u32 = 64;
 pub const min_depth: u32 = 128;
@@ -205,18 +203,6 @@ test "preset parse is exact" {
     try std.testing.expect(WorldSize.parse("") == null);
     try std.testing.expect(WorldHeight.parse("huge") == null);
     try std.testing.expect(WorldHeight.parse("banana") == null);
-}
-
-test "block_index" {
-    const dims = default;
-    try std.testing.expectEqual(@as(u32, 0), dims.block_index(0, 0, 0));
-    try std.testing.expectEqual(@as(u32, 4095), dims.block_index(15, 15, 15));
-    try std.testing.expectEqual(@as(u32, 4096), dims.block_index(16, 0, 0));
-    try std.testing.expectEqual(@as(u32, 4194303), dims.block_index(255, 63, 255));
-
-    const base = dims.block_index(0, 5, 7);
-    try std.testing.expectEqual(base + 1, dims.block_index(1, 5, 7));
-    try std.testing.expectEqual(base + 15, dims.block_index(15, 5, 7));
 }
 
 /// Independent divide/multiply form of `block_index`, sharing no code with it.

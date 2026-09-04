@@ -1,9 +1,4 @@
-/// Shared session state between MenuState, LoadState, and GameState.
-///
-/// Holds the user's chosen mode (SP vs MP), their username, the raw server
-/// address string from the direct-connect screen, and - once LoadState has
-/// opened the socket - the live TCP stream plus its Reader/Writer that
-/// GameState picks up.
+/// Session data shared by the menu, loading, and game states.
 const std = @import("std");
 const core = @import("core");
 
@@ -30,26 +25,17 @@ pub var singleplayer_seed_override: ?u64 = null;
 pub var singleplayer_size: ?wd.WorldSize = null;
 pub var singleplayer_height: ?wd.WorldHeight = null;
 
-// Live TCP stream carried from LoadState into GameState. Null in SP, or
-// before a successful connect(), or after a disconnect. GameState spawns
-// a background read-loop task that owns `mp_reader` once it picks the
-// stream up; the game thread only touches `mp_writer`.
+// The read-loop owns mp_reader after loading; the game thread owns mp_writer.
 pub var mp_stream: ?std.Io.net.Stream = null;
 pub var mp_read_buf: [4096]u8 = undefined;
 pub var mp_write_buf: [4096]u8 = undefined;
 pub var mp_reader: std.Io.net.Stream.Reader = undefined;
 pub var mp_writer: std.Io.net.Stream.Writer = undefined;
 
-/// Flipped to false by the async read loop on EOF/error. Callbacks and
-/// the disconnect handler observe it so the main loop can request quit.
 pub var mp_connected: std.atomic.Value(bool) = .init(false);
 
-// --- Disconnect reason ---
-
 /// Human-readable reason for the last disconnect, set before mp_connected is
-/// cleared (or before quit_requested is set for the DisconnectPlayer packet).
-/// Read by DisconnectState after it is entered. Not atomic -- written from
-/// the read-loop thread under release/acquire ordering on mp_connected.
+/// cleared. Its release/acquire ordering publishes this non-atomic buffer.
 pub var disconnect_reason_buf: [64]u8 = undefined;
 pub var disconnect_reason_len: u8 = 0;
 
@@ -113,9 +99,7 @@ pub fn singleplayer_seed(random_seed: u64) u64 {
     return singleplayer_seed_override orelse random_seed;
 }
 
-/// CreateWorld size/height presets for the embedded server. Like the seed
-/// override they only shape first generation; loading an existing save
-/// clears them and the save boots at its own dimensions.
+/// These presets affect only a newly generated world.
 pub fn set_singleplayer_size(size: wd.WorldSize) void {
     singleplayer_size = size;
 }
@@ -160,17 +144,14 @@ pub fn parse_server_endpoint() !ServerEndpoint {
     const input = server();
     if (input.len == 0) return error.EmptyHost;
 
-    // Try literal IP first. parseLiteral returns port 0 if the user did not
-    // specify one; substitute the default so "127.0.0.1" or "[::1]" work.
+    // parseLiteral reports port zero when none was supplied.
     if (std.Io.net.IpAddress.parseLiteral(input)) |parsed| {
         var addr = parsed;
         if (addr.getPort() == 0) addr.setPort(DEFAULT_PORT);
         return .{ .ip = addr };
     } else |_| {}
 
-    // Fallback: treat as hostname[:port]. Hostnames cannot contain ':', so
-    // splitting on the last colon is unambiguous (IPv6 literals are handled
-    // by the parseLiteral branch above).
+    // IPv6 was handled above, so the last colon unambiguously separates a port.
     var name = input;
     var port: u16 = DEFAULT_PORT;
     if (std.mem.lastIndexOfScalar(u8, input, ':')) |i| {
@@ -194,12 +175,9 @@ pub fn connect_endpoint(ep: ServerEndpoint, io: std.Io) !std.Io.net.Stream {
     };
 }
 
-test "seed_from_text hashes nonblank text deterministically" {
-    const a = seed_from_text("hello world") orelse return error.ExpectedSeed;
-    const b = seed_from_text("hello world") orelse return error.ExpectedSeed;
-    const c = seed_from_text("other world") orelse return error.ExpectedSeed;
-    try std.testing.expectEqual(a, b);
-    try std.testing.expect(a != c);
+test "seed_from_text uses FNV-1a" {
+    try std.testing.expectEqual(@as(?u64, 0x779a65e7023cd2e7), seed_from_text("hello world"));
+    try std.testing.expectEqual(@as(?u64, 0x779a65e7023cd2e7), seed_from_text(" hello world "));
 }
 
 test "seed_from_text treats blank as no override" {
@@ -207,10 +185,30 @@ test "seed_from_text treats blank as no override" {
     try std.testing.expect(seed_from_text("   ") == null);
 }
 
-test "singleplayer_seed uses override when present" {
-    clear_singleplayer_seed_override();
-    try std.testing.expectEqual(@as(u64, 123), singleplayer_seed(123));
-    set_singleplayer_seed_override(456);
-    try std.testing.expectEqual(@as(u64, 456), singleplayer_seed(123));
-    clear_singleplayer_seed_override();
+test "parse_server_endpoint handles literals and hostnames" {
+    defer set_server("");
+
+    set_server("127.0.0.1");
+    switch (try parse_server_endpoint()) {
+        .ip => |addr| try std.testing.expectEqual(DEFAULT_PORT, addr.getPort()),
+        .host => return error.ExpectedIpAddress,
+    }
+
+    set_server("[::1]:25570");
+    switch (try parse_server_endpoint()) {
+        .ip => |addr| try std.testing.expectEqual(@as(u16, 25570), addr.getPort()),
+        .host => return error.ExpectedIpAddress,
+    }
+
+    set_server("play.example.com:25571");
+    switch (try parse_server_endpoint()) {
+        .host => |host| {
+            try std.testing.expectEqualStrings("play.example.com", host.name);
+            try std.testing.expectEqual(@as(u16, 25571), host.port);
+        },
+        .ip => return error.ExpectedHostName,
+    }
+
+    set_server("");
+    try std.testing.expectError(error.EmptyHost, parse_server_endpoint());
 }

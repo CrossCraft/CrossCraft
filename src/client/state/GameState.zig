@@ -39,6 +39,7 @@ const Prompts = @import("../ui/Prompts.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
 const UiDrawList = @import("../ui/UiDrawList.zig");
+const Screen = @import("../ui/Screen.zig");
 const Colors = @import("../graphics/Color.zig");
 const Color = Colors.Color;
 const ui_input = @import("../ui/input.zig");
@@ -63,14 +64,9 @@ const PauseScreen = enum { main, options, controls, dump_world };
 
 fake_conn: FakeConn,
 conn: ClientConn,
-// MP read-loop task: owns the TCP read side, drives ClientConn
-// callbacks, clears `Session.mp_connected` on exit.
+// Owns the multiplayer TCP read side and clears mp_connected on exit.
 mp_read_thread: ?Util.Thread,
-/// Singleplayer compressor worker thread that drains save jobs owned by the
-/// embedded server. Standalone servers spawn an equivalent thread in
-/// `ServerState.init`.
 sp_compressor_thread: ?CompressorThread.Thread,
-/// Multiplayer-only compressor worker used by explicit world dumps.
 mp_compressor_thread: ?CompressorThread.Thread,
 world: WorldRenderer,
 player: Player,
@@ -84,8 +80,6 @@ inventory_repeat: ui_input.Repeat,
 inventory_blocks: [core.blocks.INVENTORY_SLOTS]core.blocks.Block,
 player_list: PlayerList,
 chat: Chat,
-/// Controller social overlay: true while the Select/Back-toggled player
-/// list + chat cursor is visible. Keyboard Tab keeps hold-to-show behavior.
 social_mode: bool,
 mp_fly_unlocked: bool,
 selection: SelectionOutline,
@@ -95,9 +89,6 @@ render_alloc: std.mem.Allocator,
 hotbar_tooltip_timer: f32,
 prev_selected_slot: u8,
 report_timer: f32,
-/// Desktop F1 toggles HUD visibility. When set, the crosshair, hotbar,
-/// version text, hotbar tooltip, prompt strip, and held-block viewmodel
-/// are all suppressed. Pause, inventory, and chat overlays stay visible.
 hud_hidden: bool,
 paused: bool,
 pause_screen: PauseScreen,
@@ -134,8 +125,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         .consumes_text = false,
     });
 
-    // SP uses FakeConn + in-process server; MP wraps ClientConn around the
-    // live TCP stream that LoadState opened.
     switch (Session.mode) {
         .singleplayer => {
             self.fake_conn.init();
@@ -171,8 +160,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
                 pspsdk.kernel.change_thread_priority(psp_main_thid, PSP_MAIN_PRIO_RUNTIME) catch {};
             };
 
-            // Handshake + LevelFinalize were already consumed in
-            // LoadState.connectTask; the socket's now pointed at SpawnPlayer.
+            // LoadState consumed the handshake through LevelFinalize.
             self.conn.init(&Session.mp_reader.interface, &Session.mp_writer.interface);
             Session.mp_connected.store(true, .release);
 
@@ -200,9 +188,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     @import("../config.zig").apply_runtime_budgets(engine);
 
-    // Player -- owns the camera; spawn Y is eye-level from the server.
-    // Use whichever writer the active connection drains position packets
-    // into: the FakeConn ring for SP, or the live TCP stream for MP.
     const player_writer: *std.Io.Writer = switch (Session.mode) {
         .singleplayer => &self.fake_conn.client_writer,
         .multiplayer => &Session.mp_writer.interface,
@@ -252,8 +237,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
 
-    // Iso-projected block icons for hotbar + inventory slots; draws to the
-    // same terrain atlas as the world.
     self.iso_blocks = try IsoBlockDrawer.init(
         render_alloc,
         ResourcePack.get_tex(.terrain),
@@ -272,8 +255,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     while (inv_i < blocks.INVENTORY_SLOTS) : (inv_i += 1) {
         self.inventory_blocks[inv_i] = blocks.inventory_block(inv_i);
     }
-    // Multiplayer already initialised player_list and chat before the
-    // read-loop thread was spawned (to avoid losing initial spawn packets).
     if (Session.mode == .singleplayer) {
         self.player_list = PlayerList.init();
         self.conn.player_list = &self.player_list;
@@ -287,11 +268,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.report_timer = 0;
     self.hud_hidden = false;
 
-    // Pause menu: built lazily-by-config. The lost-focus callback is a no-op
-    // on PSP (Aether never fires it there). Pause uses dedicated batchers so
-    // its dim quad and panel sprites/text flush after every gameplay UI pass
-    // (HUD sprites, iso blocks, HUD font) and cleanly sit on top of all of
-    // them without depending on layer ordering across separate render passes.
+    // Separate batchers guarantee the pause overlay flushes after gameplay UI.
     self.pause_batcher = try SpriteBatcher.init(render_alloc);
     self.pause_font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
     self.paused = false;
@@ -422,7 +399,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
 
 fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    // MP updates arrive as packets; no local world tick.
     if (Session.mode == .singleplayer) {
         Server.drain_local_packets();
         Server.tick();
@@ -749,7 +725,7 @@ fn begin_game_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *con
         .fonts = &self.font_batcher,
         .gui_tex = ResourcePack.get_tex(.gui),
         .glyphs_tex = ResourcePack.get_tex(.glyphs),
-        .screen = current_screen_rect(),
+        .screen = Screen.logical_rect(),
         .layer_base = layer_base,
     });
 }
@@ -762,41 +738,9 @@ fn begin_pause_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *co
         .fonts = &self.pause_font_batcher,
         .gui_tex = ResourcePack.get_tex(.gui),
         .glyphs_tex = ResourcePack.get_tex(.glyphs),
-        .screen = current_screen_rect(),
+        .screen = Screen.logical_rect(),
         .layer_base = layer_base,
     });
-}
-
-fn current_screen_rect() Ui.LogicalRect {
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const scale = ae.UI.Scaling.compute(screen_w, screen_h);
-    return .{
-        .x0 = 0,
-        .y0 = 0,
-        .x1 = @intCast((screen_w + scale - 1) / scale),
-        .y1 = @intCast((screen_h + scale - 1) / scale),
-    };
-}
-
-fn empty_input() ui_input.UiInput {
-    return .{
-        .input_system = null,
-        .cursor_x = 0,
-        .cursor_y = 0,
-        .cursor_available = false,
-        .cursor_moved = false,
-        .click_edge = false,
-        .click_held = false,
-        .nav = .none,
-        .confirm_edge = false,
-        .cancel_edge = false,
-        .pause_edge = false,
-        .title_exit_edge = false,
-        .inventory_edge = false,
-        .wheel_dy = 0,
-        .text_events = false,
-    };
 }
 
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
@@ -819,7 +763,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         }
     }
 
-    // Pick the repeat state owned by whichever overlay is on top.
     const active_repeat = if (self.paused)
         &self.pause_ui_repeat
     else
@@ -887,8 +830,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             }
         }
 
-        // Chat open/close.  Inventory and chat are mutually exclusive; neither
-        // opens while the other is active.
         if (self.player.chat_open_pending) {
             self.player.chat_open_pending = false;
             if (!self.chat.open and !self.inventory_open) {
@@ -943,7 +884,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
     const slot_block = self.player.hotbar[self.player.selected_slot];
     self.held.update(dt, slot_block, player_in_shadow(&self.player));
 
-    // Hotbar tooltip: reset timer on slot change, tick down otherwise.
     if (self.player.selected_slot != self.prev_selected_slot) {
         self.prev_selected_slot = self.player.selected_slot;
         self.hotbar_tooltip_timer = 2.0;
@@ -1028,7 +968,7 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
     }
     if (self.inventory_open) {
         var inv_list: UiDrawList = .{};
-        var none = empty_input();
+        var none = Screen.empty_input();
         var inv_ui = begin_game_ui(self, &inv_list, &self.inventory_ui_state, &none, InventoryUi.LAYER_BASE);
         _ = InventoryUi.run(&inv_ui, self.inventory_blocks[0..], &self.inventory_slot);
         inv_ui.end();
@@ -1082,7 +1022,7 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
     if (!self.paused) return;
 
     draw_pause_dim(self);
-    var none = empty_input();
+    var none = Screen.empty_input();
     switch (self.pause_screen) {
         .main => {
             var list: UiDrawList = .{};
@@ -1145,26 +1085,14 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     self.player.camera.apply();
     self.world.draw_world_pass(&self.player.camera);
 
-    // Rain: streaks + impact splashes.  No-op when Options.rain is off.
-    // Slotted here so streaks depth-test against opaque+transparent terrain
-    // and the fluid pass still draws on top of rain in submerged areas.
+    // Rain depth-tests against terrain; the later fluid pass overlays it.
     self.world.draw_rain_pass(&self.player.camera);
 
-    // Remote player models: drawn in the 3D pass, depth-tested against the world.
-    // Slotted before the fluid pass so water/lava correctly occludes them.
+    // Draw before fluids so water and lava occlude remote players.
     self.steve.draw(&self.player);
     self.steve.draw_nametags(&self.player, &self.font_batcher);
 
-    // Selection outline: still in the 3D pass, depth-tested against the world.
-    // Nudge the whole outline toward the camera by a tiny world-space amount.
-    // The outline prisms extrude outward from the block's AABB, but their
-    // inner-facing quads still share a depth plane with the outer faces of
-    // any neighbouring block (floor tops, adjacent sides) that have the same
-    // outward normal -- pulling the outline a fraction of a block toward the
-    // viewer resolves that z-fight without making the outline show through
-    // other geometry.
-    // The outline shape matches the block's subvoxel bounds (e.g. half-height
-    // for slabs, small box for flowers/mushrooms).
+    // Pull the block-bounds outline toward the camera to avoid coplanar z-fighting.
     if (self.player.selected) |hit| blk: {
         const block_id = World.data.get_block(hit.x, hit.y, hit.z);
         if (block_id.is_air()) break :blk;
@@ -1193,26 +1121,16 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         self.selection.draw(&t);
     }
 
-    // Fluid pass last so water/lava alpha-blends over the outline, steve
-    // models, and particles drawn just above instead of the depth-writeless
-    // fluid letting those overlays bleed through.
+    // Fluids do not write depth, so render them after other world geometry.
     self.world.draw_fluid_pass();
 
-    // Held-block viewmodel: swaps in its own projection + identity view,
-    // clears depth internally so it never z-fights against nearby world
-    // geometry. Matrices are left in that state on exit; the UI pass
-    // below installs its own identity proj/view before drawing.
+    // The viewmodel leaves its projection active; the UI draw restores its own.
     if (!self.hud_hidden) {
         self.held.draw(ResourcePack.get_tex(.terrain), &self.player.camera);
     }
 
-    // UI pass: orthographic overlay drawn on top of the 3D scene.
     Rendering.gfx.api.set_fog(false, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
-    // Draw order is hotbar bg -> selector -> inventory panel -> iso block
-    // icons -> tooltip text. The 2D sprites all batch into one pass; the
-    // iso blocks flush after them so they sit on top of the selector frame
-    // and the inventory panel. The font batcher flushes last for the
-    // tooltip. A depth clear between each pass keeps z-tests clean.
+    // Depth clears preserve the sprite, block-icon, then text ordering.
     Rendering.gfx.api.clear_depth();
     self.ui_batcher.draw();
 
@@ -1222,8 +1140,6 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     Rendering.gfx.api.clear_depth();
     self.font_batcher.draw();
 
-    // Pause overlay uses its own batchers so it flushes cleanly after every
-    // gameplay UI pass without depending on cross-batcher layer ordering.
     if (self.paused) {
         Rendering.gfx.api.clear_depth();
         self.pause_batcher.draw();
@@ -1233,20 +1149,13 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     }
 }
 
-/// Translucent black quad covering the entire screen, drawn behind
-/// the pause widgets so the live game scene fades out. Layer puts it
-/// one above the HUD's deepest tooltip layer.
 fn draw_pause_dim(self: *@This()) void {
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const scale = ae.UI.Scaling.compute(screen_w, screen_h);
-    const extent_x: i16 = @intCast((screen_w + scale - 1) / scale);
-    const extent_y: i16 = @intCast((screen_h + scale - 1) / scale);
+    const screen = Screen.logical_rect();
 
     self.pause_batcher.add_sprite(&.{
         .texture = &Rendering.Texture.Default,
         .pos_offset = .{ .x = 0, .y = 0 },
-        .pos_extent = .{ .x = extent_x, .y = extent_y },
+        .pos_extent = .{ .x = screen.x1, .y = screen.y1 },
         .tex_offset = .{ .x = 0, .y = 0 },
         .tex_extent = .{ .x = 1, .y = 1 },
         .color = Color.rgba(0, 0, 0, 160),
@@ -1256,18 +1165,6 @@ fn draw_pause_dim(self: *@This()) void {
     });
 }
 
-/// Compose the bottom-left HUD prompt list and delegate to PromptStrip.
-///
-/// Content switches by context so the strip always describes the
-/// currently-available actions:
-///   * Controller social mode: [Exit, Chat].
-///   * Chat session open: [Send, Cancel].
-///   * Normal play: [Inventory, Place?, Break?] -- Place requires an
-///     aimed-at placement slot, Break any non-Air target.
-///
-/// The inventory overlay owns its own PromptStrip inside the
-/// Inventory overlay; this routine is short-circuited by the
-/// caller when the inventory is open.
 fn draw_hud_prompts(self: *@This(), list: *UiDrawList) void {
     const sprite_layer: u8 = 252;
     const text_layer: u8 = 252;

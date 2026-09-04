@@ -14,20 +14,8 @@ const log = std.log.scoped(.server);
 
 pub const MaxPlayers = 128;
 
-/// Inputs the world needs to materialise. `save_location` is a relative
-/// path (under the engine data dir) to the world save *file*, including
-/// its filename -- e.g. "saves/world.cw" or "saves/foo.dat". The world spec
-/// saves the file at exactly this path. An empty string is rejected at init.
-///
-/// `save_format` picks which on-disk format to use. classic_cw is the
-/// gzip-NBT ClassicWorld format and the default; classic_dat is the
-/// legacy CrossCraft custom binary, retained for backward compatibility
-/// and selectable via server.properties `save-format:` in standalone mode.
-///
-/// `size`/`height` come from server.properties `world-size:`/`world-height:`
-/// preset names in standalone mode. Like `seed`, they apply to first
-/// generation only: an existing save always boots at its own dimensions
-/// (sniffed from its header in `world.init`).
+/// Inputs needed to load or generate a world. The save location is relative
+/// to the host's data directory and includes the file name.
 pub const WorldConfig = struct {
     seed: u64,
     save_location: []const u8,
@@ -35,80 +23,62 @@ pub const WorldConfig = struct {
     size: world_dims.WorldSize = .normal,
     height: world_dims.WorldHeight = .normal,
 
-    /// The geometry new worlds are generated with.
     pub fn dims(self: WorldConfig) world.WorldDims {
         return world_dims.from_presets(self.size, self.height);
     }
 };
 
-/// The default save path. Used by both standalone and embedded
-/// hosts when no override is supplied; also the gate condition for the
-/// root-save migrations in `Server.init` -- a custom
-/// `save-location` in server.properties skips the migration entirely.
 pub const default_save_location: []const u8 = "saves/world.cw";
-
-/// Previous default layout: a ClassicWorld save file at the data dir root.
 pub const root_default_save_file_name: []const u8 = "world.cw";
-
-/// v1.0 layout: a single classic_dat save file at the data dir root.
 pub const legacy_save_file_name: []const u8 = "world.dat";
+pub const default_server_name = "CrossCraft Server";
+pub const default_server_motd = "Welcome to CrossCraft!";
+pub const default_login_timeout_ms: u32 = 15_000;
+pub const default_max_pending_logins: u32 = 16;
+pub const default_max_connections_per_ip: u32 = 8;
+pub const default_max_players_saved: u32 = 1024;
+pub const default_max_policy_records: u32 = 4096;
 
 const BootConfig = struct {
     world: WorldConfig,
 };
 
-pub const GameConfig = union(enum) {
-    standalone: BootConfig,
-    embedded: BootConfig,
+pub const StandaloneConfig = struct {
+    world: WorldConfig,
+    server_name: []const u8 = default_server_name,
+    server_motd: []const u8 = default_server_motd,
+    whitelist_enabled: bool = false,
+    login_timeout_ms: u32 = default_login_timeout_ms,
+    max_pending_logins: u32 = default_max_pending_logins,
+    max_connections_per_ip: u32 = default_max_connections_per_ip,
+    max_players_saved: u32 = default_max_players_saved,
+    max_policy_records: u32 = default_max_policy_records,
+};
 
-    pub fn world(self: GameConfig) WorldConfig {
-        return switch (self) {
-            .standalone, .embedded => |config| config.world,
-        };
-    }
+pub const GameConfig = union(enum) {
+    standalone: StandaloneConfig,
+    embedded: BootConfig,
 };
 
 pub var io: std.Io = undefined;
-/// Directory containing the active save. Resolved at `init` from the parent of
-/// `WorldConfig.save_location`; the directory is created if it does not
-/// already exist. Standalone `server.properties` stays at the data-dir root.
 pub var save_dir: std.Io.Dir = undefined;
 var save_dir_owned: bool = false;
-
-const default_server_name = "CrossCraft Server";
-const default_server_motd = "Welcome to CrossCraft!";
 
 pub var server_name: [64]u8 = pad(default_server_name);
 pub var server_motd: [64]u8 = pad(default_server_motd);
 
-/// When true, accept_loop refuses any inbound connection whose IP isn't
-/// in the durable access-control whitelist.
 pub var whitelist_enabled: bool = false;
-
-/// Capacity of the players_db record table. Read from server.properties
-/// `max-players-saved` at init; clamped to platform-appropriate limits.
-pub var max_players_saved: u32 = 1024;
-
-/// Capacity of the durable access-control table. It is configured at startup
-/// and never evicts bans, ops, or whitelist entries.
-pub var max_policy_records: u32 = 4096;
-
-/// Absolute deadline from TCP accept until the full PlayerIDToServer frame is
-/// received. It deliberately does not reset when a peer trickles bytes.
-pub const default_login_timeout_ms: u32 = 15_000;
-pub const default_max_pending_logins: u32 = 16;
-pub const default_max_connections_per_ip: u32 = 8;
 
 pub var login_timeout_ms: u32 = default_login_timeout_ms;
 pub var max_pending_logins: u32 = default_max_pending_logins;
 pub var max_connections_per_ip: u32 = default_max_connections_per_ip;
+pub var max_players_saved: u32 = default_max_players_saved;
+pub var max_policy_records: u32 = default_max_policy_records;
 
-/// Optional sink the host (ServerState) installs to mirror chat broadcasts
-/// to its admin console. Server-core has no business knowing about stdout
-/// directly, so it goes through this hook instead.
+/// Optional host callback for mirroring broadcast chat.
 pub var on_broadcast_chat: ?*const fn ([]const u8) void = null;
 
-pub var players: FirstAvailableBuffer(Client, MaxPlayers) = .init();
+pub var players: PlayerSlots = .{};
 var player_generations: [MaxPlayers]u32 = @splat(0);
 
 /// Roster synchronization is separate from the Core-owned world lock.
@@ -135,25 +105,8 @@ pub fn unlock_roster_shared() void {
     roster_lock.unlockShared(io);
 }
 
-pub fn lock_world() void {
-    world.lock_world();
-}
-
-pub fn unlock_world() void {
-    world.unlock_world();
-}
-
-pub fn lock_world_shared() void {
-    world.lock_world_shared();
-}
-
-pub fn unlock_world_shared() void {
-    world.unlock_world_shared();
-}
-
 /// True when the server is hosted inside the client process for singleplayer.
-/// Gates behaviors that only make sense for a standalone server reachable by
-/// real network clients (server.properties I/O, join/leave chat spam, etc.).
+/// Gates durable player data and join/leave chat for remote clients.
 pub var internal_use: bool = false;
 
 pub const block_change_sink: world.WorldSimulation.BlockChangeSink = .{ .emit_fn = emit_block_change };
@@ -162,15 +115,13 @@ fn emit_block_change(_: ?*anyopaque, change: world.WorldSimulation.BlockChange) 
     broadcast_block_change(change.x, change.y, change.z, change.block);
 }
 
-fn pad(comptime s: []const u8) [64]u8 {
+fn pad(s: []const u8) [64]u8 {
     var buf: [64]u8 = @splat(' ');
-    @memcpy(buf[0..s.len], s);
+    const len = @min(buf.len, s.len);
+    @memcpy(buf[0..len], s[0..len]);
     return buf;
 }
 
-/// Buffer holding a save_location override read from server.properties.
-/// Sized for the longest path we expect to see in a config file.
-var save_location_buf: [256]u8 = undefined;
 var save_file_name_buf: [256]u8 = undefined;
 var save_file_name_len: u16 = 0;
 
@@ -185,25 +136,38 @@ pub fn init(
     roster_lock = .init;
     player_generations = @splat(0);
 
-    // Server globals survive an embedded-server teardown in the same
-    // process. Reset connection-admission values before optionally loading a
-    // fresh standalone configuration.
+    server_name = pad(default_server_name);
+    server_motd = pad(default_server_motd);
+    whitelist_enabled = false;
     login_timeout_ms = default_login_timeout_ms;
     max_pending_logins = default_max_pending_logins;
     max_connections_per_ip = default_max_connections_per_ip;
+    max_players_saved = default_max_players_saved;
+    max_policy_records = default_max_policy_records;
 
-    var wcfg = config.world();
+    var wcfg: WorldConfig = undefined;
+    switch (config) {
+        .standalone => |standalone| {
+            internal_use = false;
+            wcfg = standalone.world;
+            server_name = pad(standalone.server_name);
+            server_motd = pad(standalone.server_motd);
+            whitelist_enabled = standalone.whitelist_enabled;
+            login_timeout_ms = standalone.login_timeout_ms;
+            max_pending_logins = standalone.max_pending_logins;
+            max_connections_per_ip = standalone.max_connections_per_ip;
+            max_players_saved = standalone.max_players_saved;
+            max_policy_records = standalone.max_policy_records;
+        },
+        .embedded => |embedded| {
+            internal_use = true;
+            wcfg = embedded.world;
+        },
+    }
     if (wcfg.save_location.len == 0) {
         log.err("WorldConfig.save_location must not be empty", .{});
         return error.InvalidSaveLocation;
     }
-    internal_use = config == .embedded;
-
-    // Standalone reads server.properties from the data_dir root (a stable
-    // location independent of save_location), so an operator can edit
-    // seed and save-location before the world has ever been generated.
-    // Embedded mode never touches server.properties (NoServerPropertiesIO).
-    if (!internal_use) load_config(data_dir, &wcfg);
     normalize_default_save_location(&wcfg);
 
     // Promote old root saves into the default location before the saver opens
@@ -238,12 +202,8 @@ pub fn init(
     try compress_worker.init(alloc, io);
     errdefer compress_worker.deinit();
 
-    // wcfg.seed is used only on first generation; the saver restores
-    // the saved seed when an existing save file is found. Format choice
-    // comes from server.properties via wcfg; embedded mode uses default.
-    // World storage (and worldgen output) allocates and frees during init,
-    // so it uses raw `alloc` -- the StaticAllocator state machine forbids
-    // frees until teardown. Same rationale as the stores below.
+    // Existing saves restore their seed and dimensions. World storage must use
+    // the raw allocator because it allocates and frees during initialization.
     try world.init(
         alloc,
         scratch.allocator(),
@@ -257,9 +217,6 @@ pub fn init(
     log.info("World geometry: {}x{}x{}", .{ wcfg.dims().length, wcfg.dims().height, wcfg.dims().depth });
     errdefer world.deinit_after_init_error();
 
-    // Both persistent stores allocate from raw `alloc`, not the static
-    // wrapper. Their capacities are fixed at init before the allocator is
-    // frozen for the server's gameplay hot path.
     if (!internal_use) {
         try access_control.init(alloc, io, save_dir, max_policy_records);
         errdefer access_control.deinit();
@@ -307,15 +264,11 @@ fn normalize_default_save_location(wcfg: *WorldConfig) void {
     }
 }
 
-/// Move old root saves into the default `saves/` layout. Gated on the
-/// configured save_location matching the default, so an operator who set a
-/// custom `save-location:` in server.properties is left alone. No-op when the
-/// new file already exists. Logs and skips on failures -- the saver then falls
-/// through to worldgen, which is the same outcome as having no save at all.
+/// Move old root saves into the default `saves/` layout without touching a
+/// custom save location or replacing an existing destination.
 fn migrate_legacy_save(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
     if (!std.mem.eql(u8, wcfg.save_location, default_save_location)) return;
 
-    // Skip if the new-path file already exists -- never clobber.
     if (file_exists(data_dir, wcfg.save_location)) return;
 
     const split = split_save_location(wcfg.save_location);
@@ -401,152 +354,6 @@ fn file_exists(dir: std.Io.Dir, path: []const u8) bool {
     return true;
 }
 
-fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
-    const file = data_dir.openFile(io, "server.properties", .{}) catch {
-        write_default_config(data_dir, wcfg.*);
-        return;
-    };
-    defer file.close(io);
-
-    var buf: [512]u8 = undefined;
-    const len = file.readPositionalAll(io, &buf, 0) catch {
-        log.info("Failed to read server.properties, using defaults", .{});
-        return;
-    };
-
-    const data = buf[0..len];
-    var start: u32 = 0;
-
-    for (0..32) |_| {
-        if (start >= data.len) break;
-
-        const end = std.mem.indexOfScalarPos(u8, data, start, '\n') orelse data.len;
-        const line = data[start..end];
-        start = @intCast(end + 1);
-
-        if (std.mem.indexOfScalar(u8, line, ':')) |sep| {
-            const key = line[0..sep];
-            const value = line[sep + 1 ..];
-
-            if (std.mem.eql(u8, key, "server-name")) {
-                server_name = @splat(' ');
-                const vlen = @min(value.len, 64);
-                @memcpy(server_name[0..vlen], value[0..vlen]);
-            } else if (std.mem.eql(u8, key, "motd")) {
-                server_motd = @splat(' ');
-                const vlen = @min(value.len, 64);
-                @memcpy(server_motd[0..vlen], value[0..vlen]);
-            } else if (std.mem.eql(u8, key, "seed")) {
-                // Existing saves restore their own seed; this value applies
-                // only when generating a new world.
-                if (std.fmt.parseInt(u64, value, 10)) |parsed| {
-                    wcfg.seed = parsed;
-                } else |_| {
-                    log.warn("server.properties seed value '{s}' is not a u64; ignoring", .{value});
-                }
-            } else if (std.mem.eql(u8, key, "save-location")) {
-                if (value.len == 0) {
-                    log.warn("server.properties save-location is empty; ignoring", .{});
-                } else if (value.len > save_location_buf.len) {
-                    log.warn("server.properties save-location too long ({d} bytes); ignoring", .{value.len});
-                } else {
-                    @memcpy(save_location_buf[0..value.len], value);
-                    wcfg.save_location = save_location_buf[0..value.len];
-                }
-            } else if (std.mem.eql(u8, key, "save-format")) {
-                if (world.SaveFormat.parse(value)) |fmt| {
-                    wcfg.save_format = fmt;
-                } else {
-                    log.warn("server.properties save-format '{s}' unknown; using default", .{value});
-                }
-            } else if (std.mem.eql(u8, key, "world-size")) {
-                if (world_dims.WorldSize.parse(value)) |size| {
-                    wcfg.size = size;
-                } else {
-                    log.warn("server.properties world-size '{s}' is not tiny|normal|huge; ignoring", .{value});
-                }
-            } else if (std.mem.eql(u8, key, "world-height")) {
-                if (world_dims.WorldHeight.parse(value)) |height| {
-                    wcfg.height = height;
-                } else {
-                    log.warn("server.properties world-height '{s}' is not normal|tall; ignoring", .{value});
-                }
-            } else if (std.mem.eql(u8, key, "login-timeout-ms")) {
-                if (std.fmt.parseInt(u32, value, 10)) |parsed| {
-                    login_timeout_ms = std.math.clamp(parsed, 1_000, 60_000);
-                } else |_| {
-                    log.warn("server.properties login-timeout-ms value '{s}' is not a u32; ignoring", .{value});
-                }
-            } else if (std.mem.eql(u8, key, "max-pending-logins")) {
-                if (std.fmt.parseInt(u32, value, 10)) |parsed| {
-                    max_pending_logins = std.math.clamp(parsed, 1, MaxPlayers);
-                } else |_| {
-                    log.warn("server.properties max-pending-logins value '{s}' is not a u32; ignoring", .{value});
-                }
-            } else if (std.mem.eql(u8, key, "max-connections-per-ip")) {
-                if (std.fmt.parseInt(u32, value, 10)) |parsed| {
-                    max_connections_per_ip = std.math.clamp(parsed, 1, MaxPlayers);
-                } else |_| {
-                    log.warn("server.properties max-connections-per-ip value '{s}' is not a u32; ignoring", .{value});
-                }
-            } else if (std.mem.eql(u8, key, "whitelist")) {
-                whitelist_enabled = std.mem.eql(u8, value, "true");
-            } else if (std.mem.eql(u8, key, "max-players-saved")) {
-                if (std.fmt.parseInt(u32, value, 10)) |parsed| {
-                    max_players_saved = std.math.clamp(parsed, 1, players_db.max_capacity);
-                } else |_| {
-                    log.warn("server.properties max-players-saved value '{s}' is not a u32; ignoring", .{value});
-                }
-            } else if (std.mem.eql(u8, key, "max-policy-records")) {
-                if (std.fmt.parseInt(u32, value, 10)) |parsed| {
-                    max_policy_records = std.math.clamp(parsed, 1, access_control.max_capacity);
-                } else |_| {
-                    log.warn("server.properties max-policy-records value '{s}' is not a u32; ignoring", .{value});
-                }
-            }
-        }
-    }
-
-    log.info("Loaded server.properties", .{});
-}
-
-fn write_default_config(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
-    const file = data_dir.createFile(io, "server.properties", .{}) catch |err| {
-        log.info("No server.properties, failed to create ({}), using defaults", .{err});
-        return;
-    };
-    defer file.close(io);
-
-    var buf: [512]u8 = undefined;
-    const contents = std.fmt.bufPrint(
-        &buf,
-        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nworld-size:{s}\nworld-height:{s}\nsave-format:classic_cw\nlogin-timeout-ms:{d}\nmax-pending-logins:{d}\nmax-connections-per-ip:{d}\nwhitelist:false\nmax-players-saved:{d}\nmax-policy-records:{d}\nheartbeat-url:\n",
-        .{
-            default_server_name,
-            default_server_motd,
-            wcfg.seed,
-            wcfg.save_location,
-            @tagName(wcfg.size),
-            @tagName(wcfg.height),
-            login_timeout_ms,
-            max_pending_logins,
-            max_connections_per_ip,
-            max_players_saved,
-            max_policy_records,
-        },
-    ) catch |err| {
-        log.info("Failed to format default server.properties ({}), using defaults", .{err});
-        return;
-    };
-
-    file.writeStreamingAll(io, contents) catch |err| {
-        log.info("Failed to write default server.properties ({}), using defaults", .{err});
-        return;
-    };
-
-    log.info("Generated default server.properties", .{});
-}
-
 pub fn deinit() void {
     // world.deinit submits and waits for the final .cw save; the host-owned
     // compressor thread/storage must remain alive until this returns.
@@ -562,9 +369,8 @@ pub fn deinit() void {
     }
     save_dir = undefined;
 
-    // Reset the player table so a subsequent Server.init() starts with no
-    // stale slots (the FAB is module-static and survives re-init).
-    players = .init();
+    // The module-static table survives re-init.
+    players = .{};
 }
 
 /// A decoded, structurally valid Classic login frame. It contains only the
@@ -613,14 +419,12 @@ pub fn admit_login(
     defer unlock_roster();
 
     const name = Client.login_name(request);
-    for (players.items) |maybe_client| {
-        if (maybe_client) |client| {
-            // `name_len` is zero only before a local client sends its own
-            // login. A staged remote login always has its name installed
-            // before this check can be observed by another admission.
-            if (client.name_len == name.len and std.mem.eql(u8, client.name[0..client.name_len], name.value[0..name.len])) {
-                return .{ .rejected = "A player with that name is already connected!" };
-            }
+    for (0..MaxPlayers) |i| {
+        const existing = &(players.items[i] orelse continue);
+        // `name_len` is zero only before a local client sends its own login.
+        // Remote admissions install the name before releasing this lock.
+        if (existing.name_len == name.len and std.mem.eql(u8, existing.name[0..existing.name_len], name.value[0..name.len])) {
+            return .{ .rejected = "A player with that name is already connected!" };
         }
     }
 
@@ -628,18 +432,20 @@ pub fn admit_login(
     client.init_remote_admitted(reader, writer, transport, out, stream, ip, is_op, request);
 
     const id = players.add(client) orelse return .{ .rejected = "Server is full!" };
-    players.items[id].?.id = @intCast(id);
+    const admitted = &(players.items[id].?);
+    admitted.id = @intCast(id);
     player_generations[id] +%= 1;
     if (player_generations[id] == 0) player_generations[id] = 1;
-    players.items[id].?.generation = player_generations[id];
+    admitted.generation = player_generations[id];
     // `Protocol.init` captures the client address as its dispatch context, so
     // initialise only after the temporary `client` has been copied into the
     // stable player table.
-    players.items[id].?.init();
-    return .{ .accepted = &(players.items[id].?) };
+    admitted.init();
+    return .{ .accepted = admitted };
 }
 
-pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bool, ip: []const u8, is_op: bool) ?*Client {
+/// Join the embedded singleplayer server.
+pub fn local_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bool) ?*Client {
     var client: Client = undefined;
     client.connected = connected;
     client.transport = null;
@@ -649,12 +455,10 @@ pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *b
     client.stream = null;
     client.initialized = false;
     client.phase = .init(.awaiting_login);
-    client.local = false;
-    client.is_op = .init(is_op);
+    client.local = true;
+    client.is_op = .init(true);
     client.catchup_mode = .init(.none);
     client.ip = std.mem.zeroes([players_db.ip_str_len:0]u8);
-    const ip_n = @min(ip.len, players_db.ip_str_len);
-    @memcpy(client.ip[0..ip_n], ip[0..ip_n]);
     client.name_len = 0;
     client.id = -1;
     client.generation = 0;
@@ -662,20 +466,18 @@ pub fn client_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *b
 
     lock_roster();
     defer unlock_roster();
-    const id = players.add(client);
-
-    if (id) |i| {
-        players.items[i].?.id = @intCast(i);
-        player_generations[i] +%= 1;
-        if (player_generations[i] == 0) player_generations[i] = 1;
-        players.items[i].?.generation = player_generations[i];
-        players.items[i].?.init();
-        return &(players.items[i].?);
-    } else {
+    const i = players.add(client) orelse {
         defer connected.* = false;
         client.send_disconnect("Server is full!") catch return null;
         return null;
-    }
+    };
+    const joined = &(players.items[i].?);
+    joined.id = @intCast(i);
+    player_generations[i] +%= 1;
+    if (player_generations[i] == 0) player_generations[i] = 1;
+    joined.generation = player_generations[i];
+    joined.init();
+    return joined;
 }
 
 test "pending login frame must be complete and use the Classic protocol version" {
@@ -699,15 +501,6 @@ test "pending login frame must be complete and use the Classic protocol version"
     try std.testing.expectError(error.UnsupportedProtocolVersion, parse_login_frame(&frame));
 }
 
-/// Join the server as the local singleplayer client. Same as client_join
-/// but marks the client as local (so world compression is skipped) and
-/// implicitly op (so /commands work without ban-list bookkeeping).
-pub fn local_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bool) ?*Client {
-    const client = client_join(reader, writer, connected, "", true) orelse return null;
-    client.local = true;
-    return client;
-}
-
 pub const ClientSnapshot = struct {
     handle: PlayerHandle,
     ip: [players_db.ip_str_len:0]u8,
@@ -723,13 +516,12 @@ pub fn find_client_by_name(name: []const u8) ?ClientSnapshot {
     lock_roster_shared();
     defer unlock_roster_shared();
     for (0..MaxPlayers) |i| {
-        if (players.items[i]) |p| {
-            if (!p.initialized) continue;
-            if (std.mem.eql(u8, p.name[0..p.name_len], name)) return .{
-                .handle = .{ .id = @intCast(i), .generation = p.generation },
-                .ip = p.ip,
-            };
-        }
+        const client = &(players.items[i] orelse continue);
+        if (!client.initialized) continue;
+        if (std.mem.eql(u8, client.name[0..client.name_len], name)) return .{
+            .handle = .{ .id = @intCast(i), .generation = client.generation },
+            .ip = client.ip,
+        };
     }
     return null;
 }
@@ -801,28 +593,18 @@ pub fn broadcast_spawn_player(sender_id: i8, packet: *zb.SpawnPlayer) void {
     lock_roster_shared();
     defer unlock_roster_shared();
     for (0..MaxPlayers) |i| {
-        if (players.items[i] != null and players.items[i].?.initialized and players.items[i].?.id != sender_id) {
-            players.items[i].?.send_spawn(packet) catch continue;
-        }
-    }
-}
-
-pub fn broadcast_despawn_player(id: i8) void {
-    lock_roster_shared();
-    defer unlock_roster_shared();
-    for (0..MaxPlayers) |i| {
-        if (players.items[i] != null and players.items[i].?.initialized) {
-            players.items[i].?.send_despawn(id) catch continue;
-        }
+        const client = &(players.items[i] orelse continue);
+        if (!client.initialized or client.id == sender_id) continue;
+        client.send_spawn(packet) catch continue;
     }
 }
 
 pub fn broadcast_chat_message(id: i8, message: []u8) void {
     lock_roster_shared();
     for (0..MaxPlayers) |i| {
-        if (players.items[i] != null and players.items[i].?.initialized) {
-            players.items[i].?.send_message(id, message) catch continue;
-        }
+        const client = &(players.items[i] orelse continue);
+        if (!client.initialized) continue;
+        client.send_message(id, message) catch continue;
     }
     unlock_roster_shared();
     if (on_broadcast_chat) |hook| hook(std.mem.trimEnd(u8, message, " \x00"));
@@ -850,18 +632,15 @@ pub fn broadcast_player_positions() void {
     lock_roster_shared();
     defer unlock_roster_shared();
     for (0..MaxPlayers) |i| {
-        if (players.items[i] == null or !players.items[i].?.initialized)
-            continue;
+        const recipient = &(players.items[i] orelse continue);
+        if (!recipient.initialized) continue;
 
         for (0..MaxPlayers) |j| {
-            if (i == j)
-                continue;
-
-            if (players.items[j] != null and players.items[j].?.initialized) {
-                const p = players.items[j].?;
-                const pose = p.load_pose();
-                players.items[i].?.send_player_position(p.id, pose.x, pose.y, pose.z, pose.yaw, pose.pitch) catch continue;
-            }
+            if (i == j) continue;
+            const player = &(players.items[j] orelse continue);
+            if (!player.initialized) continue;
+            const pose = player.load_pose();
+            recipient.send_player_position(player.id, pose.x, pose.y, pose.z, pose.yaw, pose.pitch) catch continue;
         }
     }
 }
@@ -870,18 +649,17 @@ pub fn broadcast_player_positions() void {
 /// Called each tick instead of running a blocking read_loop thread.
 pub fn drain_local_packets() void {
     for (0..MaxPlayers) |i| {
-        if (players.items[i] != null and players.items[i].?.local) {
-            players.items[i].?.drain_packets();
-        }
+        const client = &(players.items[i] orelse continue);
+        if (client.local) client.drain_packets();
     }
 }
 
 var tick_counter: u32 = 0;
 
 pub fn tick() void {
-    lock_world();
+    world.lock_world();
     _ = world.tick(block_change_sink);
-    unlock_world();
+    world.unlock_world();
 
     broadcast_player_positions();
 
@@ -896,36 +674,27 @@ fn broadcast_ping() void {
     lock_roster_shared();
     defer unlock_roster_shared();
     for (0..MaxPlayers) |i| {
-        if (players.items[i] != null and players.items[i].?.initialized) {
-            players.items[i].?.send_ping() catch continue;
-        }
+        const client = &(players.items[i] orelse continue);
+        if (!client.initialized) continue;
+        client.send_ping() catch continue;
     }
 }
 
-pub fn FirstAvailableBuffer(comptime T: type, comptime U: usize) type {
-    return struct {
-        items: [U]?T,
+pub const PlayerSlots = struct {
+    items: [MaxPlayers]?Client = @splat(null),
 
-        const Self = @This();
-
-        pub fn init() Self {
-            return .{
-                .items = @splat(null),
-            };
+    fn add(self: *PlayerSlots, client: Client) ?usize {
+        for (0..MaxPlayers) |i| {
+            if (self.items[i] == null) {
+                self.items[i] = client;
+                return i;
+            }
         }
+        return null;
+    }
 
-        pub fn add(self: *Self, data: T) ?usize {
-            for (0..U) |i| {
-                if (self.items[i] == null) {
-                    self.items[i] = data;
-                    return i;
-                }
-            } else return null;
-        }
-
-        pub fn remove(self: *Self, id: usize) void {
-            self.items[id].? = undefined;
-            self.items[id] = null;
-        }
-    };
-}
+    fn remove(self: *PlayerSlots, id: usize) void {
+        std.debug.assert(self.items[id] != null);
+        self.items[id] = null;
+    }
+};

@@ -25,16 +25,14 @@ pub const HardwareClass = enum {
 
 hardware: HardwareClass,
 total_memory_mb: u32,
-chunk_radius: u32, // chunks from camera center (diameter = 2*r+1)
-lod_near_radius_blocks: u32, // sections within this distance get full-detail meshing
+chunk_radius: u32,
+lod_near_radius_blocks: u32,
 
-// Initial pool layout (used by App.init before any state runs)
 init_render: u32,
 init_audio: u32,
 init_game: u32,
 init_user: u32,
 
-// Runtime pool layout (set in GameState.init after server is up)
 rt_render: u32,
 rt_audio: u32,
 rt_game: u32,
@@ -65,7 +63,7 @@ const psp_phat_profile: Profile = .{
     .init_game = 1 * MB,
     .init_user = 12 * MB,
     .rt_render = 13 * MB + 512 * KB,
-    .rt_audio = 0 * KB,
+    .rt_audio = 0,
     .rt_game = 1 * MB,
     .rt_user = 4 * MB + 512 * KB,
 };
@@ -100,19 +98,10 @@ const old_3ds_profile: Profile = .{
     .rt_user = 4 * MB + 512 * KB,
 };
 
-const new_3ds_profile: Profile = .{
-    .hardware = .new_3ds,
-    .total_memory_mb = old_3ds_profile.total_memory_mb,
-    .chunk_radius = old_3ds_profile.chunk_radius,
-    .lod_near_radius_blocks = old_3ds_profile.lod_near_radius_blocks,
-    .init_render = old_3ds_profile.init_render,
-    .init_audio = old_3ds_profile.init_audio,
-    .init_game = old_3ds_profile.init_game,
-    .init_user = old_3ds_profile.init_user,
-    .rt_render = old_3ds_profile.rt_render,
-    .rt_audio = old_3ds_profile.rt_audio,
-    .rt_game = old_3ds_profile.rt_game,
-    .rt_user = old_3ds_profile.rt_user,
+const new_3ds_profile: Profile = blk: {
+    var profile = old_3ds_profile;
+    profile.hardware = .new_3ds;
+    break :blk profile;
 };
 
 const nintendo_switch_profile: Profile = .{
@@ -213,7 +202,7 @@ pub fn apply_runtime_budgets(engine: *Engine) void {
     set_budget_clamped(engine, .user, want);
 }
 
-/// Restore the startup pool layout. Called on entry to MenuState so the next
+/// Restore the startup pool layout.
 pub fn apply_init_budgets(engine: *Engine) void {
     const profile = current();
     set_budget_clamped(engine, .render, profile.init_render);

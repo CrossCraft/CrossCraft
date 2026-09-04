@@ -21,8 +21,7 @@ comptime {
     _ = @import("client/ui/Buttons.zig");
     _ = @import("client/ui/Ui.zig");
     _ = @import("client/ui/TextWrap.zig");
-    _ = @import("client/ui/screens/CreateWorld.zig");
     _ = @import("server/ServerState.zig");
     _ = @import("server/Heartbeat.zig");
-    _ = @import("server/BackupScheme.zig");
+    _ = @import("server/Config.zig");
 }

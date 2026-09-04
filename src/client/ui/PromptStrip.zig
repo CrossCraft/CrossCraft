@@ -1,9 +1,4 @@
-//! Portable controller / KB+M prompt strip renderer.
-//!
-//! Given an array of Prompt entries, draws each as [glyph(s)] [label] laid
-//! out left-to-right with consistent padding.  The caller owns the batchers
-//! and the glyphs texture reference, so both the in-game HUD and any menu
-//! Screen can render prompts without duplicating layout math.
+//! Controller and keyboard prompt-strip layout.
 
 const std = @import("std");
 const ae = @import("aether");
@@ -19,10 +14,8 @@ const Colors = @import("../graphics/Color.zig");
 pub const Anchor = layout.Anchor;
 
 pub const Prompt = struct {
-    /// Physical buttons drawn left-to-right.  [1] is null for the common
-    /// single-button case; set both for chords (PSP L+R for "inventory").
+    /// One button or a two-button chord, drawn left to right.
     chord: [2]?Buttons.Button,
-    /// Text shown immediately after the final glyph.
     label: []const u8,
     /// Optional ASCII string drawn centered on top of the glyph, used by
     /// KB+M BlankKey prompts (e.g. "B" for inventory, "T" for chat).  The
@@ -35,34 +28,19 @@ comptime {
     std.debug.assert(@sizeOf(Prompt) <= 64);
 }
 
-/// True when prompt strips should render at all.  `.off` in Options means
-/// the user wants a minimal UI without glyph hints anywhere.
 pub fn enabled() bool {
     return Options.current.controller_tooltips != .off;
 }
 
-// --- Layout constants (logical pixels) ---
-
-/// Canonical bottom-left offset used by every prompt strip site (menu
-/// screens and the in-game HUD) so the strip lands in the same visual
-/// spot across platforms and modes.  Reference layout was (20, 23) in
-/// 480x272 PSP-native space; x carries over unchanged (left margin
-/// reads the same on both targets), y scales to 20 in the 400x240
-/// reference.  Kept in one place so a tweak here moves every strip.
+/// Shared bottom-left position, adjusted for the PSP viewport.
 pub const DEFAULT_POS_X: i16 = 20;
 pub const DEFAULT_POS_Y: i16 = 23 - if (@import("aether").platform == .psp) 8 else 16;
 
-const GLYPH_PAD: i16 = 4; // glyph -> its label
-const ENTRY_PAD: i16 = 12; // previous label -> next glyph
-const CHORD_PAD: i16 = 2; // glyph -> next glyph inside a chord
+const GLYPH_PAD: i16 = 4;
+const ENTRY_PAD: i16 = 12;
+const CHORD_PAD: i16 = 2;
 
-/// Draw `prompts` as a horizontal strip starting at (`pos_x`, `pos_y`)
-/// relative to `anchor`.  `y_base` behaves like a bottom offset: the
-/// glyph sits `y_base` above the reference edge when `anchor` is one of
-/// the `bottom_*` variants.  Sprite / text layers are passed explicitly
-/// so callers can slot the strip into the appropriate Z band. `fonts`
-/// is borrowed read-only for `string_width`. Returns silently if
-/// `enabled()` is false or `prompts.len == 0`.
+/// For bottom anchors, `y_base` is measured inward from the reference edge.
 pub fn draw_into(
     list: *UiDrawList,
     glyphs_tex: *const Rendering.Texture,

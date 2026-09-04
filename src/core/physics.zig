@@ -12,15 +12,12 @@
 //! clipping horizontal motion. World bounds and block geometry come from
 //! `WorldData` and `Block.bounds`.
 const std = @import("std");
-const blocks = @import("blocks.zig");
 const WorldData = @import("world/WorldData.zig");
-const Block = blocks.Block;
 
 /// Separation epsilon. Absorbs floating-point slop in face classification
 /// and leaves a small gap after each clip so re-intersection is stable.
 pub const EPSILON: f32 = 0.001;
 
-/// Sentinel returned by `axis_time` when velocity on that axis is zero.
 const MATH_LARGE: f32 = 1.0e9;
 
 /// A 0.6 x 1.8 player swept at `MAX_TICK_VEL` spans at most 7 x 8 x 7 cells.
@@ -32,8 +29,6 @@ const MAX_CANDIDATES = 7 * 8 * 7;
 /// realistic input-driven motion; anything larger indicates a bug upstream.
 const MAX_TICK_VEL: f32 = 5.0;
 
-/// Result of `move_and_wall_slide`. `x`/`y`/`z` are the new feet-centred
-/// position. Flags record which faces clipped this tick.
 pub const MoveResult = struct {
     x: f32,
     y: f32,
@@ -415,11 +410,7 @@ fn clip_interval(min: *f32, max: *f32, velocity: *f32, barrier: f32, move_min: b
     velocity.* = 0;
 }
 
-/// In-loop step-up. Gated on `was_on_ground` and `step_size > 0`; computes
-/// the raise height from the block top, verifies clearance with a
-/// shrunk-footprint box, then raises the entity and zeroes vertical
-/// velocity. Returns true if the step succeeded, so the caller can skip
-/// the horizontal clip for this candidate.
+/// Try grounded step-up before horizontal clipping.
 fn try_step(
     data: *const WorldData,
     state: *ResolveState,
@@ -474,9 +465,7 @@ fn overlaps_any_solid(data: *const WorldData, box: Aabb) bool {
     return false;
 }
 
-/// Downward sweep from `start_y` within `max_drop`, returning the highest
-/// block top under the entity's XZ footprint. Used by `try_step_up` to
-/// settle the feet onto a surface after a raised horizontal move.
+/// Find the highest landing surface within the downward sweep.
 fn find_landing_y(
     data: *const WorldData,
     px: f32,

@@ -10,30 +10,7 @@ const log = std.log.scoped(.backup);
 const epochs = scheme.epochs;
 const backup_root = scheme.backup_root;
 
-const properties_file_name = "server.properties";
-const max_config_len: usize = 4096;
 const max_name_len: usize = 256;
-
-pub const Config = struct {
-    autosave_seconds: u32 = scheme.autosave_default_seconds,
-
-    pub fn load(io: std.Io, data_dir: std.Io.Dir) Config {
-        var buf: [max_config_len]u8 = undefined;
-        return .{ .autosave_seconds = scheme.parse_autosave_seconds(read_properties(io, data_dir, &buf)) };
-    }
-};
-
-fn read_properties(io: std.Io, data_dir: std.Io.Dir, buf: *[max_config_len]u8) []const u8 {
-    const file = data_dir.openFile(io, properties_file_name, .{}) catch return "";
-    defer file.close(io);
-
-    const len = file.readPositionalAll(io, buf, 0) catch |err| {
-        log.warn("Failed to read server.properties: {}", .{err});
-        return "";
-    };
-    if (len == buf.len) log.warn("server.properties may exceed the backup config buffer", .{});
-    return buf[0..len];
-}
 
 fn file_exists(io: std.Io, dir: std.Io.Dir, path: []const u8) bool {
     const file = dir.openFile(io, path, .{}) catch return false;
@@ -120,25 +97,17 @@ fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratc
     return true;
 }
 
-pub fn pre_init_validate_and_restore(io: std.Io, data_dir: std.Io.Dir, alloc: std.mem.Allocator) void {
+pub fn pre_init_validate_and_restore(
+    io: std.Io,
+    data_dir: std.Io.Dir,
+    alloc: std.mem.Allocator,
+    save_location: []const u8,
+) void {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
     const scratch = arena.allocator();
 
-    var props_buf: [max_config_len]u8 = undefined;
-    const props = read_properties(io, data_dir, &props_buf);
-
-    var raw_buf: [max_name_len]u8 = undefined;
-    const raw = scheme.parse_save_location(
-        props,
-        core.Server.default_save_location,
-        core.Server.root_default_save_file_name,
-        &raw_buf,
-    );
-
-    var parent_buf: [max_name_len]u8 = undefined;
-    var file_buf: [max_name_len]u8 = undefined;
-    const loc = scheme.split_save_location(raw, &parent_buf, &file_buf) orelse return;
+    const loc = scheme.split_save_location(save_location) orelse return;
 
     const save_dir = resolve_parent_dir(io, data_dir, loc.parent) orelse return;
     defer if (save_dir.owned) save_dir.dir.close(io);
@@ -293,7 +262,7 @@ fn prune_bucket(io: std.Io, dir: std.Io.Dir, keep: usize) void {
 
 const Backup = @This();
 
-config: Config,
+autosave_seconds: u32,
 save_dir: std.Io.Dir,
 save_file_name: [max_name_len]u8,
 save_file_name_len: u16,
@@ -301,9 +270,9 @@ ext: [8]u8,
 ext_len: u8,
 last_save_ms: u64,
 
-pub fn init(io: std.Io, data_dir: std.Io.Dir) Backup {
+pub fn init(io: std.Io, autosave_seconds: u32) Backup {
     var self: Backup = .{
-        .config = Config.load(io, data_dir),
+        .autosave_seconds = autosave_seconds,
         .save_dir = core.World.saver.save_dir,
         .save_file_name = @splat(0),
         .save_file_name_len = 0,
@@ -331,7 +300,7 @@ pub fn init(io: std.Io, data_dir: std.Io.Dir) Backup {
     self.prepare_buckets(io);
     self.catch_up_snapshot(io);
     log.info("Backups active: autosave every {d}s into '{s}/', {d} epoch buckets", .{
-        self.config.autosave_seconds, backup_root, epochs.len,
+        self.autosave_seconds, backup_root, epochs.len,
     });
     return self;
 }
@@ -372,10 +341,9 @@ fn tick_once(self: *Backup, io: std.Io) void {
     if (self.save_file_name_len == 0) return;
 
     const now_ms = current_unix_ms(io);
-    if (now_ms < self.last_save_ms) self.last_save_ms = now_ms; // clock stepped back
-    if (now_ms - self.last_save_ms < @as(u64, self.config.autosave_seconds) * std.time.ms_per_s) return;
+    if (now_ms < self.last_save_ms) self.last_save_ms = now_ms;
+    if (now_ms - self.last_save_ms < @as(u64, self.autosave_seconds) * std.time.ms_per_s) return;
 
-    // Never fight an in-flight save (initial generation, world dump).
     if (core.World.saver.save_in_progress()) return;
 
     core.World.save();

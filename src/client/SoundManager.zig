@@ -1,7 +1,5 @@
-/// Streams all audio directly from pack.zip. STORE entries (the default
-/// for .wav files in the standard pack) are read straight from disk by
-/// the audio callback with no intermediate buffers. Two shared DEFLATE
-/// stream slots exist for backwards compatibility with compressed packs.
+/// Streams audio from the active pack, with two shared DEFLATE slots for
+/// compatibility with compressed audio entries.
 const SoundManager = @This();
 
 const std = @import("std");
@@ -11,7 +9,6 @@ const Math = ae.Math;
 const blocks = @import("core").blocks;
 const Block = blocks.Block;
 const Options = @import("Options.zig");
-const ResourcePack = @import("ResourcePack.zig");
 const Zip = @import("util/Zip.zig");
 
 const flate = std.compress.flate;
@@ -25,10 +22,6 @@ pub const Material = blocks.Material;
 const material_count = @typeInfo(Material).@"enum".fields.len;
 const max_variants = 4;
 const music_count: u8 = 7;
-
-pub fn block_material(id: Block) Material {
-    return id.material();
-}
 
 const SoundEntry = struct {
     data_offset: u64 = 0,
@@ -85,10 +78,6 @@ fn init_voices() [max_voices]Voice {
 
 var voices: [max_voices]Voice = init_voices();
 
-// Only two exist -- enough for the rare case where a custom resource pack
-// ships compressed audio.  A voice that needs DEFLATE grabs a slot; the
-// decompressor reads from the voice's own file_reader.
-
 const DeflateSlot = struct {
     flate_buf: [flate.max_window_len]u8,
     decompressor: flate.Decompress,
@@ -114,7 +103,6 @@ var stored_file: File = undefined;
 var stored_io: Io = undefined;
 var initialised: bool = false;
 
-// Music state machine
 const MusicState = enum { idle, playing, delay };
 var music_state: MusicState = .idle;
 var music_delay_timer: f32 = 0;
@@ -158,10 +146,7 @@ const music_paths: [music_count][]const u8 = .{
 
 /// Opens a second handle to the pack archive so music / sfx can stream
 /// PCM data without seek contention with texture reads.
-pub fn init() void {
-    const pack = ResourcePack.get_pack();
-    const dir = ResourcePack.get_dir();
-    const path = ResourcePack.get_pack_path();
+pub fn init(pack: *Zip, dir: Io.Dir, path: []const u8) void {
     stored_io = pack.io;
     stored_file = dir.openFile(stored_io, path, .{}) catch |err| {
         log.warn("cannot open '{s}' for audio: {}", .{ path, err });
@@ -246,10 +231,7 @@ fn scan_music(pack: *Zip) void {
     }
 }
 
-/// Open a WAV from the zip, parse its header, and record where the
-/// entry's data lives in the archive. Both STORE and DEFLATE entries
-/// are supported: the Zip stream reader decompresses transparently, so
-/// the WAV header parse works regardless of compression method.
+/// Resolve both stored and deflated WAV entries to their PCM payload.
 fn resolve_wav(pack: *Zip, path: []const u8) !SoundEntry {
     var stream = try pack.open(path);
     defer pack.close_stream(&stream);
@@ -337,9 +319,7 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
         Math.Vec3.new(0, 1, 0),
     );
 
-    // Reap finished SFX voices.
-    // When sound is muted, actively stop any voices that are still streaming
-    // so we don't burn I/O and CPU on audio no one can hear.
+    // Muting stops active streams rather than continuing background I/O.
     for (voices[0..music_slot]) |*v| {
         if (!v.active) continue;
         if (Options.current.sound_volume == 0.0) {
@@ -353,12 +333,9 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
         }
     }
 
-    // Music state machine
     switch (music_state) {
         .playing => {
             if (Options.current.music_volume == 0.0) {
-                // Muted while playing: stop the stream and park in delay so
-                // music resumes automatically once volume is restored.
                 release_voice(&voices[music_slot]);
                 music_state = .delay;
                 music_delay_timer = 1.0;
@@ -381,8 +358,6 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
                 if (Options.current.music_volume > 0.0) {
                     advance_and_play_music();
                 } else {
-                    // Still muted: poll again in 1 s so music starts quickly
-                    // when volume is later restored.
                     music_delay_timer = 1.0;
                 }
             }
@@ -392,7 +367,6 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
 }
 
 fn advance_and_play_music() void {
-    // Pick a different track than the one that just played
     if (music_count > 1) {
         music_index = @intCast((@as(u32, music_index) + 1 + rand_u32(music_count - 1)) % music_count);
     }
@@ -425,7 +399,7 @@ pub fn play_step(block: Block) void {
     if (!initialised) return;
     if (Options.current.sound_volume == 0.0) return;
     if (!block.has_step_sound()) return;
-    var mat = @intFromEnum(block_material(block));
+    var mat = @intFromEnum(block.material());
     var count = step_counts[mat];
     if (count == 0) {
         mat = @intFromEnum(Material.stone);
@@ -452,7 +426,7 @@ fn play_material_sound(
 ) void {
     if (!initialised) return;
     if (Options.current.sound_volume == 0.0) return;
-    const mat = @intFromEnum(block_material(block));
+    const mat = @intFromEnum(block.material());
     const count = counts[mat];
     if (count == 0) return;
     const entry = entries[mat][rand_u32(count)];

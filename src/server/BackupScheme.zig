@@ -2,32 +2,6 @@ const std = @import("std");
 
 const log = std.log.scoped(.backup);
 
-pub const autosave_default_seconds: u32 = 300;
-pub const autosave_min_seconds: u32 = 60;
-pub const autosave_max_seconds: u32 = 900;
-
-pub fn parse_autosave_seconds(content: []const u8) u32 {
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        const key = "backup-autosave-seconds:";
-        if (!std.mem.startsWith(u8, line, key)) continue;
-        const value = std.mem.trim(u8, line[key.len..], " \t");
-        const parsed = std.fmt.parseInt(u32, value, 10) catch {
-            log.warn("backup-autosave-seconds value '{s}' is not a number; using default", .{value});
-            return autosave_default_seconds;
-        };
-        const clamped = std.math.clamp(parsed, autosave_min_seconds, autosave_max_seconds);
-        if (clamped != parsed) {
-            log.info("backup-autosave-seconds {d} clamped to {d} (allowed {d}-{d})", .{
-                parsed, clamped, autosave_min_seconds, autosave_max_seconds,
-            });
-        }
-        return clamped;
-    }
-    return autosave_default_seconds;
-}
-
 pub const Epoch = struct {
     name: []const u8,
     interval_s: u32,
@@ -89,61 +63,14 @@ pub const SaveLocation = struct {
 
 const max_name_len: usize = 256;
 
-pub fn parse_save_location(
-    content: []const u8,
-    default_location: []const u8,
-    root_default_name: []const u8,
-    buf: *[max_name_len]u8,
-) []const u8 {
-    @memcpy(buf[0..default_location.len], default_location);
-    var result: []const u8 = buf[0..default_location.len];
-
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        const key = "save-location:";
-        if (!std.mem.startsWith(u8, line, key)) continue;
-        const value = std.mem.trim(u8, line[key.len..], " \t");
-        if (value.len == 0) {
-            log.warn("server.properties save-location is empty; using default", .{});
-        } else if (value.len > buf.len) {
-            log.warn("server.properties save-location too long; using default", .{});
-        } else {
-            @memcpy(buf[0..value.len], value);
-            result = buf[0..value.len];
-        }
-        break;
-    }
-
-    if (std.mem.eql(u8, result, root_default_name)) {
-        @memcpy(buf[0..default_location.len], default_location);
-        result = buf[0..default_location.len];
-    }
-    return result;
-}
-
-pub fn split_save_location(
-    raw: []const u8,
-    parent_buf: *[max_name_len]u8,
-    file_buf: *[max_name_len]u8,
-) ?SaveLocation {
+pub fn split_save_location(raw: []const u8) ?SaveLocation {
     const sep = std.mem.lastIndexOfScalar(u8, raw, '/');
     const parent_raw = if (sep) |i| raw[0..i] else "";
     const file_raw = if (sep) |i| raw[i + 1 ..] else raw;
 
-    if (file_raw.len == 0 or file_raw.len > file_buf.len) {
+    if (file_raw.len == 0 or file_raw.len > max_name_len) {
         log.warn("Save location '{s}' has an invalid file name", .{raw});
         return null;
     }
-    if (parent_raw.len > parent_buf.len) {
-        log.warn("Save location parent '{s}' is too long", .{parent_raw});
-        return null;
-    }
-
-    @memcpy(parent_buf[0..parent_raw.len], parent_raw);
-    @memcpy(file_buf[0..file_raw.len], file_raw);
-    return .{
-        .parent = parent_buf[0..parent_raw.len],
-        .file_name = file_buf[0..file_raw.len],
-    };
+    return .{ .parent = parent_raw, .file_name = file_raw };
 }

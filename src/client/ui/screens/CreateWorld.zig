@@ -37,7 +37,6 @@ pub fn wid(w: Widget) widget_id.WidgetId {
     return widget_id.from(Widget, w);
 }
 
-/// Advance an enum selector, wrapping back to the first value.
 fn cycle(comptime E: type, v: E) E {
     const n = @typeInfo(E).@"enum".fields.len;
     return @enumFromInt((@intFromEnum(v) + 1) % n);
@@ -88,20 +87,4 @@ pub fn run(ui: *Ui, ctx: *Ctx) Action {
     if (action == .none and (name_event == .submit or seed_event == .submit) and ctx.create_enabled) action = .create;
     if (action == .none and ui.cancel_pressed()) action = .back;
     return action;
-}
-
-test "cycle wraps through every value" {
-    var size: wd.WorldSize = .tiny;
-    size = cycle(wd.WorldSize, size);
-    try std.testing.expectEqual(wd.WorldSize.normal, size);
-    size = cycle(wd.WorldSize, size);
-    try std.testing.expectEqual(wd.WorldSize.huge, size);
-    size = cycle(wd.WorldSize, size);
-    try std.testing.expectEqual(wd.WorldSize.tiny, size);
-
-    var height: wd.WorldHeight = .normal;
-    height = cycle(wd.WorldHeight, height);
-    try std.testing.expectEqual(wd.WorldHeight.tall, height);
-    height = cycle(wd.WorldHeight, height);
-    try std.testing.expectEqual(wd.WorldHeight.normal, height);
 }

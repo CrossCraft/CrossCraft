@@ -156,9 +156,6 @@ pub fn build(b: *std.Build) void {
     client_root.addImport("core", core);
     client_root.addImport("protocol", protocol);
 
-    // Embed pack.zip directly in the binary on Linux/Windows release builds.
-    // CI and dev builds use -Duse-cwd=true which skips embedding, keeping
-    // artifacts small (pack.zip can be 90+ MB).
     if (should_embed) {
         client_root.addAnonymousImport("default_pack", .{
             .root_source_file = pack_zip_path.?,
@@ -345,7 +342,9 @@ pub fn build(b: *std.Build) void {
         unit_tests.use_llvm = true;
         unit_tests.use_lld = true;
     }
-    test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    test_step.dependOn(&run_unit_tests.step);
+    b.step("test-hosts", "Run client and server host tests").dependOn(&run_unit_tests.step);
 
     const core_tests = b.addTest(.{
         .root_module = core_tests_root: {
@@ -364,7 +363,9 @@ pub fn build(b: *std.Build) void {
         core_tests.use_llvm = true;
         core_tests.use_lld = true;
     }
-    test_step.dependOn(&b.addRunArtifact(core_tests).step);
+    const run_core_tests = b.addRunArtifact(core_tests);
+    test_step.dependOn(&run_core_tests.step);
+    b.step("test-core", "Run core tests").dependOn(&run_core_tests.step);
 
     const worldgen_tests = b.addTest(.{
         .name = "worldgen_tests",
@@ -375,9 +376,11 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = test_filters,
     });
-    test_step.dependOn(&b.addRunArtifact(worldgen_tests).step);
+    const run_worldgen_tests = b.addRunArtifact(worldgen_tests);
+    test_step.dependOn(&run_worldgen_tests.step);
+    b.step("test-worldgen", "Run world generation unit tests").dependOn(&run_worldgen_tests.step);
 
-    const savetool_step = b.step("savetool", "Build the save conversion/editing tool");
+    const savetool_step = b.step("savetool", "Build the save conversion tool");
     const savetool_exe = b.addExecutable(.{
         .name = "savetool",
         .root_module = b.createModule(.{

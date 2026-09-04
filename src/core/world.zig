@@ -1,16 +1,6 @@
-// Process-wide world state.
-//
-// CrossCraft has exactly one world per process: the standalone server,
-// the embedded singleplayer server, and the multiplayer client all
-// share these slots. Singleplayer flows go through `init` (allocate ->
-// load or generate -> finalize). The multiplayer client uses
-// `init_empty` -> network fill -> `finalize_loaded` over the same
-// vars.
-//
-// The substructs (data, sim, saver) are split into separate files for
-// readability, but exposed at module scope rather than wrapped in an
-// aggregate struct -- callers write `world.data.get_block(x,y,z)` or pass a
-// block-change sink to `world.tick()` directly.
+// Process-wide state shared by standalone, embedded, and multiplayer worlds.
+// Local worlds use `init`; network clients populate `data` after `init_empty`.
+// Both paths finish through `finalize_loaded`.
 
 const std = @import("std");
 const worldgen = @import("worldgen");
@@ -21,8 +11,9 @@ pub const WorldData = @import("world/WorldData.zig");
 pub const WorldDims = wd.WorldDims;
 pub const WorldSimulation = @import("world/WorldSimulation.zig");
 pub const WorldSaver = @import("world/WorldSaver.zig");
-pub const DumpName = @import("world/DumpName.zig");
-pub const CreateName = @import("world/CreateName.zig");
+const SaveName = @import("world/SaveName.zig");
+pub const DumpName = SaveName.Dump;
+pub const CreateName = SaveName.Create;
 const fmt_mod = @import("world/SaveFormat.zig");
 pub const SaveFormat = fmt_mod.SaveFormat;
 const BlockChangeSink = WorldSimulation.BlockChangeSink;
@@ -42,8 +33,7 @@ const load_status_complete: u16 = 1;
 const load_status_generating_base: u16 = 16;
 const load_status_downloading_base: u16 = 128;
 
-// Default format for both init paths. Standalone overrides via
-// server.properties; embedded singleplayer takes this value as-is.
+// Standalone configuration may override this format.
 pub const default_format: SaveFormat = .{ .classic_cw = .{} };
 
 pub var data: WorldData = undefined;
@@ -93,12 +83,7 @@ fn decode_load_status(encoded: u16) LoadStatus {
     return .loading;
 }
 
-/// Allocate scheduler + block storage without populating block data.
-/// Used both by the full singleplayer init (which then generates or
-/// loads and flips `saver.owned_locally` to true) and by the multiplayer
-/// client (which fills `data.blocks` via the level-data-chunk
-/// decompression path and leaves `owned_locally` false so save
-/// paths are suppressed).
+/// Allocate empty world state. Multiplayer callers leave saving disabled.
 pub fn init_empty(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -116,8 +101,7 @@ pub fn init_empty(
     set_load_status(.loading);
 }
 
-/// Singleplayer init: allocate, try to load, fall back to worldgen,
-/// finalize, save once on first generation.
+/// Load a local world or generate and save it when no valid save exists.
 pub fn init(
     allocator: std.mem.Allocator,
     scratch: std.mem.Allocator,
@@ -128,10 +112,7 @@ pub fn init(
     seed: u64,
     format: SaveFormat,
 ) !void {
-    // An existing save always boots at its own geometry: sniff the dims from
-    // its header before allocating block storage. The configured geometry
-    // (server.properties world-size/world-height, or the embedded default)
-    // applies to first generation only -- the same contract as `seed`.
+    // Saved geometry wins; configuration shapes only new worlds.
     const sniffed = SaveFormat.sniff_dims(io, save_dir, save_file_name, scratch);
     const load_geometry = sniffed orelse geometry;
     if (sniffed) |s| {
@@ -155,7 +136,6 @@ pub fn init(
         const start = std.Io.Clock.Timestamp.now(io, .boot);
 
         const visited_len = (data.dims.volume() / wd.chunk_size + 7) / 8;
-        const lookaside = try scratch.alloc(u8, wd.chunk_volume);
         const visited = try scratch.alloc(u8, visited_len);
         @memset(visited, 0);
 
@@ -166,7 +146,7 @@ pub fn init(
             @bitCast(data.seed),
             .{ .width = data.dims.length, .height = data.dims.height, .depth = data.dims.depth },
         );
-        WorldData.remap_yzx_to_chunk_aware(data.dims, generated.blocks, lookaside[0..wd.chunk_volume], visited);
+        WorldData.remap_yzx_to_chunk_aware(data.dims, generated.blocks, visited);
         data.adopt_blocks(generated.blocks);
 
         const end = std.Io.Clock.Timestamp.now(io, .boot);
@@ -175,11 +155,8 @@ pub fn init(
         data.stamp_creation_metadata(io);
         saver.save(&data);
     } else if (saver.needs_format_upgrade) {
-        // Loaded an older on-disk format; rewrite it now under the
-        // configured save format so subsequent boots take the fast path.
-        // The job sits on the compress_worker LIFO until the host
-        // (GameState / ServerState) spawns the worker thread shortly after
-        // Server.init returns -- do not wait here.
+        // Queue the format rewrite. The host starts the compression worker
+        // shortly after Server.init returns, so waiting here would deadlock.
         saver.save(&data);
     }
     finalize_loaded();
@@ -213,9 +190,7 @@ fn elapsed_ms_between(start: std.Io.Clock.Timestamp, end: std.Io.Clock.Timestamp
     return @divTrunc(elapsed_ns_i64, std.time.ns_per_ms);
 }
 
-/// Compute the sunlight height map and per-chunk counts, then mark the
-/// world fully loaded. Called by both the SP generate/load path and the
-/// MP download path once `data.blocks` is populated.
+/// Rebuild derived data after either local loading or network download.
 pub fn finalize_loaded() void {
     data.compute_chunk_counts();
     data.compute_light_map();

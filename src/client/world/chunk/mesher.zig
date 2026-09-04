@@ -11,7 +11,6 @@ const Face = face_mod.Face;
 const SECTION_H: u32 = core.world_dims.chunk_size;
 const Block = core.blocks.Block;
 
-/// Check sunlight at the neighbor block this face looks into.
 fn face_sunlit(wx: u16, y: u32, wz: u16, face: Face) bool {
     const nx: i32 = @as(i32, wx) + switch (face) {
         .x_pos => @as(i32, 1),
@@ -50,28 +49,22 @@ const Row = struct {
     cross: u32,
     leaf: u32,
     slab: u32,
-    /// Glass (and any other block that culls faces against a same-type
-    /// neighbor). Two adjacent glass blocks don't draw the shared face.
+    /// Blocks that cull shared faces against the same type.
     glass: u32,
-    /// Bits set where a leaf has all 6 neighbors covered (leaf-or-opaque).
-    /// Filled by `compute_solid_leaves` after `pack_row` runs.
+    /// Leaves covered by leaf-or-opaque blocks on all six sides.
     solid_leaf: u32,
 };
 
-/// 18 Y levels x 18 Z rows (section + borders).
-/// One section plus a one-block pad on each side, so greedy meshing can
-/// read the faces of its neighbours.
+/// One section plus a one-block neighbor border on every side.
 pub const BUF_Y: u32 = SECTION_H + 2;
 pub const BUF_Z: u32 = SECTION_H + 2;
 pub const SectionBuf = [BUF_Y][BUF_Z]Row;
 
 pub const SectionCounts = struct {
-    opaque_verts: u32, // solid blocks + fully-buried leaf faces
-    transparent_verts: u32, // outer leaves + glass/cross
-    fluid_verts: u32, // water/lava
+    opaque_verts: u32,
+    transparent_verts: u32,
+    fluid_verts: u32,
 };
-
-// --- Pack ---
 
 fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     const dims = World.data.dims;
@@ -92,9 +85,7 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     const wy: u16 = @intCast(y);
     const wz: u16 = @intCast(wz_raw);
 
-    // The 16 inner blocks (bits 1..16) share a chunk and are contiguous in
-    // the chunk-aware layout. Read them as a single slice to avoid 16
-    // individual block_index computations on the hot path.
+    // Inner bits share one contiguous chunk row, avoiding 16 index lookups.
     const chunk_row = World.data.get_chunk_row(@intCast(cx * SECTION_H), wy, wz);
 
     for (0..BUF_Z) |i| {
@@ -117,19 +108,9 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .glass = glass, .solid_leaf = 0 };
 }
 
-/// Flag leaves whose all 6 neighbors are leaf-or-opaque. Such leaves are
-/// treated like opaque for culling and are drawn on the opaque mesh - this
-/// hides the interior of a leaf cluster while still letting the outer layer
-/// render as a transparent shell with holes.
-///
-/// Buffer-edge cells (by/bz boundary) can't see 1-deep in every direction and
-/// conservatively fall back to "not solid". The natural 0-fill of the u32
-/// shifts handles the x-direction boundaries the same way.
-///
-/// In far LOD (`near_lod == false`), every leaf is unconditionally marked
-/// solid. The downstream face-mask logic then routes all leaf faces through
-/// the opaque mesh and culls neighbors against them, which is the cheap
-/// "fast leaves" rendering used for distant chunks.
+/// Interior leaves join the opaque mesh; the outer shell remains transparent.
+/// Border cells conservatively remain outer leaves. Far LOD treats every leaf
+/// as interior to provide the cheap opaque-leaf path.
 fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
     if (!near_lod) {
         for (0..BUF_Y) |by| {
@@ -177,12 +158,8 @@ fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
     }
 }
 
-/// Pack the SectionBuf and return the per-mesh vertex counts so the caller
-/// can pre-allocate exact capacity before emit_section runs. emit_section
-/// recomputes face masks per cell rather than caching them: FaceMasks is a
-/// stack temporary (no shared cache), and re-running the bit ops on an
-/// already-resident SectionBuf is cheaper than the alternative of carrying a
-/// large mask buffer across the count -> emit boundary.
+/// Return exact mesh capacities. Emission recomputes masks because retaining
+/// them across passes costs more memory than the repeated bit operations.
 pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf) SectionCounts {
     const all_opaque = World.data.is_chunk_all_opaque(cx, sy, cz);
     const base_y: i32 = @as(i32, @intCast(sy)) * SECTION_H - 1;
@@ -198,18 +175,15 @@ pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf)
                 pack_row(cx, wy, wz_raw);
         }
     }
-    // All-opaque chunks have no leaves; skip the solid-leaf pass.
     if (!all_opaque) compute_solid_leaves(buf, near_lod);
 
     return count_section(buf);
 }
 
-/// Fast path for inner rows of all-opaque chunks. The 16 inner blocks are
-/// known to be opaque+visible with no other flags, so we only need to
-/// classify the 2 boundary blocks from neighboring chunks.
+/// All-opaque inner rows require classification only at their two borders.
 fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     const dims = World.data.dims;
-    var opq: u32 = SECTION_MASK; // bits 1..16
+    var opq: u32 = SECTION_MASK;
     var vis: u32 = SECTION_MASK;
     var flu: u32 = 0;
     var cross: u32 = 0;
@@ -219,7 +193,6 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     const wy: u16 = @intCast(y);
     const wz: u16 = @intCast(wz_raw);
 
-    // Left boundary (bit 0)
     const left_x: i32 = @as(i32, @intCast(cx)) * SECTION_H - 1;
     if (left_x < 0) {
         opq |= 1;
@@ -227,7 +200,6 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
         classify_block(World.get_block(@intCast(left_x), wy, wz), 0, &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
     }
 
-    // Right boundary (bit 17)
     const right_x: u32 = (cx + 1) * SECTION_H;
     if (right_x >= dims.length) {
         opq |= @as(u32, 1) << 17;
@@ -250,32 +222,21 @@ inline fn classify_block(block: Block, bit_pos: u5, opq: *u32, vis: *u32, flu: *
     if (p.glass) glass_.* |= bit;
 }
 
-// --- Count ---
-
 fn pop(v: u32) u32 {
     return @as(u32, @popCount(v));
 }
 
-/// Computed face masks for a single row, shared by counting and emission.
-///
-/// Bitmasks here are consumed by emit_section to walk each face's bits. Counts
-/// (the *_count fields) are precomputed inside compute_face_masks because their
-/// only consumer is counts_from_masks, and storing scalars costs less than
-/// keeping six u32 bitmasks alive just to popcount them later. Each directional
-/// mask has at most 16 bits set, so per-row sums fit comfortably in u8.
+/// Row masks shared by counting and emission; scalar counts avoid retaining
+/// another six masks solely for later popcounts.
 const FaceMasks = struct {
-    // Faces routed via emit_mask (registry picks opaque vs transparent mesh).
-    // Includes opaque blocks, outer leaves, glass, and fluids - the fluid bits
-    // are merged in here so emit_section can iterate one mask per direction.
+    // General faces; block properties select the destination mesh.
     x_pos: u32,
     x_neg: u32,
     y_pos: u32,
     y_neg: u32,
     z_pos: u32,
     z_neg: u32,
-    // Solid-leaf faces - always emitted to the opaque mesh. Only nonzero where
-    // the neighbor in that direction is an outer leaf (everywhere else the
-    // neighbor is opaque-or-solid-leaf and the face is culled by construction).
+    // Solid-leaf faces visible through a neighboring outer leaf.
     sl_xp: u32,
     sl_xn: u32,
     sl_yp: u32,
@@ -283,35 +244,23 @@ const FaceMasks = struct {
     sl_zp: u32,
     sl_zn: u32,
     cross: u32,
-    // Transparent blocks with fluid neighbors - emit water overlay on fluid mesh.
+    // Fluid overlays on transparent-block boundaries.
     tfl_xp: u32,
     tfl_xn: u32,
     tfl_yp: u32,
     tfl_yn: u32,
     tfl_zp: u32,
     tfl_zn: u32,
-    // --- Precomputed counts (consumed by counts_from_masks only) ---
-    // Total opaque-routed faces: sum over directions of pop((opq | slab) & dir).
-    // Slab bits aren't in `opq` (slabs route to opaque despite not being a cull
-    // barrier), so they're folded in at compute time rather than carried out.
+    // Slabs route to opaque without acting as cull barriers.
     opq_count: u8,
-    // Total fluid faces across all 6 directions. Fluid bits are already merged
-    // into x_pos/y_pos/z_pos for emit; this count exists purely so the counter
-    // pass can subtract it from the all-faces total to get transparent verts.
     flu_count: u8,
-    // Fluid top-plane faces (y_pos). Used to size the inset-top extra verts.
     flu_yp_count: u8,
 };
 
 fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const cur = buf[by][bz];
 
-    // Empty-row early-out: with no visible blocks and no cross blocks in this
-    // row, no face can originate here. vis covers fluids and (solid_)leaf, but
-    // cross blocks (saplings, flowers, mushrooms) are flagged visible=false in
-    // blocks.zig, so they must be checked separately or they vanish from
-    // the mesh in otherwise-empty rows. Common in sections above the surface
-    // where most cells are pure air.
+    // Cross-plants are not in vis, so they require a separate empty-row check.
     if (cur.vis == 0 and cur.cross == 0) return std.mem.zeroes(FaceMasks);
 
     const opq = cur.opq;
@@ -320,9 +269,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const slab = cur.slab;
     const sleaf = cur.solid_leaf;
 
-    // "Effective opaque" = real opaque + solid leaves. Anything in eff acts as
-    // an opaque barrier for face culling - so a dirt block adjacent to a
-    // solid-leaf does not draw its face, just like dirt-against-dirt.
+    // Interior leaves participate in opaque face culling.
     const n_zp = &buf[by][bz + 1];
     const n_zn = &buf[by][bz - 1];
     const n_yp = &buf[by + 1][bz];
@@ -333,13 +280,8 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const eff_yp = n_yp.opq | n_yp.solid_leaf;
     const eff_yn = n_yn.opq | n_yn.solid_leaf;
 
-    // Buried-row early-out: cur is fully effective-opaque at all 18 bits
-    // (16 inner + 2 X-direction chunk boundaries) and all 4 z/y neighbors are
-    // fully effective-opaque on SECTION_MASK, so every face is culled and
-    // every sl_*/flu_*/tfl_* mask reduces to zero. Slab/cross/fluid blocks
-    // contribute 0 to opq and never to sleaf, so eff_cur == 0x3FFFF implies
-    // they're absent in cur -- no separate slab/cross/fluid check needed.
-    // Wins on dense underground bands where most cells are buried stone.
+    // A fully opaque 18-bit row surrounded on Y/Z has no emitting masks.
+    // Slabs, cross-plants, and fluids never contribute to eff_cur.
     const ALL_18: u32 = (1 << 18) - 1;
     if (eff_cur == ALL_18 and
         (eff_zp & SECTION_MASK) == SECTION_MASK and
@@ -350,13 +292,9 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
         return std.mem.zeroes(FaceMasks);
     }
 
-    // Standard visible blocks: opaque + outer leaves + glass. Fluids and solid
-    // leaves are emitted through their own paths and excluded here.
     const std_vis = (vis & ~flu) & ~sleaf;
 
-    // Glass-against-glass: cull the shared face on both sides. A bit is set
-    // here only when the block at that bit is glass and its neighbor in that
-    // direction is also glass - used to mask out those faces below.
+    // Cull shared glass faces on both sides.
     const g = cur.glass;
     const g_xp = g & (g >> 1);
     const g_xn = g & (g << 1);
@@ -369,22 +307,17 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const x_neg = (std_vis & ~(eff_cur << 1) & ~g_xn) & SECTION_MASK;
     const z_pos = (std_vis & ~eff_zp & ~g_zp) & SECTION_MASK;
     const z_neg = (std_vis & ~eff_zn & ~g_zn) & SECTION_MASK;
-    // Slab top sits at y+0.5 with a half-block air gap below the next block,
-    // so it can never be occluded by its y+1 neighbor - force-emit unconditionally.
+    // The inset slab top cannot touch its upper neighbor and is always visible.
     const y_pos = ((std_vis & ~eff_yp & ~g_yp) | slab) & SECTION_MASK;
     const y_neg = (std_vis & ~eff_yn & ~g_yn) & SECTION_MASK;
 
-    // Fluid faces: cull against eff (so fluid against solid-leaf is culled)
-    // and against same-fluid neighbors (water-against-water looks like bulk).
+    // Cull fluids against effective opacity and the same fluid.
     const flu_xp = (flu & ~(eff_cur >> 1) & ~(flu >> 1)) & SECTION_MASK;
     const flu_xn = (flu & ~(eff_cur << 1) & ~(flu << 1)) & SECTION_MASK;
     const flu_zp = (flu & ~eff_zp & ~n_zp.flu) & SECTION_MASK;
     const flu_zn = (flu & ~eff_zn & ~n_zn.flu) & SECTION_MASK;
-    // Water/lava tops are inset (~0.9 blocks). Naked tops (block above is
-    // not fluid and not opaque) always emit. Tops with opaque above only
-    // emit when adjacent (within 1 block horizontally) to a naked top, to
-    // form a one-plane border that hides the inset seam. Deep-covered
-    // interior culls -- huge win in water/lava-filled caves.
+    // Inset fluid tops emit when exposed. Covered tops retain a one-block
+    // border beside exposed fluid to hide the height seam.
     const n_yp_zp = &buf[by + 1][bz + 1];
     const n_yp_zn = &buf[by + 1][bz - 1];
     const eff_yp_zp = n_yp_zp.opq | n_yp_zp.solid_leaf;
@@ -398,10 +331,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const flu_yp_bits = (flu & ~n_yp.flu & (~eff_yp | naked_border)) & SECTION_MASK;
     const flu_yn = (flu & ~eff_yn & ~n_yn.flu) & SECTION_MASK;
 
-    // Solid-leaf faces. By construction, all 6 neighbors of a solid leaf are
-    // leaf-or-opaque, so a face is only emitted where the neighbor is an
-    // outer leaf (not in eff). That's exactly the boundary you'd see through
-    // the transparent outer leaf - drawn here on the opaque mesh.
+    // Only faces adjoining the transparent outer shell expose solid leaves.
     const sl_xp = (sleaf & ~(eff_cur >> 1)) & SECTION_MASK;
     const sl_xn = (sleaf & ~(eff_cur << 1)) & SECTION_MASK;
     const sl_zp = (sleaf & ~eff_zp) & SECTION_MASK;
@@ -409,9 +339,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const sl_yp = (sleaf & ~eff_yp) & SECTION_MASK;
     const sl_yn = (sleaf & ~eff_yn) & SECTION_MASK;
 
-    // Transparent blocks (including slabs) with fluid neighbors. Emit a
-    // water-textured overlay on the fluid mesh so the water surface is
-    // visible from the fluid side.
+    // Transparent boundaries receive a fluid-side overlay.
     const trans = std_vis & ~opq;
     const tfl_xp = (trans & (flu >> 1)) & SECTION_MASK;
     const tfl_xn = (trans & (flu << 1)) & SECTION_MASK;
@@ -420,9 +348,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const tfl_yp = (trans & n_yp.flu) & SECTION_MASK;
     const tfl_yn = (trans & n_yn.flu) & SECTION_MASK;
 
-    // Merge fluid bits into the per-direction masks so emit_section walks one
-    // mask per face. The standalone fluid bitmasks aren't carried out -- only
-    // their popcounts (folded into the count fields below) are needed later.
+    // Merge fluid bits so emission walks one mask per direction.
     const xp_all = x_pos | flu_xp;
     const xn_all = x_neg | flu_xn;
     const yp_all = y_pos | flu_yp_bits;
@@ -430,8 +356,6 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const zp_all = z_pos | flu_zp;
     const zn_all = z_neg | flu_zn;
 
-    // Slab routes to the opaque mesh even though slab bits aren't in `opq`
-    // (which is the cull mask). Fold them in for opaque vertex-count routing.
     const routed_opq = opq | slab;
     const opq_count: u8 = @intCast(pop(routed_opq & xp_all) + pop(routed_opq & xn_all) +
         pop(routed_opq & zp_all) + pop(routed_opq & zn_all) +
@@ -467,8 +391,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     };
 }
 
-/// Derive vertex counts for a single row from its precomputed face masks.
-/// Used by emit_section to size ArrayList capacity per row before appending.
+/// Convert one row's masks to per-mesh vertex counts.
 fn counts_from_masks(f: FaceMasks) SectionCounts {
     const sl_count = pop(f.sl_xp) + pop(f.sl_xn) + pop(f.sl_zp) + pop(f.sl_zn) + pop(f.sl_yp) + pop(f.sl_yn);
     const all_count = pop(f.x_pos) + pop(f.x_neg) +
@@ -489,9 +412,7 @@ fn counts_from_masks(f: FaceMasks) SectionCounts {
     };
 }
 
-/// Standalone counting pass. Retained for parity tests; emit_section now
-/// derives counts in-line from the same FaceMasks it consumes, so rebuild()
-/// no longer calls this on the hot path.
+/// Count the vertices required by `emit_section`.
 pub fn count_section(buf: *const SectionBuf) SectionCounts {
     var total: SectionCounts = .{ .opaque_verts = 0, .transparent_verts = 0, .fluid_verts = 0 };
     for (1..BUF_Y - 1) |by| {
@@ -506,8 +427,6 @@ pub fn count_section(buf: *const SectionBuf) SectionCounts {
     return total;
 }
 
-// --- Emit ---
-
 fn assert_has_room(mesh: *const BatchMesh, quad_count: u32) void {
     const quads: usize = quad_count;
     if (Rendering.mesh.indexing_enabled) {
@@ -518,11 +437,8 @@ fn assert_has_room(mesh: *const BatchMesh, quad_count: u32) void {
     }
 }
 
-// --- Ambient Occlusion ---
-// Per-vertex AO: sample 3 neighbors in the face's neighbor plane (two tangent
-// edges + the diagonal), classify to a 4-level brightness ramp, and modulate
-// the base directional face tint. Opaque-eff = opq | solid_leaf so solid-leaf
-// clusters cast AO just like real opaque blocks (matches the cull logic).
+// AO samples two tangent neighbors and their diagonal. Interior leaves cast AO
+// because they participate in the effective-opaque mask.
 
 const AO_MUL: [4]u8 = .{ 128, 170, 212, 255 };
 
@@ -656,9 +572,7 @@ fn emit_mask(
             assert_has_room(mesh, 2);
             face_mod.emit_fluid_top(mesh, lx, local_y, lz, tile, atlas, shadowed);
         } else if (is_fluid and face != .y_neg) {
-            // Horizontal side of a fluid: match the top plane's inset height
-            // when this block's top is exposed, else span the full block so
-            // stacked fluid columns look continuous.
+            // Exposed fluid sides meet the inset top; stacked sides remain full-height.
             assert_has_room(mesh, 1);
             const above_is_fluid = ((buf[by + 1][bz].flu >> bit_pos) & 1) != 0;
             face_mod.emit_fluid_side_face(mesh, face, lx, local_y, lz, tile, atlas, shadowed, above_is_fluid);
@@ -676,7 +590,6 @@ fn emit_mask(
     }
 }
 
-/// Emit solid-leaf faces directly to the opaque mesh.
 fn emit_opaque_leaf_mask(
     mask: u32,
     y: u32,
@@ -740,9 +653,7 @@ fn emit_cross_mask(
     }
 }
 
-/// Emit fluid-overlay faces for transparent blocks adjacent to fluid.
-/// Looks up the neighbor fluid block's tile and emits an inset face on the
-/// fluid mesh so the water surface is visible from the fluid side.
+/// Neighbor texture lookup may cross a chunk boundary.
 fn emit_fluid_overlay_mask(
     mask: u32,
     y: u32,
@@ -778,7 +689,6 @@ fn emit_fluid_overlay_mask(
         const lx: u32 = @as(u32, bit_pos) - 1;
         const wx: u16 = @intCast(cx * SECTION_H + lx);
         const wz: u16 = @intCast(cz * SECTION_H + lz);
-        // Look up the neighboring fluid block's texture.
         const nx: u16 = @intCast(@as(i32, wx) + dx);
         const ny: u16 = @intCast(@as(i32, @intCast(y)) + dy);
         const nz: u16 = @intCast(@as(i32, wz) + dz);
@@ -789,10 +699,8 @@ fn emit_fluid_overlay_mask(
     }
 }
 
-/// Walks the SectionBuf and emits faces. Caller pre-allocates the three
-/// meshes from the SectionCounts pack_section returned, so emit can use
-/// assume-capacity mesh helpers without any per-row growth checks. Recomputes face
-/// masks per cell (cheaper than caching them on PSP -- see pack_section).
+/// Meshes have the exact capacities returned by `pack_section`; masks are
+/// recomputed here to avoid a persistent cache on constrained platforms.
 pub fn emit_section(
     buf: *const SectionBuf,
     cx: u32,
@@ -810,7 +718,6 @@ pub fn emit_section(
             const bz: u32 = @as(u32, @intCast(lz)) + 1;
             const f = compute_face_masks(by, bz, buf);
 
-            // Skip rows that emit nothing. Avoids the chunk_row fetch.
             const any = f.x_pos | f.x_neg | f.y_pos | f.y_neg | f.z_pos | f.z_neg |
                 f.sl_xp | f.sl_xn | f.sl_yp | f.sl_yn | f.sl_zp | f.sl_zn |
                 f.cross |
@@ -819,8 +726,6 @@ pub fn emit_section(
 
             const chunk_row = World.data.get_chunk_row(@intCast(cx * SECTION_H), @intCast(world_y), @intCast(cz * SECTION_H + lz));
 
-            // Standard faces - emit_mask routes opaque blocks to the opaque
-            // mesh and outer leaves / glass / fluids to the transparent mesh.
             if (f.x_pos != 0) emit_mask(f.x_pos, world_y, @intCast(lz), cx, cz, .x_pos, m, atlas, chunk_row, buf, by, bz, ao);
             if (f.x_neg != 0) emit_mask(f.x_neg, world_y, @intCast(lz), cx, cz, .x_neg, m, atlas, chunk_row, buf, by, bz, ao);
             if (f.z_pos != 0) emit_mask(f.z_pos, world_y, @intCast(lz), cx, cz, .z_pos, m, atlas, chunk_row, buf, by, bz, ao);
@@ -828,7 +733,6 @@ pub fn emit_section(
             if (f.y_pos != 0) emit_mask(f.y_pos, world_y, @intCast(lz), cx, cz, .y_pos, m, atlas, chunk_row, buf, by, bz, ao);
             if (f.y_neg != 0) emit_mask(f.y_neg, world_y, @intCast(lz), cx, cz, .y_neg, m, atlas, chunk_row, buf, by, bz, ao);
 
-            // Emit solid-leaf faces -> opaque mesh
             if (f.sl_xp != 0) emit_opaque_leaf_mask(f.sl_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
             if (f.sl_xn != 0) emit_opaque_leaf_mask(f.sl_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
             if (f.sl_zp != 0) emit_opaque_leaf_mask(f.sl_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
@@ -838,9 +742,6 @@ pub fn emit_section(
 
             if (f.cross != 0) emit_cross_mask(f.cross, world_y, @intCast(lz), cx, cz, m.transparent, atlas, chunk_row);
 
-            // Emit fluid-overlay faces for transparent blocks with fluid neighbors.
-            // These look up neighbor blocks which may cross chunk boundaries,
-            // so they still use get_block internally.
             if (f.tfl_xp != 0) emit_fluid_overlay_mask(f.tfl_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.fluid, atlas);
             if (f.tfl_xn != 0) emit_fluid_overlay_mask(f.tfl_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.fluid, atlas);
             if (f.tfl_zp != 0) emit_fluid_overlay_mask(f.tfl_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.fluid, atlas);

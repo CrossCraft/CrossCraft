@@ -88,7 +88,6 @@ const DEFAULT_HOTBAR: [HOTBAR_SLOTS]Block = .{
     .slab,
 };
 
-// Classic gui.png layout.
 const HOTBAR_TEX_X: i16 = 0;
 const HOTBAR_TEX_Y: i16 = 0;
 const HOTBAR_W: i16 = 182;
@@ -339,7 +338,6 @@ pub fn set_fly(self: *Self, enabled: bool) void {
     }
 }
 
-/// Apply one frame of player movement.
 pub fn update(self: *Self, sys: *input.InputSystem, dt: f32) void {
     std.debug.assert(dt >= 0);
 
@@ -710,7 +708,7 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
         if (!World.data.get_block(pb.x, pb.y, pb.z).is_air()) {
             self.pending_block = null;
         } else {
-            const bh = collision.block_height(pb.block);
+            const bh = pb.block.collision_height();
             const block_top: f32 = @as(f32, @floatFromInt(pb.y)) + bh;
             const bx0: f32 = @floatFromInt(pb.x);
             const bz0: f32 = @floatFromInt(pb.z);
@@ -956,7 +954,6 @@ fn ray_sub_aabb_fp(
     var t_far: i32 = MAX;
     var face: Face = .y_pos;
 
-    // X slab
     if (dx != 0) {
         const t0 = fpDiv(x0 - ox, dx);
         const t1 = fpDiv(x1 - ox, dx);
@@ -971,7 +968,6 @@ fn ray_sub_aabb_fp(
         if (ox < x0 or ox >= x1) return null;
     }
 
-    // Y slab
     if (dy != 0) {
         const t0 = fpDiv(y0 - oy, dy);
         const t1 = fpDiv(y1 - oy, dy);
@@ -986,7 +982,6 @@ fn ray_sub_aabb_fp(
         if (oy < y0 or oy >= y1) return null;
     }
 
-    // Z slab
     if (dz != 0) {
         const t0 = fpDiv(z0 - oz, dz);
         const t1 = fpDiv(z1 - oz, dz);
@@ -1412,7 +1407,7 @@ fn do_place(self: *Self) void {
     const bx0: f32 = @floatFromInt(hit.place_x);
     const by0: f32 = @floatFromInt(hit.place_y);
     const bz0: f32 = @floatFromInt(hit.place_z);
-    const bh: f32 = if (target == .slab and promotes_to_double_slab) 1.0 else collision.block_height(block);
+    const bh: f32 = if (target == .slab and promotes_to_double_slab) 1.0 else block.collision_height();
     const overlaps = bh > 0 and
         self.pos_x + collision.HALF_W > bx0 and
         self.pos_x - collision.HALF_W < bx0 + 1.0 and
@@ -1424,7 +1419,7 @@ fn do_place(self: *Self) void {
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
     // Promoted slabs already have collision and may target a different cell.
-    if (collision.block_height(block) > 0 and !promotes_to_double_slab) {
+    if (block.collision_height() > 0 and !promotes_to_double_slab) {
         self.pending_block = .{
             .x = hit.place_x,
             .y = hit.place_y,

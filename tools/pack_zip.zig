@@ -1,17 +1,12 @@
-/// Build tool: packs a directory into a ZIP archive.
+/// Pack a directory into a ZIP archive.
 ///
 /// Usage: pack_zip <input_dir> <output_file>
 ///
-/// Walks the input directory recursively and writes all files into a
-/// ZIP archive. Audio files (.wav) are stored uncompressed so they can
-/// be streamed directly at runtime; all other files use DEFLATE
-/// compression. Paths inside the ZIP use forward slashes regardless of
-/// host OS.
+/// WAV files remain uncompressed for streaming; other files use DEFLATE.
+/// Archive paths use forward slashes on every host.
 const std = @import("std");
 const Io = std.Io;
 const Dir = Io.Dir;
-const File = Io.File;
-const Allocator = std.mem.Allocator;
 const Crc32 = std.hash.crc.Crc32IsoHdlc;
 const flate = std.compress.flate;
 
@@ -41,7 +36,6 @@ pub fn main(init: std.process.Init) !void {
     var input_dir = try Dir.openDirAbsolute(io, input_path, .{ .iterate = true });
     defer input_dir.close(io);
 
-    // Collect file paths
     var entries: std.ArrayList([]const u8) = .empty;
     defer {
         for (entries.items) |e| gpa.free(e);
@@ -54,19 +48,16 @@ pub fn main(init: std.process.Init) !void {
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         const path = try gpa.dupe(u8, entry.path);
-        // Normalize to forward slashes for ZIP compatibility
         std.mem.replaceScalar(u8, path, '\\', '/');
         try entries.append(gpa, path);
     }
 
-    // Sort for deterministic output
     std.mem.sort([]const u8, entries.items, {}, struct {
         fn order(_: void, a: []const u8, b: []const u8) bool {
             return std.mem.order(u8, a, b) == .lt;
         }
     }.order);
 
-    // Create output file
     const output_file = try Dir.createFileAbsolute(io, output_path, .{});
     defer output_file.close(io);
 
@@ -76,10 +67,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Phase 1: local file headers + data
     var cd_records: std.ArrayList(CdRecord) = .empty;
-    defer {
-        for (cd_records.items) |r| gpa.free(r.filename);
-        cd_records.deinit(gpa);
-    }
+    defer cd_records.deinit(gpa);
 
     const compress_window = try gpa.create([flate.max_window_len]u8);
     defer gpa.destroy(compress_window);
@@ -97,8 +85,6 @@ pub fn main(init: std.process.Init) !void {
         const name_len: u16 = @intCast(rel_path.len);
         const local_header_offset = offset;
 
-        // Audio (.wav) is stored uncompressed for direct streaming;
-        // everything else is DEFLATE-compressed.
         const is_store = std.mem.endsWith(u8, rel_path, ".wav");
         const compression_method: u16 = if (is_store) 0 else 8;
 
@@ -143,7 +129,7 @@ pub fn main(init: std.process.Init) !void {
             .compressed_size = compressed_size,
             .uncompressed_size = uncompressed_size,
             .compression_method = compression_method,
-            .filename = try gpa.dupe(u8, rel_path),
+            .filename = rel_path,
             .local_header_offset = local_header_offset,
         });
     }

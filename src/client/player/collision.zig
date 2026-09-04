@@ -1,26 +1,13 @@
-/// Player-facing collision facade. Delegates the swept-AABB core to
 const std = @import("std");
 const core = @import("core");
 const World = core.World;
 const physics = core.physics;
 const Block = core.blocks.Block;
 
-// --- Player dimensions ---
-
-pub const HALF_W: f32 = 0.3; // half-width on X and Z
-pub const HEIGHT: f32 = 1.8; // feet to top of head
-pub const EYE_HEIGHT: f32 = 1.59375; // 51/32, feet to camera
+pub const HALF_W: f32 = 0.3;
+pub const HEIGHT: f32 = 1.8;
+pub const EYE_HEIGHT: f32 = 1.59375;
 pub const STEP_HEIGHT: f32 = 0.5;
-
-/// Collision AABB top of a block, in world-space units. Retained for callers
-/// that reason about a single block's height (pending-block virtual-surface
-/// clamp, particle ground tests). Full collision uses the richer per-block
-/// AABB inside `core.physics`.
-pub fn block_height(id: Block) f32 {
-    return id.collision_height();
-}
-
-// --- Liquid detection ---
 
 pub const Liquid = enum { water, lava };
 
@@ -97,8 +84,6 @@ fn classify_liquid(block: Block) ?Liquid {
     };
 }
 
-// --- Core collision ---
-
 pub const MoveResult = physics.MoveResult;
 
 /// Resolve a proposed tick of player movement against the world. In-loop
@@ -146,14 +131,10 @@ pub fn try_step_up(
     return .{ .x = p[0], .y = p[1], .z = p[2] };
 }
 
-// --- Internal helpers ---
-
-/// True when a floored f32 can be losslessly cast to i32.
 fn safe_for_i32(v: f32) bool {
     return v >= -2147483648.0 and v <= 2147483647.0;
 }
 
-/// Convert a world coordinate to a block coordinate (handles negatives).
 fn world_coord(v: f32) i32 {
     const f = @floor(v);
     if (!safe_for_i32(f)) return if (f < 0.0) std.math.minInt(i32) else std.math.maxInt(i32);
