@@ -28,6 +28,20 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
 
+      - name: Cache Zig packages
+        id: zig-pkg-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          enableCrossOsArchive: true
+
+      # Keep this cache complete even when this shorter workflow wins the
+      # first-write race with the main CI workflow after a manifest change.
+      - name: Fetch Zig packages
+        if: steps.zig-pkg-cache.outputs.cache-hit != 'true'
+        run: zig build --fetch=all
+
       - name: Collect lint metrics
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
