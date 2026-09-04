@@ -182,7 +182,7 @@ fn maybe_spawn_splash(self: *Rain, camera: *const Camera) void {
 
     const surface: i32 = rain_surface_at(gx, gz);
     if (surface <= 0 or surface >= World.data.dims.height) return;
-    if (camera.y < @as(f32, @floatFromInt(surface))) return; // camera under a roof here
+    if (camera.y < @as(f32, @floatFromInt(surface))) return;
 
     self.splashes[self.splash_count] = .{
         .px = @as(f32, @floatFromInt(gx)) + rand.float(f32),
@@ -196,7 +196,7 @@ fn maybe_spawn_splash(self: *Rain, camera: *const Camera) void {
     self.splash_count += 1;
 }
 
-/// Draw the scrolling streak planes.  Caller must bind rain.png.
+/// Caller must bind rain.png.
 pub fn draw_streaks(self: *Rain, camera: *const Camera) void {
     if (!Options.current.rain) return;
     const cam_tile_x_i: i32 = @intFromFloat(@floor(camera.x));
@@ -224,7 +224,7 @@ pub fn draw_streaks(self: *Rain, camera: *const Camera) void {
     self.streak_mesh.draw(&m);
 }
 
-/// Build and draw impact splashes.  Caller must bind particles.png.
+/// Caller must bind particles.png.
 pub fn draw_splashes(self: *Rain) void {
     if (!Options.current.rain) return;
     if (self.splash_count == 0) return;
@@ -297,7 +297,7 @@ fn build_streaks(mesh: *Rendering.MeshDataType(Vertex), cam_tile_x: i32, cam_til
             if (gz < 0 or gz >= World.data.dims.depth) continue;
 
             const surface_i: i32 = rain_surface_at(gx, gz);
-            if (surface_i >= World.data.dims.height) continue; // sky-blocked to ceiling
+            if (surface_i >= World.data.dims.height) continue;
             const surface_f: f32 = @as(f32, @floatFromInt(surface_i));
             if (world_ceiling <= surface_f) continue;
 

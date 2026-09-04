@@ -30,65 +30,34 @@ const SoundEntry = struct {
     valid: bool = false,
 };
 
-fn init_entry_grid() [material_count][max_variants]SoundEntry {
-    var grid: [material_count][max_variants]SoundEntry = undefined;
-    for (&grid) |*row| for (row) |*cell| {
-        cell.* = .{};
-    };
-    return grid;
-}
-
-fn init_entry_row() [music_count]SoundEntry {
-    var row: [music_count]SoundEntry = undefined;
-    for (&row) |*cell| cell.* = .{};
-    return row;
-}
-
-var dig_entries: [material_count][max_variants]SoundEntry = init_entry_grid();
-var dig_counts: [material_count]u8 = .{ 0, 0, 0, 0, 0, 0, 0 };
-var step_entries: [material_count][max_variants]SoundEntry = init_entry_grid();
-var step_counts: [material_count]u8 = .{ 0, 0, 0, 0, 0, 0, 0 };
-var music_entries: [music_count]SoundEntry = init_entry_row();
+var dig_entries: [material_count][max_variants]SoundEntry = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
+var dig_counts: [material_count]u8 = .{0} ** material_count;
+var step_entries: [material_count][max_variants]SoundEntry = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
+var step_counts: [material_count]u8 = .{0} ** material_count;
+var music_entries: [music_count]SoundEntry = .{SoundEntry{}} ** music_count;
 
 const max_voices: u32 = if (ae.platform == .psp) 8 else 17;
-const music_slot: u32 = if (ae.platform == .psp) 7 else 16;
+const music_slot: u32 = max_voices - 1;
 
 const Voice = struct {
-    read_buf: [8192]u8,
-    file_reader: File.Reader,
-    limited: Io.Reader.Limited,
-    handle: Audio.SoundHandle,
-    stream: Audio.StreamingSoundHandle,
-    active: bool,
-    deflate: ?*DeflateSlot,
+    read_buf: [8192]u8 = undefined,
+    file_reader: File.Reader = undefined,
+    limited: Io.Reader.Limited = undefined,
+    handle: Audio.SoundHandle = .none,
+    stream: Audio.StreamingSoundHandle = .none,
+    active: bool = false,
+    deflate: ?*DeflateSlot = null,
 };
 
-fn init_voices() [max_voices]Voice {
-    var v: [max_voices]Voice = undefined;
-    for (&v) |*slot| {
-        slot.active = false;
-        slot.handle = .none;
-        slot.stream = .none;
-        slot.deflate = null;
-    }
-    return v;
-}
-
-var voices: [max_voices]Voice = init_voices();
+var voices: [max_voices]Voice = .{Voice{}} ** max_voices;
 
 const DeflateSlot = struct {
-    flate_buf: [flate.max_window_len]u8,
-    decompressor: flate.Decompress,
-    in_use: bool,
+    flate_buf: [flate.max_window_len]u8 = undefined,
+    decompressor: flate.Decompress = undefined,
+    in_use: bool = false,
 };
 
-fn init_deflate_slots() [2]DeflateSlot {
-    var s: [2]DeflateSlot = undefined;
-    for (&s) |*slot| slot.in_use = false;
-    return s;
-}
-
-var deflate_slots: [2]DeflateSlot = init_deflate_slots();
+var deflate_slots: [2]DeflateSlot = .{DeflateSlot{}} ** 2;
 
 fn find_free_deflate_slot() ?*DeflateSlot {
     for (&deflate_slots) |*s| {
@@ -189,11 +158,11 @@ pub fn deinit() void {
     voices = undefined;
     deflate_slots = undefined;
 
-    dig_entries = init_entry_grid();
-    dig_counts = .{ 0, 0, 0, 0, 0, 0, 0 };
-    step_entries = init_entry_grid();
-    step_counts = .{ 0, 0, 0, 0, 0, 0, 0 };
-    music_entries = init_entry_row();
+    dig_entries = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
+    dig_counts = .{0} ** material_count;
+    step_entries = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
+    step_counts = .{0} ** material_count;
+    music_entries = .{SoundEntry{}} ** music_count;
 }
 
 fn scan_entries(
@@ -389,10 +358,6 @@ fn music_volume() f32 {
     return 0.5 * Options.current.music_volume;
 }
 
-pub fn play_dig(block: Block, bx: u16, by: u16, bz: u16) void {
-    play_material_sound(&dig_entries, &dig_counts, block, bx, by, bz, 1.0);
-}
-
 pub fn play_step(block: Block) void {
     if (!initialised) return;
     if (Options.current.sound_volume == 0.0) return;
@@ -413,21 +378,13 @@ pub fn play_step(block: Block) void {
     }) catch return;
 }
 
-fn play_material_sound(
-    entries: *const [material_count][max_variants]SoundEntry,
-    counts: *const [material_count]u8,
-    block: Block,
-    bx: u16,
-    by: u16,
-    bz: u16,
-    volume: f32,
-) void {
+pub fn play_dig(block: Block, bx: u16, by: u16, bz: u16) void {
     if (!initialised) return;
     if (Options.current.sound_volume == 0.0) return;
     const mat = @intFromEnum(block.material());
-    const count = counts[mat];
+    const count = dig_counts[mat];
     if (count == 0) return;
-    const entry = entries[mat][rand_u32(count)];
+    const entry = dig_entries[mat][rand_u32(count)];
     if (!entry.valid) return;
     const pos = Math.Vec3.new(
         @as(f32, @floatFromInt(bx)) + 0.5,
@@ -436,7 +393,7 @@ fn play_material_sound(
     );
     const slot = find_free_sfx() orelse return;
     start_voice(slot, entry, pos, .{
-        .volume = volume * Options.current.sound_volume,
+        .volume = Options.current.sound_volume,
         .priority = .normal,
         .ref_distance = 1.0,
         .max_distance = 16.0,

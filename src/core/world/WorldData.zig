@@ -14,20 +14,14 @@ blocks: []Block,
 dims: WorldDims,
 seed: u64,
 tick_count: u64,
-/// World name as it appears in the ClassicWorld save. Padded with zeros
-/// past `name_len`. Defaults to `"world"`; persisted/loaded by classic_cw.
+/// ClassicWorld metadata; the name is zero-padded after `name_len`.
 name: [64]u8,
 name_len: u8,
-/// 16-byte stable identifier persisted in the ClassicWorld save. Random
-/// at first generation; round-tripped through load.
 uuid: [16]u8,
-/// Java unix milliseconds at world creation. 0 if unknown (legacy
-/// classic_dat saves don't carry it).
+/// Unix milliseconds, or zero for legacy saves without creation metadata.
 time_created: i64,
 /// For each (x,z) column, stores Y+1 of the highest light-blocking block.
-/// A value of 0 means the entire column is sunlit. Consumed by
-/// `is_sunlit` and tree/grass growth checks, so it describes a light
-/// occlusion map rather than a height/elevation map. `dims.length` long.
+/// Zero means the column is sunlit; X is the fast axis.
 light_map: []u8,
 /// Per-chunk non-air and non-opaque block counts, `dims.chunk_count()` long,
 /// indexed by `dims.chunk_index`.
@@ -71,7 +65,6 @@ pub fn init_in_place(self: *WorldData, allocator: std.mem.Allocator, geometry: W
     self.name_len = @intCast(default_name.len);
 }
 
-/// Set creation metadata for a newly generated world.
 pub fn stamp_creation_metadata(self: *WorldData, io: std.Io) void {
     const real_ns: i64 = @truncate(std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds);
     var rng = std.Random.DefaultPrng.init(@bitCast(real_ns));
@@ -82,10 +75,10 @@ pub fn stamp_creation_metadata(self: *WorldData, io: std.Io) void {
 
 pub fn deinit(self: *WorldData) void {
     const allocator = self.backing_allocator;
-    if (self.blocks.len > 0) allocator.free(self.blocks);
-    if (self.light_map.len > 0) allocator.free(self.light_map);
-    if (self.chunk_counts.len > 0) allocator.free(self.chunk_counts);
-    if (self.chunk_non_opaque.len > 0) allocator.free(self.chunk_non_opaque);
+    allocator.free(self.blocks);
+    allocator.free(self.light_map);
+    allocator.free(self.chunk_counts);
+    allocator.free(self.chunk_non_opaque);
     self.* = undefined;
 }
 
@@ -106,7 +99,6 @@ pub fn unlock_shared(self: *WorldData, io: std.Io) void {
 }
 
 pub fn release_blocks(self: *WorldData) void {
-    if (self.blocks.len == 0) return;
     self.backing_allocator.free(self.blocks);
     self.blocks = &.{};
 }
@@ -127,9 +119,7 @@ pub fn get_block(self: *const WorldData, x: u16, y: u16, z: u16) Block {
     return self.blocks[self.get_index(x, y, z)];
 }
 
-/// Pointer to chunk_size contiguous blocks at chunk-aligned x.
-/// In the chunk-aware layout, blocks at (x..x+15, y, z) are contiguous,
-/// so callers can avoid per-block index computation in tight loops.
+/// `x` must be chunk-aligned.
 pub fn get_chunk_row(self: *const WorldData, x: u16, y: u16, z: u16) *const [wd.chunk_size]Block {
     assert(x % wd.chunk_size == 0);
     const base = self.get_index(x, y, z);
@@ -144,18 +134,13 @@ pub fn is_chunk_all_opaque(self: *const WorldData, cx: u32, cy: u32, cz: u32) bo
     return self.chunk_non_opaque[self.dims.chunk_at(cx, cy, cz)] == 0;
 }
 
-fn chunk_idx(self: *const WorldData, x: u16, y: u16, z: u16) u32 {
-    return self.dims.chunk_index(x, y, z);
-}
-
-/// Pure data write. Maintains chunk count invariants and the light
-/// column. Does NOT touch the scheduler -- that's the simulation's job.
+/// Update block storage, chunk counts, and lighting without scheduling physics.
 pub fn apply_block(self: *WorldData, x: u16, y: u16, z: u16, block: Block) void {
     const idx = self.get_index(x, y, z);
     const old = self.blocks[idx];
     self.blocks[idx] = block;
 
-    const ci = self.chunk_idx(x, y, z);
+    const ci = self.dims.chunk_index(x, y, z);
     if (old.is_air() and !block.is_air()) {
         self.chunk_counts[ci] += 1;
     } else if (!old.is_air() and block.is_air()) {
@@ -169,10 +154,9 @@ pub fn apply_block(self: *WorldData, x: u16, y: u16, z: u16, block: Block) void 
         self.chunk_non_opaque[ci] -= 1;
     }
 
-    self.update_height_column(x, y, z, block);
+    self.update_light_column(x, y, z, block);
 }
 
-/// Rebuild counts later maintained by `apply_block`.
 pub fn compute_chunk_counts(self: *WorldData) void {
     for (0..self.chunk_counts.len) |ci| {
         const base = ci * wd.chunk_volume;
@@ -195,7 +179,6 @@ pub fn compute_light_map(self: *WorldData) void {
     }
 }
 
-/// Column-major into `light_map`; X is the fast axis, so a shift-and-or.
 fn column_index(self: *const WorldData, z: u16, x: u16) u32 {
     return (@as(u32, z) << self.dims.log2_length) | x;
 }
@@ -212,12 +195,10 @@ fn column_height(self: *const WorldData, x: u16, z: u16) u8 {
     return 0;
 }
 
-fn update_height_column(self: *WorldData, x: u16, y: u16, z: u16, block: Block) void {
+fn update_light_column(self: *WorldData, x: u16, y: u16, z: u16, block: Block) void {
     const col_idx = self.column_index(z, x);
     const cur = self.light_map[col_idx];
-    const is_blocker = blocks_light(block);
-
-    if (is_blocker) {
+    if (!block.light_passes()) {
         const new_h: u8 = @intCast(y + 1);
         if (new_h > cur) self.light_map[col_idx] = new_h;
     } else if (y + 1 >= cur) {
@@ -225,13 +206,8 @@ fn update_height_column(self: *WorldData, x: u16, y: u16, z: u16, block: Block) 
     }
 }
 
-/// O(1) sunlight query: true if no light-blocking block exists above (x,y,z).
 pub fn is_sunlit(self: *const WorldData, x: u16, y: u16, z: u16) bool {
     return y + 1 >= self.light_map[self.column_index(z, x)];
-}
-
-pub fn blocks_light(block: Block) bool {
-    return !block.light_passes();
 }
 
 pub fn find_spawn(self: *const WorldData, io: std.Io) [3]u16 {

@@ -33,11 +33,10 @@ const load_status_complete: u16 = 1;
 const load_status_generating_base: u16 = 16;
 const load_status_downloading_base: u16 = 128;
 
-// Standalone configuration may override this format.
 pub const default_format: SaveFormat = .{ .classic_cw = .{} };
 
 pub var data: WorldData = undefined;
-pub var sim: WorldSimulation = undefined;
+var sim: ?WorldSimulation = null;
 pub var saver: WorldSaver = undefined;
 var load_status_atomic: std.atomic.Value(u16) = .init(load_status_loading);
 
@@ -58,29 +57,23 @@ pub fn unlock_world_shared() void {
 }
 
 pub fn get_load_status() LoadStatus {
-    return decode_load_status(load_status_atomic.load(.acquire));
-}
-
-pub fn set_load_status(status: LoadStatus) void {
-    load_status_atomic.store(encode_load_status(status), .release);
-}
-
-fn encode_load_status(status: LoadStatus) u16 {
-    return switch (status) {
-        .loading => load_status_loading,
-        .complete => load_status_complete,
-        .generating => load_status_generating_base,
-        .downloading => |pct| load_status_downloading_base + @as(u16, pct),
-    };
-}
-
-fn decode_load_status(encoded: u16) LoadStatus {
+    const encoded = load_status_atomic.load(.acquire);
     if (encoded == load_status_complete) return .complete;
     if (encoded >= load_status_downloading_base) {
         return .{ .downloading = @intCast(@min(encoded - load_status_downloading_base, 100)) };
     }
     if (encoded >= load_status_generating_base) return .generating;
     return .loading;
+}
+
+pub fn set_load_status(status: LoadStatus) void {
+    const encoded: u16 = switch (status) {
+        .loading => load_status_loading,
+        .complete => load_status_complete,
+        .generating => load_status_generating_base,
+        .downloading => |pct| load_status_downloading_base + @as(u16, pct),
+    };
+    load_status_atomic.store(encoded, .release);
 }
 
 /// Allocate empty world state. Multiplayer callers leave saving disabled.
@@ -94,9 +87,6 @@ pub fn init_empty(
     format: SaveFormat,
 ) !void {
     try data.init_in_place(allocator, geometry, seed);
-    errdefer data.deinit();
-    sim = try WorldSimulation.init(allocator, seed);
-    errdefer sim.deinit(allocator);
     saver = WorldSaver.init(io, save_dir, save_file_name, format);
     set_load_status(.loading);
 }
@@ -126,6 +116,7 @@ pub fn init(
 
     try init_empty(allocator, io, save_dir, save_file_name, load_geometry, seed, format);
     errdefer deinit_components();
+    sim = try WorldSimulation.init(allocator, seed);
     saver.owned_locally = true;
 
     try io.sleep(.fromMilliseconds(250), .real);
@@ -177,7 +168,8 @@ pub fn deinit_after_init_error() void {
 }
 
 fn deinit_components() void {
-    sim.deinit(data.backing_allocator);
+    if (sim) |*simulation| simulation.deinit(data.backing_allocator);
+    sim = null;
     saver.deinit();
     data.deinit();
 }
@@ -199,23 +191,23 @@ pub fn finalize_loaded() void {
 }
 
 pub fn tick(sink: BlockChangeSink) u32 {
-    return sim.tick(&data, sink);
+    return sim.?.tick(&data, sink);
 }
 
 pub fn set_block(x: u16, y: u16, z: u16, block: Block) void {
-    sim.set_block(&data, x, y, z, block);
+    sim.?.set_block(&data, x, y, z, block);
 }
 
 pub fn enqueue_neighbors_of(x: u16, y: u16, z: u16) void {
-    sim.enqueue_neighbors_of(&data, x, y, z);
+    sim.?.enqueue_neighbors_of(&data, x, y, z);
 }
 
 pub fn sponge_absorb(sink: BlockChangeSink, cx: u16, cy: u16, cz: u16) void {
-    sim.sponge_absorb(&data, sink, cx, cy, cz);
+    sim.?.sponge_absorb(&data, sink, cx, cy, cz);
 }
 
 pub fn sponge_release(cx: u16, cy: u16, cz: u16) void {
-    sim.sponge_release(&data, cx, cy, cz);
+    sim.?.sponge_release(&data, cx, cy, cz);
 }
 
 pub fn save() void {
@@ -223,21 +215,15 @@ pub fn save() void {
 }
 
 pub fn dump_named(save_file_name: []const u8, world_name: []const u8) !void {
-    try ensure_dump_dir();
+    saver.save_dir.createDir(saver.io, "saves", .default_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
     try saver.dump(&data, save_file_name, world_name, default_format);
 }
 
 pub fn wait_for_save() void {
     saver.wait_for_save();
-}
-
-fn ensure_dump_dir() !void {
-    saver.save_dir.access(saver.io, "saves", .{}) catch {
-        saver.save_dir.createDir(saver.io, "saves", .default_dir) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
-    };
 }
 
 pub fn get_block(x: u16, y: u16, z: u16) Block {
@@ -250,4 +236,39 @@ pub fn is_sunlit(x: u16, y: u16, z: u16) bool {
 
 pub fn find_spawn() [3]u16 {
     return data.find_spawn(saver.io);
+}
+
+test "downloaded worlds need no simulation and clean up after local initialization fails" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const dims = WorldDims.init(128, 64, 128);
+    var allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+
+    try init_empty(allocator.allocator(), std.testing.io, tmp.dir, "world.cw", dims, 0, default_format);
+    const storage_allocations = allocator.allocations;
+    {
+        defer deinit();
+
+        try std.testing.expect(sim == null);
+        finalize_loaded();
+        data.apply_block(1, 8, 1, .stone);
+        try std.testing.expectEqual(Block.stone, get_block(1, 8, 1));
+        try std.testing.expect(!is_sunlit(1, 7, 1));
+    }
+    try std.testing.expectEqual(allocator.allocated_bytes, allocator.freed_bytes);
+
+    allocator = .init(std.testing.allocator, .{ .fail_index = storage_allocations });
+    try std.testing.expectError(error.OutOfMemory, init(
+        allocator.allocator(),
+        std.testing.allocator,
+        std.testing.io,
+        tmp.dir,
+        "world.cw",
+        dims,
+        0,
+        default_format,
+    ));
+    try std.testing.expect(sim == null);
+    try std.testing.expectEqual(allocator.allocated_bytes, allocator.freed_bytes);
 }

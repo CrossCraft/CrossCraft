@@ -1,5 +1,4 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const blocks = @import("blocks.zig");
 const protocol = @import("protocol.zig");
 pub const Client = @import("client.zig");
@@ -7,8 +6,6 @@ const OutboundQueue = @import("outbound_queue.zig").OutboundQueue;
 const world = @import("world.zig");
 const world_dims = @import("world_dims.zig");
 const compress_worker = @import("compress_worker.zig");
-const players_db = @import("players_db.zig");
-const access_control = @import("access_control.zig");
 const zb = @import("protocol");
 
 const log = std.log.scoped(.server);
@@ -34,11 +31,6 @@ pub const root_default_save_file_name: []const u8 = "world.cw";
 pub const legacy_save_file_name: []const u8 = "world.dat";
 pub const default_server_name = "CrossCraft Server";
 pub const default_server_motd = "Welcome to CrossCraft!";
-pub const default_login_timeout_ms: u32 = 15_000;
-pub const default_max_pending_logins: u32 = 16;
-pub const default_max_connections_per_ip: u32 = 8;
-pub const default_max_players_saved: u32 = 1024;
-pub const default_max_policy_records: u32 = 4096;
 
 const BootConfig = struct {
     world: WorldConfig,
@@ -48,12 +40,6 @@ pub const StandaloneConfig = struct {
     world: WorldConfig,
     server_name: []const u8 = default_server_name,
     server_motd: []const u8 = default_server_motd,
-    whitelist_enabled: bool = false,
-    login_timeout_ms: u32 = default_login_timeout_ms,
-    max_pending_logins: u32 = default_max_pending_logins,
-    max_connections_per_ip: u32 = default_max_connections_per_ip,
-    max_players_saved: u32 = default_max_players_saved,
-    max_policy_records: u32 = default_max_policy_records,
 };
 
 pub const GameConfig = union(enum) {
@@ -65,19 +51,12 @@ pub var io: std.Io = undefined;
 pub var save_dir: std.Io.Dir = undefined;
 var save_dir_owned: bool = false;
 
-pub var server_name: [64]u8 = pad(default_server_name);
-pub var server_motd: [64]u8 = pad(default_server_motd);
-
-pub var whitelist_enabled: bool = false;
-
-pub var login_timeout_ms: u32 = default_login_timeout_ms;
-pub var max_pending_logins: u32 = default_max_pending_logins;
-pub var max_connections_per_ip: u32 = default_max_connections_per_ip;
-pub var max_players_saved: u32 = default_max_players_saved;
-pub var max_policy_records: u32 = default_max_policy_records;
+pub var server_name: [64]u8 = protocol.padded_string(default_server_name);
+pub var server_motd: [64]u8 = protocol.padded_string(default_server_motd);
 
 /// Optional host callback for mirroring broadcast chat.
 pub var on_broadcast_chat: ?*const fn ([]const u8) void = null;
+pub var on_command: ?*const fn (*Client, []const u8) void = null;
 
 pub var players: PlayerSlots = .{};
 var player_generations: [MaxPlayers]u32 = @splat(0);
@@ -107,7 +86,6 @@ pub fn unlock_roster_shared() void {
 }
 
 /// True when the server is hosted inside the client process for singleplayer.
-/// Gates durable player data and join/leave chat for remote clients.
 pub var internal_use: bool = false;
 
 pub const block_change_sink: world.WorldSimulation.BlockChangeSink = .{ .emit_fn = emit_block_change };
@@ -116,15 +94,7 @@ fn emit_block_change(_: ?*anyopaque, change: world.WorldSimulation.BlockChange) 
     broadcast_block_change(change.x, change.y, change.z, change.block);
 }
 
-fn pad(s: []const u8) [64]u8 {
-    var buf: [64]u8 = @splat(' ');
-    const len = @min(buf.len, s.len);
-    @memcpy(buf[0..len], s[0..len]);
-    return buf;
-}
-
 var save_file_name_buf: [256]u8 = undefined;
-var save_file_name_len: u16 = 0;
 
 pub fn init(
     alloc: std.mem.Allocator,
@@ -137,28 +107,16 @@ pub fn init(
     roster_lock = .init;
     player_generations = @splat(0);
 
-    server_name = pad(default_server_name);
-    server_motd = pad(default_server_motd);
-    whitelist_enabled = false;
-    login_timeout_ms = default_login_timeout_ms;
-    max_pending_logins = default_max_pending_logins;
-    max_connections_per_ip = default_max_connections_per_ip;
-    max_players_saved = default_max_players_saved;
-    max_policy_records = default_max_policy_records;
+    server_name = protocol.padded_string(default_server_name);
+    server_motd = protocol.padded_string(default_server_motd);
 
     var wcfg: WorldConfig = undefined;
     switch (config) {
         .standalone => |standalone| {
             internal_use = false;
             wcfg = standalone.world;
-            server_name = pad(standalone.server_name);
-            server_motd = pad(standalone.server_motd);
-            whitelist_enabled = standalone.whitelist_enabled;
-            login_timeout_ms = standalone.login_timeout_ms;
-            max_pending_logins = standalone.max_pending_logins;
-            max_connections_per_ip = standalone.max_connections_per_ip;
-            max_players_saved = standalone.max_players_saved;
-            max_policy_records = standalone.max_policy_records;
+            server_name = protocol.padded_string(standalone.server_name);
+            server_motd = protocol.padded_string(standalone.server_motd);
         },
         .embedded => |embedded| {
             internal_use = true;
@@ -169,7 +127,9 @@ pub fn init(
         log.err("WorldConfig.save_location must not be empty", .{});
         return error.InvalidSaveLocation;
     }
-    normalize_default_save_location(&wcfg);
+    if (std.mem.eql(u8, wcfg.save_location, root_default_save_file_name)) {
+        wcfg.save_location = default_save_location;
+    }
 
     // Promote old root saves into the default location before the saver opens
     // it. Format sniffing handles classic_dat content copied from world.dat;
@@ -177,7 +137,7 @@ pub fn init(
     migrate_legacy_save(data_dir, wcfg);
 
     const split = split_save_location(wcfg.save_location);
-    save_dir = try resolve_save_dir(data_dir, split.parent);
+    save_dir = if (split.parent.len == 0) data_dir else try data_dir.createDirPathOpen(io, split.parent, .{});
     save_dir_owned = split.parent.len > 0;
     errdefer if (save_dir_owned) {
         save_dir.close(io);
@@ -193,13 +153,8 @@ pub fn init(
     var scratch = std.heap.ArenaAllocator.init(scratch_alloc);
     defer scratch.deinit();
 
-    // Initialise the shared compression worker BEFORE world.init: a
-    // fresh classic_cw world fires its first save during generation,
-    // which submits a job to compress_worker's queue. Reordering
-    // compress_worker.init after world.init would reset the queue
-    // head and silently drop that initial save. The host frees compressor
-    // storage after joining the worker thread, so do not back it with the
-    // server StaticAllocator that Server.deinit clears first.
+    // World generation queues an initial save; compression must be ready first.
+    // Its allocator must survive until the host joins the worker thread.
     try compress_worker.init(alloc, io);
     errdefer compress_worker.deinit();
 
@@ -216,15 +171,6 @@ pub fn init(
         wcfg.save_format,
     );
     log.info("World geometry: {}x{}x{}", .{ wcfg.dims().length, wcfg.dims().height, wcfg.dims().depth });
-    errdefer world.deinit_after_init_error();
-
-    if (!internal_use) {
-        try access_control.init(alloc, io, save_dir, max_policy_records);
-        errdefer access_control.deinit();
-        try players_db.init(alloc, io, save_dir, max_players_saved);
-        errdefer players_db.deinit();
-        try access_control.finish_legacy_migration();
-    }
 }
 
 const SplitPath = struct {
@@ -232,9 +178,7 @@ const SplitPath = struct {
     file_name: []const u8,
 };
 
-/// Split a save_location like "saves/foo.dat" into ("saves", "foo.dat").
-/// "world.dat" -> ("", "world.dat"). Forward slash only -- the engine
-/// data dir API takes POSIX-style sub-paths on every platform.
+// Save paths use forward slashes on every platform.
 fn split_save_location(path: []const u8) SplitPath {
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| {
         return .{ .parent = path[0..sep], .file_name = path[sep + 1 ..] };
@@ -242,27 +186,10 @@ fn split_save_location(path: []const u8) SplitPath {
     return .{ .parent = "", .file_name = path };
 }
 
-/// Open `data_dir/sub_path`, creating it (and parents) if missing. An
-/// empty `sub_path` returns `data_dir` unchanged.
-fn resolve_save_dir(data_dir: std.Io.Dir, sub_path: []const u8) !std.Io.Dir {
-    if (sub_path.len == 0) return data_dir;
-    return data_dir.createDirPathOpen(io, sub_path, .{}) catch |err| {
-        log.err("Failed to open/create save dir '{s}': {}", .{ sub_path, err });
-        return err;
-    };
-}
-
 fn copy_save_file_name(file_name: []const u8) ![]const u8 {
     if (file_name.len == 0 or file_name.len > save_file_name_buf.len) return error.InvalidSaveLocation;
     @memcpy(save_file_name_buf[0..file_name.len], file_name);
-    save_file_name_len = @intCast(file_name.len);
-    return save_file_name_buf[0..save_file_name_len];
-}
-
-fn normalize_default_save_location(wcfg: *WorldConfig) void {
-    if (std.mem.eql(u8, wcfg.save_location, root_default_save_file_name)) {
-        wcfg.save_location = default_save_location;
-    }
+    return save_file_name_buf[0..file_name.len];
 }
 
 /// Move old root saves into the default `saves/` layout without touching a
@@ -300,7 +227,7 @@ fn migrate_legacy_save(data_dir: std.Io.Dir, wcfg: WorldConfig) void {
         return;
     };
 
-    copy_file_direct(data_dir, legacy_save_file_name, wcfg.save_location) catch |err| {
+    copy_legacy_save(data_dir, legacy_save_file_name, wcfg.save_location) catch |err| {
         log.warn("legacy save migration failed: {}", .{err});
         return;
     };
@@ -327,56 +254,55 @@ fn choose_legacy_backup_name(data_dir: std.Io.Dir, out: *[32]u8) ?[]const u8 {
     return null;
 }
 
-fn copy_file_direct(dir: std.Io.Dir, src_path: []const u8, dst_path: []const u8) !void {
-    const src = try dir.openFile(io, src_path, .{});
-    defer src.close(io);
-
-    const dst = try dir.createFile(io, dst_path, .{ .exclusive = true });
-    var dst_closed = false;
-    errdefer dir.deleteFile(io, dst_path) catch {};
-    defer if (!dst_closed) dst.close(io);
-
-    var buf: [8192]u8 = undefined;
-    var offset: u64 = 0;
-    while (true) {
-        const n = try src.readPositionalAll(io, &buf, offset);
-        if (n == 0) break;
-        try dst.writeStreamingAll(io, buf[0..n]);
-        offset += n;
-    }
-
-    dst.close(io);
-    dst_closed = true;
-}
-
 fn file_exists(dir: std.Io.Dir, path: []const u8) bool {
     const file = dir.openFile(io, path, .{}) catch return false;
     file.close(io);
     return true;
 }
 
+// Console filesystems may not support copyFile's atomic no-replace rename.
+fn copy_legacy_save(dir: std.Io.Dir, source_path: []const u8, destination_path: []const u8) !void {
+    const source = try dir.openFile(io, source_path, .{});
+    defer source.close(io);
+
+    const destination = try dir.createFile(io, destination_path, .{ .exclusive = true });
+    errdefer dir.deleteFile(io, destination_path) catch {};
+    defer destination.close(io);
+
+    var buffer: [8192]u8 = undefined;
+    var offset: u64 = 0;
+    while (true) {
+        const n = try source.readPositionalAll(io, &buffer, offset);
+        if (n == 0) break;
+        try destination.writeStreamingAll(io, buffer[0..n]);
+        offset += n;
+    }
+}
+
 pub fn deinit() void {
     // world.deinit submits and waits for the final .cw save; the host-owned
     // compressor thread/storage must remain alive until this returns.
     world.deinit();
-    if (!internal_use) {
-        players_db.deinit();
-        access_control.deinit();
-    }
+    close_save_dir();
+    players = .{};
+}
 
+/// Unwind a successful init when the host could not start compression.
+pub fn deinit_after_init_error() void {
+    world.deinit_after_init_error();
+    compress_worker.deinit();
+    close_save_dir();
+    players = .{};
+}
+
+fn close_save_dir() void {
     if (save_dir_owned) {
         save_dir.close(io);
         save_dir_owned = false;
     }
     save_dir = undefined;
-
-    // The module-static table survives re-init.
-    players = .{};
 }
 
-/// A decoded, structurally valid Classic login frame. It contains only the
-/// identity data the server needs before a Client has been assigned a player
-/// table entry.
 pub const LoginRequest = Client.LoginRequest;
 
 pub const LoginAdmission = union(enum) {
@@ -429,58 +355,41 @@ pub fn admit_login(
         }
     }
 
-    var client: Client = undefined;
-    client.init_remote_admitted(reader, writer, transport, out, stream, ip, is_op, request);
-
-    const id = players.add(client) orelse return .{ .rejected = "Server is full!" };
-    const admitted = &(players.items[id].?);
-    admitted.id = @intCast(id);
-    player_generations[id] +%= 1;
-    if (player_generations[id] == 0) player_generations[id] = 1;
-    admitted.generation = player_generations[id];
-    // `Protocol.init` captures the client address as its dispatch context, so
-    // initialise only after the temporary `client` has been copied into the
-    // stable player table.
-    admitted.init();
-    return .{ .accepted = admitted };
+    var client: Client = .{
+        .reader = reader,
+        .writer = writer,
+        .transport = transport,
+        .out = out,
+        .stream = stream,
+        .phase = .init(.handshaking),
+        .is_op = .init(is_op),
+        .name = name.value,
+        .name_len = name.len,
+    };
+    const ip_n = @min(ip.len, client.ip.len);
+    @memcpy(client.ip[0..ip_n], ip[0..ip_n]);
+    return .{ .accepted = players.add(client) orelse return .{ .rejected = "Server is full!" } };
 }
 
 /// Join the embedded singleplayer server.
 pub fn local_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bool) ?*Client {
-    var client: Client = undefined;
-    client.connected = connected;
-    client.transport = null;
-    client.reader = reader;
-    client.writer = writer;
-    client.out = null;
-    client.stream = null;
-    client.initialized = false;
-    client.phase = .init(.awaiting_login);
-    client.local = true;
-    client.is_op = .init(true);
-    client.catchup_mode = .init(.none);
-    client.ip = std.mem.zeroes([players_db.ip_str_len:0]u8);
-    client.name_len = 0;
-    client.id = -1;
-    client.generation = 0;
-    client.pose = .init(@bitCast(@as(u64, 0)));
+    var client: Client = .{
+        .reader = reader,
+        .writer = writer,
+        .connected = connected,
+        .local = true,
+        .is_op = .init(true),
+    };
 
     lock_roster();
     defer unlock_roster();
 
-    const i = players.add(client) orelse {
+    return players.add(client) orelse {
         defer connected.* = false;
 
-        client.send_disconnect("Server is full!") catch return null;
+        client.send_disconnect("Server is full!") catch {};
         return null;
     };
-    const joined = &(players.items[i].?);
-    joined.id = @intCast(i);
-    player_generations[i] +%= 1;
-    if (player_generations[i] == 0) player_generations[i] = 1;
-    joined.generation = player_generations[i];
-    joined.init();
-    return joined;
 }
 
 test "pending login frame must be complete and use the Classic protocol version" {
@@ -506,7 +415,7 @@ test "pending login frame must be complete and use the Classic protocol version"
 
 pub const ClientSnapshot = struct {
     handle: PlayerHandle,
-    ip: [players_db.ip_str_len:0]u8,
+    ip: [Client.ip_str_len:0]u8,
 
     pub fn ip_slice(self: *const ClientSnapshot) []const u8 {
         return std.mem.sliceTo(self.ip[0..], 0);
@@ -570,7 +479,7 @@ pub fn remove_client(handle: PlayerHandle) void {
     const initialized = client.initialized;
     const name = client.name;
     const name_len = client.name_len;
-    players.remove(handle.id);
+    players.items[handle.id] = null;
 
     if (initialized) {
         for (0..MaxPlayers) |i| {
@@ -606,7 +515,7 @@ pub fn broadcast_spawn_player(sender_id: i8, packet: *zb.SpawnPlayer) void {
     }
 }
 
-pub fn broadcast_chat_message(id: i8, message: []u8) void {
+pub fn broadcast_chat_message(id: i8, message: []const u8) void {
     lock_roster_shared();
     for (0..MaxPlayers) |i| {
         const client = &(players.items[i] orelse continue);
@@ -648,7 +557,7 @@ pub fn broadcast_player_positions() void {
             if (i == j) continue;
             const player = &(players.items[j] orelse continue);
             if (!player.initialized) continue;
-            const pose = player.load_pose();
+            const pose = player.pose.load();
             recipient.send_player_position(player.id, pose.x, pose.y, pose.z, pose.yaw, pose.pitch) catch continue;
         }
     }
@@ -693,18 +602,19 @@ fn broadcast_ping() void {
 pub const PlayerSlots = struct {
     items: [MaxPlayers]?Client = @splat(null),
 
-    fn add(self: *PlayerSlots, client: Client) ?usize {
-        for (0..MaxPlayers) |i| {
-            if (self.items[i] == null) {
-                self.items[i] = client;
-                return i;
-            }
+    // Protocol dispatch retains the client address, so initialize in its final slot.
+    fn add(self: *PlayerSlots, client: Client) ?*Client {
+        for (&self.items, 0..) |*slot, i| {
+            if (slot.* != null) continue;
+            slot.* = client;
+            const joined = &slot.*.?;
+            joined.id = @intCast(i);
+            player_generations[i] +%= 1;
+            if (player_generations[i] == 0) player_generations[i] = 1;
+            joined.generation = player_generations[i];
+            joined.init();
+            return joined;
         }
         return null;
-    }
-
-    fn remove(self: *PlayerSlots, id: usize) void {
-        assert(self.items[id] != null);
-        self.items[id] = null;
     }
 };

@@ -50,21 +50,10 @@ pub const OutboundQueue = struct {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
 
-        const packet_len = 8;
-        const count = q.catchup_len / packet_len;
         const start = q.buf.len - q.catchup_len;
-
-        // Records were pushed from the end toward the front. Reverse them in
-        // place first, then the overlap-safe forward copy preserves chronology.
-        for (0..count / 2) |i| {
-            const left = start + i * packet_len;
-            const right = start + (count - 1 - i) * packet_len;
-            var tmp: [packet_len]u8 = undefined;
-            @memcpy(&tmp, q.buf[left..][0..packet_len]);
-            @memcpy(q.buf[left..][0..packet_len], q.buf[right..][0..packet_len]);
-            @memcpy(q.buf[right..][0..packet_len], &tmp);
-        }
-        std.mem.copyForwards(u8, q.buf[q.len..][0..q.catchup_len], q.buf[start..][0..q.catchup_len]);
+        const journal = q.buf[start..];
+        std.mem.reverse([8]u8, std.mem.bytesAsSlice([8]u8, journal));
+        std.mem.copyForwards(u8, q.buf[q.len..][0..q.catchup_len], journal);
         q.len += q.catchup_len;
         q.catchup_len = 0;
     }
@@ -91,22 +80,7 @@ pub const OutboundQueue = struct {
     }
 };
 
-test "outbound_queue append then take returns bytes in order" {
-    const io = std.testing.io;
-    var storage: [16]u8 = undefined;
-    var q: OutboundQueue = .{ .buf = &storage };
-
-    try q.append(io, "hello");
-    try q.append(io, " world");
-
-    var dest: [16]u8 = undefined;
-    const n = q.take(io, &dest);
-    try std.testing.expectEqual(@as(usize, 11), n);
-    try std.testing.expectEqualStrings("hello world", dest[0..n]);
-    try std.testing.expectEqual(@as(usize, 0), q.take(io, &dest));
-}
-
-test "outbound_queue take with small dest compacts the remainder" {
+test "outbound_queue preserves order across partial takes and appends" {
     const io = std.testing.io;
     var storage: [16]u8 = undefined;
     var q: OutboundQueue = .{ .buf = &storage };
@@ -122,6 +96,7 @@ test "outbound_queue take with small dest compacts the remainder" {
     var dest2: [8]u8 = undefined;
     const n = q.take(io, &dest2);
     try std.testing.expectEqualStrings("efXY", dest2[0..n]);
+    try std.testing.expectEqual(@as(usize, 0), q.take(io, &dest2));
 }
 
 test "outbound_queue overflow sets the kick flag and rejects further appends" {
@@ -144,15 +119,18 @@ test "outbound_queue promotes join catch-up after normal bytes in order" {
     var q: OutboundQueue = .{ .buf = &storage };
     const first: [8]u8 = "first---".*;
     const second: [8]u8 = "second--".*;
+    const third: [8]u8 = "third---".*;
 
     try q.append(io, "level");
     try q.append_catchup(io, &first);
     try q.append_catchup(io, &second);
+    try q.append_catchup(io, &third);
     q.promote_catchup(io);
+    try q.append(io, "end");
 
     var dest: [32]u8 = undefined;
     const n = q.take(io, &dest);
-    try std.testing.expectEqualStrings("levelfirst---second--", dest[0..n]);
+    try std.testing.expectEqualStrings("levelfirst---second--third---end", dest[0..n]);
 }
 
 test "outbound_queue shares capacity between normal and catch-up bytes" {

@@ -43,7 +43,6 @@ pub fn actions() Actions {
     return gameplay_actions.?;
 }
 
-/// Register and install the gameplay action set once.
 pub fn init(sys: *input.InputSystem) !ActionSetHandle {
     if (gameplay_set) |h| return h;
     const set = try sys.register_action_set("gameplay");
@@ -82,14 +81,12 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
     const inventory_toggle = try sys.add_action(set, "inventory_toggle", .button);
     try bind_inventory_toggle(sys, inventory_toggle);
 
-    // ui_pause is mirrored from menu_set so build_frame can poll it from
-    // either context.
+    // Mirror ui_pause so build_frame can poll either context.
     const ui_pause = try sys.add_action(set, "ui_pause", .button);
     try sys.bind_action(ui_pause, &.{ .source = .{ .key = .Escape } });
     try sys.bind_action(ui_pause, &.{ .source = .{ .gamepad_button = .Start } });
 
-    // Multiplier stays 1.0; Player applies Options.current.sensitivity at
-    // read time.
+    // Player applies sensitivity at read time.
     const look = try sys.add_action(set, "look", .vector2);
     try sys.bind_action(look, &.{ .source = .{ .mouse_delta = .x }, .component = .x });
     try sys.bind_action(look, &.{ .source = .{ .mouse_delta = .y }, .component = .y });
@@ -104,9 +101,7 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
     try sys.bind_action(place, &.{ .source = .{ .mouse_button = .Right } });
     var pick_block: input.ActionHandle = .none;
     if (Options.uses_old_3ds_controls()) {
-        // Old 3DS has physical L/R shoulders but no ZL/ZR triggers. Bind the
-        // physical buttons directly; keep Aether's trigger-axis aliases as a
-        // compatibility fallback for builds using that backend mapping.
+        // Old 3DS has L/R but no ZL/ZR; retain trigger aliases for older backends.
         try sys.bind_action(break_, &.{ .source = .{ .gamepad_button = .RButton } });
         try sys.bind_action(place, &.{ .source = .{ .gamepad_button = .LButton } });
         try sys.bind_action(break_, &.{ .source = .{ .gamepad_axis = .RightTrigger } });
@@ -128,9 +123,7 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
     const playerlist = try sys.add_action(set, "playerlist", .button);
     try bind_playerlist(sys, playerlist);
 
-    // chat_open (T) and chat_cmd (/) open the chat overlay; chat_send /
-    // chat_cancel live on the chat ActionSet so Enter only sends when
-    // chat owns the top context.
+    // Send/cancel belong to the chat context so Enter only sends while chat owns input.
     const chat_open = try sys.add_action(set, "chat_open", .button);
     try sys.bind_action(chat_open, &.{ .source = .{ .key = .T } });
     const chat_cmd = try sys.add_action(set, "chat_cmd", .button);
@@ -197,10 +190,7 @@ pub fn refresh_active_context(sys: *input.InputSystem) !void {
     const set = gameplay_set orelse return;
     const top = sys.stack_top() orelse return;
     if (!std.mem.eql(u8, top.name, "gameplay")) return;
-    // Replacing even an unchanged context synchronizes its actions with the
-    // currently held physical inputs.  An overlay can be closed by Escape
-    // while that key is still held; without this sync, gameplay would see it
-    // as a fresh ui_pause edge on the following frame.
+    // Resync held inputs so closing an overlay with Escape cannot immediately reopen it.
     var ctx = top.*;
     ctx.actions = set;
     _ = try sys.replace_top(&ctx);
@@ -282,17 +272,17 @@ fn bind_move(sys: *input.InputSystem, action: input.ActionHandle) !void {
 }
 
 fn bind_psp_face_move(sys: *input.InputSystem, action: input.ActionHandle) !void {
-    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .B }, .component = .x, .multiplier = 1.0 }); // Circle = right
-    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .X }, .component = .x, .multiplier = -1.0 }); // Square = left
-    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y }, .component = .y, .multiplier = 1.0 }); // Triangle = forward
-    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .y, .multiplier = -1.0 }); // Cross = back
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .B }, .component = .x, .multiplier = 1.0 });
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .X }, .component = .x, .multiplier = -1.0 });
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y }, .component = .y, .multiplier = 1.0 });
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .y, .multiplier = -1.0 });
 }
 
 fn bind_old_3ds_face_move(sys: *input.InputSystem, action: input.ActionHandle) !void {
-    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .x, .multiplier = 1.0 }); // A = right
-    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y }, .component = .x, .multiplier = -1.0 }); // Y = left
-    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .X }, .component = .y, .multiplier = 1.0 }); // X = forward
-    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .B }, .component = .y, .multiplier = -1.0 }); // B = back
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .x, .multiplier = 1.0 });
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y }, .component = .x, .multiplier = -1.0 });
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .X }, .component = .y, .multiplier = 1.0 });
+    try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .B }, .component = .y, .multiplier = -1.0 });
 }
 
 fn bind_jump(sys: *input.InputSystem, action: input.ActionHandle) !void {
@@ -329,10 +319,10 @@ fn bind_look_stick(sys: *input.InputSystem, action: input.ActionHandle) !void {
                 try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .LeftY }, .component = .y });
             },
             .move => {
-                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .B }, .component = .x, .multiplier = 1.0 }); // Circle = right
-                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .X }, .component = .x, .multiplier = -1.0 }); // Square = left
-                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y }, .component = .y, .multiplier = -1.0 }); // Triangle = up
-                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .y, .multiplier = 1.0 }); // Cross = down
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .B }, .component = .x, .multiplier = 1.0 });
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .X }, .component = .x, .multiplier = -1.0 });
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y }, .component = .y, .multiplier = -1.0 });
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .y, .multiplier = 1.0 });
             },
         }
     } else if (Options.uses_old_3ds_controls()) {
@@ -342,10 +332,10 @@ fn bind_look_stick(sys: *input.InputSystem, action: input.ActionHandle) !void {
                 try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .LeftY }, .component = .y });
             },
             .move => {
-                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .x, .multiplier = 1.0 }); // A = right
-                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y }, .component = .x, .multiplier = -1.0 }); // Y = left
-                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .X }, .component = .y, .multiplier = -1.0 }); // X = up
-                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .B }, .component = .y, .multiplier = 1.0 }); // B = down
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .A }, .component = .x, .multiplier = 1.0 });
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y }, .component = .x, .multiplier = -1.0 });
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .X }, .component = .y, .multiplier = -1.0 });
+                try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .B }, .component = .y, .multiplier = 1.0 });
             },
         }
     } else if (ae.platform == .nintendo_3ds) {

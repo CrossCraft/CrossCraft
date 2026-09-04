@@ -51,7 +51,7 @@ var tex_loaded: u16 = 0;
 var anim_images: [Tex.count]Image.Image = undefined;
 var anim_loaded: u16 = 0;
 
-pub var atlas: TextureAtlas = undefined;
+pub const atlas = TextureAtlas.init(16, 16);
 var alloc: std.mem.Allocator = undefined;
 var pack: *Zip = undefined;
 
@@ -97,15 +97,8 @@ pub fn init(
 pub fn deinit() void {
     if (!pack_initialized) return;
     SoundManager.deinit();
-    var i: u8 = 0;
-    while (i < Tex.count) : (i += 1) {
-        if (tex_loaded & (@as(u16, 1) << @intCast(i)) != 0) {
-            textures[i].deinit(alloc);
-        }
-        if (anim_loaded & (@as(u16, 1) << @intCast(i)) != 0) {
-            anim_images[i].deinit(alloc);
-        }
-    }
+    free_loaded(&textures, tex_loaded);
+    free_loaded(&anim_images, anim_loaded);
     tex_loaded = 0;
     anim_loaded = 0;
     pack.deinit();
@@ -118,7 +111,7 @@ pub fn switch_pack(dir: std.Io.Dir, path: []const u8) !void {
     assert(pack_initialized);
     assert(path.len > 0 and path.len <= max_pack_path_len);
 
-    if (same_dir(dir, pack_dir) and
+    if (dir.handle == pack_dir.handle and
         std.mem.eql(u8, path, pack_path_buf[0..pack_path_len])) return;
 
     const game_alloc = pack.allocator;
@@ -129,63 +122,44 @@ pub fn switch_pack(dir: std.Io.Dir, path: []const u8) !void {
 
     var staged_textures: [Tex.count]Rendering.Texture = undefined;
     var staged_tex_mask: u16 = 0;
+    errdefer free_loaded(&staged_textures, staged_tex_mask);
     var staged_anim_images: [Tex.count]Image.Image = undefined;
     var staged_anim_mask: u16 = 0;
+    errdefer free_loaded(&staged_anim_images, staged_anim_mask);
 
     const old_pack = pack;
     pack = new_pack;
+    errdefer pack = old_pack;
 
-    var i: u8 = 0;
-    while (i < Tex.count) : (i += 1) {
+    for (0..Tex.count) |i| {
+        const id: Tex = @enumFromInt(i);
         const bit: u16 = @as(u16, 1) << @intCast(i);
-        if (tex_loaded & bit == 0) continue;
-        staged_textures[i] = load_texture_from_zip(@enumFromInt(i)) catch |err| {
-            log.warn("pack '{s}' missing {s}: {}", .{ path, @tagName(@as(Tex, @enumFromInt(i))), err });
-            free_staged_textures(&staged_textures, staged_tex_mask);
-            pack = old_pack;
-            new_pack.deinit();
-            return err;
-        };
-        staged_tex_mask |= bit;
-    }
-
-    i = 0;
-    while (i < Tex.count) : (i += 1) {
-        const bit: u16 = @as(u16, 1) << @intCast(i);
-        if (anim_loaded & bit == 0) continue;
-        staged_anim_images[i] = load_image_from_zip(@enumFromInt(i)) catch |err| {
-            log.warn("pack '{s}' missing {s}: {}", .{ path, @tagName(@as(Tex, @enumFromInt(i))), err });
-            free_staged_textures(&staged_textures, staged_tex_mask);
-            free_staged_anim_images(&staged_anim_images, staged_anim_mask);
-            pack = old_pack;
-            new_pack.deinit();
-            return err;
-        };
-        staged_anim_mask |= bit;
-    }
-
-    i = 0;
-    while (i < Tex.count) : (i += 1) {
-        const bit: u16 = @as(u16, 1) << @intCast(i);
-        if (staged_tex_mask & bit == 0) continue;
-        textures[i].deinit(alloc);
-        textures[i] = staged_textures[i];
-        switch (@as(Tex, @enumFromInt(i))) {
-            .terrain => {
-                textures[i].force_resident();
-                atlas = TextureAtlas.init(16, 16);
-            },
-            .logo => textures[i].force_resident(),
-            else => {},
+        if (tex_loaded & bit != 0) {
+            staged_textures[i] = load_texture_from_zip(id) catch |err| {
+                log.warn("pack '{s}' missing {s}: {}", .{ path, @tagName(id), err });
+                return err;
+            };
+            staged_tex_mask |= bit;
+        }
+        if (anim_loaded & bit != 0) {
+            staged_anim_images[i] = load_image_from_zip(id) catch |err| {
+                log.warn("pack '{s}' missing {s}: {}", .{ path, @tagName(id), err });
+                return err;
+            };
+            staged_anim_mask |= bit;
         }
     }
 
-    i = 0;
-    while (i < Tex.count) : (i += 1) {
+    for (0..Tex.count) |i| {
         const bit: u16 = @as(u16, 1) << @intCast(i);
-        if (staged_anim_mask & bit == 0) continue;
-        anim_images[i].deinit(alloc);
-        anim_images[i] = staged_anim_images[i];
+        if (tex_loaded & bit != 0) {
+            textures[i].deinit(alloc);
+            install_texture(@enumFromInt(i), staged_textures[i]);
+        }
+        if (anim_loaded & bit != 0) {
+            anim_images[i].deinit(alloc);
+            anim_images[i] = staged_anim_images[i];
+        }
     }
 
     old_pack.deinit();
@@ -200,10 +174,6 @@ pub fn switch_pack(dir: std.Io.Dir, path: []const u8) !void {
     log.info("switched to pack '{s}'", .{path});
 }
 
-fn same_dir(a: std.Io.Dir, b: std.Io.Dir) bool {
-    return a.handle == b.handle;
-}
-
 pub fn get_tex(id: Tex) *const Rendering.Texture {
     assert(!is_anim_source(id));
     const i = @intFromEnum(id);
@@ -211,7 +181,7 @@ pub fn get_tex(id: Tex) *const Rendering.Texture {
     return &textures[i];
 }
 
-pub fn load_tex(id: Tex) !void {
+fn load_tex(id: Tex) !void {
     const i = @intFromEnum(id);
     const bit: u16 = @as(u16, 1) << @intCast(i);
     if (is_anim_source(id)) {
@@ -222,20 +192,11 @@ pub fn load_tex(id: Tex) !void {
     }
 
     if (tex_loaded & bit != 0) return;
-    textures[i] = try load_texture_from_zip(id);
+    install_texture(id, try load_texture_from_zip(id));
     tex_loaded |= bit;
-
-    switch (id) {
-        .terrain => {
-            textures[i].force_resident();
-            atlas = TextureAtlas.init(16, 16);
-        },
-        .logo => textures[i].force_resident(),
-        else => {},
-    }
 }
 
-pub fn unload_tex(id: Tex) void {
+fn unload_tex(id: Tex) void {
     const i = @intFromEnum(id);
     const bit: u16 = @as(u16, 1) << @intCast(i);
     if (is_anim_source(id)) {
@@ -250,22 +211,13 @@ pub fn unload_tex(id: Tex) void {
     tex_loaded &= ~bit;
 }
 
-/// Load every texture in `set`, then unload everything not in it.
-/// Phase 1 (load) may fail; phase 2 (unload) only runs on success so
-/// the previous resource set is preserved on error.
+/// Unload obsolete textures only after the new set loads successfully.
 pub fn apply_tex_set(set: []const Tex) !void {
     for (set) |id| try load_tex(id);
 
-    var i: u8 = 0;
-    while (i < Tex.count) : (i += 1) {
-        var needed = false;
-        for (set) |s| {
-            if (@intFromEnum(s) == i) {
-                needed = true;
-                break;
-            }
-        }
-        if (!needed) unload_tex(@enumFromInt(i));
+    for (0..Tex.count) |i| {
+        const id: Tex = @enumFromInt(i);
+        if (std.mem.indexOfScalar(Tex, set, id) == null) unload_tex(id);
     }
 }
 
@@ -290,7 +242,6 @@ pub fn tick_animations() void {
     textures[@intFromEnum(Tex.terrain)].update() catch {};
 }
 
-// Ping-pong sequence: 0,1,...,N-1,N-2,...,1,0,1,... with period 2*(N-1).
 fn ping_pong_frame(step: u32, frames: u32) u32 {
     if (frames <= 1) return 0;
     const period = 2 * (frames - 1);
@@ -332,6 +283,12 @@ fn image_pixel(img: *const Image.Image, x: u32, y: u32) [4]u8 {
     return img.data[offset..][0..4].*;
 }
 
+fn install_texture(id: Tex, texture: Rendering.Texture) void {
+    const i = @intFromEnum(id);
+    textures[i] = texture;
+    if (id == .terrain or id == .logo) textures[i].force_resident();
+}
+
 fn load_texture_from_zip(id: Tex) !Rendering.Texture {
     var buf: [256]u8 = undefined;
     const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{tex_path(id)});
@@ -350,18 +307,8 @@ fn load_image_from_zip(id: Tex) !Image.Image {
     return try Image.load_png_ex(alloc, alloc, stream.reader, .rgba8);
 }
 
-fn free_staged_textures(staged: *[Tex.count]Rendering.Texture, mask: u16) void {
-    var i: u8 = 0;
-    while (i < Tex.count) : (i += 1) {
-        if (mask & (@as(u16, 1) << @intCast(i)) != 0) {
-            staged[i].deinit(alloc);
-        }
-    }
-}
-
-fn free_staged_anim_images(staged: *[Tex.count]Image.Image, mask: u16) void {
-    var i: u8 = 0;
-    while (i < Tex.count) : (i += 1) {
+fn free_loaded(staged: anytype, mask: u16) void {
+    for (0..Tex.count) |i| {
         if (mask & (@as(u16, 1) << @intCast(i)) != 0) {
             staged[i].deinit(alloc);
         }

@@ -20,8 +20,7 @@ const Rain = @import("Rain.zig");
 
 const MAX_ACTIVE: u32 = @import("../config.zig").max_sections();
 comptime {
-    // GridRef carries each chunk coord in a u8; the supported world lattice
-    // never exceeds that.
+    // Chunk coordinates must fit GridRef.
     assert(core.world_dims.max_length / core.world_dims.chunk_size <= std.math.maxInt(u8));
     assert(core.world_dims.max_depth / core.world_dims.chunk_size <= std.math.maxInt(u8));
     assert(core.world_dims.max_height / core.world_dims.chunk_size <= std.math.maxInt(u8));
@@ -86,12 +85,10 @@ io: std.Io,
 
 const GridRef = packed struct { cx: u8, cz: u8, sy: u8 };
 
-/// Flat column id from chunk coords: (cz << log2_cx) | cx.
 fn column_index(self: *const WorldRenderer, cx: usize, cz: usize) u32 {
     return @intCast((cz << self.log2_cx) | cx);
 }
 
-/// Flat section id from chunk coords and Y section.
 fn section_index(self: *const WorldRenderer, cx: usize, cz: usize, sy: usize) u32 {
     return @intCast((@as(usize, self.column_index(cx, cz)) << self.log2_sy) | sy);
 }
@@ -220,12 +217,10 @@ pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, 
         self.recollect(camera);
     }
 
-    // AO changes invalidate every loaded mesh.
     if (Options.current.ambient_occlusion != self.applied_ao) {
         self.apply_ao_toggle();
     }
 
-    // Apply leaf-mode changes without waiting for camera movement.
     if (Options.current.fancy_leaves != self.applied_fancy_leaves) {
         self.apply_fancy_leaves_toggle(camera);
     }
@@ -334,7 +329,6 @@ pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera) void {
         self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque();
     }
 
-    // Clouds follow opaque terrain and precede alpha-blended geometry.
     Rendering.gfx.api.bind_texture(self.clouds.handle);
     self.sky.draw_clouds(camera, submerged);
 
@@ -356,7 +350,6 @@ pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera) void {
         Rendering.gfx.api.set_clip_planes(false);
     }
 
-    // Particles depth-test before fluids overlay them.
     self.particles.draw();
 }
 
@@ -449,8 +442,7 @@ fn recollect(self: *WorldRenderer, camera: *const Camera) void {
     self.dirty_overflow = false;
     self.dirty_preserve_order = false;
     self.queue_unbuilt_sections(camera);
-    // init_column set all LOD states for the new columns; sync the check
-    // position so update() does not fire a redundant refresh next frame.
+    // New columns already have current LOD; avoid rescanning next frame.
     self.lod_check_x = camera.x;
     self.lod_check_y = camera.y;
     self.lod_check_z = camera.z;
@@ -468,8 +460,7 @@ fn init_column(self: *WorldRenderer, cx: u8, cz: u8, cam: *const Camera) bool {
             for (0..count) |prev| self.grid[self.section_index(cx, cz, prev)].deinit();
             return false;
         };
-        // Set the LOD state up front so the first build uses the correct
-        // detail level rather than the default and immediately rebuilding.
+        // Set LOD before the first build to avoid an immediate rebuild.
         self.grid[self.section_index(cx, cz, sy)].near_lod = target_near_lod(cx, @intCast(sy), cz, cam);
         self.grid[self.section_index(cx, cz, sy)].ao_enabled = Options.current.ambient_occlusion;
         count += 1;
@@ -586,9 +577,7 @@ fn flush_ordered_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
 
 fn try_evict_farthest(self: *WorldRenderer, cam: *const Camera) bool {
     var best_dist: f32 = -1.0;
-    var best_cx: u8 = 0;
-    var best_cz: u8 = 0;
-    var best_sy: u8 = 0;
+    var best_ref: ?GridRef = null;
 
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
@@ -596,21 +585,18 @@ fn try_evict_farthest(self: *WorldRenderer, cam: *const Camera) bool {
             for (0..self.grid_sy) |sy| {
                 const idx = self.section_index(cx, cz, sy);
                 if (!self.built[idx]) continue;
-                const sec = &self.grid[idx];
-                const d = cam.distance_sq(sec.center_x(), sec.center_y(), sec.center_z());
+                const ref: GridRef = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
+                const d = grid_ref_dist_sq(ref, cam);
                 if (d > best_dist) {
                     best_dist = d;
-                    best_cx = @intCast(cx);
-                    best_cz = @intCast(cz);
-                    best_sy = @intCast(sy);
+                    best_ref = ref;
                 }
             }
         }
     }
 
-    if (best_dist < 0.0) return false;
-
-    const best = self.section_index(best_cx, best_cz, best_sy);
+    const ref = best_ref orelse return false;
+    const best = self.section_index(ref.cx, ref.cz, ref.sy);
     self.grid[best].clear();
     self.built[best] = false;
     return true;
@@ -651,8 +637,6 @@ fn mark_section_dirty_impl(self: *WorldRenderer, cx: u8, sy: u8, cz: u8, track_q
     if (!self.loaded[col]) return;
     self.built[idx] = false;
     if (self.in_queue[idx] and !track_queued) return;
-    // Track for incremental insert on the next update(). On overflow, flag a
-    // full rescan so no dirty sections are silently dropped.
     self.record_dirty_ref(.{ .cx = cx, .cz = cz, .sy = sy }, preserve_order);
 }
 
@@ -680,7 +664,6 @@ fn contains_grid_ref(haystack: []const GridRef, needle: GridRef) bool {
     return false;
 }
 
-/// Invalidate loaded sections whose AO state changed.
 fn apply_ao_toggle(self: *WorldRenderer) void {
     const target = Options.current.ambient_occlusion;
     for (0..self.grid_cx) |cx| {
@@ -707,7 +690,6 @@ fn apply_fancy_leaves_toggle(self: *WorldRenderer, cam: *const Camera) void {
     self.lod_check_z = cam.z;
 }
 
-/// Remesh loaded sections that cross the near-LOD boundary.
 fn refresh_lod_states(self: *WorldRenderer, cam: *const Camera) void {
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
@@ -735,15 +717,11 @@ fn grid_ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
     return cam.distance_sq(wx, wy, wz);
 }
 
-/// Disabled fancy leaves force the fast mesh at every distance.
 fn target_near_lod(cx: u8, sy: u8, cz: u8, cam: *const Camera) bool {
     if (!Options.current.fancy_leaves) return false;
     const lod_near_radius: f32 = @floatFromInt(config.current().lod_near_radius_blocks);
     const lod_near_radius_sq = lod_near_radius * lod_near_radius;
-    const wx: f32 = @as(f32, @floatFromInt(@as(u32, cx) * 16)) + 8.0;
-    const wy: f32 = @as(f32, @floatFromInt(@as(u32, sy) * 16)) + 8.0;
-    const wz: f32 = @as(f32, @floatFromInt(@as(u32, cz) * 16)) + 8.0;
-    return cam.distance_sq(wx, wy, wz) <= lod_near_radius_sq;
+    return grid_ref_dist_sq(.{ .cx = cx, .sy = sy, .cz = cz }, cam) <= lod_near_radius_sq;
 }
 
 fn grid_ref_less_than(cam: *const Camera, a: GridRef, b: GridRef) bool {

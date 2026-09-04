@@ -56,6 +56,7 @@ const compress_writer_vtable: *const std.Io.Writer.VTable = blk: {
 pub fn init(alloc: std.mem.Allocator, io: std.Io) !void {
     backing_allocator = alloc;
     compress_buf = try alloc.create([flate.max_window_len]u8);
+    errdefer alloc.destroy(compress_buf);
     compressor = try alloc.create(flate.Compress);
     compressor.* = undefined;
     queue_head = .init(null);
@@ -66,6 +67,15 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io) !void {
 pub fn deinit() void {
     backing_allocator.destroy(compressor);
     backing_allocator.destroy(compress_buf);
+}
+
+test "compression initialization releases allocations on failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn check(allocator: std.mem.Allocator) !void {
+            try init(allocator, std.testing.io);
+            deinit();
+        }
+    }.check, .{});
 }
 
 /// Reset the global compressor for a new gzip stream targeting `output`.
@@ -110,9 +120,7 @@ pub fn submit(job: *Job) void {
     }
 }
 
-/// Remove a queued job before `worker_main` has been spawned. Used by init
-/// error paths that must free job storage without waiting on a worker thread
-/// that does not exist yet.
+/// Cancel during init failure, before any worker can be running.
 pub fn cancel_pending_before_worker(job: *Job) bool {
     var node = queue_head.swap(null, .acquire);
     var restore_head: ?*Job = null;
@@ -222,20 +230,10 @@ test "queued jobs publish errors and queued cancellation completes" {
     try std.testing.expect(!drain_once());
 }
 
-/// Long-running thread entry point. Spawn this with a large stack on a
-/// non-IO-tracked thread, and at a priority strictly below the main thread:
-/// compression stretches make no syscalls, so on PSP (which does not
-/// preempt equal-priority threads) an equal-priority worker would starve
-/// everything else.
+/// Needs a large stack and lower priority than the main thread: PSP does not
+/// preempt equal-priority threads during long compression runs.
 pub fn worker_main() void {
-    // PSP: pspsdk's per-thread kernel cwd is only initialised by io-tracked
-    // thread entries (futureThreadEntry / groupThreadEntry call its private
-    // inheritCwd). The compressor uses a raw OS thread, so without this the
-    // worker starts with whatever the SCE default cwd is and every
-    // relative-path file open from here returns the catch-all
-    // `error.AccessDenied`. Re-apply the tracked cwd by reading it back
-    // and pushing it through `setCurrentPath`, which calls `sceIoChdir`
-    // on the calling thread.
+    // Raw PSP threads do not inherit the per-thread filesystem cwd.
     if (comptime builtin.os.tag == .psp) {
         var cwd_buf: [1024]u8 = undefined;
         if (std.process.currentPath(stored_io, &cwd_buf)) |n| {

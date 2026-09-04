@@ -11,15 +11,12 @@ pub const STEP_HEIGHT: f32 = 0.5;
 
 pub const Liquid = enum { water, lava };
 
-/// Single-point liquid test at the given world coordinate.
-/// Used to detect whether the camera is submerged.
 pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
     const fx = @floor(px);
     const fy = @floor(py);
     const fz = @floor(pz);
     const dims = World.data.dims;
-    // Bounds-check as floats first so NaN / extreme values never reach
-    // @intFromFloat (which would panic on un-representable values).
+    // Reject NaN/extreme coordinates before @intFromFloat.
     if (fx < 0.0 or fx >= @as(f32, @floatFromInt(dims.length))) return null;
     if (fy < 0.0 or fy >= @as(f32, @floatFromInt(dims.height))) return null;
     if (fz < 0.0 or fz >= @as(f32, @floatFromInt(dims.depth))) return null;
@@ -48,7 +45,6 @@ pub fn liquid_body(px: f32, py: f32, pz: f32) ?Liquid {
     return zone_liquid(px, pz, by0, by1);
 }
 
-/// Scan block rows [by0..by1] across the player XZ footprint for liquid.
 fn zone_liquid(px: f32, pz: f32, by0: i32, by1: i32) ?Liquid {
     const min_bx = world_coord(px - HALF_W);
     const max_bx = world_coord(px + HALF_W);
@@ -109,17 +105,12 @@ pub fn move_and_collide(
     );
 }
 
-/// Check whether the player is resting on a solid surface. Used by a few
-/// spot-check paths (e.g. pending-block invariants); the main tick path
-/// consumes `MoveResult.on_ground` instead.
+/// For checks outside the physics tick; movement returns its own on_ground state.
 pub fn on_ground(px: f32, py: f32, pz: f32) bool {
     return physics.is_on_ground(&World.data, .{ px, py, pz }, HALF_W, HEIGHT);
 }
 
-/// Attempt a one-shot step-up at the given horizontal velocity. Independent
-/// of the grounded-DidSlide path used by `move_and_collide`; callers invoke
-/// this for step-ups that should fire even when airborne (water-to-land
-/// exit, where `was_on_ground` is false).
+/// Allows airborne step-ups when leaving water; grounded movement handles its own.
 pub fn try_step_up(
     px: f32,
     py: f32,

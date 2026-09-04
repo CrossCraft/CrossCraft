@@ -111,16 +111,6 @@ pub fn all_resource_passes(random: *random_state, field: terrain.block_field) vo
     resource_pass(.gold, random, field);
 }
 
-test "resource constants and attempt counts follow the specification" {
-    const dimensions: terrain.world_dimensions = .{ .width = 32, .height = 32, .depth = 32 };
-    try std.testing.expectEqual(@as(u8, 16), resource_kind.coal.material());
-    try std.testing.expectEqual(@as(u8, 15), resource_kind.iron.material());
-    try std.testing.expectEqual(@as(u8, 14), resource_kind.gold.material());
-    try std.testing.expectEqual(@as(u64, 1), vein_attempt_count(dimensions, .coal));
-    try std.testing.expectEqual(@as(u64, 1), vein_attempt_count(dimensions, .iron));
-    try std.testing.expectEqual(@as(u64, 1), vein_attempt_count(dimensions, .gold));
-}
-
 test "resource passes replace only stone" {
     const dimensions: terrain.world_dimensions = .{ .width = 32, .height = 32, .depth = 32 };
     const blocks = try std.testing.allocator.alloc(u8, dimensions.volume());

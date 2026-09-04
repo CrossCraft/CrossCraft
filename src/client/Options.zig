@@ -20,9 +20,7 @@ pub const SENS_MAX: f32 = 10.0;
 
 pub var current: Options = .{};
 
-/// In-game controller prompt style.  PSP and Nintendo consoles only support
-/// `auto` / `off`; the other layouts are desktop-only and are corrected to
-/// `auto` on load.
+/// Consoles accept only `auto` and `off`; unsupported styles reset on load.
 pub const ControllerTooltips = enum(u8) {
     auto = 0,
     xbox = 1,
@@ -57,16 +55,12 @@ pub const PspJumpMode = enum(u8) {
 };
 
 pub const Options = struct {
-    /// Path of the active texture pack (relative to the data dir).
-    /// Empty string means use the built-in default pack.
+    /// Relative to the data directory; empty selects the built-in pack.
     active_texturepack_buf: [max_pack_path]u8 = [_]u8{0} ** max_pack_path,
     active_texturepack_len: u8 = 0,
 
     /// Consumers must use `capped_render_distance` to honor the runtime profile.
-    render_distance: u8 = if (@import("aether").platform == .psp)
-        4
-    else
-        8,
+    render_distance: u8 = if (ae.platform == .psp) 4 else 8,
 
     sound_volume: f32 = 1.0,
 
@@ -74,9 +68,8 @@ pub const Options = struct {
 
     fov: f32 = 70.0,
 
-    /// Defaults off on PSP to keep meshing within budget.  Profiles with
-    /// `lod_near_radius_blocks == 0` cannot render fancy leaves at all.
-    fancy_leaves: bool = @import("aether").platform != .psp,
+    /// Profiles with no near-LOD radius cannot render fancy leaves.
+    fancy_leaves: bool = ae.platform != .psp,
 
     sensitivity: f32 = 3.0,
 
@@ -85,15 +78,13 @@ pub const Options = struct {
     /// Animate only a section's first mesh build.
     bouncy_chunks: bool = false,
 
-    /// Applied on load and when the options menu closes.
-    vsync: bool = @import("aether").platform != .psp and @import("aether").platform != .nintendo_3ds,
+    vsync: bool = ae.platform != .psp and ae.platform != .nintendo_3ds,
 
     controller_tooltips: ControllerTooltips = .auto,
 
     rain: bool = false,
 
-    /// Distance fog for world geometry.  The sky renderer keeps its own fog
-    /// enabled so the horizon retains the intended look when this is off.
+    /// The sky retains its own fog when world fog is disabled.
     fog: bool = true,
 
     key_forward: input.Key = .W,
@@ -105,9 +96,6 @@ pub const Options = struct {
     psp_analog_mode: PspAnalogMode = .look,
     psp_jump_mode: PspJumpMode = .up,
 
-    /// Lets a New 3DS use the Old 3DS single-stick control layout when its
-    /// right-side input is unavailable. This preference has no effect on
-    /// other platforms.
     new_3ds_use_old_controls: bool = false,
 
     pub fn active_texturepack(self: *const Options) []const u8 {
@@ -315,8 +303,6 @@ pub fn sensitivity_from_percent(percent: u32) f32 {
     const lmax = std.math.log10(SENS_MAX);
     return std.math.pow(f32, 10.0, lmin + (lmax - lmin) * pct);
 }
-
-// The parser owns active_texturepack only until its per-call arena is freed.
 
 const JsonNumber = struct {
     value: f64 = 0.0,
@@ -565,38 +551,14 @@ fn float_to_json_int(v: f32) u16 {
 }
 
 fn load_pc_controls(j: LoadJsonOptions) void {
-    var invalid = false;
-    const forward = parse_key(j.key_forward) orelse blk: {
-        invalid = true;
-        break :blk input.Key.W;
-    };
-    const back = parse_key(j.key_back) orelse blk: {
-        invalid = true;
-        break :blk input.Key.S;
-    };
-    const left = parse_key(j.key_left) orelse blk: {
-        invalid = true;
-        break :blk input.Key.A;
-    };
-    const right = parse_key(j.key_right) orelse blk: {
-        invalid = true;
-        break :blk input.Key.D;
-    };
-    const inventory = parse_key(j.key_inventory) orelse blk: {
-        invalid = true;
-        break :blk input.Key.B;
-    };
-
-    current.key_forward = forward;
-    current.key_back = back;
-    current.key_left = left;
-    current.key_right = right;
-    current.key_inventory = inventory;
-    if (invalid or !pc_controls_valid(&current)) current.reset_pc_controls();
-}
-
-fn parse_key(name: []const u8) ?input.Key {
-    return std.meta.stringToEnum(input.Key, name);
+    inline for (std.meta.fields(PcControl)) |control| {
+        const field = "key_" ++ control.name;
+        @field(current, field) = std.meta.stringToEnum(input.Key, @field(j, field)) orelse {
+            current.reset_pc_controls();
+            return;
+        };
+    }
+    if (!pc_controls_valid(&current)) current.reset_pc_controls();
 }
 
 fn pc_controls_valid(opt: *const Options) bool {
@@ -614,6 +576,29 @@ fn pc_controls_valid(opt: *const Options) bool {
         }
     }
     return true;
+}
+
+test "invalid saved controls reset all bindings" {
+    const previous = current;
+    defer current = previous;
+
+    current = .{ .fov = 90 };
+    const valid: LoadJsonOptions = .{ .key_forward = "Up", .key_back = "Down", .key_inventory = "I" };
+    load_pc_controls(valid);
+    try std.testing.expectEqual(input.Key.Up, current.key_forward);
+    try std.testing.expectEqual(input.Key.Down, current.key_back);
+    try std.testing.expectEqual(input.Key.I, current.key_inventory);
+
+    for ([_][]const u8{ "Up", "Escape", "not-a-key" }) |invalid| {
+        var saved = valid;
+        saved.key_inventory = invalid;
+        load_pc_controls(saved);
+        inline for (std.meta.fields(PcControl)) |control| {
+            const field = "key_" ++ control.name;
+            try std.testing.expectEqual(@field(Options{}, field), @field(current, field));
+        }
+        try std.testing.expectEqual(@as(f32, 90), current.fov);
+    }
 }
 
 test "versioned options json accepts legacy floats and new integer values" {

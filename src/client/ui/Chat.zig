@@ -59,8 +59,7 @@ fn ensure_chat_set(sys: *input.InputSystem) !input.ActionSetHandle {
     chat_cancel = try sys.add_action(set, "chat_cancel", .button);
     try sys.bind_action(chat_cancel, &.{ .source = .{ .key = .Escape } });
     try sys.bind_action(chat_cancel, &.{ .source = .{ .gamepad_button = .B } });
-    // Controller Select/Back toggles social mode -- pressing it again with
-    // chat already open exits without sending.
+    // Select/Back closes social mode without sending.
     try sys.bind_action(chat_cancel, &.{ .source = .{ .gamepad_button = .Back } });
 
     try sys.install_action_set(set);
@@ -83,8 +82,7 @@ open: bool,
 session_active: bool,
 prev_send: input.ButtonState,
 prev_cancel: input.ButtonState,
-/// Suppresses a ghost rising edge on the frame chat activates with
-/// chat_send / chat_cancel still held from the press that opened it.
+/// Suppress send/cancel inputs held when chat opens.
 chat_was_active: bool,
 render_lines: [RENDER_LINE_MAX][WRAP_LINE_MAX_BYTES]u8,
 render_line_count: u8,
@@ -197,7 +195,6 @@ pub fn close_overlay(self: *Chat, sys: *input.InputSystem, player: *Player) void
     if (!self.open) return;
     self.open = false;
     if (self.session_active) {
-        // cancel_text errors if the session is already terminal; ignore.
         sys.cancel_text() catch {};
         self.session_active = false;
     }
@@ -218,8 +215,7 @@ pub fn update(self: *Chat, sys: *input.InputSystem, player: *Player) void {
 
     if (self.session_active) {
         const session_const = sys.current_text_session() orelse return;
-        // Cast away const for the in-place shrink; the session pointer is
-        // stable storage and Aether exposes no pop-byte helper.
+        // Aether exposes stable session storage but no pop-byte helper.
         const session: *input.TextInputSession = @constCast(session_const);
         for (sys.frame_events()) |ev| {
             switch (ev.kind) {
@@ -390,10 +386,7 @@ pub fn draw_into(self: *Chat, sys: *input.InputSystem, list: *UiDrawList, fonts:
     while (input_i < @as(usize, input_line_count)) : (input_i += 1) {
         const row_y: i16 = -(base + @as(i16, @intCast(@as(usize, input_line_count) - 1 - input_i)) * ROW_H);
         if (self.store_render_line(input_lines[input_i][0..input_lens[input_i]])) |line| {
-            // Keep the prompt separate from the editable text. Combining
-            // them makes FontBatcher add another inter-character gap after
-            // the prompt's trailing space, which is especially noticeable
-            // before a leading command slash.
+            // Separate the prompt to avoid an extra FontBatcher gap before the text.
             if (input_i == 0 and line.len > 0 and line[0] == INPUT_PROMPT[0]) {
                 const prompt_len: usize = @min(line.len, INPUT_PROMPT.len);
                 list.add_text(&.{

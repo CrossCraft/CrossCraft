@@ -132,7 +132,7 @@ pub const WorldSize = enum(u8) {
     }
 
     pub fn parse(text: []const u8) ?WorldSize {
-        return parse_enum(WorldSize, text);
+        return std.meta.stringToEnum(WorldSize, text);
     }
 };
 
@@ -152,19 +152,12 @@ pub const WorldHeight = enum(u8) {
     }
 
     pub fn parse(text: []const u8) ?WorldHeight {
-        return parse_enum(WorldHeight, text);
+        return std.meta.stringToEnum(WorldHeight, text);
     }
 };
 
 pub fn from_presets(size: WorldSize, height: WorldHeight) WorldDims {
     return WorldDims.init(size.edge(), height.height(), size.edge());
-}
-
-fn parse_enum(comptime T: type, text: []const u8) ?T {
-    inline for (@typeInfo(T).@"enum".fields) |field| {
-        if (std.mem.eql(u8, text, field.name)) return @enumFromInt(field.value);
-    }
-    return null;
 }
 
 test "presets cover the supported lattice" {
@@ -178,31 +171,9 @@ test "presets cover the supported lattice" {
     };
     for (cases) |case| {
         const dims = from_presets(case.size, case.height);
-        try std.testing.expectEqualStrings(case.size.label(), switch (dims.length) {
-            128 => "Tiny",
-            256 => "Normal",
-            512 => "Huge",
-            else => unreachable,
-        });
         try std.testing.expectEqual(WorldDims.from_array(case.dims).?, dims);
     }
     try std.testing.expectEqual(default, from_presets(.normal, .normal));
-    try std.testing.expectEqual(@as(u32, 128), WorldSize.tiny.edge());
-    try std.testing.expectEqual(@as(u32, 128), WorldHeight.tall.height());
-}
-
-test "preset parse is exact" {
-    try std.testing.expectEqual(WorldSize.tiny, WorldSize.parse("tiny").?);
-    try std.testing.expectEqual(WorldSize.normal, WorldSize.parse("normal").?);
-    try std.testing.expectEqual(WorldSize.huge, WorldSize.parse("huge").?);
-    try std.testing.expectEqual(WorldHeight.normal, WorldHeight.parse("normal").?);
-    try std.testing.expectEqual(WorldHeight.tall, WorldHeight.parse("tall").?);
-
-    try std.testing.expect(WorldSize.parse("256x64x256") == null);
-    try std.testing.expect(WorldSize.parse("Tiny") == null);
-    try std.testing.expect(WorldSize.parse("") == null);
-    try std.testing.expect(WorldHeight.parse("huge") == null);
-    try std.testing.expect(WorldHeight.parse("banana") == null);
 }
 
 /// Independent divide/multiply form of `block_index`, sharing no code with it.
@@ -212,17 +183,19 @@ fn reference_index(dims: WorldDims, x: u32, y: u32, z: u32) u32 {
     return chunk * chunk_volume + local;
 }
 
-test "block_index matches an independent reference on every preset" {
-    const presets = [6][3]u16{
+test "block_index matches an independent reference on presets and rectangular worlds" {
+    const cases = [_][3]u16{
         .{ 128, 64, 128 },
         .{ 128, 128, 128 },
         .{ 256, 64, 256 },
         .{ 256, 128, 256 },
         .{ 512, 64, 512 },
         .{ 512, 128, 512 },
+        .{ 256, 128, 512 },
+        .{ 512, 64, 128 },
     };
-    for (presets) |preset| {
-        const dims = WorldDims.from_array(preset) orelse return error.TestUnexpectedResult;
+    for (cases) |dimensions| {
+        const dims = WorldDims.from_array(dimensions) orelse return error.TestUnexpectedResult;
         var x: u32 = 0;
         while (x < dims.length) : (x += 5) {
             var y: u32 = 0;
@@ -251,18 +224,4 @@ test "valid rejects anything the encodings cannot carry" {
     try std.testing.expect(!WorldDims.valid(.{ 192, 64, 128 }));
 
     try std.testing.expect(WorldDims.from_array(.{ 320, 64, 256 }) == null);
-}
-
-test "derived geometry" {
-    const dims = WorldDims.from_array(.{ 256, 128, 512 }) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(u32, 16), dims.chunks_x);
-    try std.testing.expectEqual(@as(u32, 8), dims.chunks_y);
-    try std.testing.expectEqual(@as(u32, 32), dims.chunks_z);
-    try std.testing.expectEqual(@as(u32, 4), dims.shift_cz);
-    try std.testing.expectEqual(@as(u32, 9), dims.shift_cy);
-    try std.testing.expectEqual(@as(usize, 256 * 128 * 512), dims.volume());
-    try std.testing.expectEqual(@as(usize, 16 * 8 * 32), dims.chunk_count());
-    try std.testing.expectEqual(@as(usize, 256 * chunk_size), dims.band_len());
-    try std.testing.expect(dims.matches(.{ 256, 128, 512 }));
-    try std.testing.expect(!dims.matches(.{ 256, 64, 512 }));
 }

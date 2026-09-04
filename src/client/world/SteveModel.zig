@@ -24,7 +24,6 @@ const WORLD_UNIT_SCALE: f32 = 16.0;
 const RENDER_DIST: f32 = 32.0;
 const RENDER_DIST_SQ: f32 = RENDER_DIST * RENDER_DIST;
 
-// At 20 Hz, 15/s closes about 53% of the position error per update.
 const INTERP_SPEED: f32 = 15.0;
 
 const IDLE_AMPLITUDE: f32 = 0.05;
@@ -192,7 +191,6 @@ pub fn update(self: *SteveModel, dt: f32, player_list: *const PlayerList, fonts:
             continue;
         }
 
-        // Smoothed displacement drives the walk amplitude.
         const prev_x = st.x;
         const prev_z = st.z;
         st.x += (tx - st.x) * f;
@@ -327,42 +325,43 @@ fn face_color(face: Face) u32 {
     };
 }
 
+// UV order: top, bottom, front (+Z), back (-Z), right (-X), left (+X).
 const FaceUVs = [6]UVRect;
 
 const head_uvs: FaceUVs = .{
-    char_uv(8, 0, 8, 8), // top
-    char_uv(16, 0, 8, 8), // bottom
-    char_uv(8, 8, 8, 8), // front (z_pos)
-    char_uv(24, 8, 8, 8), // back (z_neg)
-    char_uv(0, 8, 8, 8), // right (x_neg)
-    char_uv(16, 8, 8, 8), // left (x_pos)
+    char_uv(8, 0, 8, 8),
+    char_uv(16, 0, 8, 8),
+    char_uv(8, 8, 8, 8),
+    char_uv(24, 8, 8, 8),
+    char_uv(0, 8, 8, 8),
+    char_uv(16, 8, 8, 8),
 };
 
 const torso_uvs: FaceUVs = .{
-    char_uv(20, 16, 8, 4), // top
-    char_uv(28, 16, 8, 4), // bottom
-    char_uv(20, 20, 8, 12), // front
-    char_uv(32, 20, 8, 12), // back
-    char_uv(16, 20, 4, 12), // right
-    char_uv(28, 20, 4, 12), // left
+    char_uv(20, 16, 8, 4),
+    char_uv(28, 16, 8, 4),
+    char_uv(20, 20, 8, 12),
+    char_uv(32, 20, 8, 12),
+    char_uv(16, 20, 4, 12),
+    char_uv(28, 20, 4, 12),
 };
 
 const arm_uvs: FaceUVs = .{
-    char_uv(44, 16, 4, 4), // top
-    char_uv(48, 16, 4, 4), // bottom
-    char_uv(44, 20, 4, 12), // front
-    char_uv(52, 20, 4, 12), // back
-    char_uv(40, 20, 4, 12), // right
-    char_uv(48, 20, 4, 12), // left
+    char_uv(44, 16, 4, 4),
+    char_uv(48, 16, 4, 4),
+    char_uv(44, 20, 4, 12),
+    char_uv(52, 20, 4, 12),
+    char_uv(40, 20, 4, 12),
+    char_uv(48, 20, 4, 12),
 };
 
 const leg_uvs: FaceUVs = .{
-    char_uv(4, 16, 4, 4), // top
-    char_uv(8, 16, 4, 4), // bottom
-    char_uv(4, 20, 4, 12), // front
-    char_uv(12, 20, 4, 12), // back
-    char_uv(0, 20, 4, 12), // right
-    char_uv(8, 20, 4, 12), // left
+    char_uv(4, 16, 4, 4),
+    char_uv(8, 16, 4, 4),
+    char_uv(4, 20, 4, 12),
+    char_uv(12, 20, 4, 12),
+    char_uv(0, 20, 4, 12),
+    char_uv(8, 20, 4, 12),
 };
 
 fn mirror_uvs(uvs: FaceUVs) FaceUVs {

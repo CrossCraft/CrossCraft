@@ -2,6 +2,8 @@ const std = @import("std");
 const core = @import("core");
 
 const Server = core.Server;
+const PlayersDb = @import("PlayersDb.zig");
+const AccessControl = @import("AccessControl.zig");
 const log = std.log.scoped(.server_config);
 
 const properties_file_name = "server.properties";
@@ -38,12 +40,12 @@ save_location_len: u16 = 0,
 world_size: core.world_dims.WorldSize = .normal,
 world_height: core.world_dims.WorldHeight = .normal,
 save_format: core.World.SaveFormat = core.World.default_format,
-login_timeout_ms: u32 = Server.default_login_timeout_ms,
-max_pending_logins: u32 = Server.default_max_pending_logins,
-max_connections_per_ip: u32 = Server.default_max_connections_per_ip,
+login_timeout_ms: u32 = 15_000,
+max_pending_logins: u32 = 16,
+max_connections_per_ip: u32 = 8,
 whitelist_enabled: bool = false,
-max_players_saved: u32 = Server.default_max_players_saved,
-max_policy_records: u32 = Server.default_max_policy_records,
+max_players_saved: u32 = 1024,
+max_policy_records: u32 = 4096,
 autosave_seconds: u32 = autosave_default_seconds,
 heartbeat: Heartbeat = .{},
 
@@ -116,9 +118,9 @@ pub fn parse(content: []const u8, seed: u64) Config {
         } else if (std.mem.eql(u8, key, "whitelist")) {
             config.whitelist_enabled = std.mem.eql(u8, value, "true");
         } else if (std.mem.eql(u8, key, "max-players-saved")) {
-            config.max_players_saved = parse_clamped(value, config.max_players_saved, 1, core.PlayersDb.max_capacity, key);
+            config.max_players_saved = parse_clamped(value, config.max_players_saved, 1, PlayersDb.max_capacity, key);
         } else if (std.mem.eql(u8, key, "max-policy-records")) {
-            config.max_policy_records = parse_clamped(value, config.max_policy_records, 1, core.AccessControl.max_capacity, key);
+            config.max_policy_records = parse_clamped(value, config.max_policy_records, 1, AccessControl.max_capacity, key);
         } else if (std.mem.eql(u8, key, "backup-autosave-seconds")) {
             config.autosave_seconds = parse_clamped(
                 value,
@@ -152,12 +154,6 @@ pub fn core_config(self: *const Config) Server.StandaloneConfig {
         },
         .server_name = self.server_name[0..self.server_name_len],
         .server_motd = self.motd[0..self.motd_len],
-        .whitelist_enabled = self.whitelist_enabled,
-        .login_timeout_ms = self.login_timeout_ms,
-        .max_pending_logins = self.max_pending_logins,
-        .max_connections_per_ip = self.max_connections_per_ip,
-        .max_players_saved = self.max_players_saved,
-        .max_policy_records = self.max_policy_records,
     };
 }
 
@@ -283,12 +279,12 @@ test "server properties populate all standalone settings" {
     try std.testing.expectEqual(core.world_dims.WorldSize.huge, game.world.size);
     try std.testing.expectEqual(core.world_dims.WorldHeight.tall, game.world.height);
     try std.testing.expectEqual(core.World.SaveFormat.classic_dat, std.meta.activeTag(game.world.save_format));
-    try std.testing.expectEqual(@as(u32, 2500), game.login_timeout_ms);
-    try std.testing.expectEqual(@as(u32, 12), game.max_pending_logins);
-    try std.testing.expectEqual(@as(u32, 3), game.max_connections_per_ip);
-    try std.testing.expect(game.whitelist_enabled);
-    try std.testing.expectEqual(@as(u32, 200), game.max_players_saved);
-    try std.testing.expectEqual(@as(u32, 300), game.max_policy_records);
+    try std.testing.expectEqual(@as(u32, 2500), config.login_timeout_ms);
+    try std.testing.expectEqual(@as(u32, 12), config.max_pending_logins);
+    try std.testing.expectEqual(@as(u32, 3), config.max_connections_per_ip);
+    try std.testing.expect(config.whitelist_enabled);
+    try std.testing.expectEqual(@as(u32, 200), config.max_players_saved);
+    try std.testing.expectEqual(@as(u32, 300), config.max_policy_records);
     try std.testing.expectEqual(@as(u32, 120), config.autosave_seconds);
     try std.testing.expectEqual(@as(usize, 2), config.heartbeat.count);
     try std.testing.expectEqualStrings("http://localhost/a", config.heartbeat.url(0));
@@ -312,11 +308,11 @@ test "server properties retain defaults and clamp bounded values" {
     try std.testing.expectEqual(@as(u64, 77), game.world.seed);
     try std.testing.expectEqualStrings(Server.default_save_location, game.world.save_location);
     try std.testing.expectEqual(core.world_dims.WorldSize.normal, game.world.size);
-    try std.testing.expectEqual(@as(u32, 1_000), game.login_timeout_ms);
-    try std.testing.expectEqual(@as(u32, Server.MaxPlayers), game.max_pending_logins);
-    try std.testing.expectEqual(@as(u32, 1), game.max_connections_per_ip);
-    try std.testing.expectEqual(core.PlayersDb.max_capacity, game.max_players_saved);
-    try std.testing.expectEqual(core.AccessControl.max_capacity, game.max_policy_records);
+    try std.testing.expectEqual(@as(u32, 1_000), config.login_timeout_ms);
+    try std.testing.expectEqual(@as(u32, Server.MaxPlayers), config.max_pending_logins);
+    try std.testing.expectEqual(@as(u32, 1), config.max_connections_per_ip);
+    try std.testing.expectEqual(PlayersDb.max_capacity, config.max_players_saved);
+    try std.testing.expectEqual(AccessControl.max_capacity, config.max_policy_records);
     try std.testing.expectEqual(autosave_max_seconds, config.autosave_seconds);
     try std.testing.expectEqual(@as(usize, 0), config.heartbeat.count);
 

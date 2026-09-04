@@ -7,8 +7,6 @@ const proto = @import("protocol.zig");
 
 const Server = @import("server.zig");
 const compress_worker = @import("compress_worker.zig");
-const players_db = @import("players_db.zig");
-const commands = @import("commands.zig");
 const outbound_queue = @import("outbound_queue.zig");
 const OutboundQueue = outbound_queue.OutboundQueue;
 const Message = proto.Message;
@@ -17,18 +15,13 @@ const Client = @This();
 
 /// Rounded above the 1028-byte LevelDataChunk packet.
 const packet_buf_bytes = 1100;
+pub const ip_str_len = 15;
 const drain_buf_bytes = 64 * 1024;
-/// Keeps outbound latency below the 20 Hz tick interval.
 const recv_poll_timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(25), .clock = .real } };
-/// Inbound accumulation buffer for the connection loop. The largest
-/// to-server packet is the 131-byte login frame and any invalid byte
-/// disconnects immediately, so a full buffer can never deadlock.
+// Larger than any accepted client packet; invalid IDs disconnect immediately.
 const in_buf_bytes = 4096;
 
-/// World-send job submitted by an IO read loop and processed by the shared
-/// compressor worker. One slot per player; the slots outlive any individual
-/// `Client` so a late-arriving worker store after the IO thread bails on
-/// cancel never lands on a freed stack frame.
+// Job slots outlive clients so a late completion cannot write to a freed stack.
 const WorldSendJob = struct {
     base: compress_worker.Job,
     client: *Client,
@@ -105,9 +98,7 @@ pub const AtomicPlayerPose = struct {
     }
 };
 
-/// The parts of a PlayerIDToServer frame needed before a Client exists in the
-/// server player table. Keeping this small lets the network host validate and
-/// stage a login without giving an unauthenticated socket a player slot.
+/// Validated before an unauthenticated socket can acquire a player slot.
 pub const LoginRequest = struct {
     protocol_version: u8,
     username: [64]u8,
@@ -118,39 +109,34 @@ pub const LoginName = struct {
     len: u8,
 };
 
-id: i8,
-generation: u32,
-pose: AtomicPlayerPose,
+id: i8 = -1,
+generation: u32 = 0,
+pose: AtomicPlayerPose = .init(@bitCast(@as(u64, 0))),
 
 reader: *std.Io.Reader,
 writer: *std.Io.Writer,
-connected: *bool,
+connected: *bool = undefined,
 /// Remote connections publish transport closure across the socket, tick, and
 /// console threads. Local singleplayer continues to use `connected` directly.
-transport: ?*std.atomic.Value(TransportState),
+transport: ?*std.atomic.Value(TransportState) = null,
 
-/// Remote clients only: producers serialize packets into this queue and the
-/// client's own connection thread writes them to `stream`. Null for local
-/// (singleplayer) clients, which keep direct memory-writer sends.
-out: ?*OutboundQueue,
-stream: ?*std.Io.net.Stream,
+// Only the connection thread writes to remote sockets; local clients write directly.
+out: ?*OutboundQueue = null,
+stream: ?*std.Io.net.Stream = null,
 
-name: [16:0]u8,
-name_len: u8,
-initialized: bool,
-phase: std.atomic.Value(ConnectionPhase),
-local: bool,
-is_op: std.atomic.Value(bool),
-catchup_mode: std.atomic.Value(CatchupMode),
-ip: [players_db.ip_str_len:0]u8,
-protocol: Protocol,
+name: [16:0]u8 = @splat(' '),
+name_len: u8 = 0,
+initialized: bool = false,
+phase: std.atomic.Value(ConnectionPhase) = .init(.awaiting_login),
+local: bool = false,
+is_op: std.atomic.Value(bool) = .init(false),
+catchup_mode: std.atomic.Value(CatchupMode) = .init(.none),
+ip: [ip_str_len:0]u8 = @splat(0),
+protocol: Protocol = undefined,
 
-buffer: [1024]u8,
+buffer: [1024]u8 = undefined,
 
-/// Streams gzip-compressed data as 1024-byte LevelDataChunk protocol packets.
-/// Packets are appended to the client's outbound queue -- the compress worker
-/// never touches a socket, so a slow joiner fails its own login instead of
-/// stalling world compression for everyone.
+// Queue gzip chunks without blocking the shared compressor on a slow socket.
 const ChunkSender = struct {
     interface: std.Io.Writer,
     out: *OutboundQueue,
@@ -215,14 +201,6 @@ fn ctx_to_client(ctx: *anyopaque) *Client {
     return @ptrCast(@alignCast(ctx));
 }
 
-pub fn load_pose(self: *const Client) PlayerPose {
-    return self.pose.load();
-}
-
-fn store_pose(self: *Client, pose: PlayerPose) void {
-    self.pose.store(pose);
-}
-
 pub fn is_connected(self: *const Client) bool {
     if (self.transport) |transport| return transport.load(.acquire) != .closed;
     return self.connected.*;
@@ -258,54 +236,6 @@ pub fn login_name(request: LoginRequest) LoginName {
     return result;
 }
 
-/// Initialise a client that has already completed the transport-level login
-/// frame. The caller must add it to `Server.players` and call `init` on the
-/// stored entry before starting its read loop; `Protocol.init` keeps a pointer
-/// to its client context.
-pub fn init_remote_admitted(
-    self: *Client,
-    reader: *std.Io.Reader,
-    writer: *std.Io.Writer,
-    transport: *std.atomic.Value(TransportState),
-    out: *OutboundQueue,
-    stream: *std.Io.net.Stream,
-    ip: []const u8,
-    is_op: bool,
-    request: LoginRequest,
-) void {
-    const name = login_name(request);
-
-    self.connected = undefined;
-    self.transport = transport;
-    self.reader = reader;
-    self.writer = writer;
-    self.out = out;
-    self.stream = stream;
-    self.initialized = false;
-    self.phase = .init(.handshaking);
-    self.local = false;
-    self.is_op = .init(is_op);
-    self.catchup_mode = .init(.none);
-    self.ip = std.mem.zeroes([players_db.ip_str_len:0]u8);
-    const ip_n = @min(ip.len, players_db.ip_str_len);
-    @memcpy(self.ip[0..ip_n], ip[0..ip_n]);
-    self.name = name.value;
-    self.name_len = name.len;
-    self.id = -1;
-    self.generation = 0;
-    self.pose = .init(@bitCast(@as(u64, 0)));
-}
-
-fn read_packet(self: *Client, reader: *std.Io.Reader) !void {
-    const packet_id = try reader.peekByte();
-    const len = try proto.packet_length_to_server(packet_id);
-
-    const buffer = try reader.peek(len);
-    @memcpy(self.buffer[0..len], buffer);
-
-    reader.toss(len);
-}
-
 fn packet_allowed(phase: ConnectionPhase, packet_id: u8) bool {
     return switch (phase) {
         .awaiting_login => packet_id == 0x00,
@@ -331,24 +261,19 @@ fn require_active(self: *Client) bool {
 fn process_packet(self: *Client, reader: *std.Io.Reader) !bool {
     if (!self.accepts_packets()) return false;
 
-    // Check the phase before asking the generated protocol layer for a packet
-    // length. That guarantees any unexpected byte, including an unknown ID,
-    // gets an explicit disconnect without reaching the decoder or dispatcher.
     const packet_id = try reader.peekByte();
     if (!packet_allowed(self.phase.load(.acquire), packet_id)) {
         self.reject_protocol("Protocol state violation");
         return false;
     }
 
-    try self.read_packet(reader);
-
-    try self.protocol.handle_packet(self.buffer[1..], self.buffer[0]);
+    const len = try proto.packet_length_to_server(packet_id);
+    @memcpy(self.buffer[0..len], try reader.peek(len));
+    reader.toss(len);
+    try self.protocol.handle_packet(self.buffer[1..len], packet_id);
     return true;
 }
 
-/// Serialize one packet and hand it to the right sink. Remote clients get it
-/// queued for their own connection thread to write (a full queue kicks the
-/// slow client); local clients keep the direct memory-writer write + flush.
 fn send_packet(self: *Client, comptime send_fn: anytype, args: anytype) !void {
     if (self.out) |q| {
         var buf: [packet_buf_bytes]u8 = undefined;
@@ -364,9 +289,7 @@ fn send_packet(self: *Client, comptime send_fn: anytype, args: anytype) !void {
     }
 }
 
-/// Kick a client whose outbound queue overflowed: it is reading too slowly
-/// and must never be waited on. Shutting the stream down unblocks the
-/// connection thread's pending receive.
+// Closing the stream unblocks the connection thread's pending receive.
 pub fn kick_slow(self: *Client) void {
     const was_connected = self.is_connected();
     self.mark_closed();
@@ -376,9 +299,7 @@ pub fn kick_slow(self: *Client) void {
     }
 }
 
-/// Write all queued outbound bytes to the socket. Runs only on the client's
-/// own connection thread, so a stuck peer blocks nobody else. The queue
-/// mutex is released before each socket write.
+// Connection thread only; never hold the queue mutex across a socket write.
 fn drain_outbound(self: *Client) void {
     const q = self.out orelse return;
     var buf: [drain_buf_bytes]u8 = undefined;
@@ -399,7 +320,7 @@ fn drain_outbound(self: *Client) void {
     }
 }
 
-pub fn send_message(self: *Client, id: i8, message: []u8) !void {
+pub fn send_message(self: *Client, id: i8, message: []const u8) !void {
     const pid: i8 = if (id == self.id) -1 else id;
     try self.send_packet(proto.send_message, .{ pid, message });
 }
@@ -407,9 +328,7 @@ pub fn send_message(self: *Client, id: i8, message: []u8) !void {
 pub fn send_disconnect(self: *Client, reason: []const u8) !void {
     self.phase.store(.closing, .release);
     if (self.out) |q| {
-        // Callers include foreign threads (console /kick, /ban), so never
-        // touch the socket here: queue the packet best-effort and let the
-        // client's own thread drain it before teardown.
+        // Console commands may call this from outside the connection thread.
         var buf: [packet_buf_bytes]u8 = undefined;
         var fixed = std.Io.Writer.fixed(&buf);
         try proto.send_disconnect_to_client(&fixed, reason);
@@ -424,11 +343,7 @@ pub fn send_disconnect(self: *Client, reason: []const u8) !void {
 }
 
 pub fn send_ping(self: *Client) !void {
-    try self.send_packet(write_ping_byte, .{});
-}
-
-fn write_ping_byte(writer: *std.Io.Writer) !void {
-    try writer.writeByte(0x01);
+    try self.send_packet(std.Io.Writer.writeByte, .{@as(u8, 0x01)});
 }
 
 pub fn send_player_position(self: *Client, id: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) !void {
@@ -452,7 +367,7 @@ pub fn send_update_player_type(self: *Client, is_op: bool) !void {
 }
 
 fn send_world(self: *Client) !void {
-    try self.send_packet(proto.send_level_initialize_to_client, .{});
+    try self.send_packet(std.Io.Writer.writeByte, .{@as(u8, 0x02)});
     self.drain_outbound();
 
     if (self.local) {
@@ -555,22 +470,19 @@ pub fn handshake(self: *Client) !void {
 
     try self.send_world();
 
-    var name_buf: Message = @splat(' ');
-    std.mem.copyForwards(u8, &name_buf, self.name[0..self.name_len]);
-
     world.lock_world_shared();
     const spawn = world.find_spawn();
     world.unlock_world_shared();
     var initial_spawn = zb.SpawnPlayer{
         .pid = -1,
-        .name = name_buf,
+        .name = proto.padded_string(self.name[0..self.name_len]),
         .x = spawn[0],
         .y = spawn[1],
         .z = spawn[2],
         .yaw = 0,
         .pitch = 0,
     };
-    self.store_pose(.{ .x = initial_spawn.x, .y = initial_spawn.y, .z = initial_spawn.z, .yaw = 0, .pitch = 0 });
+    self.pose.store(.{ .x = initial_spawn.x, .y = initial_spawn.y, .z = initial_spawn.z, .yaw = 0, .pitch = 0 });
     try self.send_packet(proto.send_spawn_to_client, .{&initial_spawn});
     self.drain_outbound();
 
@@ -583,13 +495,10 @@ pub fn handshake(self: *Client) !void {
             const player = &(Server.players.items[i] orelse continue);
             if (player.id == self.id or !player.initialized) continue;
 
-            var name_cpy = [_]u8{' '} ** 64;
-            std.mem.copyForwards(u8, &name_cpy, &player.name);
-
-            const pose = player.load_pose();
+            const pose = player.pose.load();
             var player_spawn = zb.SpawnPlayer{
                 .pid = player.id,
-                .name = name_cpy,
+                .name = proto.padded_string(player.name[0..player.name_len]),
                 .x = pose.x,
                 .y = pose.y,
                 .z = pose.z,
@@ -605,20 +514,15 @@ pub fn handshake(self: *Client) !void {
 
     Server.broadcast_spawn_player(self.id, &initial_spawn);
 
-    const own_pose = self.load_pose();
+    const own_pose = self.pose.load();
     try self.send_packet(proto.send_position_to_client, .{ -1, own_pose.x, own_pose.y, own_pose.z, 0, 0 });
     self.drain_outbound();
 
-    // Skip welcome + join-broadcast chat in singleplayer: the lone local
-    // player would just be seeing themselves "join" their own world.
     if (!Server.internal_use) {
-        var msg_buf: Message = @splat(' ');
-        std.mem.copyForwards(u8, &msg_buf, "&eWelcome to the world!");
-
-        try self.send_message(self.id, &msg_buf);
+        try self.send_message(self.id, "&eWelcome to the world!");
         self.drain_outbound();
 
-        msg_buf = @splat(' ');
+        var msg_buf: Message = @splat(' ');
         _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
 
         Server.broadcast_chat_message(self.id, &msg_buf);
@@ -674,9 +578,6 @@ pub fn finish_login(self: *Client) !void {
     self.initialized = true;
     self.phase.store(.active, .release);
     Server.unlock_roster();
-
-    const ip = self.ip_slice();
-    if (ip.len > 0) players_db.record_completed_login(ip, self.name[0..self.name_len]);
 }
 
 fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
@@ -694,42 +595,27 @@ fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void 
     const self = ctx_to_client(ctx);
     if (!require_active(self)) return;
 
-    self.store_pose(.{ .x = e.x, .y = e.y, .z = e.z, .yaw = e.yaw, .pitch = e.pitch });
+    self.pose.store(.{ .x = e.x, .y = e.y, .z = e.z, .yaw = e.yaw, .pitch = e.pitch });
 }
 
 fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
     const self = ctx_to_client(ctx);
     if (!require_active(self)) return;
 
-    // Strip wire padding before command parsing and chat formatting.
     const trimmed = std.mem.trimEnd(u8, &event.message, " \x00");
     if (trimmed.len > 0 and trimmed[0] == '/') {
-        handle_slash_command(self, trimmed[1..]);
+        if (Server.on_command) |dispatch| {
+            dispatch(self, trimmed[1..]);
+        } else {
+            try self.send_message(self.id, "&eCommands are only available on multiplayer servers");
+        }
         return;
     }
 
-    var dup_buf = [_]u8{' '} ** 64;
-    dup_buf[0] = '&';
-    dup_buf[1] = 'f';
-
-    var curr_idx: u8 = 2;
-    for (0..self.name.len) |i| {
-        if (self.name[i] != ' ') {
-            dup_buf[i + 2] = self.name[i];
-            curr_idx += 1;
-        } else {
-            break;
-        }
-    }
-
-    dup_buf[curr_idx] = ':';
-    curr_idx += 1;
-    dup_buf[curr_idx] = ' ';
-    curr_idx += 1;
-
-    for (curr_idx..dup_buf.len, 0..(dup_buf.len - curr_idx)) |i, j| {
-        dup_buf[i] = event.message[j];
-    }
+    var dup_buf: Message = @splat(' ');
+    const prefix = std.fmt.bufPrint(&dup_buf, "&f{s}: ", .{self.name[0..self.name_len]}) catch unreachable;
+    const len = @min(trimmed.len, dup_buf.len - prefix.len);
+    @memcpy(dup_buf[prefix.len..][0..len], trimmed[0..len]);
 
     // Translate Minecraft's alternate '%' color prefix.
     for (0..dup_buf.len - 1) |i| {
@@ -740,21 +626,6 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
     }
 
     Server.broadcast_chat_message(self.id, &dup_buf);
-}
-
-fn slash_sink_write(ctx: *anyopaque, line: []const u8) void {
-    const self = ctx_to_client(ctx);
-    var msg_buf: Message = @splat(' ');
-    const n = @min(line.len, msg_buf.len);
-    @memcpy(msg_buf[0..n], line[0..n]);
-    self.send_message(self.id, &msg_buf) catch return;
-    self.writer.flush() catch return;
-}
-
-fn handle_slash_command(self: *Client, body: []const u8) void {
-    const allowed = self.is_op.load(.acquire) or Server.internal_use;
-    const sink: commands.Sink = .{ .ctx = self, .write_fn = slash_sink_write };
-    commands.dispatch(sink, body, allowed);
 }
 
 fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
@@ -770,9 +641,7 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     if (event.x >= dims.length or event.y >= dims.height or event.z >= dims.depth)
         return;
 
-    // Wire byte to typed mode at the protocol boundary. Bare `@enumFromInt`
-    // would panic in ReleaseSafe on any value outside {0, 1}, so a single
-    // malformed packet from any peer would crash the server.
+    // Validate untrusted mode bytes before converting to an enum.
     const mode = std.enums.fromInt(zb.ClickMode, event.mode) orelse return;
 
     if (mode == .destroy and event.y == 0)
@@ -854,9 +723,7 @@ pub fn drain_packets(self: *Client) void {
     while (self.try_process_packet()) {}
 }
 
-/// Connection loop -- runs on the client's own Io thread pool thread.
-/// Interleaves draining the outbound queue with inbound reads so a slow
-/// peer only ever stalls this one thread; returns when the connection ends.
+/// Drain outbound packets between reads on this client's connection thread.
 pub fn read_loop(self: *Client) void {
     const stream = self.stream orelse {
         self.mark_closed();
@@ -921,22 +788,12 @@ pub fn read_loop(self: *Client) void {
     }
 }
 
-test "connection phase accepts only phase-valid client packets" {
-    try std.testing.expect(packet_allowed(.awaiting_login, 0x00));
-    try std.testing.expect(!packet_allowed(.awaiting_login, 0x05));
-    try std.testing.expect(!packet_allowed(.handshaking, 0x00));
-    try std.testing.expect(!packet_allowed(.active, 0x00));
-    try std.testing.expect(packet_allowed(.active, 0x05));
-    try std.testing.expect(packet_allowed(.active, 0x08));
-    try std.testing.expect(packet_allowed(.active, 0x0D));
-    try std.testing.expect(!packet_allowed(.closing, 0x0D));
-}
-
 test "phase-invalid packets disconnect before dispatch" {
     const cases = [_]struct { phase: ConnectionPhase, packet_id: u8 }{
         .{ .phase = .active, .packet_id = 0x00 },
         .{ .phase = .awaiting_login, .packet_id = 0x05 },
         .{ .phase = .awaiting_login, .packet_id = 0x0D },
+        .{ .phase = .handshaking, .packet_id = 0x00 },
     };
     for (cases) |case| {
         const packet = [_]u8{case.packet_id};
@@ -944,16 +801,16 @@ test "phase-invalid packets disconnect before dispatch" {
         var output: [256]u8 = undefined;
         var writer = std.Io.Writer.fixed(&output);
         var connected = true;
-        var client: Client = undefined;
-        client.reader = &reader;
-        client.writer = &writer;
-        client.connected = &connected;
-        client.transport = null;
-        client.out = null;
-        client.phase = .init(case.phase);
+        var client: Client = .{
+            .reader = &reader,
+            .writer = &writer,
+            .connected = &connected,
+            .phase = .init(case.phase),
+        };
 
         try std.testing.expect(!(try client.process_packet(&reader)));
         try std.testing.expect(!connected);
+        try std.testing.expectEqual(@as(usize, 0), reader.seek);
         try std.testing.expectEqual(@as(u8, 0x0E), writer.buffered()[0]);
     }
 }

@@ -2,10 +2,8 @@ comptime {
     _ = @import("world_dims.zig");
     _ = @import("blocks.zig");
     _ = @import("physics.zig");
-    _ = @import("access_control.zig");
     _ = @import("outbound_queue.zig");
     _ = @import("compress_worker.zig");
-    _ = @import("players_db.zig");
     _ = @import("client.zig");
     _ = @import("server.zig");
     _ = @import("nbt/nbt.zig");

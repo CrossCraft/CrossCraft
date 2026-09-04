@@ -6,7 +6,6 @@ const layout = ae.UI.layout;
 
 pub const WidgetId = widget_id.WidgetId;
 
-/// Tracks whether focus was last moved by the pointer or the d-pad.
 pub const FocusSource = enum { mouse, pad };
 
 pub const FocusableKind = enum(u8) { button, text_field, slider, slot_grid };
@@ -31,7 +30,6 @@ pub const ScrollView = struct {
     wheel_step: i16,
 };
 
-/// Per-`ScrollList` scroll position.
 pub const ScrollEntry = struct {
     id: WidgetId,
     y: i16,
@@ -58,33 +56,22 @@ scroll_view_count: u8 = 0,
 scroll_entries: [MAX_SCROLLS]ScrollEntry = undefined,
 scroll_count: u8 = 0,
 
-/// Reset transient state on screen entry. `seed_focus = true` arms
-/// pad-style nav so the first focusable is highlighted after the first frame.
+/// `seed_focus` highlights the first focusable after the first frame.
 pub fn open(self: *UiState, seed_focus: bool) void {
-    self.cancel_active_text();
-    self.focused = null;
-    self.hovered = null;
-    self.captured = null;
-    self.captured_via_click = false;
-    self.focus_source = if (seed_focus) .pad else .mouse;
-    self.focusable_count = 0;
-    self.scroll_view_count = 0;
-    self.scroll_count = 0;
+    self.* = .{ .focus_source = if (seed_focus) .pad else .mouse };
 }
 
 pub fn scroll_y(self: *const UiState, id: WidgetId) i16 {
-    var i: u8 = 0;
-    while (i < self.scroll_count) : (i += 1) {
-        if (self.scroll_entries[i].id == id) return self.scroll_entries[i].y;
+    for (self.scroll_entries[0..self.scroll_count]) |entry| {
+        if (entry.id == id) return entry.y;
     }
     return 0;
 }
 
 pub fn set_scroll_y(self: *UiState, id: WidgetId, y: i16) void {
-    var i: u8 = 0;
-    while (i < self.scroll_count) : (i += 1) {
-        if (self.scroll_entries[i].id == id) {
-            self.scroll_entries[i].y = y;
+    for (self.scroll_entries[0..self.scroll_count]) |*entry| {
+        if (entry.id == id) {
+            entry.y = y;
             return;
         }
     }

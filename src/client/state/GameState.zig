@@ -67,8 +67,7 @@ fake_conn: FakeConn,
 conn: ClientConn,
 // Owns the multiplayer TCP read side and clears mp_connected on exit.
 mp_read_thread: ?Util.Thread,
-sp_compressor_thread: ?CompressorThread.Thread,
-mp_compressor_thread: ?CompressorThread.Thread,
+compressor_thread: ?Util.Thread,
 world: WorldRenderer,
 player: Player,
 ui_batcher: SpriteBatcher,
@@ -105,19 +104,13 @@ dump_world_name_len: u8,
 pause_ui_repeat: ui_input.Repeat,
 pause_batcher: SpriteBatcher,
 pause_font_batcher: FontBatcher,
-/// True once `init` has run to completion. Guards `deinit` so a partially
-/// initialised state -- e.g. `init` errored on OOM after enough world reload
-/// cycles -- does not crash on undefined sub-allocations.
 inited: bool,
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
     self.mp_read_thread = null;
-    self.sp_compressor_thread = null;
-    self.mp_compressor_thread = null;
-    // Push the gameplay context up front so any later init failure is
-    // matched by the deinit pop below.
+    self.compressor_thread = null;
     const gameplay_set = try bindings.init(&engine.input);
     try engine.input.push_context(&.{
         .name = "gameplay",
@@ -165,10 +158,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             self.conn.init(&Session.mp_reader.interface, &Session.mp_writer.interface);
             Session.mp_connected.store(true, .release);
 
-            // Wire up player_list and chat BEFORE the read loop starts so
-            // that SpawnPlayer packets for already-connected players (sent
-            // by the server right after LevelFinalize) are not silently
-            // dropped due to null pointers.
+            // Install recipients before the read loop can dispatch their packets.
             self.player_list = PlayerList.init();
             self.conn.player_list = &self.player_list;
             self.chat = Chat.init();
@@ -244,8 +234,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         ResourcePack.atlas,
     );
 
-    // ensure_registered is idempotent; call it so the inventory overlay
-    // has the menu actions even if MenuState was skipped.
     try ui_input.ensure_registered(&engine.input);
     ui_input.set_profile(ui_input.default_profile());
     self.inventory_open = false;
@@ -299,7 +287,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
             try CompressWorker.init(engine.allocator(.user), engine.io);
             errdefer CompressWorker.deinit();
-            self.mp_compressor_thread = try CompressorThread.spawn(engine.allocator(.user));
+            self.compressor_thread = try CompressorThread.spawn("world_compress", engine.allocator(.user));
         },
     }
 
@@ -318,7 +306,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     }
     ControlsScreen.cancel_capture(&engine.input, pause_controls_ctx(self));
 
-    // Pop gameplay and any overlays still stacked on top of it.
     while (engine.input.stack_top()) |top| {
         if (std.mem.eql(u8, top.name, "gameplay")) {
             _ = engine.input.pop_context() catch {};
@@ -328,13 +315,10 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
         _ = engine.input.pop_context() catch break;
     }
 
-    // Stop the read-loop task before freeing any resources it may still
-    // be accessing (world_renderer, conn.buffer, etc.).
+    // Join the reader before freeing its world and UI recipients.
     switch (Session.mode) {
         .singleplayer => self.fake_conn.connected = false,
         .multiplayer => {
-            // Signal the loop to exit, then close the socket to unblock any
-            // pending read, then await the task so we know it has returned.
             Session.mp_connected.store(false, .release);
             if (Session.mp_stream) |*s| {
                 s.close(engine.io);
@@ -344,9 +328,7 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
                 t.join();
                 self.mp_read_thread = null;
             }
-            // PSP: tear down the networking stack so the next connect cycle
-            // re-runs net dialog + net.init from a clean state. Skipping this
-            // leaves sceNet/Apctl/Resolver loaded and the second connect fails.
+            // PSP reconnects fail unless the networking stack is reinitialized.
             if (ae.platform == .psp) {
                 const pspsdk = @import("pspsdk");
                 pspsdk.extra.net.disconnect();
@@ -364,37 +346,22 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.ui_batcher.deinit();
     self.world.deinit();
 
-    // Tear down the game-side world/server allocations. SP went through
-    // Server.init (which sets up the static allocator + compressor and owns
-    // World), so Server.deinit unwinds the whole stack. MP only ran
-    // World.init_empty, plus a small compressor worker for explicit dumps.
+    // Keep compression alive until the final singleplayer save completes.
     switch (Session.mode) {
         .singleplayer => {
-            // Server.deinit triggers the final save; the compressor thread
-            // must still be alive to drain it before we signal exit and
-            // join. Its backing storage is freed only after the thread is
-            // gone.
             self.ensure_sp_compressor_started(engine) catch |err| {
                 log.err("failed to start SP compressor before shutdown: {}", .{err});
             };
             Server.deinit();
-            if (self.sp_compressor_thread) |*t| {
-                CompressWorker.signal_exit();
-                t.join();
-                self.sp_compressor_thread = null;
-            }
-            CompressWorker.deinit();
         },
-        .multiplayer => {
-            World.deinit();
-            if (self.mp_compressor_thread) |*t| {
-                CompressWorker.signal_exit();
-                t.join();
-                self.mp_compressor_thread = null;
-            }
-            CompressWorker.deinit();
-        },
+        .multiplayer => World.deinit(),
     }
+    if (self.compressor_thread) |*t| {
+        CompressWorker.signal_exit();
+        t.join();
+        self.compressor_thread = null;
+    }
+    CompressWorker.deinit();
     self.inited = false;
 }
 
@@ -412,30 +379,23 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
 fn ensure_sp_compressor_started(self: *@This(), engine: *Engine) !void {
     if (comptime ae.platform == .wasm) return;
 
-    if (self.sp_compressor_thread != null) return;
+    if (self.compressor_thread != null) return;
     // Drain save jobs queued by Server.init only after the state transition
     // and initial memory report have completed.
-    self.sp_compressor_thread = try CompressorThread.spawn(engine.allocator(.user));
+    self.compressor_thread = try CompressorThread.spawn("world_compress", engine.allocator(.user));
 }
 
-/// Emit PositionAndOrientationToServer every tick. Classic's wire format
-/// is u16 fixed-point (world*32) for position and u8 (turn/256) for
-/// yaw/pitch.
 fn send_player_position(player: *Player) void {
     const eye_y = player.pos_y + collision.EYE_HEIGHT;
     const x_fp: u16 = fp_coord(player.pos_x);
     const y_fp: u16 = fp_coord(eye_y);
     const z_fp: u16 = fp_coord(player.pos_z);
 
-    // camera.yaw rotates CCW; Classic's u8 yaw rotates CW. Negate to
-    // flip handedness; the zero point already matches.
+    // Camera yaw is CCW; Classic yaw is CW with the same zero point.
     const yaw_u8 = angle_to_classic_u8(-player.camera.yaw);
     const pitch_u8 = angle_to_classic_u8(player.camera.pitch);
 
-    // Skip if the Writer is still holding data from a previous failed
-    // flush (transient ENOBUFS on PSP). Retry the flush so pending
-    // block/chat bytes get another chance; stale position history isn't
-    // worth preserving. Real disconnects go through the read_loop.
+    // Retry buffered chat/block packets after PSP ENOBUFS before adding newer positions.
     if (Session.mode == .multiplayer and Session.mp_writer.interface.end > 0) {
         player.writer.flush() catch {};
         return;
@@ -674,9 +634,6 @@ fn close_pause(self: *@This(), engine: *Engine) void {
 fn open_inventory(self: *@This(), engine: *Engine) void {
     if (self.inventory_open) return;
     self.inventory_open = true;
-    // Seed the cursor from the player's current hotbar pick when it
-    // refers to a filled slot; otherwise drop to the first cell so the
-    // overlay always opens with a selectable highlight.
     self.inventory_slot = if (self.player.selected_slot < blocks.INVENTORY_FILLED)
         self.player.selected_slot
     else
@@ -770,9 +727,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         &self.inventory_repeat;
     const ui_in = ui_input.build_frame(&engine.input, dt, active_repeat);
 
-    // Pause menu open/close. Focus loss only auto-pauses when nothing else is
-    // already grabbing input -- otherwise the chat or inventory overlay would
-    // sit awkwardly behind the pause panel.
     const can_open_pause = !self.paused and !self.chat.open and !self.inventory_open;
     var just_opened_pause = false;
     if (focus_lost_this_frame(&engine.input) and can_open_pause) {
@@ -791,9 +745,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         if (!just_opened_pause) {
             switch (self.pause_screen) {
                 .main => {
-                    // Skip tree.update on the open frame so the same Escape
-                    // press that opened the menu (which also raises
-                    // cancel_edge) does not immediately close it.
+                    // Do not let the opening Escape press close the menu again.
                     if (try update_pause_menu(self, engine, &ui_in)) return;
                 },
                 .options => try update_pause_options(self, engine, &ui_in),
@@ -919,11 +871,6 @@ fn handle_fly_tap(self: *@This()) void {
     }
 }
 
-/// True when the voxel containing the player's eye is not directly sunlit.
-/// Used to tint the held-block viewmodel to match the surrounding lighting,
-/// matching the per-face shading the chunk mesher applies to world geometry.
-/// Out-of-world positions (e.g. the brief above-ceiling case during a
-/// teleport) read as lit so the held block never goes dark unexpectedly.
 fn player_in_shadow(player: *const Player) bool {
     const eye_y = player.pos_y + collision.EYE_HEIGHT;
     const fx = @floor(player.pos_x);
@@ -969,7 +916,7 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
     }
     if (self.inventory_open) {
         var inv_list: UiDrawList = .{};
-        var none = Screen.empty_input();
+        var none: ui_input.UiInput = .{};
         var inv_ui = begin_game_ui(self, &inv_list, &self.inventory_ui_state, &none, InventoryUi.LAYER_BASE);
         _ = InventoryUi.run(&inv_ui, self.inventory_blocks[0..], &self.inventory_slot);
         inv_ui.end();
@@ -1023,7 +970,7 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
     if (!self.paused) return;
 
     draw_pause_dim(self);
-    var none = Screen.empty_input();
+    var none: ui_input.UiInput = .{};
     switch (self.pause_screen) {
         .main => {
             var list: UiDrawList = .{};
@@ -1071,15 +1018,13 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
 
 fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    // SP drains packets on the game thread; MP has the bg read-loop
-    // task doing it and just checks the connection flag here.
     if (Session.mode == .singleplayer) {
         self.conn.drain_packets();
     } else if (!Session.mp_connected.load(.acquire)) {
         DisconnectState.transition_here(engine);
         return;
     }
-    if (self.conn.quit_requested) {
+    if (Session.mode == .singleplayer and self.conn.quit_requested) {
         DisconnectState.transition_here(engine);
         return;
     }

@@ -203,16 +203,10 @@ pub fn begin(args: InitArgs) Ui {
     return self;
 }
 
-fn input_system(self: *const Ui) ?*input_api.InputSystem {
-    return self.input.input_system;
-}
-
-/// End the engine session alongside the UI-side field state. Aether permits
-/// only one non-terminal text session, so clearing just `UiState.active_text`
-/// leaves the next pointer-selected field unable to begin editing.
+/// Aether permits only one active text session, even across UI fields.
 fn cancel_active_text(self: *Ui) void {
     if (self.state.active_text != null) {
-        if (self.input_system()) |sys| {
+        if (self.input.input_system) |sys| {
             if (sys.current_text_session()) |session| {
                 if (!session.is_terminal()) sys.cancel_text() catch {};
             }
@@ -225,12 +219,10 @@ pub fn end(self: *Ui) void {
     assert(self.depth == 1);
 
     self.state.focusable_count = self.focus_count;
-    var i: u8 = 0;
-    while (i < self.focus_count) : (i += 1) self.state.focusables[i] = self.focusables[i];
+    @memcpy(self.state.focusables[0..self.focus_count], self.focusables[0..self.focus_count]);
 
     self.state.scroll_view_count = self.scroll_view_count;
-    i = 0;
-    while (i < self.scroll_view_count) : (i += 1) self.state.scroll_views[i] = self.scroll_views[i];
+    @memcpy(self.state.scroll_views[0..self.scroll_view_count], self.scroll_views[0..self.scroll_view_count]);
 
     if (self.state.focused) |id| {
         if (self.find_current_visible_id(id) == null) self.state.focused = null;
@@ -322,13 +314,13 @@ pub fn button(self: *Ui, id: WidgetId, text: []const u8, opts: ButtonOpts) bool 
     const rect = self.alloc_rect(.{ .x = opts.width, .y = opts.height });
     if (opts.enabled) self.push_focusable(.{ .id = id, .kind = .button, .rect = rect, .enabled = true });
 
-    const focused = opts.enabled and self.state_focused_eq(id);
-    const hovered = opts.enabled and self.state_hovered_eq(id);
+    const focused = opts.enabled and self.state.focused == id;
+    const hovered = opts.enabled and self.state.hovered == id;
     draw_button(self, rect, text, focused or hovered, opts);
     self.record_child(draw_start, self.draw.count, focus_start, self.focus_count, scroll_start, self.scroll_view_count, rect);
 
     if (!opts.enabled) return false;
-    if (self.input.click_edge and self.state_hovered_eq(id) and !self.claimed_click) {
+    if (self.input.click_edge and self.state.hovered == id and !self.claimed_click) {
         self.claimed_click = true;
         self.state.focused = id;
         self.state.focus_source = .mouse;
@@ -337,7 +329,7 @@ pub fn button(self: *Ui, id: WidgetId, text: []const u8, opts: ButtonOpts) bool 
         self.state.captured_via_click = false;
         return true;
     }
-    if (self.input.confirm_edge and self.state_focused_eq(id) and !self.claimed_confirm) {
+    if (self.input.confirm_edge and self.state.focused == id and !self.claimed_confirm) {
         self.claimed_confirm = true;
         self.cancel_active_text();
         self.state.captured = null;
@@ -366,7 +358,7 @@ pub fn slider(self: *Ui, id: WidgetId, value: *f32, opts: SliderOpts) bool {
     self.push_focusable(.{ .id = id, .kind = .slider, .rect = rect });
 
     var changed = false;
-    if (self.input.click_edge and self.state_hovered_eq(id) and !self.claimed_click) {
+    if (self.input.click_edge and self.state.hovered == id and !self.claimed_click) {
         self.claimed_click = true;
         self.state.focused = id;
         self.state.focus_source = .mouse;
@@ -387,14 +379,14 @@ pub fn slider(self: *Ui, id: WidgetId, value: *f32, opts: SliderOpts) bool {
         } else if (self.input.nav == .left or self.input.nav == .right) {
             changed = nudge_slider_value(value, opts, self.input.nav);
         }
-    } else if (self.input.confirm_edge and self.state_focused_eq(id) and !self.claimed_confirm) {
+    } else if (self.input.confirm_edge and self.state.focused == id and !self.claimed_confirm) {
         self.claimed_confirm = true;
         self.state.focus_source = .pad;
         self.state.captured = id;
         self.state.captured_via_click = false;
     }
 
-    const focused = self.state_focused_eq(id) or self.state_hovered_eq(id);
+    const focused = self.state.focused == id or self.state.hovered == id;
     draw_slider(self, rect, id, value.*, opts, focused);
     self.record_child(draw_start, self.draw.count, focus_start, self.focus_count, scroll_start, self.scroll_view_count, rect);
     return changed;
@@ -418,7 +410,7 @@ pub fn text_field(self: *Ui, id: WidgetId, buf: *TextBuf, opts: TextOpts) TextEv
     self.push_focusable(.{ .id = id, .kind = .text_field, .rect = rect });
 
     var event: TextEvent = .none;
-    if (self.input.click_edge and self.state_hovered_eq(id) and !self.claimed_click) {
+    if (self.input.click_edge and self.state.hovered == id and !self.claimed_click) {
         self.claimed_click = true;
         self.state.focused = id;
         self.state.focus_source = .mouse;
@@ -430,10 +422,10 @@ pub fn text_field(self: *Ui, id: WidgetId, buf: *TextBuf, opts: TextOpts) TextEv
             self.set_active_text(id, buf, opts);
         }
     }
-    if (self.state_active_text_eq(id) and self.state.text_session_started and self.text_submit_edge() and !self.claimed_confirm) {
+    if (self.state.active_text == id and self.state.text_session_started and self.text_submit_edge() and !self.claimed_confirm) {
         self.claimed_confirm = true;
-        if (self.input_system()) |sys| sys.submit_text() catch {};
-    } else if (self.input.confirm_edge and self.state_focused_eq(id) and !self.claimed_confirm and !self.state_active_text_eq(id)) {
+        if (self.input.input_system) |sys| sys.submit_text() catch {};
+    } else if (self.input.confirm_edge and self.state.focused == id and !self.claimed_confirm and self.state.active_text != id) {
         self.claimed_confirm = true;
         self.state.focus_source = .pad;
         if (uses_modal_text_input()) {
@@ -477,19 +469,19 @@ pub fn slot_grid(self: *Ui, id: WidgetId, opts: SlotGridOpts) ?u8 {
     if (opts.interactive) self.push_focusable(.{ .id = id, .kind = .slot_grid, .rect = rect });
 
     var activated: ?u8 = null;
-    if (opts.interactive and self.input.cursor_moved and self.state_hovered_eq(id)) {
+    if (opts.interactive and self.input.cursor_moved and self.state.hovered == id) {
         _ = self.snap_slot_to_cursor(id, opts);
     }
-    if (opts.interactive and self.state_focused_eq(id) and self.input.nav != .none) {
+    if (opts.interactive and self.state.focused == id and self.input.nav != .none) {
         nudge_slot(opts, self.input.nav);
     }
-    if (opts.interactive and self.input.click_edge and self.state_hovered_eq(id) and !self.claimed_click) {
+    if (opts.interactive and self.input.click_edge and self.state.hovered == id and !self.claimed_click) {
         self.claimed_click = true;
         self.state.focused = id;
         self.state.focus_source = .mouse;
         if (self.snap_slot_to_cursor(id, opts)) activated = opts.cursor.*;
     }
-    if (opts.interactive and self.input.confirm_edge and self.state_focused_eq(id) and !self.claimed_confirm) {
+    if (opts.interactive and self.input.confirm_edge and self.state.focused == id and !self.claimed_confirm) {
         self.claimed_confirm = true;
         if (slot_valid(opts, opts.cursor.*)) activated = opts.cursor.*;
     }
@@ -1063,21 +1055,6 @@ fn autoscroll_to_focus(self: *Ui) void {
     }
 }
 
-fn state_focused_eq(self: *const Ui, id: WidgetId) bool {
-    const f = self.state.focused orelse return false;
-    return f == id;
-}
-
-fn state_hovered_eq(self: *const Ui, id: WidgetId) bool {
-    const h = self.state.hovered orelse return false;
-    return h == id;
-}
-
-fn state_active_text_eq(self: *const Ui, id: WidgetId) bool {
-    const a = self.state.active_text orelse return false;
-    return a == id;
-}
-
 fn persist(self: *Ui, text: []const u8) []const u8 {
     if (self.label_used + text.len > self.label_buf.len) return text;
     const dst = self.label_buf[self.label_used .. self.label_used + text.len];
@@ -1153,17 +1130,16 @@ fn set_active_text(self: *Ui, id: WidgetId, buf: *TextBuf, opts: TextOpts) void 
         .max_bytes = buf.max,
         .initial = if (buf.len.* > 0) buf.bytes[0..buf.len.*] else null,
     };
-    const sys = self.input_system() orelse {
-        self.finish_active_text();
+    const sys = self.input.input_system orelse {
+        self.state.cancel_active_text();
         return;
     };
-    // A screen can be replaced outside this UI pass. Recover from any
-    // orphaned non-terminal session before claiming this field.
+    // Screen transitions can orphan an Aether session.
     if (sys.current_text_session()) |session| {
         if (!session.is_terminal()) sys.cancel_text() catch {};
     }
     _ = sys.begin_text_input(&target, &input_opts) catch {
-        self.finish_active_text();
+        self.state.cancel_active_text();
         return;
     };
     self.state.text_session_started = true;
@@ -1177,7 +1153,7 @@ fn uses_modal_text_input() bool {
 }
 
 fn fire_modal_text_input(self: *Ui, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {
-    const sys = self.input_system() orelse return false;
+    const sys = self.input.input_system orelse return false;
     if (sys.current_text_session()) |s| {
         if (!s.is_terminal()) sys.cancel_text() catch {};
     }
@@ -1194,7 +1170,7 @@ fn fire_modal_text_input(self: *Ui, id: WidgetId, buf: *TextBuf, opts: TextOpts)
     self.state.text_session_started = false;
     const session = sys.current_text_session() orelse {
         log.warn("modal text input '{s}' produced no session", .{opts.session_id});
-        self.finish_active_text();
+        self.state.cancel_active_text();
         return false;
     };
     if (session.status != .submitted) {
@@ -1202,26 +1178,26 @@ fn fire_modal_text_input(self: *Ui, id: WidgetId, buf: *TextBuf, opts: TextOpts)
             log.warn("modal text input '{s}' returned non-terminal status {s}", .{ opts.session_id, @tagName(session.status) });
         }
         if (!session.is_terminal()) sys.cancel_text() catch {};
-        self.finish_active_text();
+        self.state.cancel_active_text();
         return false;
     }
     const changed = copy_session_to_buf(session.buffer.items, buf);
-    self.finish_active_text();
+    self.state.cancel_active_text();
     return changed;
 }
 
 fn sync_session_to_field(self: *Ui, id: WidgetId, buf: *TextBuf) TextEvent {
     if (self.state.active_text == null or self.state.active_text.? != id or !self.state.text_session_started) return .none;
-    const sys = self.input_system() orelse return .none;
+    const sys = self.input.input_system orelse return .none;
     const session = sys.current_text_session() orelse return .none;
     self.apply_text_session_events(session);
     if (session.status == .submitted) {
         _ = copy_session_to_buf(session.buffer.items, buf);
-        self.finish_active_text();
+        self.state.cancel_active_text();
         return .submit;
     }
     if (session.status == .cancelled) {
-        self.finish_active_text();
+        self.state.cancel_active_text();
         return .none;
     }
     return if (copy_session_to_buf(session.buffer.items, buf)) .changed else .none;
@@ -1229,7 +1205,7 @@ fn sync_session_to_field(self: *Ui, id: WidgetId, buf: *TextBuf) TextEvent {
 
 fn apply_text_session_events(self: *Ui, session_const: *const input_api.TextInputSession) void {
     if (!self.input.text_events or session_const.status != .active) return;
-    const sys = self.input_system() orelse return;
+    const sys = self.input.input_system orelse return;
     const session: *input_api.TextInputSession = @constCast(session_const);
     for (sys.frame_events()) |ev| {
         switch (ev.kind) {
@@ -1243,7 +1219,7 @@ fn apply_text_session_events(self: *Ui, session_const: *const input_api.TextInpu
 
 fn text_submit_edge(self: *const Ui) bool {
     if (!self.input.text_events) return false;
-    const sys = self.input_system() orelse return false;
+    const sys = self.input.input_system orelse return false;
     for (sys.frame_events()) |ev| {
         switch (ev.kind) {
             .key_down => |k| {
@@ -1267,11 +1243,6 @@ fn pop_text_codepoint(session: *input_api.TextInputSession) void {
     session.buffer.items.len = start;
 }
 
-fn finish_active_text(self: *Ui) void {
-    self.state.active_text = null;
-    self.state.text_session_started = false;
-}
-
 fn copy_session_to_buf(items: []const u8, buf: *TextBuf) bool {
     const take = @min(items.len, @as(usize, buf.max));
     const old = buf.bytes[0..buf.len.*];
@@ -1289,19 +1260,6 @@ test "pointer text-field transitions release the prior text session" {
     var state: UiState = .{};
     var in: UiInput = .{
         .input_system = &sys,
-        .cursor_x = 0,
-        .cursor_y = 0,
-        .cursor_available = false,
-        .cursor_moved = false,
-        .click_edge = false,
-        .click_held = false,
-        .nav = .none,
-        .confirm_edge = false,
-        .cancel_edge = false,
-        .pause_edge = false,
-        .title_exit_edge = false,
-        .inventory_edge = false,
-        .wheel_dy = 0,
         .text_events = true,
     };
     var ui: Ui = undefined;
@@ -1316,8 +1274,7 @@ test "pointer text-field transitions release the prior text session" {
     try std.testing.expectEqual(first_id, state.active_text.?);
     try std.testing.expectEqualStrings("first", sys.current_text_session().?.target.id);
 
-    // A screen transition can clear its local state before its next UI pass.
-    // Starting another field must recover from that orphaned Aether session.
+    // Recover from an orphaned session after a screen transition.
     state.cancel_active_text();
     var second_bytes: [8]u8 = undefined;
     var second_len: u8 = 0;
@@ -1330,8 +1287,7 @@ test "pointer text-field transitions release the prior text session" {
     try std.testing.expectEqual(input_api.TextInputStatus.active, session.status);
     try std.testing.expectEqualStrings("second", session.target.id);
 
-    // An outside click must end the Aether session as well as local UI focus,
-    // so a subsequent click-to-type field can start normally.
+    // Clicking outside must release the session for the next field.
     in.cursor_available = true;
     in.click_edge = true;
     ui.route_pre_frame();
@@ -1558,7 +1514,7 @@ fn draw_textfield(ui: *Ui, rect: LogicalRect, id: WidgetId, buf: *TextBuf, opts:
         .sizing = elide,
     });
     const active = ui.state.active_text != null and ui.state.active_text.? == id;
-    const focused = ui.state_focused_eq(id) or ui.state_hovered_eq(id);
+    const focused = ui.state.focused == id or ui.state.hovered == id;
     if (active) {
         draw_rect_outline(ui, rect, style.active_outline_thickness, style.active_outline_color, ui.layer_base + 4);
     } else if (focused) {

@@ -30,7 +30,6 @@ pub fn face_color(face: Face) u32 {
     };
 }
 
-/// Darken a color for shadowed geometry. Multiplies RGB by 153/256 (~0.6).
 pub fn apply_shadow(color: u32) u32 {
     const r = (color >> 16) & 0xFF;
     const g = (color >> 8) & 0xFF;
@@ -186,8 +185,6 @@ pub fn emit_face_colors(
     ));
 }
 
-/// Emit one face of a half-height slab (6 vertices). Top face sits at
-/// y + 0.5; side faces span [y, y + 0.5]; bottom face is unchanged.
 pub fn emit_slab_face(
     mesh: *BatchMesh,
     face: Face,
@@ -203,13 +200,10 @@ pub fn emit_slab_face(
     const uv = tile_uvs(tile, atlas);
     const py_top: i16 = encode_pos_frac(y, 128);
     const py_bot: i16 = encode_pos(y);
-    // make_quad uses only py1 for y_pos and only py for y_neg, so the
-    // unused bound on those faces is harmless.
     const py0: i16 = if (face == .y_pos) py_top else py_bot;
     const py1: i16 = py_top;
 
-    // Side faces sample only the lower half of the tile so the texture
-    // matches the geometry rather than getting squashed.
+    // Crop the lower half of the tile rather than squash its texture.
     const use_lower_half = face != .y_pos and face != .y_neg;
     const half_v: i16 = @intCast(@divTrunc(@as(i32, uv.tv1) - @as(i32, uv.tv0), 2));
     const tv0: i16 = if (use_lower_half) @intCast(@as(i32, uv.tv0) + half_v) else uv.tv0;
@@ -230,10 +224,7 @@ pub fn emit_slab_face(
     ));
 }
 
-/// Emit one side face of a fluid block (6 vertices). The top of the quad
-/// matches the fluid top plane (inset ~0.9 blocks) when the block above is
-/// not also fluid; otherwise it spans the full block so stacked fluid
-/// columns remain flush. Not valid for y_pos / y_neg faces.
+/// Exposed sides meet the inset fluid top; stacked sides span the full block.
 pub fn emit_fluid_side_face(
     mesh: *BatchMesh,
     face: Face,
@@ -268,7 +259,7 @@ pub fn emit_fluid_side_face(
     ));
 }
 
-/// Emit fluid top face at 0.9 block height, double-sided (12 vertices).
+/// Double-sided fluid surface at 0.9 block height.
 pub fn emit_fluid_top(
     mesh: *BatchMesh,
     x: u32,
@@ -296,11 +287,8 @@ pub fn emit_fluid_top(
     ));
 }
 
-/// Emit a fluid-overlay face on a transparent block's boundary with fluid.
-/// Inset 1/256 block past the boundary toward the fluid so the face sits
-/// just in front of the transparent block's own face when viewed from the
-/// fluid side, passing the depth test. Perpendicular axes are expanded by
-/// the same amount to close hairline seams at block corners. (6 vertices)
+/// Offset 1/256 block toward the fluid to pass the transparent face's depth
+/// test, and expand the other axes by the same amount to close corner seams.
 pub fn emit_fluid_overlay(
     mesh: *BatchMesh,
     face: Face,

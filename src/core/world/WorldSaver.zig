@@ -146,14 +146,17 @@ fn cw_save_run(base: *compress_worker.Job) anyerror!void {
 }
 
 fn save_worker(self: *WorldSaver) void {
-    const save_file_name = self.worker_save_file_name();
+    const save_file_name = if (self.save_override_active)
+        self.save_override_file_name[0..self.save_override_file_name_len]
+    else
+        self.save_file_name;
     var temp_name_buf: [TEMP_NAME_MAX]u8 = undefined;
-    const temp_name = sibling_name(save_file_name, TEMP_SUFFIX, &temp_name_buf) catch {
+    const temp_name = std.fmt.bufPrint(&temp_name_buf, "{s}{s}", .{ save_file_name, TEMP_SUFFIX }) catch {
         log.err("Save file name is too long: '{s}'", .{save_file_name});
         return;
     };
     var previous_name_buf: [TEMP_NAME_MAX]u8 = undefined;
-    const previous_name = sibling_name(save_file_name, PREVIOUS_SUFFIX, &previous_name_buf) catch {
+    const previous_name = std.fmt.bufPrint(&previous_name_buf, "{s}{s}", .{ save_file_name, PREVIOUS_SUFFIX }) catch {
         log.err("Save file name is too long: '{s}'", .{save_file_name});
         return;
     };
@@ -167,7 +170,10 @@ fn save_worker(self: *WorldSaver) void {
         data.lock_shared(self.io);
         defer data.unlock_shared(self.io);
 
-        const world_name = self.worker_world_name(data);
+        const world_name = if (self.save_override_active)
+            self.save_override_world_name[0..self.save_override_world_name_len]
+        else
+            data.name[0..data.name_len];
         @memcpy(world_name_buf[0..world_name.len], world_name);
         break :blk .{
             .dims = data.dims,
@@ -212,10 +218,6 @@ const SaveBody = struct {
         try self.format.save_world(self.context, writer);
     }
 };
-
-fn sibling_name(target: []const u8, suffix: []const u8, out: []u8) ![]const u8 {
-    return std.fmt.bufPrint(out, "{s}{s}", .{ target, suffix });
-}
 
 fn write_and_promote(
     io: std.Io,
@@ -276,16 +278,6 @@ fn file_exists(io: std.Io, dir: std.Io.Dir, name: []const u8) bool {
     return true;
 }
 
-fn worker_save_file_name(self: *const WorldSaver) []const u8 {
-    if (!self.save_override_active) return self.save_file_name;
-    return self.save_override_file_name[0..self.save_override_file_name_len];
-}
-
-fn worker_world_name(self: *const WorldSaver, data: *const WorldData) []const u8 {
-    if (!self.save_override_active) return data.name[0..data.name_len];
-    return self.save_override_world_name[0..self.save_override_world_name_len];
-}
-
 /// Load a valid save, returning false when the caller should generate a world.
 pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator) bool {
     const file = self.save_dir.openFile(self.io, self.save_file_name, .{}) catch {
@@ -301,16 +293,7 @@ pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator)
 
     var reader = file.reader(self.io, read_buf);
 
-    // A gzip stream may need roughly 1 KiB before yielding its first inflated
-    // byte, so prefer the largest available prefix when detecting the format.
-    const peek_sizes = [_]usize{ BLOCK_SIZE, 8192, 4096, 1024, 256, 64, 12 };
-    var prefix: []const u8 = &.{};
-    inline for (peek_sizes) |sz| {
-        if (reader.interface.peek(sz)) |s| {
-            prefix = s;
-            break;
-        } else |_| {}
-    }
+    const prefix = reader.interface.peek(BLOCK_SIZE) catch reader.interface.buffered();
     const sniff = SaveFormat.detect(prefix) orelse self.format;
     const load_format: SaveFormat = blk: {
         if (std.meta.activeTag(sniff) == .classic_cw and !SaveFormat.verify_classic_cw(prefix, scratch)) {

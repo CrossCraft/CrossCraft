@@ -12,9 +12,9 @@ const CompressWorker = core.CompressWorker;
 const ServerConfig = @import("Config.zig");
 const Heartbeat = @import("Heartbeat.zig");
 const Backup = @import("Backup.zig");
-const PlayersDb = core.PlayersDb;
-const AccessControl = core.AccessControl;
-const Commands = core.Commands;
+const PlayersDb = @import("PlayersDb.zig");
+const AccessControl = @import("AccessControl.zig");
+const Commands = @import("Commands.zig");
 const outbound_queue = core.OutboundQueue;
 
 const log = std.log.scoped(.server);
@@ -38,9 +38,7 @@ const ConnectionData = struct {
     writer: std.Io.net.Stream.Writer,
     read_buffer: [4096]u8,
     write_buffer: [4096]u8,
-    /// Bounded per-client outbound backlog. The buffer is allocated when the
-    /// login is admitted and freed in `release_slot_locked`; producers only
-    /// ever append here, never write to the socket.
+    // Only the connection worker writes to the socket; producers enqueue here.
     out_queue: outbound_queue.OutboundQueue,
     transport: std.atomic.Value(Server.Client.TransportState),
     ip: [PlayersDb.ip_str_len:0]u8,
@@ -48,34 +46,26 @@ const ConnectionData = struct {
     closed: bool = false,
 };
 
-/// A connection always lives at one stable address. The pending reader can
-/// therefore prefetch bytes beyond the login frame without losing them when
-/// the record becomes an active client connection.
+// Stable addresses preserve prefetched bytes when a pending login is admitted.
 const ConnectionSlot = struct {
     data: ConnectionData = undefined,
     state: ConnectionState = .free,
     worker_done: bool = true,
-    pending_index: ?usize = null,
-    active_index: ?usize = null,
     login: Server.LoginRequest = undefined,
     player_handle: ?Server.PlayerHandle = null,
 };
 
-// Signal handlers run with C calling conventions and cannot carry
-// context, so the engine and listener pointers live at module scope.
-// `init` populates them; `deinit` clears them.
+// C signal handlers cannot carry context.
 var global_engine: ?*Engine = null;
 var global_listener: ?*std.Io.net.Server = null;
 
 var stdout_buf: [512]u8 = undefined;
 var stdout_writer: std.Io.File.Writer = undefined;
-var stdout_iface: ?*std.Io.Writer = null;
 var stdout_mutex: std.Io.Mutex = .init;
 
 const ServerState = @This();
 
-conn_handles: []?*ConnectionSlot,
-pending_handles: []?*ConnectionSlot,
+inited: bool = false,
 connection_pool: []ConnectionSlot,
 connections_mutex: std.Io.Mutex,
 tasks: std.Io.Group,
@@ -98,6 +88,7 @@ pub fn state(self: *ServerState) State {
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(ServerState, ctx);
+    self.inited = false;
 
     const alloc = engine.allocator(.user);
 
@@ -117,31 +108,34 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     );
     try Server.init(alloc, alloc, engine.io, engine.dirs.data, config);
 
-    self.conn_handles = try alloc.alloc(?*ConnectionSlot, core.Server.MaxPlayers);
-    errdefer alloc.free(self.conn_handles);
-    @memset(self.conn_handles, null);
-
-    const pending_len: usize = @intCast(Server.max_pending_logins);
-    self.pending_handles = try alloc.alloc(?*ConnectionSlot, pending_len);
-    errdefer alloc.free(self.pending_handles);
-    @memset(self.pending_handles, null);
-
-    self.connection_pool = try alloc.alloc(ConnectionSlot, core.Server.MaxPlayers + pending_len);
-    errdefer alloc.free(self.connection_pool);
-    for (self.connection_pool) |*slot| slot.* = .{};
-
-    self.compressor_thread = try Util.Thread.spawn(.{
+    self.compressor_thread = Util.Thread.spawn(.{
         .name = "world_compress",
         .stack_size = 512 * 1024,
         .priority = .lowest,
         .allocator = alloc,
-    }, CompressWorker.worker_main, .{});
-
-    self.backup = Backup.init(engine.io, self.server_config.autosave_seconds);
-    self.tasks.concurrent(engine.io, Backup.loop, .{ &self.backup, engine }) catch |err| {
-        log.err("Failed to start backup task: {}", .{err});
+    }, CompressWorker.worker_main, .{}) catch |err| {
+        Server.deinit_after_init_error();
         return err;
     };
+    errdefer {
+        Server.deinit();
+        CompressWorker.signal_exit();
+        self.compressor_thread.join();
+        CompressWorker.deinit();
+    }
+
+    try AccessControl.init(alloc, engine.io, Server.save_dir, self.server_config.max_policy_records);
+    errdefer AccessControl.deinit();
+    try PlayersDb.init(alloc, engine.io, Server.save_dir, self.server_config.max_players_saved);
+    errdefer PlayersDb.deinit();
+    try AccessControl.finish_legacy_migration();
+
+    const pending_len: usize = @intCast(self.server_config.max_pending_logins);
+    self.connection_pool = try alloc.alloc(ConnectionSlot, Server.MaxPlayers + pending_len);
+    errdefer alloc.free(self.connection_pool);
+    for (self.connection_pool) |*slot| slot.* = .{};
+
+    self.backup = Backup.init(engine.io, self.server_config.autosave_seconds);
 
     engine.report();
 
@@ -153,21 +147,34 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     }
 
     global_engine = engine;
+    errdefer global_engine = null;
     install_signal_handlers();
 
     log.info("Starting server on port {d}", .{SERVER_PORT});
 
     const server_ip = try std.Io.net.IpAddress.parseIp4("0.0.0.0", SERVER_PORT);
-    // Allow quick restarts while accepted sockets are still winding down.
     self.listener = try server_ip.listen(engine.io, .{ .reuse_address = true });
+    errdefer self.listener.deinit(engine.io);
     global_listener = &self.listener;
+    errdefer global_listener = null;
 
     const stdout_file = std.Io.File.stdout();
     stdout_writer = stdout_file.writer(engine.io, &stdout_buf);
-    stdout_iface = &stdout_writer.interface;
     Server.on_broadcast_chat = write_stripped_line;
+    Server.on_command = dispatch_player_command;
+    errdefer {
+        Server.on_broadcast_chat = null;
+        Server.on_command = null;
+    }
+    errdefer {
+        self.tasks.cancel(engine.io);
+        for (self.connection_pool) |*slot| {
+            if (slot.state != .free) release_slot_locked(slot, engine);
+        }
+    }
 
-    self.tasks.concurrent(engine.io, accept_loop, .{ self, engine }) catch unreachable;
+    try self.tasks.concurrent(engine.io, Backup.loop, .{ &self.backup, engine });
+    try self.tasks.concurrent(engine.io, accept_loop, .{ self, engine });
     if (self.server_config.heartbeat.count > 0) {
         self.tasks.concurrent(engine.io, heartbeat_loop, .{ self, engine }) catch |err| {
             log.err("Failed to start heartbeat sender: {}", .{err});
@@ -175,16 +182,25 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         };
     }
 
-    self.tasks.concurrent(engine.io, console_loop, .{ self, engine }) catch unreachable;
+    try self.tasks.concurrent(engine.io, console_loop, .{ self, engine });
+    self.inited = true;
+}
+
+fn dispatch_player_command(client: *Server.Client, line: []const u8) void {
+    Commands.dispatch(.{ .ctx = client, .write_fn = player_command_write }, line, client.is_op.load(.acquire));
+}
+
+fn player_command_write(ctx: *anyopaque, line: []const u8) void {
+    const client: *Server.Client = @ptrCast(@alignCast(ctx));
+    client.send_message(client.id, line) catch {};
 }
 
 fn stdout_console_write(_: *anyopaque, line: []const u8) void {
     write_stripped_line(line);
 }
 
-/// Strip in-game color codes from console output.
 fn write_stripped_line(line: []const u8) void {
-    const w = stdout_iface orelse return;
+    const w = &stdout_writer.interface;
     const engine = global_engine orelse return;
     stdout_mutex.lockUncancelable(engine.io);
     defer stdout_mutex.unlock(engine.io);
@@ -238,34 +254,22 @@ fn slot_ip(slot: *const ConnectionSlot) []const u8 {
     return std.mem.sliceTo(slot.data.ip[0..], 0);
 }
 
-fn count_connections_for_ip_locked(self: *ServerState, ip: []const u8) usize {
-    var count: usize = 0;
-
-    for (self.pending_handles) |maybe_slot| {
-        const slot = maybe_slot orelse continue;
-        if (slot.state != .free and std.mem.eql(u8, slot_ip(slot), ip)) count += 1;
-    }
-    for (self.conn_handles) |maybe_slot| {
-        const slot = maybe_slot orelse continue;
-        if (slot.state != .free and std.mem.eql(u8, slot_ip(slot), ip)) count += 1;
-    }
-
-    return count;
-}
-
 fn reserve_pending_slot_locked(
     self: *ServerState,
     conn: std.Io.net.Stream,
     ip: []const u8,
     is_op: bool,
-    engine: *Engine,
+    io: std.Io,
 ) PendingReservation {
-    if (count_connections_for_ip_locked(self, ip) >= Server.max_connections_per_ip)
-        return .ip_limited;
-
-    const pending_index = for (self.pending_handles, 0..) |entry, index| {
-        if (entry == null) break index;
-    } else return .pending_full;
+    var ip_count: usize = 0;
+    var pending_count: usize = 0;
+    for (self.connection_pool) |*slot| {
+        if (slot.state == .free) continue;
+        if (std.mem.eql(u8, slot_ip(slot), ip)) ip_count += 1;
+        if (slot.state != .active) pending_count += 1;
+    }
+    if (ip_count >= self.server_config.max_connections_per_ip) return .ip_limited;
+    if (pending_count >= self.server_config.max_pending_logins) return .pending_full;
 
     const slot = for (self.connection_pool) |*candidate| {
         if (candidate.state == .free) break candidate;
@@ -276,8 +280,8 @@ fn reserve_pending_slot_locked(
             .stream = conn,
             .reader = undefined,
             .writer = undefined,
-            .read_buffer = @splat(0),
-            .write_buffer = @splat(0),
+            .read_buffer = undefined,
+            .write_buffer = undefined,
             .out_queue = .{},
             .transport = .init(.open),
             .ip = std.mem.zeroes([PlayersDb.ip_str_len:0]u8),
@@ -285,26 +289,16 @@ fn reserve_pending_slot_locked(
         },
         .state = .pending,
         .worker_done = false,
-        .pending_index = pending_index,
     };
     const ip_len = @min(ip.len, PlayersDb.ip_str_len);
     @memcpy(slot.data.ip[0..ip_len], ip[0..ip_len]);
-    slot.data.reader = std.Io.net.Stream.Reader.init(conn, engine.io, &slot.data.read_buffer);
-    slot.data.writer = std.Io.net.Stream.Writer.init(conn, engine.io, &slot.data.write_buffer);
-    self.pending_handles[pending_index] = slot;
+    slot.data.reader = std.Io.net.Stream.Reader.init(conn, io, &slot.data.read_buffer);
+    slot.data.writer = std.Io.net.Stream.Writer.init(conn, io, &slot.data.write_buffer);
 
     return .{ .accepted = slot };
 }
 
-fn release_slot_locked(self: *ServerState, slot: *ConnectionSlot, engine: *Engine) void {
-    if (slot.pending_index) |index| {
-        self.pending_handles[index] = null;
-        slot.pending_index = null;
-    }
-    if (slot.active_index) |index| {
-        self.conn_handles[index] = null;
-        slot.active_index = null;
-    }
+fn release_slot_locked(slot: *ConnectionSlot, engine: *Engine) void {
     if (!slot.data.closed) {
         slot.data.stream.close(engine.io);
         slot.data.closed = true;
@@ -327,7 +321,7 @@ fn reject_slot_locked(slot: *ConnectionSlot, engine: *Engine, reason: []const u8
     slot.data.transport.store(.closed, .release);
 }
 
-fn finish_pending_worker(self: *ServerState, slot: *ConnectionSlot, engine: *Engine) void {
+fn finish_worker(self: *ServerState, slot: *ConnectionSlot, engine: *Engine) void {
     self.connections_mutex.lockUncancelable(engine.io);
     defer self.connections_mutex.unlock(engine.io);
 
@@ -335,31 +329,21 @@ fn finish_pending_worker(self: *ServerState, slot: *ConnectionSlot, engine: *Eng
     slot.worker_done = true;
 }
 
-fn finish_active_worker(self: *ServerState, slot: *ConnectionSlot, engine: *Engine) void {
-    self.connections_mutex.lockUncancelable(engine.io);
-    defer self.connections_mutex.unlock(engine.io);
-
-    if (slot.state == .active) slot.worker_done = true;
-}
-
 fn reap_finished_connections(self: *ServerState, engine: *Engine) void {
     self.connections_mutex.lockUncancelable(engine.io);
     defer self.connections_mutex.unlock(engine.io);
 
-    for (self.pending_handles) |maybe_slot| {
-        const slot = maybe_slot orelse continue;
-        if (slot.state == .failed and slot.worker_done) {
-            release_slot_locked(self, slot, engine);
-        }
-    }
-
-    for (self.conn_handles, 0..) |maybe_slot, index| {
-        const slot = maybe_slot orelse continue;
-        if (slot.state == .active and slot.worker_done and slot.data.transport.load(.acquire) == .closed) {
-            log.info("Connection in slot {d} disconnected", .{index});
-            if (slot.player_handle) |handle| Server.remove_client(handle);
-            slot.player_handle = null;
-            release_slot_locked(self, slot, engine);
+    for (self.connection_pool, 0..) |*slot, index| {
+        if (!slot.worker_done) continue;
+        switch (slot.state) {
+            .failed => release_slot_locked(slot, engine),
+            .active => {
+                if (slot.data.transport.load(.acquire) != .closed) continue;
+                log.info("Connection in slot {d} disconnected", .{index});
+                if (slot.player_handle) |handle| Server.remove_client(handle);
+                release_slot_locked(slot, engine);
+            },
+            else => {},
         }
     }
 }
@@ -368,26 +352,24 @@ fn promote_ready_logins(self: *ServerState, engine: *Engine) void {
     self.connections_mutex.lockUncancelable(engine.io);
     defer self.connections_mutex.unlock(engine.io);
 
-    for (self.pending_handles, 0..) |maybe_slot, pending_index| {
-        const slot = maybe_slot orelse continue;
+    var active_count: usize = 0;
+    for (self.connection_pool) |*slot| {
+        if (slot.state == .active) active_count += 1;
+    }
+    for (self.connection_pool, 0..) |*slot, index| {
         if (slot.state != .ready or !slot.worker_done) continue;
-
-        const active_index = for (self.conn_handles, 0..) |entry, index| {
-            if (entry == null) break index;
-        } else {
+        if (active_count == Server.MaxPlayers) {
             log.info("&4Server full, rejecting completed login", .{});
             reject_slot_locked(slot, engine, "Server is full!");
-            release_slot_locked(self, slot, engine);
+            release_slot_locked(slot, engine);
             continue;
-        };
+        }
 
-        // Allocate the outbound queue now that the login consumes a real
-        // player slot; pre-allocating for every pending socket would waste
-        // memory on connections that never finish logging in.
+        // Pending sockets do not need an outbound queue until admission.
         slot.data.out_queue.buf = engine.allocator(.user).alloc(u8, outbound_queue.out_queue_bytes) catch {
             log.err("Failed to allocate outbound queue, rejecting completed login", .{});
             reject_slot_locked(slot, engine, "Server error, try again");
-            release_slot_locked(self, slot, engine);
+            release_slot_locked(slot, engine);
             continue;
         };
 
@@ -405,22 +387,19 @@ fn promote_ready_logins(self: *ServerState, engine: *Engine) void {
             .rejected => |reason| {
                 log.info("Rejecting completed login: {s}", .{reason});
                 reject_slot_locked(slot, engine, reason);
-                release_slot_locked(self, slot, engine);
+                release_slot_locked(slot, engine);
                 continue;
             },
             .accepted => |accepted| accepted,
         };
 
-        self.pending_handles[pending_index] = null;
-        slot.pending_index = null;
-        self.conn_handles[active_index] = slot;
-        slot.active_index = active_index;
+        active_count += 1;
         slot.state = .active;
         slot.worker_done = false;
         slot.player_handle = .{ .id = @intCast(client.id), .generation = client.generation };
 
         self.tasks.concurrent(engine.io, client_login_loop, .{ self, slot, client, engine }) catch {
-            log.err("Failed to spawn login task for slot {d}", .{active_index});
+            log.err("Failed to spawn login task for slot {d}", .{index});
             client.mark_closed();
             slot.worker_done = true;
         };
@@ -441,7 +420,7 @@ const LoginRaceResult = union(enum) {
 };
 
 fn pending_login_loop(self: *ServerState, slot: *ConnectionSlot, engine: *Engine) std.Io.Cancelable!void {
-    defer finish_pending_worker(self, slot, engine);
+    defer finish_worker(self, slot, engine);
 
     const LoginSelect = std.Io.Select(LoginRaceResult);
     var result_buffer: [2]LoginRaceResult = undefined;
@@ -452,7 +431,7 @@ fn pending_login_loop(self: *ServerState, slot: *ConnectionSlot, engine: *Engine
         log.err("Failed to schedule pending login read: {}", .{err});
         return;
     };
-    select.concurrent(.timeout, wait_for_login_timeout, .{ engine.io, Server.login_timeout_ms }) catch |err| {
+    select.concurrent(.timeout, wait_for_login_timeout, .{ engine.io, self.server_config.login_timeout_ms }) catch |err| {
         log.err("Failed to schedule pending login timeout: {}", .{err});
         return;
     };
@@ -479,7 +458,6 @@ fn pending_login_loop(self: *ServerState, slot: *ConnectionSlot, engine: *Engine
             if (slot.state == .pending) {
                 slot.login = request;
                 slot.state = .ready;
-                slot.worker_done = true;
             }
             self.connections_mutex.unlock(engine.io);
         },
@@ -487,7 +465,7 @@ fn pending_login_loop(self: *ServerState, slot: *ConnectionSlot, engine: *Engine
             timeout_result catch |err| switch (err) {
                 error.Canceled => return error.Canceled,
             };
-            log.info("Pending login timed out after {d} ms", .{Server.login_timeout_ms});
+            log.info("Pending login timed out after {d} ms", .{self.server_config.login_timeout_ms});
         },
     }
 }
@@ -498,7 +476,7 @@ fn client_login_loop(
     client: *Server.Client,
     engine: *Engine,
 ) std.Io.Cancelable!void {
-    defer finish_active_worker(self, slot, engine);
+    defer finish_worker(self, slot, engine);
 
     client.finish_login() catch |err| switch (err) {
         error.Canceled => {
@@ -507,13 +485,11 @@ fn client_login_loop(
         },
         else => {
             client.mark_closed();
-            // The reaper waits for this task's worker_done publication before it
-            // removes the generation-checked player entry. Do not add accesses
-            // after the task returns and publishes that completion.
             log.info("Login failed: {}", .{err});
             return;
         },
     };
+    PlayersDb.record_completed_login(slot_ip(slot), client.name[0..client.name_len]);
     client.read_loop();
 }
 
@@ -538,8 +514,8 @@ fn count_initialized_users() u32 {
     Server.lock_roster_shared();
     defer Server.unlock_roster_shared();
 
-    for (0..Server.players.items.len) |i| {
-        const client = &(Server.players.items[i] orelse continue);
+    for (&Server.players.items) |*entry| {
+        const client = &(entry.* orelse continue);
         if (client.initialized and client.is_connected()) count += 1;
     }
     return count;
@@ -557,7 +533,7 @@ fn heartbeat_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
             .server_name = &Server.server_name,
             .port = SERVER_PORT,
             .users = self.heartbeat_users.load(.acquire),
-            .max_players = core.Server.MaxPlayers,
+            .max_players = Server.MaxPlayers,
             .salt = &self.heartbeat_salt,
         };
 
@@ -574,24 +550,24 @@ fn heartbeat_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
 
 fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(ServerState, ctx);
+    if (!self.inited) return;
+    self.inited = false;
 
     self.tasks.cancel(engine.io);
     log.info("Shutting down server...", .{});
 
     self.connections_mutex.lockUncancelable(engine.io);
     for (self.connection_pool) |*slot| {
-        if (slot.state != .free) self.release_slot_locked(slot, engine);
+        if (slot.state != .free) release_slot_locked(slot, engine);
     }
     self.connections_mutex.unlock(engine.io);
 
     global_listener = null;
     self.listener.deinit(engine.io);
 
-    // Server.deinit triggers the final world save and waits for it. That
-    // save runs on the compressor thread, so the thread must still be alive
-    // here. Tear it down only after Server.deinit returns. Any in-flight
-    // world-send job aborts with WriteFailed because tasks.cancel above
-    // drained the IO read loops.
+    PlayersDb.deinit();
+    AccessControl.deinit();
+    // The compressor must finish the final world save before it shuts down.
     Server.deinit();
 
     CompressWorker.signal_exit();
@@ -599,11 +575,9 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     CompressWorker.deinit();
 
     engine.allocator(.user).free(self.connection_pool);
-    engine.allocator(.user).free(self.pending_handles);
-    engine.allocator(.user).free(self.conn_handles);
 
     Server.on_broadcast_chat = null;
-    stdout_iface = null;
+    Server.on_command = null;
     global_engine = null;
 }
 
@@ -611,16 +585,18 @@ fn reject_connection(conn: std.Io.net.Stream, engine: *Engine, reason: []const u
     var write_buf: [128]u8 = undefined;
     var writer = std.Io.net.Stream.Writer.init(conn, engine.io, &write_buf);
     core.protocol.send_disconnect_to_client(&writer.interface, reason) catch {};
-    var c = conn;
-    c.close(engine.io);
+    conn.close(engine.io);
 }
 
 fn accept_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
     while (engine.running) {
-        var conn = self.listener.accept(engine.io) catch |err| {
-            if (!engine.running) return;
-            log.err("Error accepting connection: {}", .{err});
-            continue;
+        var conn = self.listener.accept(engine.io) catch |err| switch (err) {
+            error.Canceled => return error.Canceled,
+            else => {
+                if (!engine.running) return;
+                log.err("Error accepting connection: {}", .{err});
+                continue;
+            },
         };
         if (!engine.running) {
             conn.close(engine.io);
@@ -628,16 +604,12 @@ fn accept_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
         }
         log.info("Client connected: {}", .{conn.socket.address});
 
-        // Canonicalise the peer IP and look up durable policy. This is a
-        // snapshot-only check: accepting a TCP connection never creates a
-        // recent-player record or writes players.json.
-        // Done before any slot assignment so banned IPs cannot consume
-        // a slot and whitelist mode rejects strangers cheaply.
+        // Check policy before consuming a pending slot.
         var ip_buf: [PlayersDb.ip_str_len]u8 = undefined;
         const ip = PlayersDb.format_ip(conn.socket.address, &ip_buf) orelse "";
         const policy = AccessControl.lookup(ip);
 
-        if (Server.whitelist_enabled and !policy.whitelisted) {
+        if (self.server_config.whitelist_enabled and !policy.whitelisted) {
             log.info("Rejecting {s}: not whitelisted", .{ip});
             reject_connection(conn, engine, "Not whitelisted");
             continue;
@@ -649,7 +621,7 @@ fn accept_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
             continue;
         }
         self.connections_mutex.lockUncancelable(engine.io);
-        const reservation = self.reserve_pending_slot_locked(conn, ip, policy.op, engine);
+        const reservation = self.reserve_pending_slot_locked(conn, ip, policy.op, engine.io);
         self.connections_mutex.unlock(engine.io);
 
         switch (reservation) {
@@ -658,7 +630,7 @@ fn accept_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
                 self.tasks.concurrent(engine.io, pending_login_loop, .{ self, slot, engine }) catch |err| {
                     log.err("Failed to spawn pending-login task: {}", .{err});
                     self.connections_mutex.lockUncancelable(engine.io);
-                    self.release_slot_locked(slot, engine);
+                    release_slot_locked(slot, engine);
                     self.connections_mutex.unlock(engine.io);
                 };
             },
@@ -682,8 +654,7 @@ fn console_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
 
     while (engine.running) {
         const raw = r.takeDelimiterExclusive('\n') catch |err| switch (err) {
-            error.EndOfStream => return,
-            error.ReadFailed => return,
+            error.EndOfStream, error.ReadFailed => return,
             error.StreamTooLong => {
                 r.toss(r.bufferedLen());
                 continue;
@@ -700,11 +671,9 @@ fn console_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
         } else {
             var msg_buf: core.protocol.Message = @splat(' ');
             const prefix = "&4[Server]: ";
-            const n_pre = @min(prefix.len, msg_buf.len);
-            @memcpy(msg_buf[0..n_pre], prefix[0..n_pre]);
-            const space = msg_buf.len - n_pre;
-            const n_msg = @min(line.len, space);
-            @memcpy(msg_buf[n_pre .. n_pre + n_msg], line[0..n_msg]);
+            @memcpy(msg_buf[0..prefix.len], prefix);
+            const n_msg = @min(line.len, msg_buf.len - prefix.len);
+            @memcpy(msg_buf[prefix.len..][0..n_msg], line[0..n_msg]);
             Server.broadcast_chat_message(-1, &msg_buf);
         }
     }
@@ -771,4 +740,30 @@ test "console color stripping preserves literal ampersands" {
         try write_without_color_codes(&writer, case.input);
         try std.testing.expectEqualStrings(case.expected, writer.buffered());
     }
+}
+
+test "pending connection limits include ready and failed logins and active IPs" {
+    var pool = [_]ConnectionSlot{.{}} ** 3;
+    var self: ServerState = undefined;
+    self.connection_pool = &pool;
+    self.server_config = ServerConfig.parse("max-pending-logins:1\nmax-connections-per-ip:1\n", 0);
+    const io = std.testing.io;
+    const stream: std.Io.net.Stream = undefined;
+
+    const first = self.reserve_pending_slot_locked(stream, "203.0.113.1", false, io).accepted;
+    try std.testing.expectEqualStrings("203.0.113.1", slot_ip(first));
+    try std.testing.expect(!first.worker_done);
+    try std.testing.expectEqual(.ip_limited, self.reserve_pending_slot_locked(stream, "203.0.113.1", false, io));
+    for ([_]ConnectionState{ .pending, .ready, .failed }) |state_| {
+        first.state = state_;
+        try std.testing.expectEqual(.pending_full, self.reserve_pending_slot_locked(stream, "203.0.113.2", false, io));
+    }
+
+    first.state = .active;
+    try std.testing.expectEqual(.ip_limited, self.reserve_pending_slot_locked(stream, "203.0.113.1", false, io));
+    const second = self.reserve_pending_slot_locked(stream, "203.0.113.2", true, io).accepted;
+    try std.testing.expect(first != second);
+    try std.testing.expect(second.data.is_op);
+    try std.testing.expectEqualStrings("203.0.113.1", slot_ip(first));
+    try std.testing.expectEqual(.pending_full, self.reserve_pending_slot_locked(stream, "203.0.113.3", false, io));
 }

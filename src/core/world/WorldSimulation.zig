@@ -38,9 +38,7 @@ pub const BlockChange = struct {
     block: Block,
 };
 
-/// A non-allocating destination for simulation-driven block changes. The
-/// simulation owns world mutation; the sink mirrors that mutation to clients
-/// or records it in tests. It must not retain `change` beyond the call.
+/// Receives each committed simulation change without buffering or allocating.
 pub const BlockChangeSink = struct {
     ctx: ?*anyopaque = null,
     emit_fn: *const fn (ctx: ?*anyopaque, change: BlockChange) void,
@@ -50,9 +48,7 @@ pub const BlockChangeSink = struct {
     }
 };
 
-/// Bound both client packet bursts and simulation work identically on every
-/// target. This is a throughput budget, not storage: changes are streamed to
-/// the sink as soon as they are committed.
+/// Bound packet bursts and simulation work on every target.
 pub const MAX_BLOCK_CHANGES_PER_TICK: u32 = 2048;
 pub const MAX_DUE_UPDATES_PER_TICK: u32 = 2048;
 
@@ -62,7 +58,7 @@ pub const MAX_DUE_UPDATES_PER_TICK: u32 = 2048;
 // the carry-over queue in O(1) when a tick hits its work budget.
 pub const WHEEL_SIZE: u32 = 1024;
 pub const WHEEL_MASK: u32 = WHEEL_SIZE - 1;
-pub const POOL_CAPACITY: u32 = 1 << 13; // 8192 nodes
+pub const POOL_CAPACITY: u32 = 8192;
 
 pub const SENTINEL: u32 = std.math.maxInt(u32);
 
@@ -129,7 +125,7 @@ pub fn tick(self: *WorldSimulation, data: *WorldData, sink: BlockChangeSink) u32
     self.circular_append(&self.ready_tail, due_tail);
 
     while (self.ready_tail != SENTINEL and processed < MAX_DUE_UPDATES_PER_TICK) {
-        const node_idx = self.circular_peek_head(self.ready_tail);
+        const node_idx = self.node_pool[self.ready_tail].next;
         const node = self.node_pool[node_idx];
         const change_bound = block_update_change_bound(data, node.loc);
         if (change_bound > MAX_BLOCK_CHANGES_PER_TICK - emitted) break;
@@ -222,11 +218,6 @@ fn circular_append(self: *WorldSimulation, dst_tail: *u32, src_tail: u32) void {
     self.node_pool[dst_tail.*].next = src_head;
     self.node_pool[src_tail].next = dst_head;
     dst_tail.* = src_tail;
-}
-
-fn circular_peek_head(self: *const WorldSimulation, tail: u32) u32 {
-    assert(tail != SENTINEL);
-    return self.node_pool[tail].next;
 }
 
 fn circular_pop_head(self: *WorldSimulation, tail: *u32) u32 {

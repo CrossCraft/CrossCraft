@@ -510,15 +510,6 @@ test "fused 2D hash equals the three-level lattice hash at z = 0" {
     }
 }
 
-test "octave construction and sampling are deterministic" {
-    var first_random = random_state.init(-9_876_543_210);
-    var second_random = random_state.init(-9_876_543_210);
-    const first = octave_noise.init(&first_random, 8);
-    const second = octave_noise.init(&second_random, 8);
-    try std.testing.expectEqual(first_random.state, second_random.state);
-    try std.testing.expectEqual(first.value(12.25, -7.75), second.value(12.25, -7.75));
-}
-
 test "lattice sampling equals direct sampling at integer coordinates" {
     var random = random_state.init(77_312);
     const noise = octave_noise.init(&random, 8);

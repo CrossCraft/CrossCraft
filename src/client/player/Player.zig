@@ -346,8 +346,7 @@ pub fn update(self: *Player, sys: *input.InputSystem, dt: f32) void {
 
     self.poll_inputs(sys, dt);
 
-    // Process deferred gamepad shoulder actions. The one-frame delay lets
-    // a same-frame L+R chord cancel the pending break/place before it fires.
+    // Delay shoulder actions one frame so an L+R chord can cancel them.
     if (self.pending_shoulder_break) {
         self.pending_shoulder_break = false;
         if (!self.shoulder_l_held) {
@@ -363,9 +362,7 @@ pub fn update(self: *Player, sys: *input.InputSystem, dt: f32) void {
         }
     }
 
-    // Hold-to-repeat: tick timers while either the mouse/keyboard button
-    // or the corresponding gamepad shoulder button is held. The initial
-    // press already fired via the rising-edge poll; the timer handles repeats.
+    // Rising edges fire the first action; held inputs drive repeat timers.
     const break_any_held = self.break_held or (self.shoulder_r_held and !self.shoulder_l_held);
     const place_any_held = self.place_held or (self.shoulder_l_held and !self.shoulder_r_held);
     if (break_any_held) {
@@ -861,7 +858,6 @@ pub fn raycast_block(self: *const Player, range: f32) ?RaycastHit {
             };
         }
 
-        // Partial block: integer slab test against the subvoxel AABB.
         if (ray_sub_aabb_fp(fp_ox, fp_oy, fp_oz, dir_x, dir_y, dir_z, bx, by, bz, bounds, range_fp)) |face| {
             const off = face_normal(face);
             const px = bx + off[0];

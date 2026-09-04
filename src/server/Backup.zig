@@ -2,15 +2,36 @@ const std = @import("std");
 const ae = @import("aether");
 const core = @import("core");
 
-const scheme = @import("BackupScheme.zig");
 const Block = core.blocks.Block;
 
 const log = std.log.scoped(.backup);
 
-const epochs = scheme.epochs;
-const backup_root = scheme.backup_root;
-
+const epochs = [_]struct { name: []const u8, interval_s: u32, keep: usize }{
+    .{ .name = "5min", .interval_s = 5 * 60, .keep = 12 },
+    .{ .name = "1hr", .interval_s = 60 * 60, .keep = 6 },
+    .{ .name = "6hr", .interval_s = 6 * 60 * 60, .keep = 4 },
+    .{ .name = "1day", .interval_s = 24 * 60 * 60, .keep = 3 },
+    .{ .name = "3days", .interval_s = 3 * 24 * 60 * 60, .keep = 3 },
+    .{ .name = "1week", .interval_s = 7 * 24 * 60 * 60, .keep = 4 },
+};
+const backup_root = "backups";
+const backup_entry_name_max = 24;
+const backup_scan_cap = 64;
 const max_name_len: usize = 256;
+
+const BackupEntry = struct {
+    ts: u64,
+    name: [backup_entry_name_max]u8,
+    name_len: u8,
+
+    fn name_slice(self: *const BackupEntry) []const u8 {
+        return self.name[0..self.name_len];
+    }
+
+    fn newest_first(_: void, a: BackupEntry, b: BackupEntry) bool {
+        return a.ts > b.ts;
+    }
+};
 
 fn file_exists(io: std.Io, dir: std.Io.Dir, path: []const u8) bool {
     const file = dir.openFile(io, path, .{}) catch return false;
@@ -18,23 +39,8 @@ fn file_exists(io: std.Io, dir: std.Io.Dir, path: []const u8) bool {
     return true;
 }
 
-const OpenedDir = struct {
-    dir: std.Io.Dir,
-    owned: bool,
-};
-
-fn resolve_parent_dir(io: std.Io, data_dir: std.Io.Dir, sub_path: []const u8) ?OpenedDir {
-    if (sub_path.len == 0) return .{ .dir = data_dir, .owned = false };
-    const dir = data_dir.createDirPathOpen(io, sub_path, .{}) catch |err| {
-        log.err("Failed to open save dir '{s}': {}", .{ sub_path, err });
-        return null;
-    };
-    return .{ .dir = dir, .owned = true };
-}
-
 fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratch: std.mem.Allocator) bool {
-    // Validate at the file's own announced dimensions, not the configured
-    // world size: a valid save of any supported geometry must restore.
+    // Backups may use different dimensions from the configured world.
     const dims = core.World.SaveFormat.sniff_dims(io, dir, file_name, scratch) orelse {
         log.warn("'{s}' has no recognizable save header; failing validation", .{file_name});
         return false;
@@ -52,14 +58,7 @@ fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratc
 
     var reader = file.reader(io, read_buf);
 
-    const peek_sizes = [_]usize{ read_prefix_buf_len, 8192, 4096, 1024, 256, 64, 12 };
-    var prefix: []const u8 = &.{};
-    inline for (peek_sizes) |sz| {
-        if (reader.interface.peek(sz)) |s| {
-            prefix = s;
-            break;
-        } else |_| {}
-    }
+    const prefix = reader.interface.peek(read_prefix_buf_len) catch reader.interface.buffered();
     if (prefix.len < 2) return false;
 
     const sniff = core.World.SaveFormat.detect(prefix) orelse return false;
@@ -70,14 +69,11 @@ fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratc
         return false;
     }
 
-    const volume: usize = dims.volume();
-    const raw = scratch.alloc(u8, volume) catch |err| {
+    const blocks = scratch.alloc(Block, dims.volume()) catch |err| {
         log.err("Failed to allocate world scratch for save validation: {}", .{err});
         return false;
     };
-    defer scratch.free(raw);
-
-    const blocks: []Block = @ptrCast(raw);
+    defer scratch.free(blocks);
 
     const outcome = sniff.load_world(scratch, dims, blocks, &reader.interface) catch |err| {
         log.warn("'{s}' failed to parse as {s}: {}", .{ file_name, @tagName(sniff), err });
@@ -110,21 +106,29 @@ pub fn pre_init_validate_and_restore(
 
     const scratch = arena.allocator();
 
-    const loc = scheme.split_save_location(save_location) orelse return;
+    const separator = std.mem.lastIndexOfScalar(u8, save_location, '/');
+    const parent = if (separator) |i| save_location[0..i] else "";
+    const file_name = if (separator) |i| save_location[i + 1 ..] else save_location;
+    if (file_name.len == 0 or file_name.len > max_name_len) {
+        log.warn("Save location '{s}' has an invalid file name", .{save_location});
+        return;
+    }
+    const save_dir = if (parent.len == 0) data_dir else data_dir.createDirPathOpen(io, parent, .{}) catch |err| {
+        log.err("Failed to open save dir '{s}': {}", .{ parent, err });
+        return;
+    };
+    defer if (parent.len != 0) save_dir.close(io);
 
-    const save_dir = resolve_parent_dir(io, data_dir, loc.parent) orelse return;
-    defer if (save_dir.owned) save_dir.dir.close(io);
-
-    const exists = file_exists(io, save_dir.dir, loc.file_name);
-    if (exists and validate_save_file(io, save_dir.dir, loc.file_name, scratch)) return;
+    const exists = file_exists(io, save_dir, file_name);
+    if (exists and validate_save_file(io, save_dir, file_name, scratch)) return;
 
     if (exists) {
-        log.warn("Save '{s}' failed validation; attempting backup restore", .{loc.file_name});
+        log.warn("Save '{s}' failed validation; attempting backup restore", .{file_name});
     } else {
-        log.info("Save '{s}' not found; checking backups", .{loc.file_name});
+        log.info("Save '{s}' not found; checking backups", .{file_name});
     }
 
-    if (restore_newest_valid(io, save_dir.dir, loc.file_name, scratch)) {
+    if (restore_newest_valid(io, save_dir, file_name, scratch)) {
         log.info("Backup restore complete; the restored save will be loaded", .{});
     } else if (exists) {
         log.err("No valid backup found; the world will be regenerated", .{});
@@ -136,10 +140,10 @@ fn restore_newest_valid(io: std.Io, save_dir: std.Io.Dir, save_file_name: []cons
         var bucket = open_bucket(io, save_dir, epoch.name) orelse continue;
         defer bucket.close(io);
 
-        var entries: [scheme.BACKUP_SCAN_CAP]BackupEntry = undefined;
+        var entries: [backup_scan_cap]BackupEntry = undefined;
         const count = collect_backups(io, bucket, &entries);
         if (count == 0) continue;
-        scheme.sort_entries_desc(entries[0..count]);
+        std.mem.sort(BackupEntry, entries[0..count], {}, BackupEntry.newest_first);
 
         for (entries[0..count]) |entry| {
             if (!validate_save_file(io, bucket, entry.name_slice(), scratch)) {
@@ -153,7 +157,7 @@ fn restore_newest_valid(io: std.Io, save_dir: std.Io.Dir, save_file_name: []cons
                 return false;
             };
 
-            copy_streaming(io, bucket, entry.name_slice(), save_dir, tmp_name) catch |err| {
+            bucket.copyFile(entry.name_slice(), save_dir, tmp_name, io, .{}) catch |err| {
                 log.err("Failed to copy backup '{s}/{s}' into place: {}", .{ epoch.name, entry.name_slice(), err });
                 continue;
             };
@@ -177,13 +181,8 @@ fn preserve_displaced_save(io: std.Io, save_dir: std.Io.Dir, save_file_name: []c
     var corrupt_buf: [max_name_len + 12]u8 = undefined;
     const corrupt_name = std.fmt.bufPrint(&corrupt_buf, "{s}.corrupt", .{save_file_name}) catch return;
 
-    if (file_exists(io, save_dir, corrupt_name)) {
-        save_dir.deleteFile(io, corrupt_name) catch {};
-    }
-    save_dir.rename(save_file_name, save_dir, corrupt_name, io) catch {
-        // Old save stays in the way; the promote-rename below will simply
-        // overwrite it.
-    };
+    save_dir.deleteFile(io, corrupt_name) catch {};
+    save_dir.rename(save_file_name, save_dir, corrupt_name, io) catch {};
 }
 
 fn open_bucket(io: std.Io, save_dir: std.Io.Dir, epoch_name: []const u8) ?std.Io.Dir {
@@ -192,15 +191,20 @@ fn open_bucket(io: std.Io, save_dir: std.Io.Dir, epoch_name: []const u8) ?std.Io
     return save_dir.openDir(io, path, .{ .iterate = true }) catch null;
 }
 
-const BackupEntry = scheme.BackupEntry;
+fn parse_backup_timestamp(name: []const u8) ?u64 {
+    var digits: usize = 0;
+    while (digits < name.len and std.ascii.isDigit(name[digits])) digits += 1;
+    if (digits == 0 or (digits < name.len and name[digits] != '.')) return null;
+    return std.fmt.parseInt(u64, name[0..digits], 10) catch null;
+}
 
 fn collect_backups(io: std.Io, dir: std.Io.Dir, entries: []BackupEntry) usize {
     var iter = dir.iterate();
     var count: usize = 0;
     while (iter.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        const ts = scheme.parse_backup_timestamp(entry.name) orelse continue;
-        if (entry.name.len > scheme.BACKUP_ENTRY_NAME_MAX) continue;
+        const ts = parse_backup_timestamp(entry.name) orelse continue;
+        if (entry.name.len > backup_entry_name_max) continue;
         if (count == entries.len) {
             log.warn("Backup bucket scan capped at {d} entries", .{entries.len});
             break;
@@ -221,42 +225,19 @@ fn newest_timestamp(io: std.Io, dir: std.Io.Dir) ?u64 {
     var newest: ?u64 = null;
     while (iter.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        const ts = scheme.parse_backup_timestamp(entry.name) orelse continue;
+        const ts = parse_backup_timestamp(entry.name) orelse continue;
         if (newest == null or ts > newest.?) newest = ts;
     }
     return newest;
 }
 
-fn copy_streaming(io: std.Io, src_dir: std.Io.Dir, src_name: []const u8, dst_dir: std.Io.Dir, dst_name: []const u8) !void {
-    const src = try src_dir.openFile(io, src_name, .{});
-    defer src.close(io);
-
-    const dst = try dst_dir.createFile(io, dst_name, .{});
-    var dst_closed = false;
-    errdefer dst_dir.deleteFile(io, dst_name) catch {};
-    defer if (!dst_closed) dst.close(io);
-
-    var buf: [8192]u8 = undefined;
-    var offset: u64 = 0;
-    while (true) {
-        const n = try src.readPositionalAll(io, &buf, offset);
-        if (n == 0) break;
-        try dst.writeStreamingAll(io, buf[0..n]);
-        offset += n;
-    }
-
-    dst.close(io);
-    dst_closed = true;
-}
-
 fn prune_bucket(io: std.Io, dir: std.Io.Dir, keep: usize) void {
-    var entries: [scheme.BACKUP_SCAN_CAP]BackupEntry = undefined;
+    var entries: [backup_scan_cap]BackupEntry = undefined;
     const count = collect_backups(io, dir, &entries);
     if (count <= keep) return;
 
-    const excess = count - keep;
-    std.mem.sort(BackupEntry, entries[0..count], {}, BackupEntry.less_ts);
-    for (entries[0..excess]) |entry| {
+    std.mem.sort(BackupEntry, entries[0..count], {}, BackupEntry.newest_first);
+    for (entries[keep..count]) |entry| {
         dir.deleteFile(io, entry.name_slice()) catch |err| {
             log.warn("Failed to prune backup '{s}': {}", .{ entry.name_slice(), err });
         };
@@ -267,49 +248,37 @@ const Backup = @This();
 
 autosave_seconds: u32,
 save_dir: std.Io.Dir,
-save_file_name: [max_name_len]u8,
-save_file_name_len: u16,
-ext: [8]u8,
-ext_len: u8,
+save_file_name: []const u8,
+ext: []const u8,
 last_save_ms: u64,
 
 pub fn init(io: std.Io, autosave_seconds: u32) Backup {
     var self: Backup = .{
         .autosave_seconds = autosave_seconds,
         .save_dir = core.World.saver.save_dir,
-        .save_file_name = @splat(0),
-        .save_file_name_len = 0,
-        .ext = @splat(0),
-        .ext_len = 0,
+        .save_file_name = core.World.saver.save_file_name,
+        .ext = "",
         .last_save_ms = current_unix_ms(io),
     };
 
-    const save_file_name = core.World.saver.save_file_name;
-    if (save_file_name.len == 0 or save_file_name.len > self.save_file_name.len) {
+    if (self.save_file_name.len == 0 or self.save_file_name.len > max_name_len) {
         log.err("Could not resolve save file name; periodic backups disabled", .{});
+        self.save_file_name = "";
         return self;
     }
-    @memcpy(self.save_file_name[0..save_file_name.len], save_file_name);
-    self.save_file_name_len = @intCast(save_file_name.len);
-
-    if (std.mem.lastIndexOfScalar(u8, save_file_name, '.')) |dot| {
-        const ext = save_file_name[dot..];
-        if (ext.len <= self.ext.len) {
-            @memcpy(self.ext[0..ext.len], ext);
-            self.ext_len = @intCast(ext.len);
-        }
+    if (std.mem.lastIndexOfScalar(u8, self.save_file_name, '.')) |dot| {
+        const ext = self.save_file_name[dot..];
+        if (ext.len <= 8) self.ext = ext;
     }
 
     self.prepare_buckets(io);
-    self.catch_up_snapshot(io);
+    if (file_exists(io, self.save_dir, self.save_file_name) and !core.World.saver.save_in_progress()) {
+        self.snapshot_into(io, 0, self.last_save_ms);
+    }
     log.info("Backups active: autosave every {d}s into '{s}/', {d} epoch buckets", .{
         self.autosave_seconds, backup_root, epochs.len,
     });
     return self;
-}
-
-fn current_save_name(self: *const Backup) []const u8 {
-    return self.save_file_name[0..self.save_file_name_len];
 }
 
 fn prepare_buckets(self: *Backup, io: std.Io) void {
@@ -324,13 +293,6 @@ fn prepare_buckets(self: *Backup, io: std.Io) void {
     }
 }
 
-fn catch_up_snapshot(self: *Backup, io: std.Io) void {
-    if (self.save_file_name_len == 0) return;
-    if (!file_exists(io, self.save_dir, self.current_save_name())) return;
-    if (core.World.saver.save_in_progress()) return;
-    self.snapshot_into(io, 0);
-}
-
 const poll_interval_ms: i64 = 2_000;
 
 pub fn loop(self: *Backup, engine: *ae.Engine) std.Io.Cancelable!void {
@@ -341,7 +303,7 @@ pub fn loop(self: *Backup, engine: *ae.Engine) std.Io.Cancelable!void {
 }
 
 fn tick_once(self: *Backup, io: std.Io) void {
-    if (self.save_file_name_len == 0) return;
+    if (self.save_file_name.len == 0) return;
 
     const now_ms = current_unix_ms(io);
     if (now_ms < self.last_save_ms) self.last_save_ms = now_ms;
@@ -353,25 +315,10 @@ fn tick_once(self: *Backup, io: std.Io) void {
     core.World.wait_for_save();
     self.last_save_ms = now_ms;
 
-    // Bucket 0 receives every completed save. Longer epochs promote on
-    // their own wall-clock interval; checking them here means every
-    // snapshot sources a file whose save has fully completed.
-    self.snapshot_into(io, 0);
-    for (1..epochs.len) |index| self.snapshot_epoch_if_due(io, index, now_ms);
+    for (0..epochs.len) |index| self.snapshot_into(io, index, now_ms);
 }
 
-fn snapshot_epoch_if_due(self: *Backup, io: std.Io, index: usize, now_ms: u64) void {
-    const epoch = epochs[index];
-    var bucket = open_bucket(io, self.save_dir, epoch.name) orelse return;
-    defer bucket.close(io);
-
-    if (newest_timestamp(io, bucket)) |ts| {
-        if (now_ms - ts < @as(u64, epoch.interval_s) * std.time.ms_per_s) return;
-    }
-    self.snapshot_into(io, index);
-}
-
-fn snapshot_into(self: *Backup, io: std.Io, index: usize) void {
+fn snapshot_into(self: *Backup, io: std.Io, index: usize, now_ms: u64) void {
     const epoch = epochs[index];
     var bucket = open_bucket(io, self.save_dir, epoch.name) orelse {
         log.err("Failed to open backup bucket '{s}'", .{epoch.name});
@@ -379,14 +326,20 @@ fn snapshot_into(self: *Backup, io: std.Io, index: usize) void {
     };
     defer bucket.close(io);
 
-    var name_buf: [scheme.BACKUP_ENTRY_NAME_MAX]u8 = undefined;
-    const name = scheme.format_backup_name(&name_buf, current_unix_ms(io), self.ext[0..self.ext_len]) catch {
+    if (index != 0) {
+        if (newest_timestamp(io, bucket)) |ts| {
+            if (now_ms -| ts < @as(u64, epoch.interval_s) * std.time.ms_per_s) return;
+        }
+    }
+
+    var name_buf: [backup_entry_name_max]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "{d}{s}", .{ current_unix_ms(io), self.ext }) catch {
         log.err("Backup name overflow", .{});
         return;
     };
 
-    copy_streaming(io, self.save_dir, self.current_save_name(), bucket, name) catch |err| {
-        log.err("Failed to snapshot '{s}' into '{s}': {}", .{ self.current_save_name(), epoch.name, err });
+    self.save_dir.copyFile(self.save_file_name, bucket, name, io, .{}) catch |err| {
+        log.err("Failed to snapshot '{s}' into '{s}': {}", .{ self.save_file_name, epoch.name, err });
         return;
     };
 
@@ -395,6 +348,5 @@ fn snapshot_into(self: *Backup, io: std.Io, index: usize) void {
 }
 
 fn current_unix_ms(io: std.Io) u64 {
-    const real_ns: i64 = @truncate(std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds);
-    return @intCast(@max(real_ns, 0) / std.time.ns_per_ms);
+    return @intCast(@max(std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(), 0));
 }

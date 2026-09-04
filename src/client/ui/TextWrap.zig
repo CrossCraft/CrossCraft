@@ -20,97 +20,48 @@ pub fn wrap(
     if (text.len == 0 or max_w <= 0) return 0;
 
     var count: u8 = 0;
-    var start = skip_spaces(text, 0);
+    var remaining = std.mem.trimStart(u8, text, " ");
     var active_color: ?u8 = null;
 
-    while (start < text.len and count < MAX_LINES) {
-        const fit = fonts.fit_width(text[start..], max_w, 0, 1);
-        var fit_end = start + fit;
-        if (fit_end <= start or !has_visible(text[start..fit_end])) {
-            fit_end = force_one_visible(text, start);
-        }
-        if (fit_end > text.len) fit_end = text.len;
-
+    while (remaining.len > 0 and count < MAX_LINES) {
+        const fit = fonts.fit_width(remaining, max_w, 0, 1);
+        const fit_end = @min(remaining.len, @max(fit, first_visible_end(remaining)));
         var end = fit_end;
         var next = fit_end;
-        if (fit_end < text.len) {
-            if (last_space(text, start, fit_end)) |space| {
-                if (space > start) {
+        if (fit_end < remaining.len) {
+            if (std.mem.lastIndexOfScalar(u8, remaining[0..fit_end], ' ')) |space| {
+                if (space > 0) {
                     end = space;
                     next = space + 1;
                 }
             }
         }
 
-        end = trim_trailing_spaces(text, start, end);
-        if (end == start) {
-            start = skip_spaces(text, next);
-            continue;
+        const line = std.mem.trimEnd(u8, remaining[0..end], " ");
+        if (line.len > 0) {
+            var prefix_len: usize = 0;
+            if (count > 0) {
+                if (active_color) |color| {
+                    assert(MAX_LINE_BYTES >= 2);
+                    out[count][prefix_len] = COLOR_PREFIX;
+                    out[count][prefix_len + 1] = color;
+                    prefix_len = 2;
+                }
+            }
+            assert(prefix_len + line.len <= MAX_LINE_BYTES);
+            @memcpy(out[count][prefix_len..][0..line.len], line);
+            lens[count] = @intCast(prefix_len + line.len);
+            active_color = scan_color(active_color, line);
+            count += 1;
         }
-
-        lens[count] = write_line(MAX_LINE_BYTES, &out[count], if (count > 0) active_color else null, text[start..end]);
-        active_color = scan_color(active_color, text[start..end]);
-        count += 1;
-        start = skip_spaces(text, next);
+        remaining = std.mem.trimStart(u8, remaining[next..], " ");
     }
 
     return count;
 }
 
-fn write_line(
-    comptime MAX_LINE_BYTES: usize,
-    out: *[MAX_LINE_BYTES]u8,
-    prefix_color: ?u8,
-    text: []const u8,
-) u8 {
-    var n: usize = 0;
-    if (prefix_color) |c| {
-        assert(n + 2 <= MAX_LINE_BYTES);
-        out[n] = COLOR_PREFIX;
-        out[n + 1] = c;
-        n += 2;
-    }
-    assert(n + text.len <= MAX_LINE_BYTES);
-    @memcpy(out[n .. n + text.len], text);
-    n += text.len;
-    return @intCast(n);
-}
-
-fn skip_spaces(text: []const u8, at: usize) usize {
-    var i = at;
-    while (i < text.len and text[i] == ' ') : (i += 1) {}
-    return i;
-}
-
-fn trim_trailing_spaces(text: []const u8, start: usize, end: usize) usize {
-    var n = end;
-    while (n > start and text[n - 1] == ' ') : (n -= 1) {}
-    return n;
-}
-
-fn last_space(text: []const u8, start: usize, end: usize) ?usize {
-    var i = end;
-    while (i > start) {
-        i -= 1;
-        if (text[i] == ' ') return i;
-    }
-    return null;
-}
-
-fn has_visible(text: []const u8) bool {
+fn first_visible_end(text: []const u8) usize {
     var i: usize = 0;
-    while (i < text.len) {
-        if (is_color_code(text, i)) {
-            i += 2;
-            continue;
-        }
-        return true;
-    }
-    return false;
-}
-
-fn force_one_visible(text: []const u8, start: usize) usize {
-    var i = start;
     while (i < text.len) {
         if (is_color_code(text, i)) {
             i += 2;
@@ -136,10 +87,8 @@ fn scan_color(initial: ?u8, text: []const u8) ?u8 {
 }
 
 fn is_color_code(text: []const u8, at: usize) bool {
-    return at + 1 < text.len and text[at] == COLOR_PREFIX and is_color_hex(text[at + 1]);
-}
-
-fn is_color_hex(c: u8) bool {
+    if (at + 1 >= text.len or text[at] != COLOR_PREFIX) return false;
+    const c = text[at + 1];
     return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
 }
 
@@ -175,26 +124,28 @@ fn expect_wrap(text: []const u8, max_w: i16, expected: []const []const u8) !void
     }
 }
 
-test "single-line fit" {
+test "text wrapping handles whitespace and long words" {
+    try expect_wrap("", 5, &.{});
+    try expect_wrap("   ", 5, &.{});
+    try expect_wrap("hello", 0, &.{});
     try expect_wrap("hello", 5, &.{"hello"});
-}
-
-test "wraps at spaces" {
     try expect_wrap("hello world", 5, &.{ "hello", "world" });
-}
-
-test "hard wraps long words" {
     try expect_wrap("abcdefgh", 3, &.{ "abc", "def", "gh" });
+    try expect_wrap("  hello   world  ", 5, &.{ "hello", "world" });
 }
 
-test "skips leading spaces on continuation lines" {
-    try expect_wrap("hello   world", 5, &.{ "hello", "world" });
-}
-
-test "does not split color codes" {
+test "text wrapping preserves color codes across lines" {
     try expect_wrap("a&cb", 1, &.{ "a&c", "&cb" });
+    try expect_wrap("&chello world", 5, &.{ "&chello", "&cworld" });
+    try expect_wrap("&c", 1, &.{"&c"});
+    try expect_wrap("&c&aab", 1, &.{ "&c&aa", "&ab" });
+    try expect_wrap("a&", 1, &.{ "a", "&" });
 }
 
-test "preserves active color on continuation lines" {
-    try expect_wrap("&chello world", 5, &.{ "&chello", "&cworld" });
+test "text wrapping stops when the output is full" {
+    var out: [2][1]u8 = undefined;
+    var lens: [2]u8 = undefined;
+    const font: TestFont = .{};
+    try std.testing.expectEqual(2, wrap(2, 1, &font, "abc", 1, &out, &lens));
+    try std.testing.expectEqualDeep([2][1]u8{ .{'a'}, .{'b'} }, out);
 }

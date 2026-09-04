@@ -22,8 +22,7 @@ pub fn build(b: *std.Build) void {
     if (b.graph.environ_map.get("CI") != null) {
         run_lint.addArg("--check-only");
     }
-    // Build-system roots are not reached through Zig @imports, so identify
-    // them explicitly for the linter's dead-file analysis.
+    // Include roots that Zig imports cannot reach in dead-file analysis.
     run_lint.addArgs(lint_roots);
 
     const lint_step = b.step("lint", "Lint the codebase with tiger_lint");
@@ -82,9 +81,12 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const psp_client_dir = "CrossCraft-Classic-PSP";
-    const nintendo_3ds_client_dir = "CrossCraft-Classic-3DS";
-    const nintendo_switch_client_dir = "CrossCraft-Classic-Switch";
+    const console_client_dir: ?[]const u8 = switch (config.platform) {
+        .psp => "CrossCraft-Classic-PSP",
+        .nintendo_3ds => "CrossCraft-Classic-3DS",
+        .nintendo_switch => "CrossCraft-Classic-Switch",
+        else => null,
+    };
     const is_psp = config.platform == .psp;
     const is_macos = config.platform == .macos;
     const is_3ds = config.platform == .nintendo_3ds;
@@ -99,9 +101,7 @@ pub fn build(b: *std.Build) void {
         else => false,
     };
 
-    // Resource packing: ZIP the default resource pack at build time.
-    // Skipped via -Dskip-pack on CI where the LFS-backed resources submodule
-    // is not fetched, which would otherwise zip up LFS pointer stubs.
+    // CI can skip packing when the LFS-backed resources are unavailable.
     const pack_zip_path: ?std.Build.LazyPath = if (skip_pack) null else blk: {
         const resources = b.dependency("resources", .{});
 
@@ -119,51 +119,13 @@ pub fn build(b: *std.Build) void {
     };
     const archival_save_path = b.path("saves/origins.cw");
 
-    // Whether pack.zip is embedded directly in the Linux/Windows binary.
-    // True for local release builds; false for -Duse-cwd (CI/dev) and all
-    // other platforms.
     const should_embed = is_desktop and pack_zip_path != null and !(overrides.use_cwd orelse false);
 
-    // Packaging strategy per platform:
-    //   PSP: install into bin/<psp_client_dir>/ for EBOOT layout.
-    //   3DS: install beside the 3dsx; users copy the directory to SDMC.
-    //   Switch: install beside the NRO; users copy the directory to SDMC.
-    //   macOS: routed through Aether.exportArtifactWithOutputs into the .app bundle's
-    //     Contents/Resources/ -- see below.
-    //   Desktop, embedding: pack.zip is baked into the binary; no loose file.
-    //   Desktop, -Duse-cwd: install to zig-out/bin/ so run-game (which cd's
-    //     into the install dir before exec) and distribution zips both find it.
     const install_pack: ?*std.Build.Step = if (pack_zip_path) |pack_zip| blk: {
-        if (is_psp) {
-            const psp_install = b.addInstallFile(
-                pack_zip,
-                "bin/" ++ psp_client_dir ++ "/pack.zip",
-            );
-            break :blk &psp_install.step;
-        }
-        if (is_3ds) {
-            const nintendo_3ds_install = b.addInstallFile(
-                pack_zip,
-                "bin/" ++ nintendo_3ds_client_dir ++ "/pack.zip",
-            );
-            break :blk &nintendo_3ds_install.step;
-        }
-        if (is_switch) {
-            const nintendo_switch_install = b.addInstallFile(
-                pack_zip,
-                "bin/" ++ nintendo_switch_client_dir ++ "/pack.zip",
-            );
-            break :blk &nintendo_switch_install.step;
-        }
-        if (is_macos) break :blk null; // Aether.exportArtifactWithOutputs installs via opts.resources.
-        if (should_embed) break :blk null; // Baked into binary; no separate file needed.
-
-        // -Duse-cwd path: install pack.zip alongside the binary in
-        // zig-out/bin/. The run-game step sets cwd to the install dir so
-        // the binary finds it there, and distribution zips (zig-out/) get
-        // the pack for free.
-        const bin_install = b.addInstallFile(pack_zip, "bin/pack.zip");
-        break :blk &bin_install.step;
+        // macOS packaging installs the pack inside the signed app bundle.
+        if (is_macos or should_embed) break :blk null;
+        const path = if (console_client_dir) |dir| b.fmt("bin/{s}/pack.zip", .{dir}) else "bin/pack.zip";
+        break :blk &b.addInstallFile(pack_zip, path).step;
     } else null;
 
     const ae_dep = b.dependency("engine", .{
@@ -200,10 +162,6 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "embed_pack", should_embed);
     client_root.addImport("build_options", build_options.createModule());
 
-    // On macOS we pipe the default pack and archival save through
-    // exportArtifactWithOutputs so they land in Contents/Resources/ inside the .app
-    // bundle before Aether signs it. On PSP/3DS/desktop the install steps
-    // above and the release workflow handle their placement.
     const mac_resources: []const Aether.packaging.Resource = if (is_macos) blk: {
         if (pack_zip_path) |pack_zip| {
             break :blk &.{
@@ -215,16 +173,13 @@ pub fn build(b: *std.Build) void {
     } else &.{};
     const packaged = Aether.packaging.exportArtifactWithOutputs(ae_dep.builder, b, client_exe, config, .{
         .title = "CrossCraft Classic",
-        .output_dir = if (is_psp) psp_client_dir else if (is_3ds) nintendo_3ds_client_dir else if (is_switch) nintendo_switch_client_dir else null,
+        .output_dir = console_client_dir,
         .bundle_id = "com.iridescentrose.crosscraft-classic",
         .resources = mac_resources,
         .nintendo_3ds_description = if (is_3ds) "Clean-room Minecraft Classic" else "",
         .nintendo_3ds_publisher = if (is_3ds) "CrossCraft" else "",
         .switch_author = if (is_switch) "CrossCraft" else "",
         .switch_version = if (is_switch) "0.0.0" else "",
-        // Each platform consumes its native icon format: Aether turns the
-        // macOS PNG into an .icns, embeds the Windows .ico in the PE resource
-        // table, and feeds the console artwork to their package builders.
         .icon_png = if (is_macos) b.path("assets/icon-osx.png") else null,
         .windows_icon = if (is_windows) b.path("assets/icon-win32.ico") else null,
         .icon0 = if (is_psp) b.path("assets/icon-psp.png") else null,
@@ -274,18 +229,12 @@ pub fn build(b: *std.Build) void {
 
     const build_game_step = b.step("game", "Build the game");
     build_game_step.dependOn(lint_step);
-    // macOS ships the exe inside CrossCraft-Classic.app (wired by
-    // Aether.exportArtifactWithOutputs onto b.getInstallStep()). Installing a flat
-    // copy alongside would duplicate the binary and confuse downstream
-    // packaging.
+    // Bundled targets install through the packaging pipeline.
     if (!is_macos and !is_3ds and !is_switch) {
         build_game_step.dependOn(&b.addInstallArtifact(client_exe, .{}).step);
     }
     if (install_pack) |ip| build_game_step.dependOn(ip);
     if (is_psp or is_macos or is_3ds or is_switch) {
-        // exportArtifactWithOutputs registers pipeline / bundle steps on
-        // b.getInstallStep(); wire them into the game step so
-        // `zig build game -Dtarget=<platform>` produces the artifact.
         build_game_step.dependOn(b.getInstallStep());
     }
 
@@ -304,7 +253,7 @@ pub fn build(b: *std.Build) void {
     } else if (is_switch) {
         const nro_path = b.getInstallPath(
             .bin,
-            b.fmt("{s}/{s}.nro", .{ nintendo_switch_client_dir, client_name }),
+            b.fmt("{s}/{s}.nro", .{ console_client_dir.?, client_name }),
         );
         const nxlink_path = b.option([]const u8, "nxlink-path", "Switch: path to nxlink (default: $DEVKITPRO/tools/bin/nxlink or /opt/devkitpro/tools/bin/nxlink)") orelse blk: {
             const dkp = b.graph.environ_map.get("DEVKITPRO") orelse "/opt/devkitpro";
@@ -331,12 +280,7 @@ pub fn build(b: *std.Build) void {
         const link_step = b.step("nxlink", "Push the nro to a networked Switch via nxlink");
         link_step.dependOn(&link_cmd.step);
     } else {
-        // macOS must run the binary from inside the .app bundle: pack.zip
-        // is installed into <Bundle>.app/Contents/Resources/ by
-        // exportArtifactWithOutputs, and the engine resolves the resources dir from
-        // the exe path (only bundle-laid-out exes look in Contents/).
-        // Running the raw cache artifact would leave it looking for
-        // pack.zip beside the cache binary and fail with FileNotFound.
+        // macOS resolves resources relative to the installed app bundle.
         const run_client_cmd = if (is_macos)
             b.addSystemCommand(&.{b.getInstallPath(
                 .bin,
@@ -344,9 +288,7 @@ pub fn build(b: *std.Build) void {
             )})
         else
             b.addRunArtifact(client_exe);
-        // Same cwd reasoning as run-server: under -Duse-cwd=true the binary
-        // finds the installed pack.zip here, and any data it writes
-        // (options.json, texturepacks/) lands alongside it.
+        // Keep data and the loose resource pack together under -Duse-cwd.
         run_client_cmd.setCwd(.{ .cwd_relative = b.getInstallPath(.bin, "") });
         run_client_cmd.step.dependOn(build_game_step);
         run_client_step.dependOn(&run_client_cmd.step);
@@ -432,9 +374,6 @@ pub fn build(b: *std.Build) void {
     });
     savetool_step.dependOn(&b.addInstallArtifact(savetool_exe, .{}).step);
 
-    // Golden-hash regression test for the worldgen module: regenerates 100
-    // predetermined worlds and compares sha256 block-array hashes against
-    // values captured from the Classic-Worldgen-RE black-box oracle.
     const worldgen_test_step = b.step("worldgen-test", "Verify worldgen output against 100 oracle-captured golden hashes");
     const worldgen_test_exe = b.addExecutable(.{
         .name = "worldgen_test",

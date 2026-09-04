@@ -7,16 +7,12 @@
 // Ported to Zig for CrossCraft (GPLv2; uses separate Aether-Engine).
 // Modifications Copyright (c) 2026 CrossCraft
 
-//! Swept-AABB entity/world collision. Each move gathers intersecting blocks,
-//! resolves the nearest candidates first, and attempts grounded step-up before
-//! clipping horizontal motion. World bounds and block geometry come from
-//! `WorldData` and `Block.bounds`.
+//! Swept-AABB collisions resolved nearest-first, with grounded step-up.
 const std = @import("std");
 const assert = std.debug.assert;
 const WorldData = @import("world/WorldData.zig");
 
-/// Separation epsilon. Absorbs floating-point slop in face classification
-/// and leaves a small gap after each clip so re-intersection is stable.
+/// Gap left after clipping to keep repeated collision checks stable.
 pub const EPSILON: f32 = 0.001;
 
 const MATH_LARGE: f32 = 1.0e9;
@@ -24,10 +20,7 @@ const MATH_LARGE: f32 = 1.0e9;
 /// A 0.6 x 1.8 player swept at `MAX_TICK_VEL` spans at most 7 x 8 x 7 cells.
 const MAX_CANDIDATES = 7 * 8 * 7;
 
-/// Per-axis velocity clamp applied before broadphase. It bounds the candidate
-/// extent. 5.0 blocks/tick (100 blocks/sec at 20 TPS) is
-/// well above terminal velocity (~4.0 under Classic drag/gravity) and any
-/// realistic input-driven motion; anything larger indicates a bug upstream.
+/// Limit the broadphase extent while allowing Classic terminal velocity.
 const MAX_TICK_VEL: f32 = 5.0;
 
 pub const MoveResult = struct {
@@ -68,11 +61,8 @@ const ResolveState = struct {
     hit_z: bool,
 };
 
-/// Resolve a proposed tick's worth of movement against the voxel world.
-/// `pos` is feet-centred (X/Z = centre, Y = base). `vel` is per-tick
-/// displacement (blocks/tick). `half_w` and `height` define the entity AABB.
-/// `step_size` > 0 enables in-loop step-up when `was_on_ground` is true;
-/// pass 0 to disable.
+/// `pos` is feet-centred; `vel` is displacement in blocks per tick.
+/// Positive `step_size` enables grounded step-up. Returns the final position.
 pub fn move_and_wall_slide(
     data: *const WorldData,
     pos: [3]f32,
@@ -119,11 +109,7 @@ pub fn move_and_wall_slide(
 
     for (buf[0..count]) |candidate| resolve_candidate(data, &state, candidate);
 
-    // Integrate remaining velocity. Axes that collided are zero (the clip
-    // already snapped the entity flush to the face); non-colliding axes
-    // retain their original velocity and advance here. Matches CrossCraft's
-    // pre-existing move_and_collide contract (returns the post-integration
-    // position) rather than a "caller adds velocity" convention.
+    // Clipped axes have already moved and have zero remaining velocity.
     state.entity.min_x += state.vel[0];
     state.entity.max_x += state.vel[0];
     state.entity.min_y += state.vel[1];
@@ -142,12 +128,8 @@ pub fn move_and_wall_slide(
     };
 }
 
-/// One-shot step-up probe. Raises feet by `step_size`, slides horizontally
-/// by `(dx, dz)` at the raised height, then finds the highest block top
-/// crossed by a downward sweep within `step_size`. Returns the landed
-/// position or null if the raised box is obstructed or no surface was
-/// crossed. Used by callers that want to opt in to a step-up outside the
-/// normal grounded-DidSlide path (e.g. water-to-land exit).
+/// Raise, slide horizontally, and land within `step_size` for water-to-land exits.
+/// Returns null when obstructed or no surface above the original feet is reached.
 pub fn try_step_up(
     data: *const WorldData,
     pos: [3]f32,
@@ -172,10 +154,7 @@ pub fn try_step_up(
     return .{ moved.x, landed_y, moved.z };
 }
 
-/// Single-point "is feet flush with a surface" probe. Offsets the entity
-/// AABB down by EPSILON and tests for any solid overlap. Used for
-/// grounded-state refresh outside the main move (rare -- prefer
-/// MoveResult.on_ground).
+/// Probe just below the feet when no movement result is available.
 pub fn is_on_ground(
     data: *const WorldData,
     pos: [3]f32,
@@ -250,16 +229,7 @@ fn broadphase(
     }
 }
 
-/// World-space AABB of a solid block at integer cell (bx, by, bz), or null
-/// if the cell is passable. Out-of-bounds treatment:
-///
-///   y < 0            -> full solid cube (bedrock floor / world bottom).
-///   y >= world height -> passable (no ceiling; entities can jump above).
-///   x/z OOB          -> full solid cube (world-edge walls).
-///
-/// In-bounds cells consult the shared block registry for both solidity
-/// (`sim_props.solid`) and geometry (`bounds`), so slabs, flowers, and any
-/// future partial shapes automatically get the right AABB.
+/// World edges have solid floors and walls, but no ceiling.
 fn solid_block_aabb(data: *const WorldData, bx: i32, by: i32, bz: i32) ?Aabb {
     if (by < 0) return full_cube(bx, by, bz);
     if (by >= data.dims.height) return null;
@@ -411,7 +381,6 @@ fn clip_interval(min: *f32, max: *f32, velocity: *f32, barrier: f32, move_min: b
     velocity.* = 0;
 }
 
-/// Try grounded step-up before horizontal clipping.
 fn try_step(
     data: *const WorldData,
     state: *ResolveState,
@@ -466,7 +435,6 @@ fn overlaps_any_solid(data: *const WorldData, box: Aabb) bool {
     return false;
 }
 
-/// Find the highest landing surface within the downward sweep.
 fn find_landing_y(
     data: *const WorldData,
     px: f32,
@@ -515,10 +483,7 @@ fn overlaps_xz(a: Aabb, b: Aabb) bool {
         a.max_z > b.min_z + EPSILON and a.min_z + EPSILON < b.max_z;
 }
 
-/// Floor-to-i32 with NaN / out-of-range clamping so the broadphase never
-/// panics on @intFromFloat for pathological inputs. Values outside the
-/// i32 range get clamped; the solid_block_aabb OOB check then treats those
-/// cells as walls.
+/// Clamp invalid coordinates before converting them to cell indices.
 fn floor_i32(v: f32) i32 {
     const f = @floor(v);
     if (!(f >= -2147483648.0)) return std.math.minInt(i32);

@@ -270,7 +270,6 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const slab = cur.slab;
     const sleaf = cur.solid_leaf;
 
-    // Interior leaves participate in opaque face culling.
     const n_zp = &buf[by][bz + 1];
     const n_zn = &buf[by][bz - 1];
     const n_yp = &buf[by + 1][bz];
@@ -295,7 +294,6 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
 
     const std_vis = (vis & ~flu) & ~sleaf;
 
-    // Cull shared glass faces on both sides.
     const g = cur.glass;
     const g_xp = g & (g >> 1);
     const g_xn = g & (g << 1);
@@ -312,7 +310,6 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const y_pos = ((std_vis & ~eff_yp & ~g_yp) | slab) & SECTION_MASK;
     const y_neg = (std_vis & ~eff_yn & ~g_yn) & SECTION_MASK;
 
-    // Cull fluids against effective opacity and the same fluid.
     const flu_xp = (flu & ~(eff_cur >> 1) & ~(flu >> 1)) & SECTION_MASK;
     const flu_xn = (flu & ~(eff_cur << 1) & ~(flu << 1)) & SECTION_MASK;
     const flu_zp = (flu & ~eff_zp & ~n_zp.flu) & SECTION_MASK;
@@ -349,7 +346,6 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const tfl_yp = (trans & n_yp.flu) & SECTION_MASK;
     const tfl_yn = (trans & n_yn.flu) & SECTION_MASK;
 
-    // Merge fluid bits so emission walks one mask per direction.
     const xp_all = x_pos | flu_xp;
     const xn_all = x_neg | flu_xn;
     const yp_all = y_pos | flu_yp_bits;
@@ -392,7 +388,6 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     };
 }
 
-/// Convert one row's masks to per-mesh vertex counts.
 fn counts_from_masks(f: FaceMasks) SectionCounts {
     const sl_count = pop(f.sl_xp) + pop(f.sl_xn) + pop(f.sl_zp) + pop(f.sl_zn) + pop(f.sl_yp) + pop(f.sl_yn);
     const all_count = pop(f.x_pos) + pop(f.x_neg) +
@@ -413,7 +408,6 @@ fn counts_from_masks(f: FaceMasks) SectionCounts {
     };
 }
 
-/// Count the vertices required by `emit_section`.
 pub fn count_section(buf: *const SectionBuf) SectionCounts {
     var total: SectionCounts = .{ .opaque_verts = 0, .transparent_verts = 0, .fluid_verts = 0 };
     for (1..BUF_Y - 1) |by| {

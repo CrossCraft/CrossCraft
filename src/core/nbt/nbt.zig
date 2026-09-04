@@ -42,10 +42,7 @@ pub const NBT = struct {
     };
 
     pub fn write(self: NBT, writer: *std.Io.Writer) WriteError!void {
-        const tag = std.meta.activeTag(self.value);
-        try writer.writeByte(@intFromEnum(tag));
-        if (tag == .end) return;
-        try write_string(writer, self.name);
+        try write_header(writer, std.meta.activeTag(self.value), self.name);
         try write_payload(self.value, writer);
     }
 
@@ -82,16 +79,9 @@ fn write_string(writer: *std.Io.Writer, value: []const u8) WriteError!void {
     try writer.writeAll(value);
 }
 
-pub fn write_named_byte_array_stream(
-    writer: *std.Io.Writer,
-    name: []const u8,
-    len: u32,
-    body: anytype,
-) WriteError!void {
-    try writer.writeByte(@intFromEnum(Tag.byte_array));
-    try write_string(writer, name);
-    try writer.writeInt(i32, @intCast(len), .big);
-    try body.write_into(writer);
+pub fn write_header(writer: *std.Io.Writer, tag: Tag, name: []const u8) WriteError!void {
+    try writer.writeByte(@intFromEnum(tag));
+    if (tag != .end) try write_string(writer, name);
 }
 
 test "writes nested NBT in network byte order" {
@@ -122,18 +112,12 @@ test "writes nested NBT in network byte order" {
     try std.testing.expectEqualSlices(u8, &expected, writer.buffered());
 }
 
-test "streams a named byte array body" {
-    const Body = struct {
-        bytes: []const u8,
-
-        fn write_into(self: @This(), writer: *std.Io.Writer) WriteError!void {
-            try writer.writeAll(self.bytes);
-        }
-    };
+test "writes a named byte array" {
     const payload = [_]u8{ 0xaa, 0xbb, 0xcc };
     var buf: [32]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    try write_named_byte_array_stream(&writer, "BlockArray", payload.len, Body{ .bytes = &payload });
+    const array: NBT = .{ .name = "BlockArray", .value = .{ .byte_array = &payload } };
+    try array.write(&writer);
 
     const expected = [_]u8{
         7, 0, 10, 'B', 'l',  'o',  'c',  'k', 'A', 'r', 'r', 'a', 'y',

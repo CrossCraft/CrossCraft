@@ -829,7 +829,7 @@ test "block indexing follows the oracle x-major layout" {
     try std.testing.expectEqual(@as(usize, 16 * 16 * 32), dimensions.volume());
 }
 
-test "largest supervisor-tested dimensions preserve the final index" {
+test "512x128x512 dimensions preserve the final index" {
     const dimensions: world_dimensions = .{ .width = 512, .height = 128, .depth = 512 };
     try std.testing.expect(dimensions.validate());
     try std.testing.expectEqual(@as(usize, 512 * 128 * 512), dimensions.volume());

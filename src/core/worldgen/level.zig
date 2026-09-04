@@ -29,19 +29,14 @@ fn horizontal_inside(dimensions: world_dimensions, point: horizontal_walk_point)
     return point.x >= 0 and point.x < width and point.z >= 0 and point.z < depth;
 }
 
-fn flower_eligible(field: terrain.block_field, elevation: *const terrain.elevation_cache, point: horizontal_walk_point) bool {
-    if (!horizontal_inside(field.dimensions, point)) return false;
+fn place_flower(field: terrain.block_field, elevation: *const terrain.elevation_cache, material: u8, point: horizontal_walk_point) void {
+    if (!horizontal_inside(field.dimensions, point)) return;
     const x: u32 = @intCast(point.x);
     const z: u32 = @intCast(point.z);
     const top = elevation.surface_height(field.dimensions, x, z);
-    return field.at(x, top + 1, z) == terrain.air_id and field.at(x, top, z) == terrain.grass_id;
-}
-
-fn place_flower(field: terrain.block_field, elevation: *const terrain.elevation_cache, material: u8, point: horizontal_walk_point) void {
-    if (!flower_eligible(field, elevation, point)) return;
-    const x: u32 = @intCast(point.x);
-    const z: u32 = @intCast(point.z);
-    field.set(x, elevation.surface_height(field.dimensions, x, z) + 1, z, material);
+    if (field.at(x, top + 1, z) == terrain.air_id and field.at(x, top, z) == terrain.grass_id) {
+        field.set(x, top + 1, z, material);
+    }
 }
 
 fn flower_walk(random: *random_state, field: terrain.block_field, elevation: *const terrain.elevation_cache, material: u8, origin: horizontal_walk_point) void {
@@ -69,23 +64,20 @@ fn flower_pass(random: *random_state, field: terrain.block_field, elevation: *co
     }
 }
 
-fn mushroom_eligible(field: terrain.block_field, elevation: *const terrain.elevation_cache, point: subterranean_walk_point) bool {
+fn place_mushroom(field: terrain.block_field, elevation: *const terrain.elevation_cache, material: u8, point: subterranean_walk_point) void {
     const width: i32 = @intCast(field.dimensions.width);
     const depth: i32 = @intCast(field.dimensions.depth);
     if (point.x < 0 or point.x >= width or point.z < 0 or
         point.z >= depth or point.y < 1)
-        return false;
+        return;
     const x: u32 = @intCast(point.x);
     const y: u32 = @intCast(point.y);
     const z: u32 = @intCast(point.z);
     const surface_height = elevation.surface_height(field.dimensions, x, z);
-    if (surface_height <= 1 or point.y >= @as(i32, @intCast(surface_height)) - 1) return false;
-    return field.at(x, y, z) == terrain.air_id and field.at(x, y - 1, z) == terrain.stone_id;
-}
-
-fn place_mushroom(field: terrain.block_field, elevation: *const terrain.elevation_cache, material: u8, point: subterranean_walk_point) void {
-    if (!mushroom_eligible(field, elevation, point)) return;
-    field.set(@intCast(point.x), @intCast(point.y), @intCast(point.z), material);
+    if (surface_height <= 1 or point.y >= @as(i32, @intCast(surface_height)) - 1) return;
+    if (field.at(x, y, z) == terrain.air_id and field.at(x, y - 1, z) == terrain.stone_id) {
+        field.set(x, y, z, material);
+    }
 }
 
 fn mushroom_walk(random: *random_state, field: terrain.block_field, elevation: *const terrain.elevation_cache, material: u8, origin: subterranean_walk_point) void {
@@ -115,10 +107,6 @@ fn mushroom_pass(random: *random_state, field: terrain.block_field, elevation: *
         };
         for (0..20) |_| mushroom_walk(random, field, elevation, material, origin);
     }
-}
-
-fn horizontal_distance(left: u32, right: u32) u32 {
-    return if (left <= right) right - left else left - right;
 }
 
 fn tree_clearance_radius(base: terrain.block_position, height: u32, y: u32) u32 {
@@ -236,46 +224,6 @@ fn still_fluid_exposed(field: terrain.block_field, position: terrain.block_posit
     return false;
 }
 
-fn fall_passable(material: u8) bool {
-    return material == terrain.air_id or
-        material == terrain.flowing_water_id or
-        material == terrain.still_water_id or
-        material == terrain.flowing_lava_id or
-        material == terrain.still_lava_id;
-}
-
-fn falling_destination(field: terrain.block_field, source: terrain.block_position) u32 {
-    assert(field.inside(source));
-
-    var destination_y = source.y;
-    while (destination_y > 0 and
-        fall_passable(field.at(source.x, destination_y - 1, source.z)))
-    {
-        destination_y -= 1;
-    }
-
-    return destination_y;
-}
-
-const falling_move_result = union(enum) {
-    stationary,
-    moved: terrain.block_position,
-};
-
-fn moved_falling_field(field: terrain.block_field, source: terrain.block_position) falling_move_result {
-    const destination: terrain.block_position = .{
-        .x = source.x,
-        .y = falling_destination(field, source),
-        .z = source.z,
-    };
-    if (destination.y == source.y) return .stationary;
-
-    const material = field.at(source.x, source.y, source.z);
-    field.set(source.x, source.y, source.z, terrain.air_id);
-    field.set(destination.x, destination.y, destination.z, material);
-    return .{ .moved = destination };
-}
-
 fn deliver_neighbor_notifications(field: terrain.block_field, changed_material: u8, positions: []const lattice_position) void {
     assert(changed_material <= 49);
     for (positions) |position| {
@@ -284,7 +232,6 @@ fn deliver_neighbor_notifications(field: terrain.block_field, changed_material: 
         const source: terrain.block_position = .{ .x = @intCast(position.x), .y = @intCast(position.y), .z = @intCast(position.z) };
         const source_material = field.at(source.x, source.y, source.z);
         if (falling_material(source_material)) {
-            assert(!fluid_material(source_material));
             falling_neighbor_reaction(field, source);
         } else if (fluid_material(source_material)) {
             fluid_neighbor_reaction(field, source, changed_material);
@@ -297,15 +244,20 @@ fn falling_neighbor_reaction(field: terrain.block_field, source: terrain.block_p
     assert(falling_material(field.at(source.x, source.y, source.z)));
 
     const source_material = field.at(source.x, source.y, source.z);
-    switch (moved_falling_field(field, source)) {
-        .stationary => {},
-        .moved => |destination| {
-            const source_neighbors = axis_neighbor_order(lattice_position_from_block(source));
-            const destination_neighbors = axis_neighbor_order(lattice_position_from_block(destination));
-            deliver_neighbor_notifications(field, terrain.air_id, source_neighbors[0..]);
-            deliver_neighbor_notifications(field, source_material, destination_neighbors[0..]);
-        },
+    var destination = source;
+    while (destination.y > 0) {
+        const below = field.at(source.x, destination.y - 1, source.z);
+        if (below != terrain.air_id and !fluid_material(below)) break;
+        destination.y -= 1;
     }
+    if (destination.y == source.y) return;
+
+    field.set(source.x, source.y, source.z, terrain.air_id);
+    field.set(destination.x, destination.y, destination.z, source_material);
+    const source_neighbors = axis_neighbor_order(lattice_position_from_block(source));
+    const destination_neighbors = axis_neighbor_order(lattice_position_from_block(destination));
+    deliver_neighbor_notifications(field, terrain.air_id, &source_neighbors);
+    deliver_neighbor_notifications(field, source_material, &destination_neighbors);
 }
 
 fn fluid_neighbor_reaction(field: terrain.block_field, source: terrain.block_position, changed_material: u8) void {
@@ -354,8 +306,8 @@ fn place_canopy(random: *random_state, field: terrain.block_field, base: terrain
         while (x <= base.x + radius) : (x += 1) {
             var z = base.z - radius;
             while (z <= base.z + radius) : (z += 1) {
-                const corner = horizontal_distance(base.x, x) == radius and
-                    horizontal_distance(base.z, z) == radius;
+                const corner = (x == base.x - radius or x == base.x + radius) and
+                    (z == base.z - radius or z == base.z + radius);
                 if (!corner) {
                     notifying_block_placement(field, .{ .x = x, .y = y, .z = z }, foliage_id);
                 } else {
@@ -542,22 +494,25 @@ test "tree base placement delivers falling notifications recursively" {
     try std.testing.expectEqual(terrain.gravel_id, field.at(10, 6, 8));
 }
 
-test "placement into air notifies axis neighbors" {
+test "only changed placements notify axis neighbors" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, terrain.stone_id);
     defer std.testing.allocator.free(field.blocks);
 
     const position: terrain.block_position = .{ .x = 8, .y = 7, .z = 8 };
 
-    field.set(position.x, position.y, position.z, terrain.air_id);
-    field.set(9, 7, 8, terrain.sand_id);
-    field.set(9, 6, 8, terrain.air_id);
+    for ([_]u8{ terrain.air_id, terrain.dirt_id }) |before| {
+        @memset(field.blocks, terrain.stone_id);
+        field.set(position.x, position.y, position.z, before);
+        field.set(9, 7, 8, terrain.sand_id);
+        field.set(9, 6, 8, terrain.air_id);
+        notifying_block_placement(field, position, terrain.dirt_id);
 
-    notifying_block_placement(field, position, terrain.dirt_id);
-
-    try std.testing.expectEqual(terrain.dirt_id, field.at(position.x, position.y, position.z));
-    try std.testing.expectEqual(terrain.air_id, field.at(9, 7, 8));
-    try std.testing.expectEqual(terrain.sand_id, field.at(9, 6, 8));
+        const changed = before != terrain.dirt_id;
+        try std.testing.expectEqual(terrain.dirt_id, field.at(position.x, position.y, position.z));
+        try std.testing.expectEqual(if (changed) terrain.air_id else terrain.sand_id, field.at(9, 7, 8));
+        try std.testing.expectEqual(if (changed) terrain.sand_id else terrain.air_id, field.at(9, 6, 8));
+    }
 }
 
 test "notifying placement converts exposed still fluid to flowing" {
@@ -666,24 +621,6 @@ test "trunk placement into air notifies axis neighbors" {
     try std.testing.expectEqual(trunk_id, field.at(base.x, base.y, base.z));
     try std.testing.expectEqual(terrain.air_id, field.at(9, 8, 8));
     try std.testing.expectEqual(terrain.sand_id, field.at(9, 7, 8));
-}
-
-test "unchanged notifying placement does not deliver falling notifications" {
-    const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
-    const field = try test_field(dimensions, terrain.stone_id);
-    defer std.testing.allocator.free(field.blocks);
-
-    const position: terrain.block_position = .{ .x = 8, .y = 7, .z = 8 };
-
-    field.set(position.x, position.y, position.z, terrain.dirt_id);
-    field.set(9, 7, 8, terrain.sand_id);
-    field.set(9, 6, 8, terrain.air_id);
-
-    notifying_block_placement(field, position, terrain.dirt_id);
-
-    try std.testing.expectEqual(terrain.dirt_id, field.at(position.x, position.y, position.z));
-    try std.testing.expectEqual(terrain.sand_id, field.at(9, 7, 8));
-    try std.testing.expectEqual(terrain.air_id, field.at(9, 6, 8));
 }
 
 test "tree success consumes height plus sixteen corner draws" {

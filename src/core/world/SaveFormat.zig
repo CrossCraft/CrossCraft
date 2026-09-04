@@ -81,14 +81,7 @@ pub const SaveFormat = union(enum) {
 
         var reader = file.reader(io, read_buf);
 
-        const peek_sizes = [_]usize{ sniff_prefix_len, 8192, 4096, 1024, 256, 64, 12, 6 };
-        var prefix: []const u8 = &.{};
-        inline for (peek_sizes) |sz| {
-            if (reader.interface.peek(sz)) |s| {
-                prefix = s;
-                break;
-            } else |_| {}
-        }
+        const prefix = reader.interface.peek(sniff_prefix_len) catch reader.interface.buffered();
 
         const sniff = detect(prefix) orelse return null;
         return switch (sniff) {
@@ -170,14 +163,10 @@ test "sniff_dims reads the announced geometry from both formats" {
         try comp.writer.writeAll(&test_header_nbt);
         try comp.finish();
 
-        // Match the full prefix available from a real world file.
-        var file_bytes: [16384 + 256]u8 = @splat(0);
-        @memcpy(file_bytes[0..out.buffered().len], out.buffered());
-
         const file = try tmp.dir.createFile(io, "world.cw", .{});
         defer file.close(io);
 
-        try file.writeStreamingAll(io, &file_bytes);
+        try file.writeStreamingAll(io, out.buffered());
 
         const dims = SaveFormat.sniff_dims(io, tmp.dir, "world.cw", std.testing.allocator).?;
         try std.testing.expectEqual(@as(u32, 512), dims.length);

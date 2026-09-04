@@ -115,9 +115,7 @@ pub const SimProps = packed struct(u8) {
     fast_tick: bool = false,
 };
 
-/// Complete registration input for one block. Registry compiles this friendly
-/// aggregate into its hot-path structure-of-arrays tables. Strings are borrowed
-/// and must outlive the Registry.
+/// Registration data compiled into separate property tables. Strings are borrowed.
 const Definition = struct {
     mesh: MeshProps = .{},
     simulation: SimProps = .{},
@@ -138,8 +136,7 @@ const Definition = struct {
     }
 };
 
-/// Named tags cover Classic blocks; unnamed values support wire IDs and local
-/// sentinels without inflating the one-byte representation.
+/// Unnamed values support wire IDs and local sentinels.
 pub const Block = enum(u8) {
     air = 0,
     stone = 1,
@@ -202,31 +199,31 @@ pub const Block = enum(u8) {
     }
 
     pub inline fn mesh_props(self: Block) MeshProps {
-        return global.mesh_props[index(self)];
+        return global.mesh_props[@intFromEnum(self)];
     }
 
     pub inline fn sim_props(self: Block) SimProps {
-        return global.sim_props[index(self)];
+        return global.sim_props[@intFromEnum(self)];
     }
 
     pub inline fn fluid_kind(self: Block) FluidKind {
-        return global.fluid_kind[index(self)];
+        return global.fluid_kind[@intFromEnum(self)];
     }
 
     pub inline fn material(self: Block) Material {
-        return global.material[index(self)];
+        return global.material[@intFromEnum(self)];
     }
 
     pub inline fn bounds(self: Block) SubvoxelBounds {
-        return global.bounds[index(self)];
+        return global.bounds[@intFromEnum(self)];
     }
 
     pub inline fn face_tile(self: Block, face: Face) Tile {
-        return global.face_tiles[index(self)].for_face(face);
+        return global.face_tiles[@intFromEnum(self)].for_face(face);
     }
 
     pub inline fn display_name(self: Block) []const u8 {
-        return global.display_name[index(self)];
+        return global.display_name[@intFromEnum(self)];
     }
 
     pub inline fn collision_height(self: Block) f32 {
@@ -293,32 +290,17 @@ comptime {
 
 /// Compile-time structure-of-arrays lookup table for gameplay hot paths.
 const Registry = struct {
-    mesh_props: [BLOCK_CAPACITY]MeshProps,
-    sim_props: [BLOCK_CAPACITY]SimProps,
-    face_tiles: [BLOCK_CAPACITY]FaceTiles,
-    material: [BLOCK_CAPACITY]Material,
-    fluid_kind: [BLOCK_CAPACITY]FluidKind,
-    bounds: [BLOCK_CAPACITY]SubvoxelBounds,
-    display_name: [BLOCK_CAPACITY][]const u8,
-    inventory_order: [INVENTORY_SLOTS]Block,
-    inventory_used: [INVENTORY_SLOTS]bool,
-
-    fn empty() Registry {
-        return .{
-            .mesh_props = @splat(MeshProps{}),
-            .sim_props = @splat(SimProps{}),
-            .face_tiles = @splat(FaceTiles.all(0, 0)),
-            .material = @splat(.grass),
-            .fluid_kind = @splat(.none),
-            .bounds = @splat(.full),
-            .display_name = @splat(""),
-            .inventory_order = @splat(.air),
-            .inventory_used = @splat(false),
-        };
-    }
+    mesh_props: [BLOCK_CAPACITY]MeshProps = @splat(.{}),
+    sim_props: [BLOCK_CAPACITY]SimProps = @splat(.{}),
+    face_tiles: [BLOCK_CAPACITY]FaceTiles = @splat(.all(0, 0)),
+    material: [BLOCK_CAPACITY]Material = @splat(.grass),
+    fluid_kind: [BLOCK_CAPACITY]FluidKind = @splat(.none),
+    bounds: [BLOCK_CAPACITY]SubvoxelBounds = @splat(.full),
+    display_name: [BLOCK_CAPACITY][]const u8 = @splat(""),
+    inventory_order: [INVENTORY_SLOTS]Block = @splat(.air),
 
     fn classic() Registry {
-        var self = Registry.empty();
+        var self: Registry = .{};
         for (0..classic_block_count) |raw_id| {
             const value: Block = @enumFromInt(raw_id);
             self.register(value, classic_definition(value));
@@ -327,12 +309,8 @@ const Registry = struct {
     }
 
     fn register(self: *Registry, value: Block, def: Definition) void {
-        const id = index(value);
+        const id = @intFromEnum(value);
         assert(def.valid());
-        if (def.inventory_slot) |slot| {
-            assert(!self.inventory_used[slot]);
-        }
-
         self.mesh_props[id] = def.mesh;
         self.sim_props[id] = def.simulation;
         self.face_tiles[id] = def.face_tiles;
@@ -342,8 +320,8 @@ const Registry = struct {
         self.display_name[id] = def.display_name;
 
         if (def.inventory_slot) |slot| {
+            assert(value != .air and self.inventory_order[slot] == .air);
             self.inventory_order[slot] = value;
-            self.inventory_used[slot] = true;
         }
     }
 };
@@ -353,10 +331,6 @@ const global = Registry.classic();
 pub inline fn inventory_block(slot: u8) Block {
     assert(slot < INVENTORY_SLOTS);
     return global.inventory_order[slot];
-}
-
-fn index(value: Block) usize {
-    return @intFromEnum(value);
 }
 
 fn tile_valid(tile: Tile) bool {
@@ -456,24 +430,16 @@ fn classic_definition(value: Block) Definition {
             def.simulation.light_passes = true;
             def.simulation.ticks = true;
         },
-        else => {},
-    }
-
-    switch (value) {
         .flowing_water, .still_water, .flowing_lava, .still_lava => {
             def.mesh.@"opaque" = false;
             def.mesh.fluid = true;
+            def.mesh.emits_light = def.fluid_kind == .lava;
             def.simulation.solid = false;
             def.simulation.selectable = false;
             def.simulation.step_sound = false;
             def.simulation.ticks = true;
             def.simulation.fast_tick = true;
         },
-        else => {},
-    }
-
-    switch (value) {
-        .flowing_lava, .still_lava => def.mesh.emits_light = true,
         .leaves => {
             def.mesh.@"opaque" = false;
             def.mesh.leaf = true;
@@ -488,10 +454,6 @@ fn classic_definition(value: Block) Definition {
             def.mesh.@"opaque" = false;
             def.mesh.slab = true;
         },
-        else => {},
-    }
-
-    switch (value) {
         .dirt, .grass => def.simulation.ticks = true,
         .sand, .gravel => {
             def.simulation.ticks = true;

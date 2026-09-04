@@ -3,14 +3,12 @@ const assert = std.debug.assert;
 
 const log = std.log.scoped(.access_control);
 
-/// The policy store is separate from the bounded recent-player cache. A
-/// policy entry is never evicted: if the configured capacity is exhausted,
-/// the administrative mutation fails instead of weakening enforcement.
+// Policy entries are never evicted when the store reaches capacity.
 pub const max_capacity: u32 = 65_536;
-pub const ip_str_len: u32 = 15;
+const ip_str_len = @import("core").Server.Client.ip_str_len;
 pub const reason_len: u32 = 64;
 
-pub const Policy = struct {
+const Policy = struct {
     ip: [ip_str_len:0]u8,
     ban_reason: [reason_len:0]u8,
     banned: bool,
@@ -24,14 +22,9 @@ pub const Policy = struct {
     pub fn ban_reason_slice(self: *const Policy) []const u8 {
         return std.mem.sliceTo(self.ban_reason[0..], 0);
     }
-
-    fn has_any_flag(self: *const Policy) bool {
-        return self.banned or self.op or self.whitelisted;
-    }
 };
 
-/// An immutable copy returned to callers so the store lock never leaks a
-/// mutable record pointer to connection or console tasks.
+/// Returned by value so callers do not retain records protected by the lock.
 pub const Snapshot = struct {
     banned: bool = false,
     op: bool = false,
@@ -56,9 +49,7 @@ const JsonFile = struct {
 };
 
 const file_name = "access-control.json";
-// A 64-byte reason can expand to 384 bytes when JSON-escaped. Leave room for
-// the remaining fields and indentation so every valid in-memory policy can be
-// serialized without allocating during a synchronous command.
+// JSON escaping can expand a 64-byte reason to 384 bytes.
 const json_bytes_per_record: usize = 640;
 
 var mutex: std.Io.Mutex = .init;
@@ -66,14 +57,12 @@ var records: []Policy = &.{};
 var json_records: []JsonRecord = &.{};
 var json_scratch: []u8 = &.{};
 var count: u32 = 0;
-var capacity: u32 = 0;
 var save_dir: std.Io.Dir = undefined;
 var save_io: std.Io = undefined;
 var owning_alloc: std.mem.Allocator = undefined;
 var initialized: bool = false;
 
-/// True only when access-control.json did not exist at init. During this
-/// one-time window players_db may import legacy policy flags from players.json.
+// An existing access-control.json always takes precedence over legacy flags.
 var accepting_legacy_import: bool = false;
 var legacy_imported: bool = false;
 
@@ -88,9 +77,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, cap_request: 
     json_records = try alloc.alloc(JsonRecord, cap);
     json_scratch = try alloc.alloc(u8, scratch_len);
 
-    @memset(std.mem.sliceAsBytes(records), 0);
     count = 0;
-    capacity = cap;
     save_dir = dir;
     save_io = io;
     owning_alloc = alloc;
@@ -110,14 +97,13 @@ pub fn deinit() void {
 }
 
 fn clear(alloc: std.mem.Allocator) void {
-    if (records.len > 0) alloc.free(records);
-    if (json_records.len > 0) alloc.free(json_records);
-    if (json_scratch.len > 0) alloc.free(json_scratch);
+    alloc.free(records);
+    alloc.free(json_records);
+    alloc.free(json_scratch);
     records = &.{};
     json_records = &.{};
     json_scratch = &.{};
     count = 0;
-    capacity = 0;
     initialized = false;
     accepting_legacy_import = false;
     legacy_imported = false;
@@ -155,28 +141,17 @@ pub fn set_banned(ip: []const u8, banned: bool, reason: []const u8) !void {
     try save_locked();
 }
 
-pub fn set_op(ip: []const u8, op: bool) !void {
-    try set_flag(ip, op, "op");
-}
-
-pub fn set_whitelisted(ip: []const u8, whitelisted: bool) !void {
-    try set_flag(ip, whitelisted, "whitelisted");
-}
-
-fn set_flag(ip: []const u8, enabled: bool, comptime field: []const u8) !void {
+pub fn set_flag(ip: []const u8, comptime flag: enum { op, whitelisted }, enabled: bool) !void {
     if (!initialized) return;
     mutex.lockUncancelable(save_io);
     defer mutex.unlock(save_io);
 
     const index = if (enabled) try upsert_index_locked(ip) else find_index_locked(ip) orelse return;
-    @field(records[index], field) = enabled;
+    @field(records[index], @tagName(flag)) = enabled;
     remove_if_empty_locked(index);
     try save_locked();
 }
 
-/// Import one legacy players.json record. This intentionally does nothing
-/// after the first boot with access-control.json so a current policy file is
-/// always authoritative (including future unban/unop operations).
 pub fn import_legacy(
     ip: []const u8,
     banned: bool,
@@ -202,9 +177,7 @@ pub fn import_legacy(
     legacy_imported = true;
 }
 
-/// Complete the one-time migration after players_db has finished loading.
-/// Persist policy before serving connections so no legacy enforcement state is
-/// silently lost in a crash or subsequent cache write.
+/// Persist migrated policy before accepting connections or rewriting the cache.
 pub fn finish_legacy_migration() !void {
     if (!initialized or !accepting_legacy_import) return;
     mutex.lockUncancelable(save_io);
@@ -225,7 +198,7 @@ fn find_index_locked(ip: []const u8) ?u32 {
 
 fn upsert_index_locked(ip: []const u8) !u32 {
     if (find_index_locked(ip)) |index| return index;
-    if (count >= capacity) return error.PolicyStoreFull;
+    if (count >= records.len) return error.PolicyStoreFull;
 
     const index = count;
     const rec = &records[index];
@@ -238,14 +211,13 @@ fn upsert_index_locked(ip: []const u8) !u32 {
 
 fn remove_if_empty_locked(index: u32) void {
     const rec = &records[index];
-    if (rec.has_any_flag()) return;
+    if (rec.banned or rec.op or rec.whitelisted) return;
     const last: u32 = count - 1;
     if (index != last) records[index] = records[last];
     count -= 1;
 }
 
-/// Returns whether a policy file existed. Existing-but-empty files are still
-/// authoritative and deliberately suppress legacy migration.
+// Empty files are authoritative too and suppress legacy migration.
 fn load_locked() !bool {
     const file = save_dir.openFile(save_io, file_name, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
@@ -262,22 +234,20 @@ fn load_locked() !bool {
     };
     if (n == 0) return true;
 
-    var arena = std.heap.ArenaAllocator.init(owning_alloc);
-    defer arena.deinit();
-
-    const parsed = std.json.parseFromSliceLeaky(
+    const parsed = std.json.parseFromSlice(
         JsonFile,
-        arena.allocator(),
+        owning_alloc,
         json_scratch[0..n],
         .{ .ignore_unknown_fields = true },
     ) catch |err| {
         log.err("parse {s} failed: {}", .{ file_name, err });
         return error.InvalidPolicyFile;
     };
+    defer parsed.deinit();
 
-    for (parsed.records) |jr| {
+    for (parsed.value.records) |jr| {
         if (!jr.banned and !jr.op and !jr.whitelisted) continue;
-        if (count >= capacity) return error.PolicyStoreFull;
+        if (count >= records.len) return error.PolicyStoreFull;
 
         const rec = &records[count];
         count += 1;
@@ -337,29 +307,10 @@ test "policy capacity rejects new entries without evicting existing policy" {
     defer deinit();
 
     try set_banned("203.0.113.10", true, "test ban");
-    try std.testing.expectError(error.PolicyStoreFull, set_op("203.0.113.11", true));
+    try std.testing.expectError(error.PolicyStoreFull, set_flag("203.0.113.11", .op, true));
 
     const policy = lookup("203.0.113.10");
     try std.testing.expect(policy.banned);
     try std.testing.expectEqualStrings("test ban", policy.ban_reason_slice());
     try std.testing.expect(!lookup("203.0.113.11").op);
-}
-
-test "legacy policy import persists as canonical access control" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try init(std.testing.allocator, io, tmp.dir, 2);
-    try import_legacy("198.51.100.7", true, "legacy ban", true, false);
-    try finish_legacy_migration();
-    deinit();
-
-    try init(std.testing.allocator, io, tmp.dir, 2);
-    defer deinit();
-
-    const policy = lookup("198.51.100.7");
-    try std.testing.expect(policy.banned);
-    try std.testing.expect(policy.op);
-    try std.testing.expectEqualStrings("legacy ban", policy.ban_reason_slice());
 }

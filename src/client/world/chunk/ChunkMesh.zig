@@ -1,3 +1,5 @@
+//! Section meshes: opaque blocks and buried leaves, transparent blocks, and fluids.
+
 const std = @import("std");
 const ae = @import("aether");
 const Math = ae.Math;
@@ -11,11 +13,6 @@ const World = @import("core").World;
 pub const BatchMesh = Rendering.MeshType(Vertex);
 pub const BatchMeshData = Rendering.MeshDataType(Vertex);
 
-/// One 16x16x16 section with 3 meshes:
-///   opaque -- solid blocks + buried (solid) leaf faces
-///   trans  -- outer leaves + glass/cross
-///   fluid  -- water/lava (drawn last with depth writes off)
-/// Each mesh owns its vertex storage via the render allocator.
 opaque_data: BatchMeshData,
 @"opaque": BatchMesh,
 trans_data: BatchMeshData,
@@ -25,22 +22,10 @@ fluid: BatchMesh,
 cx: u32,
 sy: u32,
 cz: u32,
-/// Whether this section was last rebuilt as "near LOD" (within
-/// LOD_NEAR_RADIUS_BLOCKS of the camera). World owns the value: it
-/// updates the field when the section transitions across the radius and
-/// queues a rebuild so the mesher picks the new state up.
 near_lod: bool,
-/// Whether this section was last rebuilt with ambient occlusion on. Same
-/// ownership pattern as `near_lod` - World flips it and marks dirty when
-/// Options.current.ambient_occlusion changes.
 ao_enabled: bool,
-/// Bouncy-rise animation progress in [0, 1]. 1 means at rest; 0 means the
-/// section is drawn 16 blocks below its natural Y. World kicks this to 0 the
-/// first time a section is meshed when the bouncy_chunks option is enabled,
-/// then advances toward 1 over 1 second via update_animation().
+/// Rises from 16 blocks below its position at 0 to rest at 1.
 anim_progress: f32,
-/// True until the first successful rebuild() -- used by World to distinguish
-/// newly-meshed sections from dirty rebuilds.
 first_build: bool,
 allocator: std.mem.Allocator,
 
@@ -65,7 +50,6 @@ pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !ChunkMesh 
     };
 }
 
-/// Advance the bouncy rise animation. No-op once the section is at rest.
 pub fn update_animation(self: *ChunkMesh, dt: f32) void {
     if (self.anim_progress < 1.0) {
         self.anim_progress = @min(self.anim_progress + dt, 1.0);
@@ -91,25 +75,14 @@ pub fn clear(self: *ChunkMesh) void {
 }
 
 pub fn rebuild(self: *ChunkMesh, atlas: *const TextureAtlas) error{ OutOfMemory, IndexOverflow }!void {
-    // All-air chunks have no visible faces -- skip pack/count/emit entirely.
-    if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) {
-        self.opaque_data.clear_retaining_capacity();
-        self.trans_data.clear_retaining_capacity();
-        self.fluid_data.clear_retaining_capacity();
-        return;
-    }
-
-    var buf: mesher.SectionBuf = undefined;
-    // pack_section bundles the count phase and returns per-mesh totals so
-    // we can pre-allocate exact capacity before emit. emit_section then uses
-    // assume-capacity mesh helpers -- no per-row growth, no realloc thrash.
-    const counts = mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
-
-    const a = self.allocator;
     self.opaque_data.clear_retaining_capacity();
     self.trans_data.clear_retaining_capacity();
     self.fluid_data.clear_retaining_capacity();
+    if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) return;
 
+    var buf: mesher.SectionBuf = undefined;
+    const counts = mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
+    const a = self.allocator;
     try self.opaque_data.ensure_quad_capacity(a, counts.opaque_verts / 6);
     try self.trans_data.ensure_quad_capacity(a, counts.transparent_verts / 6);
     try self.fluid_data.ensure_quad_capacity(a, counts.fluid_verts / 6);
@@ -123,16 +96,6 @@ pub fn rebuild(self: *ChunkMesh, atlas: *const TextureAtlas) error{ OutOfMemory,
     inline for (&.{ .{ &self.opaque_data, &self.@"opaque" }, .{ &self.trans_data, &self.trans }, .{ &self.fluid_data, &self.fluid } }) |pair| {
         if (pair[0].vertices.items.len > 0) pair[1].update(pair[0]);
     }
-}
-
-pub fn center_x(self: *const ChunkMesh) f32 {
-    return @as(f32, @floatFromInt(self.cx * 16)) + 8.0;
-}
-pub fn center_y(self: *const ChunkMesh) f32 {
-    return @as(f32, @floatFromInt(self.sy * 16)) + 8.0;
-}
-pub fn center_z(self: *const ChunkMesh) f32 {
-    return @as(f32, @floatFromInt(self.cz * 16)) + 8.0;
 }
 
 /// Draw opaque geometry only. Call front-to-back.
@@ -156,11 +119,8 @@ pub fn draw_fluid(self: *ChunkMesh) void {
     self.fluid.draw(&m);
 }
 
-// SNORM dequant divides by 32768 (not 32767), so encode_pos(16) = 32767
-// maps to 32767/32768 ~= 0.99997, not 1.0. Over-compensate slightly so
-// chunk edges overlap by a sub-pixel amount rather than leaving a gap.
-// Opaque geometry can use a larger overlap (depth test hides it);
-// translucent needs a tighter fit to avoid double-blend artifacts.
+// Compensate for PSP SNORM dequantization gaps. Translucent geometry needs
+// less overlap to avoid double blending.
 const scale_opaque: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32753.0 else 16.0;
 const scale_trans: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32763.0 else 16.0;
 
@@ -168,9 +128,6 @@ fn model_matrix(self: *const ChunkMesh, s: f32) Math.Mat4 {
     const wx: f32 = @floatFromInt(self.cx * 16);
     const base_wy: f32 = @floatFromInt(self.sy * 16);
     const wz: f32 = @floatFromInt(self.cz * 16);
-    // Bouncy rise: at anim_progress=0 the section sits 16 blocks below its
-    // natural Y, reaching rest at anim_progress=1. Stays at 1 (no offset) on
-    // rebuilds and when the option is disabled.
     const wy = base_wy - 16.0 * (1.0 - self.anim_progress);
     return Math.Mat4.scaling(s, s, s).mul(Math.Mat4.translation(wx, wy, wz));
 }

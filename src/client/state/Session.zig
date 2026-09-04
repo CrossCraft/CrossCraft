@@ -87,59 +87,18 @@ pub fn singleplayer_save() []const u8 {
     return singleplayer_save_buf[0..singleplayer_save_len];
 }
 
-pub fn set_singleplayer_seed_override(seed: ?u64) void {
-    singleplayer_seed_override = seed;
-}
-
-pub fn clear_singleplayer_seed_override() void {
-    singleplayer_seed_override = null;
-}
-
-pub fn singleplayer_seed(random_seed: u64) u64 {
-    return singleplayer_seed_override orelse random_seed;
-}
-
-/// These presets affect only a newly generated world.
-pub fn set_singleplayer_size(size: wd.WorldSize) void {
-    singleplayer_size = size;
-}
-
-pub fn set_singleplayer_height(height: wd.WorldHeight) void {
-    singleplayer_height = height;
-}
-
-pub fn clear_singleplayer_size_height() void {
-    singleplayer_size = null;
-    singleplayer_height = null;
-}
-
 pub fn seed_from_text(input: []const u8) ?u64 {
     const trimmed = std.mem.trim(u8, input, " ");
     if (trimmed.len == 0) return null;
-    return fnv1a64(trimmed);
+    return std.hash.Fnv1a_64.hash(trimmed);
 }
 
-fn fnv1a64(input: []const u8) u64 {
-    var hash: u64 = 0xcbf29ce484222325;
-    for (input) |ch| {
-        hash ^= ch;
-        hash *%= 0x100000001b3;
-    }
-    return hash;
-}
-
-/// Either an already-resolved IP literal or a hostname that needs DNS
-/// resolution at connect time. The hostname slice borrows from `server_buf`,
-/// so the endpoint is only valid while `server_buf` is unchanged.
+/// Hostnames borrow from server_buf until the next set_server call.
 pub const ServerEndpoint = union(enum) {
     ip: std.Io.net.IpAddress,
     host: struct { name: []const u8, port: u16 },
 };
 
-/// Parse the stored server string. Accepts IPv4/IPv6 literals with or
-/// without a port ("1.2.3.4", "1.2.3.4:25565", "[::1]:25") and bare
-/// hostnames ("play.example.com", "play.example.com:25565"). When the port
-/// is absent, defaults to `DEFAULT_PORT` (25565).
 pub fn parse_server_endpoint() !ServerEndpoint {
     const input = server();
     if (input.len == 0) return error.EmptyHost;
@@ -164,7 +123,6 @@ pub fn parse_server_endpoint() !ServerEndpoint {
     return .{ .host = .{ .name = name, .port = port } };
 }
 
-/// Connect to the parsed endpoint, resolving via DNS if it is a hostname.
 pub fn connect_endpoint(ep: ServerEndpoint, io: std.Io) !std.Io.net.Stream {
     return switch (ep) {
         .ip => |addr| addr.connect(io, .{ .mode = .stream }),
@@ -175,12 +133,9 @@ pub fn connect_endpoint(ep: ServerEndpoint, io: std.Io) !std.Io.net.Stream {
     };
 }
 
-test "seed_from_text uses FNV-1a" {
+test "seed_from_text trims names and treats blank as no override" {
     try std.testing.expectEqual(@as(?u64, 0x779a65e7023cd2e7), seed_from_text("hello world"));
     try std.testing.expectEqual(@as(?u64, 0x779a65e7023cd2e7), seed_from_text(" hello world "));
-}
-
-test "seed_from_text treats blank as no override" {
     try std.testing.expect(seed_from_text("") == null);
     try std.testing.expect(seed_from_text("   ") == null);
 }

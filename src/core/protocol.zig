@@ -123,10 +123,6 @@ pub fn send_block_change_to_client(writer: *Writer, x: u16, y: u16, z: u16, bloc
     try packet.write(writer);
 }
 
-pub fn send_level_initialize_to_client(writer: *Writer) !void {
-    try writer.writeByte(0x02);
-}
-
 pub fn send_level_chunk_to_client(writer: *Writer, length: u16, data: *const [1024]u8, percent: u8) !void {
     var packet = zb.LevelDataChunk{
         .length = length,
@@ -153,7 +149,7 @@ pub fn send_message(writer: *Writer, pid: i8, message: []const u8) !void {
     try packet.write(writer);
 }
 
-fn padded_string(value: []const u8) [64]u8 {
+pub fn padded_string(value: []const u8) [64]u8 {
     var out: [64]u8 = @splat(' ');
     const len = @min(value.len, out.len);
     @memcpy(out[0..len], value[0..len]);

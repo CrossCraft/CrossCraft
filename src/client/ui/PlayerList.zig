@@ -1,4 +1,4 @@
-// Display-only player list populated by multiplayer packets.
+//! Remote player positions and names populated by multiplayer packets.
 
 const std = @import("std");
 const ae = @import("aether");
@@ -19,8 +19,7 @@ const PANEL_W: i16 = 120;
 const PANEL_TOP: i16 = 20;
 const HEADER_H: i16 = 12;
 
-// Layer values: sit below the inventory (247+) and hotbar (250+) but above
-// world geometry. Panel layer must be lower than text layer.
+// Below inventory (247+) and hotbar (250+).
 const PANEL_LAYER: u8 = 244;
 const TEXT_LAYER: u8 = 245;
 
@@ -44,8 +43,7 @@ pub fn init() PlayerList {
     return .{ .entries = std.mem.zeroes([core.Server.MaxPlayers]Entry) };
 }
 
-/// Register a remote player. `raw` is the 64-byte space-padded name from the
-/// SpawnPlayer packet. Only the first 16 non-space bytes are stored.
+/// Trim trailing spaces/NULs from the first 16 bytes of the protocol name.
 pub fn spawn(self: *PlayerList, pid: i8, raw: []const u8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) void {
     if (pid < 0) return;
     const idx: usize = @intCast(pid);

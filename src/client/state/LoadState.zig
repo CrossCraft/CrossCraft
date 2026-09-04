@@ -42,43 +42,28 @@ var task_io: std.Io = undefined;
 
 var loading_set: ?ae.Core.input.ActionSetHandle = null;
 
-const TaskHandle = union(enum) {
-    thread: Util.Thread,
-    none,
-
-    fn await(self: *TaskHandle) void {
-        switch (self.*) {
-            .thread => |t| t.join(),
-            .none => {},
-        }
-        self.* = .none;
-    }
-};
-
 fn start_server_task(
     alloc: std.mem.Allocator,
     scratch: std.mem.Allocator,
     seed: u64,
     data_dir: std.Io.Dir,
     save_location: []const u8,
-) TaskHandle {
+) ?Util.Thread {
     if (comptime ae.platform == .wasm) {
         run_server_task(alloc, scratch, seed, data_dir, save_location);
-        return .none;
+        return null;
     }
 
-    return .{
-        .thread = Util.Thread.spawn(.{
-            .name = "load_server",
-            .stack_size = 1024 * 1024,
-            .priority = .normal,
-            .allocator = alloc,
-        }, run_server_task, .{ alloc, scratch, seed, data_dir, save_location }) catch |err| {
-            log.err("server task thread unavailable: {}", .{err});
-            session_error = err;
-            server_ready.store(true, .release);
-            return .none;
-        },
+    return Util.Thread.spawn(.{
+        .name = "load_server",
+        .stack_size = 1024 * 1024,
+        .priority = .normal,
+        .allocator = alloc,
+    }, run_server_task, .{ alloc, scratch, seed, data_dir, save_location }) catch |err| {
+        log.err("server task thread unavailable: {}", .{err});
+        session_error = err;
+        server_ready.store(true, .release);
+        return null;
     };
 }
 
@@ -86,14 +71,14 @@ fn start_connect_task(
     alloc: std.mem.Allocator,
     seed: u64,
     data_dir: std.Io.Dir,
-) TaskHandle {
+) ?Util.Thread {
     if (comptime ae.platform == .wasm) {
         session_error = error.UnsupportedPlatform;
         server_ready.store(true, .release);
-        return .none;
+        return null;
     }
 
-    return .{ .thread = Util.Thread.spawn(.{
+    return Util.Thread.spawn(.{
         .name = "mp_connect",
         .stack_size = 512 * 1024,
         .priority = .normal,
@@ -102,8 +87,8 @@ fn start_connect_task(
         log.err("connect task thread unavailable: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
-        return .none;
-    } };
+        return null;
+    };
 }
 
 fn ensure_loading_set(engine: *Engine) !ae.Core.input.ActionSetHandle {
@@ -317,11 +302,9 @@ fn capture_disconnect_reason(packet: []const u8) void {
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 time: f32,
-server_task: TaskHandle,
+server_task: ?Util.Thread,
 server_notified: bool,
 render_alloc: std.mem.Allocator,
-/// True once `init` ran to completion. Guards `deinit` so a partially
-/// initialised state never frees undefined fields.
 inited: bool,
 
 var game_state: GameState = undefined;
@@ -360,7 +343,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     task_io = engine.io;
     const io = task_io;
     const random_seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
-    const singleplayer_seed = Session.singleplayer_seed(random_seed);
+    const singleplayer_seed = Session.singleplayer_seed_override orelse random_seed;
     server_ready.store(false, .monotonic);
     session_error = null;
     Session.clear_disconnect_reason();
@@ -387,7 +370,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
-    self.server_task.await();
+    if (self.server_task) |thread| thread.join();
+    self.server_task = null;
     self.font_batcher.deinit();
     self.batcher.deinit();
 

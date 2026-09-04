@@ -52,12 +52,8 @@ pub const ClassicCw = struct {
         return try read_classic_world_compound(&decompress.reader, dims, blocks);
     }
 
-    /// Dimensions announced by the ClassicWorld NBT header, sniffed from an
-    /// inflated prefix. Null when the prefix is not a ClassicWorld compound,
-    /// the X/Y/Z shorts do not all appear before BlockArray, or the dims
-    /// fall outside the supported lattice.
+    /// Read supported dimensions before BlockArray without inflating the world.
     pub fn sniff_dims(_: ClassicCw, prefix: []const u8, scratch: std.mem.Allocator) ?WorldDims {
-        if (!fmt_mod.SaveFormat.verify_classic_cw(prefix, scratch)) return null;
         const window_buf = scratch.alloc(u8, std.compress.flate.max_window_len) catch return null;
         defer scratch.free(window_buf);
 
@@ -68,88 +64,51 @@ pub const ClassicCw = struct {
 };
 
 fn write_classic_world_compound(ctx: SaveContext, out: *std.Io.Writer) !void {
-    try out.writeInt(u8, @intFromEnum(nbt.Tag.compound), .big);
-    try write_string_payload(out, "ClassicWorld");
+    try nbt.write_header(out, .compound, "ClassicWorld");
 
     const spawn_children = [_]nbt.NBT{
-        leaf_short("X", @intCast(@as(i32, ctx.spawn[0]) >> 5)),
-        leaf_short("Y", @intCast(@as(i32, ctx.spawn[1]) >> 5)),
-        leaf_short("Z", @intCast(@as(i32, ctx.spawn[2]) >> 5)),
-        leaf_byte("H", 0),
-        leaf_byte("P", 0),
+        named("X", .{ .short = @intCast(@as(i32, ctx.spawn[0]) >> 5) }),
+        named("Y", .{ .short = @intCast(@as(i32, ctx.spawn[1]) >> 5) }),
+        named("Z", .{ .short = @intCast(@as(i32, ctx.spawn[2]) >> 5) }),
+        named("H", .{ .byte = 0 }),
+        named("P", .{ .byte = 0 }),
     };
     const created_by_children = [_]nbt.NBT{
-        leaf_string("Service", CREATED_BY_SERVICE),
-        leaf_string("Username", CREATED_BY_USERNAME),
+        named("Service", .{ .string = CREATED_BY_SERVICE }),
+        named("Username", .{ .string = CREATED_BY_USERNAME }),
     };
     const map_gen_children = [_]nbt.NBT{
-        leaf_string("Software", MAP_GENERATOR_SOFTWARE),
-        leaf_string("MapGeneratorName", MAP_GENERATOR_NAME),
+        named("Software", .{ .string = MAP_GENERATOR_SOFTWARE }),
+        named("MapGeneratorName", .{ .string = MAP_GENERATOR_NAME }),
     };
 
-    var uuid_copy = ctx.uuid;
     const meta_children = [_]nbt.NBT{
-        leaf_byte("FormatVersion", FORMAT_VERSION),
-        leaf_string("Name", ctx.name),
-        named("UUID", .{ .byte_array = &uuid_copy }),
-        leaf_short("X", @intCast(ctx.dims.length)),
-        leaf_short("Y", @intCast(ctx.dims.height)),
-        leaf_short("Z", @intCast(ctx.dims.depth)),
+        named("FormatVersion", .{ .byte = FORMAT_VERSION }),
+        named("Name", .{ .string = ctx.name }),
+        named("UUID", .{ .byte_array = &ctx.uuid }),
+        named("X", .{ .short = @intCast(ctx.dims.length) }),
+        named("Y", .{ .short = @intCast(ctx.dims.height) }),
+        named("Z", .{ .short = @intCast(ctx.dims.depth) }),
         named("CreatedBy", .{ .compound = &created_by_children }),
         named("MapGenerator", .{ .compound = &map_gen_children }),
-        leaf_long("TimeCreated", ctx.time_created),
-        leaf_long("LastAccessed", ctx.last_modified),
-        leaf_long("LastModified", ctx.last_modified),
+        named("TimeCreated", .{ .long = ctx.time_created }),
+        named("LastAccessed", .{ .long = ctx.last_modified }),
+        named("LastModified", .{ .long = ctx.last_modified }),
         named("Spawn", .{ .compound = &spawn_children }),
     };
 
-    for (meta_children) |child| {
-        try child.write(out);
-    }
+    for (meta_children) |child| try child.write(out);
 
-    // Stream BlockArray in spec-correct YZX order. Each band is copied while
-    // the world is read-locked, then compressed after releasing the lock.
-    const total_len: u32 = @intCast(ctx.dims.volume());
-    const BlockBody = struct {
-        world: *WorldData,
-        io: std.Io,
+    try nbt.write_header(out, .byte_array, "BlockArray");
+    try out.writeInt(i32, @intCast(ctx.dims.volume()), .big);
+    try ctx.world.write_blocks_yzx(ctx.io, out);
 
-        pub fn write_into(self: @This(), w: *std.Io.Writer) nbt.WriteError!void {
-            try self.world.write_blocks_yzx(self.io, w);
-        }
-    };
-    try nbt.write_named_byte_array_stream(out, "BlockArray", total_len, BlockBody{ .world = ctx.world, .io = ctx.io });
-
-    try out.writeInt(u8, @intFromEnum(nbt.Tag.compound), .big);
-    try write_string_payload(out, "Metadata");
-    try out.writeInt(u8, @intFromEnum(nbt.Tag.end), .big);
-
-    try out.writeInt(u8, @intFromEnum(nbt.Tag.end), .big);
-}
-
-fn write_string_payload(writer: *std.Io.Writer, s: []const u8) !void {
-    try writer.writeInt(u16, @intCast(s.len), .big);
-    try writer.writeAll(s);
+    try named("Metadata", .{ .compound = &.{} }).write(out);
+    try out.writeByte(@intFromEnum(nbt.Tag.end));
 }
 
 fn named(name: []const u8, value: nbt.NBT.Value) nbt.NBT {
     return .{ .name = name, .value = value };
-}
-
-fn leaf_byte(name: []const u8, value: i8) nbt.NBT {
-    return named(name, .{ .byte = value });
-}
-
-fn leaf_short(name: []const u8, value: i16) nbt.NBT {
-    return named(name, .{ .short = value });
-}
-
-fn leaf_long(name: []const u8, value: i64) nbt.NBT {
-    return named(name, .{ .long = value });
-}
-
-fn leaf_string(name: []const u8, value: []const u8) nbt.NBT {
-    return named(name, .{ .string = value });
 }
 
 fn read_classic_world_compound(
@@ -177,9 +136,6 @@ fn read_classic_world_compound(
         const child_name = try take_string(reader, &name_buf);
 
         if (std.mem.eql(u8, child_name, "BlockArray")) {
-            // We've already consumed the tag + name. The streaming helper
-            // would re-consume them, so call its body inline here: read
-            // i32 length and stream into the chunk-major layout.
             if (t != .byte_array) return error.InvalidTag;
             if (seen_block_array) return error.DuplicateBlockArray;
             if (seen_dimensions != 0b111) return error.MissingDimensions;
@@ -253,9 +209,7 @@ fn take_string(reader: *std.Io.Reader, buf: []u8) ![]u8 {
     return buf[0..len];
 }
 
-/// Walk the outer compound capturing the X/Y/Z shorts. Stops at BlockArray:
-/// its payload is the bulk of the file, and a header that places it before
-/// the dims gives the sniff nothing to read.
+/// Stop at BlockArray to avoid reading the block payload.
 fn peek_classic_world_dims(reader: *std.Io.Reader) ?WorldDims {
     if ((nbt.read_tag(reader) catch return null) != .compound) return null;
     var name_buf: [64]u8 = undefined;
@@ -263,35 +217,26 @@ fn peek_classic_world_dims(reader: *std.Io.Reader) ?WorldDims {
     if (!std.mem.eql(u8, name, "ClassicWorld")) return null;
 
     var dims: [3]u16 = undefined;
-    var seen_x = false;
-    var seen_y = false;
-    var seen_z = false;
-    while (!(seen_x and seen_y and seen_z)) {
+    var seen: u3 = 0;
+    while (seen != 0b111) {
         const t = nbt.read_tag(reader) catch return null;
         if (t == .end) return null;
         const child_name = take_string(reader, &name_buf) catch return null;
 
         if (std.mem.eql(u8, child_name, "BlockArray")) return null;
-        // Bitcast keeps a hostile negative short from panicking; an
-        // implausible value simply fails the from_array validation below.
-        if (std.mem.eql(u8, child_name, "X") and t == .short and !seen_x) {
-            dims[0] = @bitCast(reader.takeInt(i16, .big) catch return null);
-            seen_x = true;
-        } else if (std.mem.eql(u8, child_name, "Y") and t == .short and !seen_y) {
-            dims[1] = @bitCast(reader.takeInt(i16, .big) catch return null);
-            seen_y = true;
-        } else if (std.mem.eql(u8, child_name, "Z") and t == .short and !seen_z) {
-            dims[2] = @bitCast(reader.takeInt(i16, .big) catch return null);
-            seen_z = true;
-        } else {
-            skip_payload(reader, t) catch return null;
+        if (dimension_index(child_name)) |index| {
+            const bit = @as(u3, 1) << index;
+            if (t == .short and seen & bit == 0) {
+                dims[index] = reader.takeInt(u16, .big) catch return null;
+                seen |= bit;
+                continue;
+            }
         }
+        skip_payload(reader, t) catch return null;
     }
     return WorldDims.from_array(dims);
 }
 
-/// Skip the payload of any NBT tag we don't care about, leaving the
-/// reader positioned on the next sibling tag byte.
 const SkipError = std.Io.Reader.Error || error{InvalidTag};
 
 fn skip_payload(reader: *std.Io.Reader, tag: nbt.Tag) SkipError!void {
@@ -309,28 +254,18 @@ fn skip_payload(reader: *std.Io.Reader, tag: nbt.Tag) SkipError!void {
             const len = try reader.takeInt(u16, .big);
             try reader.discardAll64(len);
         },
-        .list => try skip_list(reader),
-        .compound => try skip_compound(reader),
-    }
-}
-
-fn skip_list(reader: *std.Io.Reader) SkipError!void {
-    const elem_tag = try nbt.read_tag(reader);
-    const len = try reader.takeInt(i32, .big);
-    if (len <= 0) return;
-    var i: i32 = 0;
-    while (i < len) : (i += 1) {
-        try skip_payload(reader, elem_tag);
-    }
-}
-
-fn skip_compound(reader: *std.Io.Reader) SkipError!void {
-    while (true) {
-        const tag = try nbt.read_tag(reader);
-        if (tag == .end) return;
-        const name_len = try reader.takeInt(u16, .big);
-        try reader.discardAll64(name_len);
-        try skip_payload(reader, tag);
+        .list => {
+            const elem_tag = try nbt.read_tag(reader);
+            const len = try reader.takeInt(i32, .big);
+            var i: i32 = 0;
+            while (i < len) : (i += 1) try skip_payload(reader, elem_tag);
+        },
+        .compound => while (true) {
+            const child_tag = try nbt.read_tag(reader);
+            if (child_tag == .end) break;
+            try reader.discardAll64(try reader.takeInt(u16, .big));
+            try skip_payload(reader, child_tag);
+        },
     }
 }
 
@@ -345,13 +280,11 @@ test "loader accepts shuffled dimensions before BlockArray" {
     @memset(blocks, .stone);
 
     var w = std.Io.Writer.fixed(encoded);
-    try w.writeByte(@intFromEnum(nbt.Tag.compound));
-    try write_string_payload(&w, "ClassicWorld");
-    try leaf_short("Z", 128).write(&w);
-    try leaf_short("X", 128).write(&w);
-    try leaf_short("Y", 64).write(&w);
-    try w.writeByte(@intFromEnum(nbt.Tag.byte_array));
-    try write_string_payload(&w, "BlockArray");
+    try nbt.write_header(&w, .compound, "ClassicWorld");
+    try named("Z", .{ .short = 128 }).write(&w);
+    try named("X", .{ .short = 128 }).write(&w);
+    try named("Y", .{ .short = 64 }).write(&w);
+    try nbt.write_header(&w, .byte_array, "BlockArray");
     try w.writeInt(i32, @intCast(dims.volume()), .big);
     try w.splatByteAll(0, dims.volume());
     try w.writeByte(@intFromEnum(nbt.Tag.end));
@@ -364,8 +297,7 @@ test "loader accepts shuffled dimensions before BlockArray" {
 
     const duplicate_start = w.buffered().len - 1;
     var duplicate = std.Io.Writer.fixed(encoded[duplicate_start..]);
-    try duplicate.writeByte(@intFromEnum(nbt.Tag.byte_array));
-    try write_string_payload(&duplicate, "BlockArray");
+    try nbt.write_header(&duplicate, .byte_array, "BlockArray");
     var duplicate_reader = std.Io.Reader.fixed(encoded[0 .. duplicate_start + duplicate.buffered().len]);
     try std.testing.expectError(error.DuplicateBlockArray, read_classic_world_compound(&duplicate_reader, dims, blocks));
 }
@@ -375,12 +307,10 @@ test "loader rejects malformed dimensions before writing blocks" {
         fn run(expected_error: anyerror, children: []const nbt.NBT, block_array_after: bool) !void {
             var buf: [256]u8 = undefined;
             var w = std.Io.Writer.fixed(&buf);
-            try w.writeByte(@intFromEnum(nbt.Tag.compound));
-            try write_string_payload(&w, "ClassicWorld");
+            try nbt.write_header(&w, .compound, "ClassicWorld");
             for (children) |child| try child.write(&w);
             if (block_array_after) {
-                try w.writeByte(@intFromEnum(nbt.Tag.byte_array));
-                try write_string_payload(&w, "BlockArray");
+                try nbt.write_header(&w, .byte_array, "BlockArray");
             } else {
                 try w.writeByte(@intFromEnum(nbt.Tag.end));
             }
@@ -392,26 +322,25 @@ test "loader rejects malformed dimensions before writing blocks" {
         }
     };
 
-    try Fixture.run(error.InvalidDimensions, &.{leaf_short("X", -1)}, false);
-    try Fixture.run(error.InvalidDimensions, &.{leaf_short("X", 192)}, false);
-    try Fixture.run(error.DimensionMismatch, &.{leaf_short("X", 128)}, false);
-    try Fixture.run(error.DuplicateDimension, &.{ leaf_short("X", 256), leaf_short("X", 256) }, false);
-    try Fixture.run(error.MissingDimensions, &.{ leaf_short("X", 256), leaf_short("Y", 64) }, false);
-    try Fixture.run(error.MissingDimensions, &.{ leaf_short("X", 256), leaf_short("Y", 64) }, true);
-    try Fixture.run(error.MissingBlockArray, &.{ leaf_short("X", 256), leaf_short("Y", 64), leaf_short("Z", 256) }, false);
+    try Fixture.run(error.InvalidDimensions, &.{named("X", .{ .short = -1 })}, false);
+    try Fixture.run(error.InvalidDimensions, &.{named("X", .{ .short = 192 })}, false);
+    try Fixture.run(error.DimensionMismatch, &.{named("X", .{ .short = 128 })}, false);
+    try Fixture.run(error.DuplicateDimension, &.{ named("X", .{ .short = 256 }), named("X", .{ .short = 256 }) }, false);
+    try Fixture.run(error.MissingDimensions, &.{ named("X", .{ .short = 256 }), named("Y", .{ .short = 64 }) }, false);
+    try Fixture.run(error.MissingDimensions, &.{ named("X", .{ .short = 256 }), named("Y", .{ .short = 64 }) }, true);
+    try Fixture.run(error.MissingBlockArray, &.{ named("X", .{ .short = 256 }), named("Y", .{ .short = 64 }), named("Z", .{ .short = 256 }) }, false);
 }
 
 test "sniff_dims reads X/Y/Z shorts past earlier tags" {
     var buf: [512]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
-    try w.writeInt(u8, @intFromEnum(nbt.Tag.compound), .big);
-    try write_string_payload(&w, "ClassicWorld");
-    try leaf_byte("FormatVersion", FORMAT_VERSION).write(&w);
-    try leaf_string("Name", "test world").write(&w);
+    try nbt.write_header(&w, .compound, "ClassicWorld");
+    try named("FormatVersion", .{ .byte = FORMAT_VERSION }).write(&w);
+    try named("Name", .{ .string = "test world" }).write(&w);
     try named("Spawn", .{ .compound = &.{} }).write(&w);
-    try leaf_short("X", 512).write(&w);
-    try leaf_short("Y", 128).write(&w);
-    try leaf_short("Z", 512).write(&w);
+    try named("X", .{ .short = 512 }).write(&w);
+    try named("Y", .{ .short = 128 }).write(&w);
+    try named("Z", .{ .short = 512 }).write(&w);
     try named("CreatedBy", .{ .compound = &.{} }).write(&w);
 
     var r = std.Io.Reader.fixed(w.buffered());
@@ -426,8 +355,7 @@ test "sniff_dims rejects non-ClassicWorld and dims after BlockArray" {
 
     {
         var w = std.Io.Writer.fixed(&buf);
-        try w.writeInt(u8, @intFromEnum(nbt.Tag.compound), .big);
-        try write_string_payload(&w, "MinecraftLevel");
+        try nbt.write_header(&w, .compound, "MinecraftLevel");
         var r = std.Io.Reader.fixed(w.buffered());
         try std.testing.expect(peek_classic_world_dims(&r) == null);
     }
@@ -436,20 +364,18 @@ test "sniff_dims rejects non-ClassicWorld and dims after BlockArray" {
         // A foreign writer may place BlockArray before the dims; there is
         // nothing to sniff without inflating the whole payload.
         var w = std.Io.Writer.fixed(&buf);
-        try w.writeInt(u8, @intFromEnum(nbt.Tag.compound), .big);
-        try write_string_payload(&w, "ClassicWorld");
+        try nbt.write_header(&w, .compound, "ClassicWorld");
         try named("BlockArray", .{ .byte_array = &.{} }).write(&w);
-        try leaf_short("X", 256).write(&w);
-        try leaf_short("Y", 64).write(&w);
-        try leaf_short("Z", 256).write(&w);
+        try named("X", .{ .short = 256 }).write(&w);
+        try named("Y", .{ .short = 64 }).write(&w);
+        try named("Z", .{ .short = 256 }).write(&w);
         var r = std.Io.Reader.fixed(w.buffered());
         try std.testing.expect(peek_classic_world_dims(&r) == null);
     }
 
     {
         var w = std.Io.Writer.fixed(&buf);
-        try w.writeByte(@intFromEnum(nbt.Tag.compound));
-        try write_string_payload(&w, "ClassicWorld");
+        try nbt.write_header(&w, .compound, "ClassicWorld");
         try w.writeByte(0xff);
         var r = std.Io.Reader.fixed(w.buffered());
         try std.testing.expect(peek_classic_world_dims(&r) == null);

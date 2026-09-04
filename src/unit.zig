@@ -1,19 +1,9 @@
 comptime {
-    const core = @import("core");
     _ = @import("client/util/Zip.zig");
     _ = @import("client/graphics/TextureAtlas.zig");
     _ = @import("client/world/chunk/face.zig");
-    // Core files are reachable only through the `core` module: importing them
-    // by path here would place them in two modules (this test root and `core`),
-    // which Zig forbids.
-    _ = core.World.DumpName;
-    _ = core.World.CreateName;
-    _ = core.World.WorldSimulation;
-    _ = core.Client;
-    _ = core.OutboundQueue;
-    _ = core.PlayersDb;
-    _ = core.AccessControl;
     _ = @import("client/state/Session.zig");
+    _ = @import("client/connection/ClientConn.zig");
     _ = @import("client/state/BundledSave.zig");
     _ = @import("client/Options.zig");
     _ = @import("client/config.zig");
@@ -24,4 +14,7 @@ comptime {
     _ = @import("server/ServerState.zig");
     _ = @import("server/Heartbeat.zig");
     _ = @import("server/Config.zig");
+    _ = @import("server/AccessControl.zig");
+    _ = @import("server/PlayersDb.zig");
+    _ = @import("server/Commands.zig");
 }

@@ -16,10 +16,7 @@ pitch: f32, // radians, positive = looking up
 fov: f32, // vertical FOV in radians
 frustum: Math.Frustum,
 
-// View-bob state, written by Player.sync_camera and consumed by both
-// the world view matrix (tilt) and the held-block renderer (bob_hor/ver
-// for screen-space sway). Defaults are no-op so anything that doesn't
-// touch them stays unaffected.
+// Player.sync_camera supplies view tilt and held-block sway.
 tilt: Math.Mat4,
 bob_hor: f32,
 bob_ver: f32,
@@ -39,7 +36,6 @@ pub fn init(x: f32, y: f32, z: f32) Camera {
     };
 }
 
-/// Build view + projection matrices, upload to GPU, extract frustum planes.
 pub fn apply(self: *Camera) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
@@ -54,7 +50,7 @@ pub fn apply(self: *Camera) void {
         .mul(self.tilt);
     Rendering.gfx.api.set_view_matrix(&view);
 
-    // VP for frustum extraction (row-vector convention = V * P)
+    // Row-vector convention: V * P.
     self.frustum = Math.Frustum.fromViewProjection(view.mul(proj));
 }
 
@@ -70,7 +66,6 @@ pub fn section_visible(self: *const Camera, cx: u32, sy: u32, cz: u32) bool {
     return self.frustum.containsAABB(aabb);
 }
 
-/// Squared 3D distance from camera to a world point.
 pub fn distance_sq(self: *const Camera, wx: f32, wy: f32, wz: f32) f32 {
     const dx = wx - self.x;
     const dy = wy - self.y;

@@ -21,25 +21,11 @@ protocol: zb.Protocol,
 spawn_x: u16,
 spawn_y: u16,
 spawn_z: u16,
-world_x: u16,
-world_y: u16,
-world_z: u16,
 handshake_complete: bool,
-/// Set by `on_disconnect` (or other fatal packet paths); GameState polls it
-/// each draw and calls `engine.quit()` when true. Avoids threading an
-/// engine pointer into every packet handler.
 quit_requested: bool,
 
-/// Set by GameState after the world renderer exists. Block-change packets
-/// from the server use it to mark affected sections for rebuild.
 world_renderer: ?*WorldRenderer,
-
-/// Set by GameState after the player list is initialised. SpawnPlayer /
-/// DespawnPlayer packets for remote players (pid != -1) are forwarded here.
 player_list: ?*PlayerList,
-
-/// Set by GameState after Chat is initialised. Incoming Message packets
-/// are forwarded here so the chat overlay can display them.
 chat: ?*Chat,
 
 buffer: [1028]u8,
@@ -50,9 +36,6 @@ pub fn init(self: *ClientConn, reader: *std.Io.Reader, writer: *std.Io.Writer) v
     self.spawn_x = 0;
     self.spawn_y = 0;
     self.spawn_z = 0;
-    self.world_x = 0;
-    self.world_y = 0;
-    self.world_z = 0;
     self.handshake_complete = false;
     self.quit_requested = false;
     self.world_renderer = null;
@@ -78,59 +61,33 @@ pub fn join(self: *ClientConn, username: []const u8) !void {
     try self.writer.flush();
 }
 
-/// Non-blocking: read and process one server packet if available.
-pub fn try_process_packet(self: *ClientConn) bool {
-    const packet_id = self.reader.peekByte() catch return false;
+fn process_packet(self: *ClientConn) !void {
+    const packet_id = try self.reader.peekByte();
     const len = proto.packet_length_to_client(packet_id) catch |err| {
         log.err("unknown packet id 0x{x:0>2}: {}", .{ packet_id, err });
-        return false;
+        return err;
     };
-    const buf = self.reader.peek(len) catch return false;
+    const buf = try self.reader.peek(len);
     @memcpy(self.buffer[0..len], buf);
     self.reader.toss(len);
     self.protocol.handle_packet(self.buffer[1..len], self.buffer[0]) catch |err| {
         log.err("failed to handle packet 0x{x:0>2}: {}", .{ self.buffer[0], err });
-        return false;
+        return err;
     };
-    return true;
 }
 
 pub fn drain_packets(self: *ClientConn) void {
-    while (self.try_process_packet()) {}
+    while (!self.quit_requested) self.process_packet() catch return;
 }
 
-/// Blocking read loop for multiplayer. Reads one packet at a time and hands
-/// it to callbacks that update the shared world and renderer.
-///
-/// Exits on `connected.* == false`, which the disconnect handler and any
-/// read/dispatch failure set so the game thread can observe the drop.
+/// Publishes the disconnect reason before the game thread observes closure.
 pub fn read_loop(self: *ClientConn, connected: *std.atomic.Value(bool)) void {
-    while (connected.load(.acquire)) {
-        const packet_id = self.reader.peekByte() catch |err| {
+    defer connected.store(false, .release);
+
+    while (connected.load(.acquire) and !self.quit_requested) {
+        self.process_packet() catch |err| {
             log.info("read_loop: {} - closing", .{err});
-            // Only set generic reason if on_disconnect didn't already set one.
             Session.set_disconnect_reason_if_empty("Connection lost");
-            connected.store(false, .release);
-            return;
-        };
-        const len = proto.packet_length_to_client(packet_id) catch |err| {
-            log.err("read_loop: unknown packet 0x{x:0>2}: {}", .{ packet_id, err });
-            Session.set_disconnect_reason_if_empty("Connection lost");
-            connected.store(false, .release);
-            return;
-        };
-        const buf = self.reader.peek(len) catch |err| {
-            log.info("read_loop peek: {} - closing", .{err});
-            Session.set_disconnect_reason_if_empty("Connection lost");
-            connected.store(false, .release);
-            return;
-        };
-        @memcpy(self.buffer[0..len], buf);
-        self.reader.toss(len);
-        self.protocol.handle_packet(self.buffer[1..len], self.buffer[0]) catch |err| {
-            log.err("read_loop handle 0x{x:0>2}: {}", .{ self.buffer[0], err });
-            Session.set_disconnect_reason_if_empty("Connection lost");
-            connected.store(false, .release);
             return;
         };
     }
@@ -150,11 +107,7 @@ fn on_level_data_chunk(_: *anyopaque, event: zb.LevelDataChunk) !void {
     log.info("LevelDataChunk: {d} bytes, {d}%", .{ event.length, event.percent });
 }
 
-fn on_level_finalize(ctx: *anyopaque, event: zb.LevelFinalize) !void {
-    const self: *ClientConn = @ptrCast(@alignCast(ctx));
-    self.world_x = event.x;
-    self.world_y = event.y;
-    self.world_z = event.z;
+fn on_level_finalize(_: *anyopaque, event: zb.LevelFinalize) !void {
     log.info("LevelFinalize: {d}x{d}x{d}", .{ event.x, event.y, event.z });
 }
 
@@ -185,27 +138,19 @@ fn on_message(ctx: *anyopaque, event: zb.Message) !void {
 fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
     const self: *ClientConn = @ptrCast(@alignCast(ctx));
     const wr = self.world_renderer orelse return;
-    // Apply the change locally. Singleplayer's in-process server already
-    // wrote it to the shared World singleton, so this is a no-op echo there;
-    // for real multiplayer it is the only path that updates the client world.
+    // Singleplayer already applied this change to the shared world.
     const block: Block = @enumFromInt(event.block);
     World.lock_world();
-    World.set_block(event.x, event.y, event.z, block);
+    World.data.apply_block(event.x, event.y, event.z, block);
     World.unlock_world();
-    // Translate world block coords to (cx, sy, cz) section indices.
     const cx: u8 = @intCast(event.x >> 4);
     const cz: u8 = @intCast(event.z >> 4);
     const sy: u8 = @intCast(event.y >> 4);
-    // Border blocks need their neighbor sections rebuilt as well, since
-    // greedy meshing reads a 1-block padding from adjacent sections.
     const lx: u16 = event.x & 0xF;
     const ly: u16 = event.y & 0xF;
     const lz: u16 = event.z & 0xF;
     wr.mark_block_change_dirty(cx, sy, cz, lx, ly, lz, block.is_air());
-    // Lighting propagation: a sunlight change at (x,y,z) affects every
-    // transparent block below it down to the next light-blocking block.
-    // Mark the section column (and XZ-boundary neighbours) dirty for each
-    // affected level so those meshes pick up the new shading.
+    // Sunlight changes invalidate the column down to the next opaque block.
     if (event.y > 0) {
         var walk_y: u16 = event.y - 1;
         while (true) {
@@ -215,7 +160,7 @@ fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
             if (lx == 15) wr.mark_section_dirty(cx + 1, walk_sy, cz);
             if (lz == 0 and cz > 0) wr.mark_section_dirty(cx, walk_sy, cz - 1);
             if (lz == 15) wr.mark_section_dirty(cx, walk_sy, cz + 1);
-            if (World.WorldData.blocks_light(World.data.get_block(event.x, walk_y, event.z))) break;
+            if (!World.data.get_block(event.x, walk_y, event.z).light_passes()) break;
             if (walk_y == 0) break;
             walk_y -= 1;
         }
@@ -231,9 +176,43 @@ fn on_despawn(ctx: *anyopaque, event: zb.DespawnPlayer) !void {
 fn on_disconnect(ctx: *anyopaque, event: zb.DisconnectPlayer) !void {
     const self: *ClientConn = @ptrCast(@alignCast(ctx));
     log.info("Disconnect: {s}", .{&event.reason});
-    // Save trimmed reason so DisconnectState can display it. Written before
-    // quit_requested is set; the game thread reads it after observing quit_requested.
     const trimmed = std.mem.trimEnd(u8, &event.reason, " ");
     Session.set_disconnect_reason(trimmed);
     self.quit_requested = true;
+}
+
+test "multiplayer disconnect stops dispatch and publishes the server reason" {
+    defer Session.clear_disconnect_reason();
+
+    Session.clear_disconnect_reason();
+    var bytes: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    try proto.send_disconnect_to_client(&writer, "Server shutting down");
+    try proto.send_message(&writer, 0, "Must not be dispatched");
+    var reader = std.Io.Reader.fixed(writer.buffered());
+    var conn: ClientConn = undefined;
+    conn.init(&reader, &writer);
+    var connected: std.atomic.Value(bool) = .init(true);
+
+    conn.read_loop(&connected);
+
+    try std.testing.expect(!connected.load(.acquire));
+    try std.testing.expectEqualStrings("Server shutting down", Session.disconnect_reason());
+    try std.testing.expectEqual(@as(usize, 65), reader.seek);
+}
+
+test "multiplayer truncated packet publishes connection loss" {
+    defer Session.clear_disconnect_reason();
+
+    Session.clear_disconnect_reason();
+    var reader = std.Io.Reader.fixed(&.{ 0x0e, 'x' });
+    var writer = std.Io.Writer.fixed(&.{});
+    var conn: ClientConn = undefined;
+    conn.init(&reader, &writer);
+    var connected: std.atomic.Value(bool) = .init(true);
+
+    conn.read_loop(&connected);
+
+    try std.testing.expect(!connected.load(.acquire));
+    try std.testing.expectEqualStrings("Connection lost", Session.disconnect_reason());
 }

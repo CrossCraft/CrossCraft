@@ -1,4 +1,3 @@
-/// Per-frame snapshot of the shared menu action set.
 const std = @import("std");
 const assert = std.debug.assert;
 const ae = @import("aether");
@@ -19,42 +18,28 @@ const REPEAT_DELAY: f32 = 0.4;
 const REPEAT_RATE: f32 = 0.08;
 
 pub const Repeat = struct {
-    /// Order: up, down, left, right.
-    timers: [4]f32 = .{ 0, 0, 0, 0 },
-    fired_first: [4]bool = .{ false, false, false, false },
+    direction: NavDir = .none,
+    timer: f32 = 0,
 };
 
 pub const UiInput = struct {
-    input_system: ?*input.InputSystem,
-    cursor_x: i16,
-    cursor_y: i16,
-    cursor_available: bool,
-    cursor_moved: bool,
-    click_edge: bool,
-    /// True while ui_click is held; distinct from the rising edge so sliders
-    /// and scrollbars can read ongoing pointer state.
-    click_held: bool,
-    nav: NavDir,
-    confirm_edge: bool,
-    /// In-menu "back" - Escape, B, gamepad B/Start.
-    cancel_edge: bool,
-    /// In-game pause - Escape and gamepad Start only; excludes B so the
-    /// inventory key cannot pause mid-gameplay.
-    pause_edge: bool,
-    /// Console-only Start/Plus edge used to exit from the main title screen.
-    /// Other menu screens intentionally leave this unconsumed so their
-    /// existing Start-as-Back behavior remains intact.
-    title_exit_edge: bool,
-    /// Inventory toggle while a UI overlay owns input. This lets the same
-    /// keyboard/gamepad binding close inventory without making B a global
-    /// text-screen cancel key.
-    inventory_edge: bool,
-    /// Vertical wheel notches this frame. Positive scrolls content upward
-    /// (GLFW convention). Zero when `cursor_available` is false.
-    wheel_dy: i8,
-    /// True on the update-side frame. Draw-only UI replays set this false so
-    /// text sessions do not process the same raw key events twice.
-    text_events: bool,
+    input_system: ?*input.InputSystem = null,
+    cursor_x: i16 = 0,
+    cursor_y: i16 = 0,
+    cursor_available: bool = false,
+    cursor_moved: bool = false,
+    click_edge: bool = false,
+    click_held: bool = false,
+    nav: NavDir = .none,
+    confirm_edge: bool = false,
+    cancel_edge: bool = false,
+    pause_edge: bool = false,
+    title_exit_edge: bool = false,
+    inventory_edge: bool = false,
+    /// Positive wheel notches scroll content upward.
+    wheel_dy: i8 = 0,
+    /// Draw-only UI replays must not process text events twice.
+    text_events: bool = false,
 };
 
 const Prev = struct {
@@ -81,9 +66,7 @@ const Actions = struct {
 
 const Runtime = struct {
     prev: Prev = .{},
-    /// True iff menu_set owned the top context last frame. Suppresses a
-    /// ghost rising edge on the frame menu_set activates with a binding
-    /// already held (e.g. B from the gameplay press that pushed us here).
+    /// Suppress held bindings when the menu becomes active.
     was_active: bool = false,
     set: ?input.ActionSetHandle = null,
     actions: ?Actions = null,
@@ -116,21 +99,13 @@ pub fn seed_focus_on_open() bool {
     return !profile_uses_pointer() or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
 }
 
-/// Whether this platform maps its physical Start-equivalent to exiting from
-/// the main title screen. Switch Plus is normalized to gamepad Start by
-/// Aether's input backend.
 pub fn title_exit_enabled() bool {
-    return title_exit_enabled_for(ae.platform);
-}
-
-fn title_exit_enabled_for(platform: ae.Platform) bool {
-    return switch (platform) {
+    return switch (ae.platform) {
         .psp, .nintendo_3ds, .nintendo_switch => true,
         else => false,
     };
 }
 
-/// Register the process-wide menu action set once.
 pub fn ensure_registered(sys: *input.InputSystem) !void {
     if (runtime.set != null) return;
     const set = try sys.register_action_set("menu");
@@ -143,22 +118,18 @@ pub fn ensure_registered(sys: *input.InputSystem) !void {
     try sys.bind_action(confirm, &.{ .source = .{ .key = .Space } });
     try sys.bind_action(confirm, &.{ .source = .{ .gamepad_button = .A } });
 
-    // Cancel = back. Keyboard B is intentionally not included: text fields
-    // need to accept the letter 'b' without backing out of their screen.
+    // Leave keyboard B available to text fields.
     const cancel = try sys.add_action(set, "ui_cancel", .button);
     try sys.bind_action(cancel, &.{ .source = .{ .key = .Escape } });
     try sys.bind_action(cancel, &.{ .source = .{ .gamepad_button = .B } });
     try sys.bind_action(cancel, &.{ .source = .{ .gamepad_button = .Start } });
 
-    // ui_pause is the in-game "open pause" trigger. Deliberately omits B so
-    // pressing B (which opens inventory) cannot pause mid-gameplay.
+    // Inventory's B binding must not pause gameplay.
     const pause = try sys.add_action(set, "ui_pause", .button);
     try sys.bind_action(pause, &.{ .source = .{ .key = .Escape } });
     try sys.bind_action(pause, &.{ .source = .{ .gamepad_button = .Start } });
 
-    // On consoles, Start exits only from the main title screen. Keep this
-    // separate from cancel so every other menu continues to treat Start as
-    // Back, and gameplay continues to use it for Pause.
+    // Start exits the console title screen; elsewhere it means Back or Pause.
     const title_exit = try sys.add_action(set, "ui_title_exit", .button);
     if (title_exit_enabled()) {
         try sys.bind_action(title_exit, &.{ .source = .{ .gamepad_button = .Start } });
@@ -256,8 +227,6 @@ pub fn build_frame(sys: *input.InputSystem, dt: f32, repeat: *Repeat) UiInput {
 
     const active_now = is_menu_set_active(sys);
 
-    // Seed prev := current on activation so already-held bindings do not
-    // fire a spurious rising edge.
     const fresh_activation = active_now and !runtime.was_active;
     runtime.was_active = active_now;
 
@@ -302,8 +271,7 @@ pub fn build_frame(sys: *input.InputSystem, dt: f32, repeat: *Repeat) UiInput {
     };
 }
 
-/// Accumulate fractional trackpad deltas and floor toward zero so a slow
-/// scroll still registers a notch eventually.
+/// Preserve fractional trackpad deltas between frames.
 fn read_wheel_dy(sys: *input.InputSystem) i8 {
     for (sys.frame_events()) |ev| {
         switch (ev.kind) {
@@ -323,18 +291,10 @@ fn rising_edge(prev: input.ButtonState, cur: input.ButtonState) bool {
     return prev == .released and cur == .pressed;
 }
 
-test "title exit is limited to handheld console targets" {
-    try std.testing.expect(title_exit_enabled_for(.psp));
-    try std.testing.expect(title_exit_enabled_for(.nintendo_3ds));
-    try std.testing.expect(title_exit_enabled_for(.nintendo_switch));
-    try std.testing.expect(!title_exit_enabled_for(.linux));
-    try std.testing.expect(!title_exit_enabled_for(.wasm));
-}
-
 fn is_menu_set_active(sys: *input.InputSystem) bool {
     const top = sys.stack_top() orelse return false;
     const set = runtime.set orelse return false;
-    return @intFromEnum(top.actions) == @intFromEnum(set);
+    return top.actions == set;
 }
 
 const Cursor = struct { x: i16, y: i16 };
@@ -355,33 +315,23 @@ fn read_cursor(sys: *input.InputSystem) Cursor {
     };
 }
 
-/// Resolves the four held flags into at most one autorepeat-fired direction.
-/// Up takes priority over Down, Left over Right (matches typical menu UX).
 fn resolve_nav(held: [4]bool, dt: f32, repeat: *Repeat) NavDir {
     const dirs = [_]NavDir{ .up, .down, .left, .right };
-    const active = for (held, 0..) |is_held, i| {
-        if (is_held) break i;
+    const active = for (held, dirs) |is_held, direction| {
+        if (is_held) break direction;
     } else {
         repeat.* = .{};
         return .none;
     };
 
-    for (0..held.len) |i| {
-        if (i != active) {
-            repeat.timers[i] = 0;
-            repeat.fired_first[i] = false;
-        }
+    if (active != repeat.direction) {
+        repeat.* = .{ .direction = active };
+        return active;
     }
-
-    if (!repeat.fired_first[active]) {
-        repeat.fired_first[active] = true;
-        repeat.timers[active] = 0;
-        return dirs[active];
-    }
-    repeat.timers[active] += dt;
-    if (repeat.timers[active] < REPEAT_DELAY) return .none;
-    repeat.timers[active] -= REPEAT_RATE;
-    return dirs[active];
+    repeat.timer += dt;
+    if (repeat.timer < REPEAT_DELAY) return .none;
+    repeat.timer -= REPEAT_RATE;
+    return active;
 }
 
 test "navigation repeats while held and resets on release" {
@@ -392,6 +342,8 @@ test "navigation repeats while held and resets on release" {
     try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0, &repeat));
     try std.testing.expectEqual(NavDir.none, resolve_nav(down, REPEAT_DELAY - 0.01, &repeat));
     try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0.02, &repeat));
+    try std.testing.expectEqual(NavDir.none, resolve_nav(down, REPEAT_RATE - 0.02, &repeat));
+    try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0.02, &repeat));
 
     try std.testing.expectEqual(NavDir.none, resolve_nav(released, 0, &repeat));
     try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0, &repeat));
@@ -401,4 +353,6 @@ test "navigation resolves opposing directions once per frame" {
     var repeat: Repeat = .{};
     try std.testing.expectEqual(NavDir.up, resolve_nav(.{ true, true, true, true }, 0, &repeat));
     try std.testing.expectEqual(NavDir.down, resolve_nav(.{ false, true, true, true }, 0, &repeat));
+    try std.testing.expectEqual(NavDir.none, resolve_nav(.{ false, true, true, true }, REPEAT_DELAY - 0.01, &repeat));
+    try std.testing.expectEqual(NavDir.up, resolve_nav(.{ true, true, true, true }, 0, &repeat));
 }

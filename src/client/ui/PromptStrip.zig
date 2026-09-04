@@ -18,14 +18,11 @@ pub const Prompt = struct {
     /// One button or a two-button chord, drawn left to right.
     chord: [2]?Buttons.Button,
     label: []const u8,
-    /// Optional ASCII string drawn centered on top of the glyph, used by
-    /// KB+M BlankKey prompts (e.g. "B" for inventory, "T" for chat).  The
-    /// slice must outlive the FontBatcher flush, so pass a string literal.
+    /// Key text overlaid on the glyph; must outlive the FontBatcher flush.
     letter_overlay: ?[]const u8 = null,
 };
 
 comptime {
-    // Guard against accidental Prompt bloat -- PSP-friendly budget.
     assert(@sizeOf(Prompt) <= 64);
 }
 

@@ -79,16 +79,10 @@ pub fn begin(self: *IsoBlockDrawer) void {
 }
 
 pub fn add_payload(self: *IsoBlockDrawer, payload: Payload) void {
-    self.add_block(payload.block, payload.cx, payload.cy, payload.half_extent_px);
-}
-
-pub fn add_block(
-    self: *IsoBlockDrawer,
-    block: Block,
-    cx: f32,
-    cy: f32,
-    half_extent_px: f32,
-) void {
+    const block = payload.block;
+    const cx = payload.cx;
+    const cy = payload.cy;
+    const half_extent_px = payload.half_extent_px;
     assert(half_extent_px > 0);
     if (block.is_air()) return;
 
@@ -124,15 +118,6 @@ pub fn draw(self: *IsoBlockDrawer) void {
 
     const ident = Math.Mat4.identity();
     self.mesh.draw(&ident);
-}
-
-fn face_shading(face: Face) u32 {
-    return switch (face) {
-        .y_pos => 0xFFFFFFFF,
-        .x_pos => 0xFF999999,
-        .z_neg => 0xFFCCCCCC,
-        else => 0xFFFFFFFF,
-    };
 }
 
 fn project_xy(self: *const IsoBlockDrawer, vx: f32, vy: f32, vz: f32, cx: f32, cy: f32) [2]f32 {
@@ -184,7 +169,12 @@ fn emit_iso_face(
     const tv0: i16 = if (slab_side) @intCast(base_v + @divTrunc(th, 2)) else @intCast(base_v);
     const tv1: i16 = @intCast(base_v + th);
 
-    const color = face_shading(face);
+    const color: u32 = switch (face) {
+        .y_pos => 0xFFFFFFFF,
+        .x_pos => 0xFF999999,
+        .z_neg => 0xFFCCCCCC,
+        else => unreachable,
+    };
 
     const corners: [4][3]f32 = switch (face) {
         .x_pos => .{

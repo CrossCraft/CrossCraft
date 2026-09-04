@@ -6,7 +6,6 @@ const Scaling = ae.UI.Scaling;
 const layout = ae.UI.layout;
 
 const Colors = @import("../graphics/Color.zig");
-const input = @import("input.zig");
 
 pub fn logical_rect() layout.LogicalRect {
     const width = Rendering.gfx.surface.get_width();
@@ -17,26 +16,6 @@ pub fn logical_rect() layout.LogicalRect {
         .y0 = 0,
         .x1 = @intCast((width + scale - 1) / scale),
         .y1 = @intCast((height + scale - 1) / scale),
-    };
-}
-
-pub fn empty_input() input.UiInput {
-    return .{
-        .input_system = null,
-        .cursor_x = 0,
-        .cursor_y = 0,
-        .cursor_available = false,
-        .cursor_moved = false,
-        .click_edge = false,
-        .click_held = false,
-        .nav = .none,
-        .confirm_edge = false,
-        .cancel_edge = false,
-        .pause_edge = false,
-        .title_exit_edge = false,
-        .inventory_edge = false,
-        .wheel_dy = 0,
-        .text_events = false,
     };
 }
 

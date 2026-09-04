@@ -24,9 +24,7 @@ const CLOUD_UV_REPEATS: u32 = 1;
 /// Scales cloud UV density without changing the mesh.
 const CLOUD_TEX_SCALE: u32 = 2;
 const CLOUD_UV_PERIOD: f32 = PLANE_SIZE * @as(f32, @floatFromInt(CLOUD_TEX_SCALE)) / @as(f32, @floatFromInt(CLOUD_UV_REPEATS));
-/// Clouds float this far above the world ceiling so tall worlds keep their
-/// cloud plane clear of terrain. Normal-height worlds land on the classic
-/// fixed Y=72 (64 + 8).
+/// Keep clouds above tall worlds; the classic 64-block height gives Y=72.
 const CLOUD_Y_MARGIN: u32 = 8;
 const CLOUD_SPEED: f32 = 0.175;
 
@@ -205,7 +203,6 @@ fn emit_down_quad(
     tv0: i16,
     tv1: i16,
 ) void {
-    // v0=(x0,z1) v1=(x1,z1) v2=(x1,z0) v3=(x0,z0); emit 0,2,1 then 0,3,2
     mesh.add_quad_assume_capacity(
         .{ .pos = .{ x0, 0, z1 }, .uv = .{ tu0, tv1 }, .color = color },
         .{ .pos = .{ x0, 0, z0 }, .uv = .{ tu0, tv0 }, .color = color },

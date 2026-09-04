@@ -93,7 +93,7 @@ fn prepare_batches(self: *@This()) !void {
     Screen.add_dirt_background(&self.batcher, self.dirt);
 
     var list: UiDrawList = .{};
-    var none = Screen.empty_input();
+    var none: ui_input.UiInput = .{};
     var ui = self.begin_ui(&list, &none);
     _ = DisconnectScreen.run(&ui, Session.disconnect_reason());
     ui.end();
