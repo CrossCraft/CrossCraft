@@ -18,8 +18,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # Builds every (target, kind) with -Dskip-pack=true so we never have to
-  # pull the LFS-backed resources submodule. No artifacts are uploaded.
+  # Pull-request builds skip the LFS-backed resource pack.
   dev:
     if: github.event_name == 'pull_request'
     strategy:
@@ -344,44 +343,11 @@ jobs:
           path: zig-out/bin/CrossCraft-Classic-Switch/
           if-no-files-found: error
 
-  # Build the pack_zip host tool for distribution. This is the canonical
-  # way to produce a CrossCraft pack.zip from a resource directory.
-  pack-tool:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-latest,  name: linux }
-          - { os: macos-latest,   name: mac }
-          - { os: windows-latest, name: windows }
-    runs-on: ${{ matrix.os }}
-    name: pack-tool (${{ matrix.name }})
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-
-      - name: Build pack_zip
-        run: zig build pack-tool -Doptimize=ReleaseSafe
-
-      - name: Upload pack-tool
-        uses: actions/upload-artifact@v7
-        with:
-          name: pack-tool_${{ matrix.name }}
-          path: zig-out/bin/
-          if-no-files-found: error
-
-  # Worldgen golden-hash regression test: regenerates 100 predetermined
-  # worlds through the worldgen module and compares sha256 block-array
-  # hashes against values captured from the Classic-Worldgen-RE black-box
-  # oracle (the original Minecraft Classic server). Catches any change that
-  # breaks byte-identical world generation. Runs on the host toolchain only,
-  # so no LFS resources are needed.
-  worldgen-test:
+  # Host tests need no LFS resources. The golden corpus checks worldgen
+  # byte parity with the reference generator.
+  tests:
     runs-on: ubuntu-latest
-    name: worldgen golden hash (100 worlds)
+    name: unit and worldgen tests
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -391,5 +357,8 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
 
-      - name: Worldgen golden hash test
+      - name: Unit tests
+        run: zig build test -Dskip-pack=true
+
+      - name: Worldgen golden hashes (100 worlds)
         run: zig build worldgen-test -Doptimize=ReleaseSafe -Dskip-pack=true

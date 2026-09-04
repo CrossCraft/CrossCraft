@@ -7,9 +7,7 @@ const log = std.log.scoped(.ui);
 const core = @import("core");
 const layout_mod = ae.UI.layout;
 const texture_region = ae.UI.texture_region;
-const button_style_mod = @import("ButtonStyle.zig");
-const slider_style_mod = @import("SliderStyle.zig");
-const text_field_style_mod = @import("TextFieldStyle.zig");
+const widget_style = @import("WidgetStyle.zig");
 const prompt_strip = @import("PromptStrip.zig");
 const prompts_mod = @import("Prompts.zig");
 const ui_input = @import("input.zig");
@@ -25,9 +23,9 @@ pub const Anchor = layout_mod.Anchor;
 pub const TextureRegion = texture_region.TextureRegion;
 pub const Color = Colors.Color;
 pub const WidgetId = widget_id.WidgetId;
-pub const ButtonStyle = button_style_mod.ButtonStyle;
-pub const SliderStyle = slider_style_mod.SliderStyle;
-pub const TextFieldStyle = text_field_style_mod.TextFieldStyle;
+pub const ButtonStyle = widget_style.Button;
+pub const SliderStyle = widget_style.Slider;
+pub const TextFieldStyle = widget_style.TextField;
 pub const Prompt = prompt_strip.Prompt;
 pub const UiInput = ui_input.UiInput;
 
@@ -279,20 +277,6 @@ pub fn stack(self: *Self, opts: StackOpts) ScopeHandle {
     return .{ .ui = self };
 }
 
-pub fn overlay_scope(self: *Self) ScopeHandle {
-    self.push_scope(.{
-        .axis = .vertical,
-        .anchor = .top_left,
-        .cross_align = .start,
-        .gap = 0,
-        .padding = .{},
-        .box = .{ .width = .fill, .height = .fill },
-        .overlay_mode = true,
-        .scroll_clip = self.current_scroll_clip(),
-    });
-    return .{ .ui = self };
-}
-
 pub fn label(self: *Self, text: []const u8) void {
     const draw_start = self.draw.count;
     const focus_start = self.focus_count;
@@ -323,37 +307,11 @@ pub fn spacer(self: *Self, w: i16, h: i16) void {
     self.record_child(draw_start, self.draw.count, focus_start, self.focus_count, scroll_start, self.scroll_view_count, rect);
 }
 
-pub const ImageOpts = struct {
-    texture: *const Rendering.Texture,
-    width: i16,
-    height: i16,
-    color: Color = Colors.white_fg,
-};
-
-pub fn image(self: *Self, region: TextureRegion, opts: ImageOpts) void {
-    const draw_start = self.draw.count;
-    const focus_start = self.focus_count;
-    const scroll_start = self.scroll_view_count;
-    const rect = self.alloc_rect(.{ .x = opts.width, .y = opts.height });
-    self.draw.add_sprite(&.{
-        .texture = opts.texture,
-        .pos_offset = .{ .x = rect.x0, .y = rect.y0 },
-        .pos_extent = .{ .x = rect.width(), .y = rect.height() },
-        .tex_offset = .{ .x = region.x, .y = region.y },
-        .tex_extent = .{ .x = region.w, .y = region.h },
-        .color = opts.color,
-        .layer = self.layer_base + 2,
-        .reference = .top_left,
-        .origin = .top_left,
-    });
-    self.record_child(draw_start, self.draw.count, focus_start, self.focus_count, scroll_start, self.scroll_view_count, rect);
-}
-
 pub const ButtonOpts = struct {
     width: i16 = 200,
     height: i16 = 20,
     enabled: bool = true,
-    style: *const ButtonStyle = &button_style_mod.classic,
+    style: *const ButtonStyle = &ButtonStyle.classic,
 };
 
 pub fn button(self: *Self, id: WidgetId, text: []const u8, opts: ButtonOpts) bool {
@@ -396,7 +354,7 @@ pub const SliderOpts = struct {
     max: f32,
     nudge: f32 = 0.05,
     scale: enum { linear, log10 } = .linear,
-    style: *const SliderStyle = &slider_style_mod.classic,
+    style: *const SliderStyle = &SliderStyle.classic,
 };
 
 pub fn slider(self: *Self, id: WidgetId, value: *f32, opts: SliderOpts) bool {
@@ -448,7 +406,7 @@ pub const TextOpts = struct {
     height: i16 = 20,
     placeholder: []const u8 = "",
     session_id: []const u8,
-    style: *const TextFieldStyle = &text_field_style_mod.classic,
+    style: *const TextFieldStyle = &TextFieldStyle.classic,
 };
 
 pub fn text_field(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) TextEvent {

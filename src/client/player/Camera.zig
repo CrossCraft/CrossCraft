@@ -70,13 +70,6 @@ pub fn section_visible(self: *const Self, cx: u32, sy: u32, cz: u32) bool {
     return self.frustum.containsAABB(aabb);
 }
 
-/// Squared horizontal distance (XZ plane) from camera to a world point.
-pub fn distance_sq_xz(self: *const Self, wx: f32, wz: f32) f32 {
-    const dx = wx - self.x;
-    const dz = wz - self.z;
-    return dx * dx + dz * dz;
-}
-
 /// Squared 3D distance from camera to a world point.
 pub fn distance_sq(self: *const Self, wx: f32, wy: f32, wz: f32) f32 {
     const dx = wx - self.x;

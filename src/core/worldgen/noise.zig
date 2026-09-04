@@ -4,14 +4,7 @@ const builtin = @import("builtin");
 
 const random_state = @import("random.zig");
 
-// Down/up rounding to integer, emitted without a libcall. compiler_rt's
-// floorf/ceilf are soft-float routines (~50 instructions each on MIPS) and
-// every cascade column performs several; the MIPS FPU's truncating cvt.w.s
-// (single instruction) plus a sign-corrected unit adjustment reproduces the
-// exact @floor/@ceil values branch-free-ish. Non-MIPS targets keep the native
-// @floor/@ceil, which are single instructions there. Exact values are
-// preserved for every finite in-range input (|x| < 2^31), so no decision can
-// move as a result of this substitution.
+// Avoid compiler_rt floor/ceil calls on MIPS while preserving finite f32 results.
 pub inline fn floor_f32(x: f32) f32 {
     if (builtin.cpu.arch == .mipsel or builtin.cpu.arch == .mips) {
         const truncated: f32 = @floatFromInt(@as(i32, @intFromFloat(x)));
@@ -30,14 +23,9 @@ pub inline fn ceil_f32(x: f32) f32 {
 
 pub const permutation = struct {
     entries: [512]u8,
-    // fused[i] == entries[entries[i]] for i in [0, 512). The 2D sampler always
-    // hashes with an implicit z of 0, whose third lookup is entries[xy + 0]:
-    // fused turns that three-level chain (entries[entries[entries[x] + y] + 0])
-    // into two loads. Pure table indirection; the hash value is unchanged.
+    // Collapses the implicit z=0 hash from three table reads to two.
     fused: [512]u8,
-    // fused_masked[i] == fused[i] & 15: the f32 kernels consume the hash only
-    // through the 16-entry gradient coefficient table, so masking once at
-    // initialization removes the per-corner andi from every sample.
+    // The f32 kernel only uses the low four hash bits.
     fused_masked: [512]u8,
 
     pub fn init(random: *random_state) permutation {
@@ -85,16 +73,10 @@ pub fn fade(parameter: f32) f32 {
     return parameter * parameter * parameter * (parameter * (parameter * 6.0 - 15.0) + 10.0);
 }
 
-// The lattice-sampled chains evaluate at (x * 2^-k, y * 2^-k) for integer
-// (x, y): lattice cell (x >> k), fractional offset ((x & (2^k - 1)) * 2^-k).
-// All of these are exact (a power-of-two multiply only shifts the exponent,
-// x <= 512 keeps the product representable), and fade(offset) is a pure
-// function of the integer mask. Memoizing it per octave turns the 7-op
-// Hermite fade into one L1D-resident load; the per-sample scale multiplies
-// and the FPU trunc round-trips disappear for these chains entirely.
-pub const lattice_fade_tables: [8][256]f32 = blk: {
+// Octaves 1...7 use at most 128 distinct dyadic offsets.
+const lattice_fade_tables: [7][128]f32 = blk: {
     @setEvalBranchQuota(16_000);
-    var tables: [8][256]f32 = undefined;
+    var tables: [7][128]f32 = undefined;
     for (0..tables.len) |row| {
         const k: u32 = @as(u32, @intCast(row)) + 1;
         const mask: u32 = (@as(u32, 1) << @intCast(k)) - 1;
@@ -106,12 +88,7 @@ pub const lattice_fade_tables: [8][256]f32 = blk: {
     break :blk tables;
 };
 
-/// Integer-domain sampling for the lattice chains (both coordinates are
-/// non-negative integers, sampled at dyadic octave scales). Bits are
-/// identical to the float-domain gradient_noise on these inputs: the lattice
-/// coordinate is x >> k (== floor(x * 2^-k) for non-negative x), the offset
-/// (x & mask) * 2^-k equals x * 2^-k - floor exactly, and the fade table is
-/// the same Hermite polynomial evaluated on the same bits.
+// Integer coordinates and dyadic scales make this bit-identical to float sampling.
 fn gradient_noise_lattice(table: *const permutation, x: u32, y: u32, k: u4) f32 {
     const lattice_x: i32 = @intCast(x >> k);
     const lattice_y: i32 = @intCast(y >> k);
@@ -132,24 +109,8 @@ pub fn interpolate(weight: f32, lower: f32, upper: f32) f32 {
     return lower + weight * (upper - lower);
 }
 
-pub fn gradient(hash: u8, x: f32, y: f32, z: f32) f32 {
-    const nibble = hash & 15;
-    const first = if (nibble < 8) x else y;
-    const second = if (nibble < 4) y else if (nibble == 12 or nibble == 14) x else z;
-    const signed_first = if ((nibble & 1) == 0) first else -first;
-    const signed_second = if (((nibble >> 1) & 1) == 0) second else -second;
-    return signed_first + signed_second;
-}
-
-// Precomputed Perlin gradient for the 2D sampler (offset_z == 0.0, which every
-// gradient_noise call site uses). With z == 0 the nibble selects reduce to
-// g = c.x * x + c.y * y for a coefficient pair in {-1.0, 0.0, 1.0}^2:
-// nib 0-3: ±x ± y; 4-7: ±x; 8-11: ±y; 12/14: ±x ± y; 13/15: ±y. Multiplication
-// by ±1.0 is exact and IEEE add is commutative, so this is bit-identical to
-// the branchy selects for every real input (offsets are non-negative; only a
-// sign of zero could differ, and no downstream decision distinguishes them).
-// The MIPS build of the selects is ~4x larger than two table loads + two
-// multiplies + an add.
+// With z=0, each Perlin gradient is a coefficient pair in {-1, 0, 1}².
+// Precomputing the pairs avoids branchy gradient selection on MIPS.
 const gradient_2d_coefficients = blk: {
     @setEvalBranchQuota(2_000);
     const coefficient_pair = struct { x: f32, y: f32 };
@@ -162,7 +123,7 @@ const gradient_2d_coefficients = blk: {
             4...7 => .{ .x = sign_first, .y = 0.0 },
             8...11 => .{ .x = 0.0, .y = sign_first },
             12, 14 => .{ .x = sign_second, .y = sign_first },
-            else => .{ .x = 0.0, .y = sign_first }, // 13, 15: second is z == 0
+            else => .{ .x = 0.0, .y = sign_first },
         };
     }
     break :blk table;
@@ -177,48 +138,18 @@ fn wrap_coordinate(coordinate: i32) u8 {
     return @truncate(@as(u32, @bitCast(coordinate)));
 }
 
-pub fn lattice_hash(table: *const permutation, x: i32, y: i32, z: i32) u8 {
-    const x_hash = table.entry(wrap_coordinate(x));
-    const xy_hash = table.entry(@as(usize, x_hash) + wrap_coordinate(y));
-    return table.entry(@as(usize, xy_hash) + wrap_coordinate(z));
-}
-
 fn lattice_hash_2d(table: *const permutation, x: i32, y: i32) u8 {
     const x_hash = table.entry(wrap_coordinate(x));
-    // fused[i] == entries[entries[i]], so this two-load chain equals the
-    // three-load lattice_hash(x, y, 0): entries[entries[entries[x] + y] + 0].
     return table.fused[@as(usize, x_hash) + wrap_coordinate(y)];
 }
 
-// Masked variant for the f32 kernels: the hash is only consumed through the
-// 16-entry gradient coefficient table, so the pre-masked table saves the
-// per-corner andi. Bit-identical indexing; the f64 mirror keeps the full hash.
 fn lattice_hash_2d_masked(table: *const permutation, x: i32, y: i32) u8 {
     const x_hash = table.entry(wrap_coordinate(x));
     return table.fused_masked[@as(usize, x_hash) + wrap_coordinate(y)];
 }
 
-pub fn gradient_noise(table: *const permutation, x: f32, y: f32) f32 {
-    return gradient_noise_impl(table, x, y, false, false);
-}
-
-/// Variant for sampling grids that are provably non-negative in both
-/// coordinates (every octave of a scaled u32 input stays >= 0). For those
-/// inputs the truncating float-to-int conversion already equals @floor: the
-/// general path's sign-fixup (f.compare + branch + unit add, ~3 instructions
-/// and 2 hazard nops on the in-order PSP FPU each) is dead code here. Values
-/// are bit-identical to gradient_noise on these inputs.
-pub inline fn gradient_noise_nonneg(table: *const permutation, x: f32, y: f32) f32 {
-    return gradient_noise_impl(table, x, y, true, true);
-}
-
 fn gradient_noise_impl(table: *const permutation, x: f32, y: f32, comptime nonneg_x: bool, comptime nonneg_y: bool) f32 {
-    // Two-dimensional lattice: this function is only ever sampled with an
-    // implicit offset_z of 0.0, where fade(0.0) == 0.0 makes the offset-z == 1
-    // plane contribute exactly zero to the final interpolation. Skipping that
-    // plane halves the lattice hashes and gradient calls per sample and changes
-    // no result: the four corners retained below are the same arithmetic as the
-    // original full-z variant's `lower_z` path.
+    // The omitted z=1 plane contributes zero when the implicit z offset is zero.
     const lattice_x: i32 = if (nonneg_x) @intFromFloat(x) else floor_coordinate(x);
     const lattice_y: i32 = if (nonneg_y) @intFromFloat(y) else floor_coordinate(y);
     const offset_x = x - @as(f32, @floatFromInt(lattice_x));
@@ -236,7 +167,7 @@ pub const octave_noise = struct {
     count: u4,
 
     pub fn init(random: *random_state, count: u4) octave_noise {
-        assert(count <= 8);
+        assert(count == 6 or count == 8);
         var result: octave_noise = undefined;
         result.count = count;
         for (0..count) |index| result.permutations[index] = permutation.init(random);
@@ -244,46 +175,25 @@ pub const octave_noise = struct {
     }
 
     pub inline fn value(self: *const octave_noise, x: f32, y: f32) f32 {
-        return self.value_from(x, y, 0, false, false);
+        return self.value_from(x, y, false, false);
     }
 
-    /// Both coordinates are non-negative: the octave-scaled samples stay in
-    /// [0, inf) and the kernel's truncating float->int conversion is exactly
-    /// @floor there, skipping the sign-fixup on the in-order PSP FPU.
+    // Skips floor sign correction for a non-negative sampling grid.
     pub inline fn value_nonneg(self: *const octave_noise, x: f32, y: f32) f32 {
-        return self.value_from(x, y, 0, true, true);
+        return self.value_from(x, y, true, true);
     }
 
-    /// Only the second coordinate is non-negative (displaced x can cross
-    /// below zero; the y/z sampling grid never does).
+    // Displaced x can be negative; the y/z sampling grid cannot.
     pub inline fn value_y_nonneg(self: *const octave_noise, x: f32, y: f32) f32 {
-        return self.value_from(x, y, 0, false, true);
+        return self.value_from(x, y, false, true);
     }
 
-    /// Lattice-sampled variant: both coordinates are integer-valued. Octave 0
-    /// there has every offset zero, so each corner gradient is ±0.0 and the
-    /// blended result is exactly ±0.0 — adding it to the sum cannot change the
-    /// value (x + 0.0 == x for any nonzero x; the degenerate all-zero sum
-    /// stays a zero of the same sign as the non-skipped path). Skipping it
-    /// therefore yields bit-identical results while saving one of every
-    /// `count` gradient samples on the four lattice-sampled chains (selector,
-    /// strata, sand, gravel — roughly 4 of every 12 cascade chains per column).
+    // Octave zero is always zero at integer coordinates and can be skipped.
     pub inline fn value_lattice(self: *const octave_noise, x: u32, y: u32) f32 {
-        return self.value_lattice_from(x, y, 1);
-    }
-
-    /// Integer-domain octave chain: each octave k samples at (x * 2^-k,
-    /// y * 2^-k) via gradient_noise_lattice — no FP scale multiplies, no FPU
-    /// floor round-trips, and a table look-up instead of the Hermite fade.
-    /// Bit-identical to the float-domain path on these inputs.
-    inline fn value_lattice_from(self: *const octave_noise, x: u32, y: u32, comptime first_octave: u4) f32 {
-        assert(first_octave <= self.count);
-        return switch (@as(u6, first_octave) * 16 + self.count) {
-            0 * 16 + 6 => unrolled_lattice(0, 6, self, x, y),
-            0 * 16 + 8 => unrolled_lattice(0, 8, self, x, y),
-            1 * 16 + 6 => unrolled_lattice(1, 6, self, x, y),
-            1 * 16 + 8 => unrolled_lattice(1, 8, self, x, y),
-            else => generic_lattice(self, first_octave, x, y),
+        return switch (self.count) {
+            6 => unrolled_lattice(1, 6, self, x, y),
+            8 => unrolled_lattice(1, 8, self, x, y),
+            else => unreachable,
         };
     }
 
@@ -304,54 +214,17 @@ pub const octave_noise = struct {
         return sum * comptime @as(f32, @floatFromInt(@as(u32, 1) << count));
     }
 
-    fn generic_lattice(self: *const octave_noise, comptime first_octave: u4, x: u32, y: u32) f32 {
-        var sum: f32 = 0.0;
-        var sample_scale: f32 = 1.0;
-        var amplitude: f32 = 1.0;
-        for (0..first_octave) |_| {
-            sample_scale *= 0.5;
-            amplitude *= 2.0;
-        }
-        for (first_octave..self.count) |index| {
-            const k: u4 = @intCast(index);
-            sum += gradient_noise_lattice(&self.permutations[index], x, y, k) * amplitude;
-            sample_scale *= 0.5;
-            amplitude *= 2.0;
-        }
-        return sum;
-    }
-
-    /// Cell-affine lattice-row evaluation (the lattice-chain fast path).
-    ///
-    /// `gradient_noise_lattice` spends ~14 loads per octave sample (four
-    /// corner hashes through the permutation tables, four gradient
-    /// coefficient loads, two fade entries). But within one lattice cell the
-    /// four corner hashes are constant, the two x-neighbor corners share
-    /// their x-cell, and at a fixed sampling-y the y-offset
-    /// `(y & mask) * 2^-k` and its fade are constant for the whole row.
-    /// The octave value is then an *affine* function of the x-offset:
-    ///
-    ///   corner(i,j) = a_ij * ox + b_ij * oy        (a_ij, b_ij in {-1,0,1})
-    ///   L = lerp(fx, g00, g10) = u00*ox + r00 + fx*(v00*ox + t00)
-    ///   U = lerp(fx, g01, g11) = u01*ox + r01 + fx*(v01*ox + t01)
-    ///   value = lerp(fy, L, U)
-    ///
-    /// where the (u, v, r, t) constants depend only on the four corner
-    /// signs and fixed oy/fy. Per cell the four hashes fold into eight
-    /// scalar constants; per column the sample collapses to one fade load
-    /// plus ~17 fp ops with **zero** corner loads (they amortize over the
-    /// cell's 2^k/stride columns). The reassociated lerp chain differs from
-    /// `gradient_noise_lattice` in rounding by at most a few ulps (measured
-    /// <= 6e-8 absolute at magnitude ~1) — far inside the margin envelopes
-    /// the exact tier re-verifies — and byte-identity is enforced by the
-    /// oracle sweep.
+    // Reuses hashes and y terms across one lattice row. Within a cell:
+    //   L = u00*ox + r00 + fx*(v00*ox + t00)
+    //   U = u01*ox + r01 + fx*(v01*ox + t01)
+    // Reassociation differs by at most 6e-8, inside the verified margins.
     pub inline fn lattice_row(self: *const octave_noise, out: []f32, x0: u32, y: u32, stride: u32, n: usize) void {
         assert(n <= out.len);
-        assert(self.count >= 1 and stride >= 1);
-        switch (@as(u6, 1) * 16 + self.count) {
-            1 * 16 + 6 => unrolled_lattice_row(1, 6, self, out, x0, y, stride, n),
-            1 * 16 + 8 => unrolled_lattice_row(1, 8, self, out, x0, y, stride, n),
-            else => generic_lattice_row(self, out, x0, y, stride, n),
+        assert(stride >= 1);
+        switch (self.count) {
+            6 => unrolled_lattice_row(1, 6, self, out, x0, y, stride, n),
+            8 => unrolled_lattice_row(1, 8, self, out, x0, y, stride, n),
+            else => unreachable,
         }
     }
 
@@ -372,13 +245,7 @@ pub const octave_noise = struct {
         for (out[0..n]) |*slot| slot.* *= comptime @as(f32, @floatFromInt(@as(u32, 1) << count));
     }
 
-    fn generic_lattice_row(self: *const octave_noise, out: []f32, x0: u32, y: u32, stride: u32, n: usize) void {
-        for (0..n) |i| out[i] = self.value_lattice_from(x0 + @as(u32, @intCast(i)) * stride, y, 1);
-    }
-
-    // One octave across `n` consecutive sampling-x columns at fixed
-    // sampling-y. The first cell may be cut off by `x0`'s position inside
-    // its cell; every subsequent cell is entered at its start.
+    // Samples an x run at fixed y using the supplied stride.
     inline fn lattice_octave_run(table: *const permutation, out: []f32, x0: u32, y: u32, comptime k: u4, stride: u32, n: usize, amp: f32) void {
         const cell_mask: u32 = (@as(u32, 1) << k) - 1;
         const scale: f32 = 1.0 / @as(f32, @floatFromInt(@as(u32, 1) << k));
@@ -404,7 +271,6 @@ pub const octave_noise = struct {
             const coeff_01 = gradient_2d_coefficients[hash_01];
             const coeff_11 = gradient_2d_coefficients[hash_11];
 
-            // Folded per-cell constants (see the doc comment above).
             const p00 = coeff_00.x;
             const q00 = coeff_10.x - coeff_00.x;
             const r00 = coeff_00.y * oy;
@@ -435,35 +301,19 @@ pub const octave_noise = struct {
         }
     }
 
-    // Inlined so the per-column phase loops carry the unrolled octave chains
-    // directly: the out-of-line copy costs a large stack-frame spill per call
-    // on the PSP (the cascade calls this once per column per phase).
-    inline fn value_from(self: *const octave_noise, x: f32, y: f32, comptime first_octave: u4, comptime nonneg_x: bool, comptime nonneg_y: bool) f32 {
-        assert(first_octave <= self.count);
-        // Only the 6-/8-octave chains exist (selector/surface vs elevate);
-        // unroll those loops so the octaves' independent FP work overlaps on
-        // the in-order PSP FPU (the serial `sum +=` latency would otherwise
-        // dominate). release-fast reassociation may regroup the sum, which
-        // stays inside the margin envelope the f64 fallback re-verifies.
-        return switch (@as(u6, first_octave) * 16 + self.count) {
-            0 * 16 + 6 => unrolled_value(0, 6, self, x, y, nonneg_x, nonneg_y),
-            0 * 16 + 8 => unrolled_value(0, 8, self, x, y, nonneg_x, nonneg_y),
-            1 * 16 + 6 => unrolled_value(1, 6, self, x, y, nonneg_x, nonneg_y),
-            1 * 16 + 8 => unrolled_value(1, 8, self, x, y, nonneg_x, nonneg_y),
-            else => generic_value(self, first_octave, x, y, nonneg_x, nonneg_y),
+    // Inlining avoids a large PSP stack spill in the per-column loop.
+    inline fn value_from(self: *const octave_noise, x: f32, y: f32, comptime nonneg_x: bool, comptime nonneg_y: bool) f32 {
+        return switch (self.count) {
+            6 => unrolled_value(6, self, x, y, nonneg_x, nonneg_y),
+            8 => unrolled_value(8, self, x, y, nonneg_x, nonneg_y),
+            else => unreachable,
         };
     }
 
-    inline fn unrolled_value(comptime first_octave: u4, comptime count: u4, self: *const octave_noise, x: f32, y: f32, comptime nonneg_x: bool, comptime nonneg_y: bool) f32 {
-        // The octave amplitudes are powers of two (2^oct), so accumulating at
-        // a common scale (2^(oct - count)) and scaling once at the end is
-        // exact: every step multiplies by a power of two. The add sequence
-        // differs from the per-octave * 2^oct form by the same ulp order the
-        // existing release-fast reassociation already tolerates, which the f64
-        // boundary fallback's margins cover (8-43x headroom).
+    inline fn unrolled_value(comptime count: u4, self: *const octave_noise, x: f32, y: f32, comptime nonneg_x: bool, comptime nonneg_y: bool) f32 {
         var sum: f32 = 0.0;
-        comptime var exponent: i32 = @as(i32, first_octave) - @as(i32, count);
-        inline for (first_octave..count) |oct| {
+        comptime var exponent: i32 = -@as(i32, count);
+        inline for (0..count) |oct| {
             const scale: f32 = comptime @as(f32, 1.0) / @as(f32, @floatFromInt(@as(u32, 1) << oct));
             const relative_amplitude: f32 = comptime blk: {
                 const pow = if (exponent >= 0)
@@ -477,30 +327,9 @@ pub const octave_noise = struct {
         }
         return sum * comptime @as(f32, @floatFromInt(@as(u32, 1) << count));
     }
-
-    fn generic_value(self: *const octave_noise, comptime first_octave: u4, x: f32, y: f32, comptime nonneg_x: bool, comptime nonneg_y: bool) f32 {
-        var sum: f32 = 0.0;
-        var sample_scale: f32 = 1.0;
-        var amplitude: f32 = 1.0;
-        for (0..first_octave) |_| {
-            sample_scale *= 0.5;
-            amplitude *= 2.0;
-        }
-        for (first_octave..self.count) |index| {
-            sum += gradient_noise_impl(&self.permutations[index], x * sample_scale, y * sample_scale, nonneg_x, nonneg_y) * amplitude;
-            sample_scale *= 0.5;
-            amplitude *= 2.0;
-        }
-        return sum;
-    }
 };
 
-// ---------------------------------------------------------------------------
-// f64 mirror of the sampling math. The f32 path above is the fast path for
-// every column; terrain.zig re-verifies columns whose f32 decisions land
-// within a margin of a boundary using these exact pre-conversion functions
-// (which were verified byte-identical against the oracle). They consume the
-// same permutation tables as the f32 path; only the float type differs.
+// f64 mirror used to recheck f32 results near a decision boundary.
 
 pub fn f64_floor_coordinate(coordinate: f64) i32 {
     assert(std.math.isFinite(coordinate));
@@ -546,13 +375,7 @@ pub fn f64_value_lattice(self: *const octave_noise, x: u32, y: u32) f64 {
     return f64_value_from(self, @floatFromInt(x), @floatFromInt(y), 1);
 }
 
-/// Exact multiply by a power of two via exponent-field addition. The
-/// octave amplitudes in the exact f64 chains are always 2^k, and for
-/// normal-range inputs (everything except zero and the subnormal tails) the
-/// exponent add reproduces the IEEE multiply bit-for-bit; the rare
-/// subnormal/zero cases fall back to the generic (soft-float) multiply. The
-/// PSP emulates every f64 multiply with a ~50-instruction soft-float call,
-/// so this removes the bulk of the re-verification chains' cost.
+// Exact power-of-two scaling without the PSP's emulated f64 multiply.
 inline fn f64_mul_pow2(value: f64, shift: i32) f64 {
     if (value == 0.0) return 0.0;
     const bits: u64 = @bitCast(value);
@@ -580,33 +403,14 @@ fn f64_value_from(self: *const octave_noise, x: f64, y: f64, comptime first_octa
     return sum;
 }
 
-// ---- Q28 fixed-point mirror of the exact f64 cascade chains. ----
-//
-// The PSP has no FPU doubles: every f64 op above is a soft-float library
-// call (~50 instructions). The exact-verify path only needs the *decision*
-// the oracle's f64 arithmetic makes (a truncation or a sign), so the cascade
-// can run in Q28 fixed-point on the hardware integer ALU. Each op deviates
-// from the f64 result by at most a ulp (~2^-28); the five decision
-// quantities accumulate no more than ~2^-22 absolute deviation. Any quantity
-// that lands within `fixed_decisiveness` (3.8e-6, eight times the deviation
-// bound) of a decision boundary falls back to the f64 path, which preserves
-// byte-identity while making the fallback all-but-unreachable: a boundary
-// proximity window of 3.8e-6 is 2^-13 of the f32 margin windows that already
-// selected these columns, and each thread of 65536 columns hits a boundary
-// inside that window in expectation 0.02 times per world.
-//
-// Products stay well inside i64: the largest operands are a < 1 fixed value
-// (~2^28) times a gradient difference (< 2^29), bounded by 2^57; coordinates
-// up to ~2^11 only shift (>> 28), never multiply.
+// Q28 mirror for boundary decisions on targets without hardware f64. Values
+// too close to a boundary fall back to the exact f64 path in terrain.zig.
 pub const fixed = struct {
     pub const shift: u6 = 28;
     pub const one: i64 = 1 << shift;
     const mask: i64 = one - 1;
 
-    /// Q28 encoding of an f64. The f64 input is always exactly representable
-    /// at Q28 for |value| < 2^35 (the coordinate/cascade inputs), so the
-    /// conversion is an exact scaled integer; truncation toward zero never
-    /// loses more than a ulp on the subnormal glass, which the guard covers.
+    // Worldgen coordinates are exactly representable in Q28.
     pub inline fn from_f64(value: f64) i64 {
         return @intFromFloat(value * @as(f64, @floatFromInt(one)));
     }
@@ -621,8 +425,7 @@ pub const fixed = struct {
         return value << k;
     }
 
-    /// (a * b) >> 28, truncated toward zero (|operands| <= 2^30 keeps the
-    /// product inside i64; the low-28-bit truncation is a < 1 ulp error).
+    // Intermediate products require i128 before returning to Q28.
     pub inline fn mul(a: i64, b: i64) i64 {
         return @intCast((@as(i128, a) * @as(i128, b)) >> shift);
     }
@@ -638,7 +441,6 @@ pub fn fixed_gradient(hash: u8, x: i64, y: i64) i64 {
 }
 
 pub fn fixed_fade(parameter: i64) i64 {
-    // Mirrors f64_fade op for op: p^3 * (p * (6p - 15) + 10).
     const p2 = fixed.mul(parameter, parameter);
     const p3 = fixed.mul(p2, parameter);
     const inner = fixed.mul(parameter, 6 * fixed.one) - 15 * fixed.one;
@@ -662,9 +464,7 @@ pub inline fn fixed_interpolate(weight: i64, lower: i64, upper: i64) i64 {
     return lower + fixed.mul(weight, upper - lower);
 }
 
-/// Fixed mirror of f64_value_from. x, y are Q28 fixed coordinates; octave
-/// `index` is sampled at (x >> index) with amplitude 2^index, bit-identical
-/// structure to the f64 chain's sample_scale / amplitude_shift pair.
+// Fixed mirror of f64_value_from for Q28 coordinates.
 pub inline fn fixed_value_from(self: *const octave_noise, x: i64, y: i64, comptime first_octave: u4) i64 {
     assert(first_octave <= self.count);
     var sum: i64 = 0;
@@ -692,11 +492,10 @@ test "forward shuffle is a duplicated permutation and consumes 256 draws" {
     }
 }
 
-test "noise primitives preserve specified endpoints and wrapping" {
+test "noise primitives preserve specified endpoints" {
     try std.testing.expectEqual(@as(f32, 0.0), fade(0.0));
     try std.testing.expectEqual(@as(f32, 1.0), fade(1.0));
     try std.testing.expectEqual(@as(i32, -2), floor_coordinate(-1.25));
-    try std.testing.expectEqual(gradient(3, 0.25, -0.5, 0.75), gradient(19, 0.25, -0.5, 0.75));
 }
 
 test "fused 2D hash equals the three-level lattice hash at z = 0" {
@@ -705,7 +504,9 @@ test "fused 2D hash equals the three-level lattice hash at z = 0" {
     for (0..512) |index| {
         const x: i32 = @as(i32, @intCast(index)) - 256;
         const y: i32 = @as(i32, @intCast((index * 37) % 512)) - 256;
-        try std.testing.expectEqual(lattice_hash(&perm, x, y, 0), lattice_hash_2d(&perm, x, y));
+        const x_hash = perm.entry(wrap_coordinate(x));
+        const xy_hash = perm.entry(@as(usize, x_hash) + wrap_coordinate(y));
+        try std.testing.expectEqual(perm.entry(xy_hash), lattice_hash_2d(&perm, x, y));
     }
 }
 

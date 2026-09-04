@@ -72,19 +72,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, cap_request: 
     const scratch_len: usize = @as(usize, cap) * 256 + 1024;
 
     std.debug.assert(!initialized);
-    errdefer {
-        if (records.len > 0) alloc.free(records);
-        if (json_records.len > 0) alloc.free(json_records);
-        if (json_scratch.len > 0) alloc.free(json_scratch);
-        records = &.{};
-        json_records = &.{};
-        json_scratch = &.{};
-        count = 0;
-        capacity = 0;
-        initialized = false;
-        dirty = false;
-        dirty_since_unix = 0;
-    }
+    errdefer clear(alloc);
 
     records = try alloc.alloc(PlayerRecord, cap);
     json_records = try alloc.alloc(JsonRecord, cap);
@@ -108,9 +96,13 @@ pub fn deinit() void {
     defer mutex.unlock(save_io);
 
     flush_now_locked();
-    owning_alloc.free(records);
-    owning_alloc.free(json_records);
-    owning_alloc.free(json_scratch);
+    clear(owning_alloc);
+}
+
+fn clear(alloc: std.mem.Allocator) void {
+    if (records.len > 0) alloc.free(records);
+    if (json_records.len > 0) alloc.free(json_records);
+    if (json_scratch.len > 0) alloc.free(json_scratch);
     records = &.{};
     json_records = &.{};
     json_scratch = &.{};

@@ -126,7 +126,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
     cycle_row(
         ui,
         opt,
-        .{ .id = .vsync, .label = "VSync", .field = .vsync, .enabled = Options.vsync_toggle_supported() },
+        .{ .id = .vsync, .label = "VSync", .field = .vsync },
         .{ .id = .rain, .label = "Rain", .field = .rain },
     );
 

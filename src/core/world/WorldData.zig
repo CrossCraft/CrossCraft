@@ -1,5 +1,3 @@
-// --- WorldData ---
-
 const std = @import("std");
 const wd = @import("../world_dims.zig");
 const b = @import("../blocks.zig");
@@ -11,7 +9,7 @@ pub const WorldDims = wd.WorldDims;
 const WorldData = @This();
 
 backing_allocator: std.mem.Allocator,
-raw_blocks: []u8,
+access_lock: std.Io.RwLock,
 blocks: []Block,
 dims: WorldDims,
 seed: u64,
@@ -41,7 +39,7 @@ const default_name = "world";
 pub fn init_in_place(self: *WorldData, allocator: std.mem.Allocator, geometry: WorldDims, new_seed: u64) !void {
     self.* = .{
         .backing_allocator = allocator,
-        .raw_blocks = &.{},
+        .access_lock = .init,
         .blocks = &.{},
         .dims = geometry,
         .seed = new_seed,
@@ -55,8 +53,8 @@ pub fn init_in_place(self: *WorldData, allocator: std.mem.Allocator, geometry: W
         .chunk_non_opaque = &.{},
     };
 
-    self.raw_blocks = try allocator.alloc(u8, geometry.volume());
-    errdefer allocator.free(self.raw_blocks);
+    self.blocks = try allocator.alloc(Block, geometry.volume());
+    errdefer allocator.free(self.blocks);
     self.light_map = try allocator.alloc(u8, geometry.length * geometry.depth);
     errdefer allocator.free(self.light_map);
     self.chunk_counts = try allocator.alloc(u16, geometry.chunk_count());
@@ -64,8 +62,7 @@ pub fn init_in_place(self: *WorldData, allocator: std.mem.Allocator, geometry: W
     self.chunk_non_opaque = try allocator.alloc(u16, geometry.chunk_count());
     errdefer allocator.free(self.chunk_non_opaque);
 
-    self.blocks = @ptrCast(self.raw_blocks);
-    @memset(self.raw_blocks, 0x00);
+    @memset(self.blocks, .air);
     @memset(self.light_map, 0);
     @memset(self.chunk_counts, 0);
     @memset(self.chunk_non_opaque, 0);
@@ -87,26 +84,40 @@ pub fn stamp_creation_metadata(self: *WorldData, io: std.Io) void {
 
 pub fn deinit(self: *WorldData) void {
     const allocator = self.backing_allocator;
-    if (self.raw_blocks.len > 0) allocator.free(self.raw_blocks);
+    if (self.blocks.len > 0) allocator.free(self.blocks);
     if (self.light_map.len > 0) allocator.free(self.light_map);
     if (self.chunk_counts.len > 0) allocator.free(self.chunk_counts);
     if (self.chunk_non_opaque.len > 0) allocator.free(self.chunk_non_opaque);
     self.* = undefined;
 }
 
+pub fn lock(self: *WorldData, io: std.Io) void {
+    self.access_lock.lockUncancelable(io);
+}
+
+pub fn unlock(self: *WorldData, io: std.Io) void {
+    self.access_lock.unlock(io);
+}
+
+pub fn lock_shared(self: *WorldData, io: std.Io) void {
+    self.access_lock.lockSharedUncancelable(io);
+}
+
+pub fn unlock_shared(self: *WorldData, io: std.Io) void {
+    self.access_lock.unlockShared(io);
+}
+
 /// Free the block storage. Used on the generate path, where the generator
 /// returns its own full-volume buffer that is adopted afterwards.
 pub fn release_blocks(self: *WorldData) void {
-    if (self.raw_blocks.len == 0) return;
-    self.backing_allocator.free(self.raw_blocks);
-    self.raw_blocks = &.{};
+    if (self.blocks.len == 0) return;
+    self.backing_allocator.free(self.blocks);
     self.blocks = &.{};
 }
 
 /// Take ownership of a full-volume block buffer.
 pub fn adopt_blocks(self: *WorldData, blocks: []u8) void {
     assert(blocks.len == self.dims.volume());
-    self.raw_blocks = blocks;
     self.blocks = @ptrCast(blocks);
 }
 
@@ -128,14 +139,6 @@ pub fn get_chunk_row(self: *const WorldData, x: u16, y: u16, z: u16) *const [wd.
     assert(x % wd.chunk_size == 0);
     const base = self.get_index(x, y, z);
     return self.blocks[base..][0..wd.chunk_size];
-}
-
-/// Pointer to an entire 16x16x16 chunk (4 KiB). Index within the chunk
-/// with `(ly * chunk_size + lz) * chunk_size + lx` -- the same 4-op
-/// arithmetic as the old contiguous formula.
-pub fn get_chunk_ptr(self: *const WorldData, chunk_cx: u32, chunk_cy: u32, chunk_cz: u32) *const [wd.chunk_volume]Block {
-    const ci = self.dims.chunk_at(chunk_cx, chunk_cy, chunk_cz);
-    return self.blocks[ci * wd.chunk_volume ..][0..wd.chunk_volume];
 }
 
 pub fn is_chunk_all_air(self: *const WorldData, cx: u32, cy: u32, cz: u32) bool {
@@ -227,7 +230,6 @@ fn update_height_column(self: *WorldData, x: u16, y: u16, z: u16, block: Block) 
         const new_h: u8 = @intCast(y + 1);
         if (new_h > cur) self.light_map[col_idx] = new_h;
     } else if (y + 1 >= cur) {
-        // Removed the top blocker; rescan
         self.light_map[col_idx] = self.column_height(x, z);
     }
 }
@@ -240,15 +242,6 @@ pub fn is_sunlit(self: *const WorldData, x: u16, y: u16, z: u16) bool {
 /// True when sunlight cannot pass through this block type.
 pub fn blocks_light(block: Block) bool {
     return !block.light_passes();
-}
-
-pub fn has_direct_sunlight(self: *const WorldData, x: u16, y: u16, z: u16) bool {
-    var check_y: u32 = y + 1;
-    while (check_y < self.dims.height) : (check_y += 1) {
-        const blk = self.get_block(x, @intCast(check_y), z);
-        if (!blk.light_passes()) return false;
-    }
-    return true;
 }
 
 pub fn find_spawn(self: *const WorldData, io: std.Io) [3]u16 {
@@ -294,26 +287,25 @@ pub fn find_spawn(self: *const WorldData, io: std.Io) [3]u16 {
     };
 }
 
-/// Write all blocks in contiguous YZX wire order from chunk-aware memory.
-/// Within each (y,z) row, the chunk_size x-values per chunk are contiguous in
-/// the chunk-aware layout, so each inner iteration is a 16-byte slice copy.
-/// Used by the network LevelDataChunk path. The save format owns its own
-/// traversal in classic_dat.zig; this stays public for the wire path.
-pub fn write_blocks_yzx(self: *const WorldData, writer: *std.Io.Writer) !void {
-    for (0..self.dims.height) |yi| {
-        for (0..self.dims.depth) |zi| {
-            for (0..self.dims.chunks_x) |cxi| {
-                const base = self.dims.block_index(@intCast(cxi * wd.chunk_size), @intCast(yi), @intCast(zi));
-                const slice: *const [wd.chunk_size]u8 = @ptrCast(self.blocks[base..][0..wd.chunk_size]);
-                try writer.writeAll(slice);
-            }
+/// Stream a race-free progressive capture in YZX order. Each band is copied
+/// under the shared lock, which is released before compression or file I/O.
+pub fn write_blocks_yzx(self: *WorldData, io: std.Io, writer: *std.Io.Writer) !void {
+    var band_storage: [wd.max_length * wd.chunk_size]u8 = undefined;
+    const band = band_storage[0..self.dims.band_len()];
+
+    for (0..self.dims.height) |y| {
+        var z: u32 = 0;
+        while (z < self.dims.depth) : (z += wd.chunk_size) {
+            self.lock_shared(io);
+            self.copy_blocks_yzx_band(@intCast(y), @intCast(z), band);
+            self.unlock_shared(io);
+            try writer.writeAll(band);
         }
     }
 }
 
 /// Copy one wire-contiguous YZX band: all X values for chunk_size adjacent Z
-/// rows at one Y level. The dedicated server holds its shared world lock only
-/// for this 4 KiB copy, then compresses the band without blocking mutations.
+/// rows at one Y level. This bounds shared-lock hold time to a short memcpy.
 pub fn copy_blocks_yzx_band(
     self: *const WorldData,
     y: u16,
@@ -337,13 +329,16 @@ pub fn copy_blocks_yzx_band(
     }
 }
 
-/// Read contiguous YZX wire-order data and scatter into chunk-aware positions.
 pub fn read_blocks_yzx(self: *WorldData, reader: *std.Io.Reader) !void {
-    for (0..self.dims.height) |yi| {
-        for (0..self.dims.depth) |zi| {
-            for (0..self.dims.chunks_x) |cxi| {
-                const base = self.dims.block_index(@intCast(cxi * wd.chunk_size), @intCast(yi), @intCast(zi));
-                const slice: *[wd.chunk_size]u8 = @ptrCast(self.blocks[base..][0..wd.chunk_size]);
+    return read_blocks_yzx_into(self.dims, self.blocks, reader);
+}
+
+pub fn read_blocks_yzx_into(dims: WorldDims, blocks: []Block, reader: *std.Io.Reader) !void {
+    for (0..dims.height) |yi| {
+        for (0..dims.depth) |zi| {
+            for (0..dims.chunks_x) |cxi| {
+                const base = dims.block_index(@intCast(cxi * wd.chunk_size), @intCast(yi), @intCast(zi));
+                const slice: *[wd.chunk_size]u8 = @ptrCast(blocks[base..][0..wd.chunk_size]);
                 try reader.readSliceAll(slice);
             }
         }
@@ -464,4 +459,76 @@ test "copy_blocks_yzx_band preserves wire row order" {
             try std.testing.expectEqual(expected, band[z_offset * data.dims.length + x]);
         }
     }
+}
+
+test "write_blocks_yzx releases the lock before writing each band" {
+    const io = std.testing.io;
+    var data: WorldData = undefined;
+    try data.init_in_place(std.testing.allocator, wd.from_presets(.tiny, .normal), 1);
+    defer data.deinit();
+
+    const ProbeWriter = struct {
+        interface: std.Io.Writer,
+        world: *WorldData,
+        calls: usize = 0,
+        valid_bands: bool = true,
+        first_bytes: [2]u8 = @splat(0),
+
+        fn init(world: *WorldData) @This() {
+            return .{
+                .interface = .{
+                    .vtable = &.{ .drain = drain },
+                    .buffer = &.{},
+                },
+                .world = world,
+            };
+        }
+
+        fn drain(writer: *std.Io.Writer, chunks: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+            const self: *@This() = @alignCast(@fieldParentPtr("interface", writer));
+            if (chunks.len != 1 or splat != 1 or chunks[0].len != self.world.dims.band_len()) {
+                self.valid_bands = false;
+            }
+            if (self.calls < self.first_bytes.len and chunks.len > 0 and chunks[0].len > 0) {
+                self.first_bytes[self.calls] = chunks[0][0];
+            }
+
+            if (!self.world.access_lock.tryLock(io)) return error.WriteFailed;
+            defer self.world.access_lock.unlock(io);
+            if (self.calls == 0) {
+                self.world.blocks[self.world.get_index(0, 0, wd.chunk_size)] = .stone;
+            }
+
+            self.calls += 1;
+            return writer.consume(writer.end + std.Io.Writer.countSplat(chunks, splat));
+        }
+    };
+
+    var probe = ProbeWriter.init(&data);
+    try data.write_blocks_yzx(io, &probe.interface);
+
+    try std.testing.expect(probe.valid_bands);
+    try std.testing.expectEqual(@as(usize, data.dims.height * data.dims.chunks_z), probe.calls);
+    try std.testing.expectEqual(@intFromEnum(Block.air), probe.first_bytes[0]);
+    try std.testing.expectEqual(@intFromEnum(Block.stone), probe.first_bytes[1]);
+}
+
+test "apply_block maintains the sunlight column" {
+    var data: WorldData = undefined;
+    try data.init_in_place(std.testing.allocator, wd.default, 1);
+    defer data.deinit();
+    data.compute_chunk_counts();
+    data.compute_light_map();
+
+    try std.testing.expect(data.is_sunlit(10, 10, 10));
+    data.apply_block(10, 20, 10, .stone);
+    try std.testing.expect(!data.is_sunlit(10, 19, 10));
+    try std.testing.expect(data.is_sunlit(10, 20, 10));
+
+    data.apply_block(10, 5, 10, .stone);
+    data.apply_block(10, 20, 10, .air);
+    try std.testing.expect(!data.is_sunlit(10, 4, 10));
+    try std.testing.expect(data.is_sunlit(10, 5, 10));
+    data.apply_block(10, 5, 10, .air);
+    try std.testing.expect(data.is_sunlit(10, 4, 10));
 }

@@ -17,14 +17,11 @@ const log = std.log.scoped(.options);
 const options_file = "options.json";
 const json_format_version: u8 = 2;
 const max_pack_path: usize = 256;
-/// Generous upper bound for the JSON file (typical size ~300 bytes).
 const max_json_size: usize = 4096;
 
 pub const SENS_MIN: f32 = 0.1;
 pub const SENS_MAX: f32 = 10.0;
 
-/// Live singleton.  Any system may read `Options.current`; only `load` and
-/// the settings UI should write it.
 pub var current: Options = .{};
 
 /// In-game controller prompt style.  PSP and Nintendo consoles only support
@@ -76,13 +73,10 @@ pub const Options = struct {
     else
         8,
 
-    /// SFX volume multiplier (0.0 = silent, 1.0 = full).
     sound_volume: f32 = 1.0,
 
-    /// Music volume multiplier (0.0 = silent, 1.0 = full).
     music_volume: f32 = 0.5,
 
-    /// Vertical field of view in degrees.
     fov: f32 = 70.0,
 
     /// True = full leaf transparency (fancy); false = opaque leaves (fast).
@@ -90,10 +84,8 @@ pub const Options = struct {
     /// `lod_near_radius_blocks == 0` cannot render fancy leaves at all.
     fancy_leaves: bool = @import("aether").platform != .psp,
 
-    /// Mouse / analogue-stick look sensitivity multiplier.
     sensitivity: f32 = 3.0,
 
-    /// Smooth ambient occlusion on block faces.
     ambient_occlusion: bool = false,
 
     /// Newly-meshed chunk sections rise from -16 blocks over 1 second.
@@ -111,21 +103,18 @@ pub const Options = struct {
     /// PSP / Nintendo consoles.
     controller_tooltips: ControllerTooltips = .auto,
 
-    /// Weather: rain on/off.  Defaults off on every platform.
     rain: bool = false,
 
     /// Distance fog for world geometry.  The sky renderer keeps its own fog
     /// enabled so the horizon retains the intended look when this is off.
     fog: bool = true,
 
-    /// Desktop keyboard controls. Gamepad bindings remain fixed.
     key_forward: input.Key = .W,
     key_back: input.Key = .S,
     key_left: input.Key = .A,
     key_right: input.Key = .D,
     key_inventory: input.Key = .B,
 
-    /// PSP compact control swaps.
     psp_analog_mode: PspAnalogMode = .look,
     psp_jump_mode: PspJumpMode = .up,
 
@@ -134,12 +123,10 @@ pub const Options = struct {
     /// other platforms.
     new_3ds_use_old_controls: bool = false,
 
-    /// Returns the active texture pack path as a slice (may be empty).
     pub fn active_texturepack(self: *const Options) []const u8 {
         return self.active_texturepack_buf[0..self.active_texturepack_len];
     }
 
-    /// Stores `path` in the fixed buffer, truncating silently if needed.
     pub fn set_active_texturepack(self: *Options, path: []const u8) void {
         const len: u8 = @intCast(@min(path.len, max_pack_path - 1));
         @memcpy(self.active_texturepack_buf[0..len], path[0..len]);
@@ -204,15 +191,6 @@ pub fn capped_render_distance() u8 {
 /// helper centralises the detection so the UI and load path agree.
 pub fn fancy_leaves_supported() bool {
     return cfg.current().lod_near_radius_blocks > 0;
-}
-
-/// True when VSync can be changed by the options UI.
-pub fn vsync_toggle_supported() bool {
-    return true;
-}
-
-pub fn effective_vsync(vsync: bool) bool {
-    return if (vsync_toggle_supported()) vsync else true;
 }
 
 /// True when the platform has one built-in controller glyph family.
@@ -365,7 +343,6 @@ pub fn sensitivity_from_percent(percent: u32) f32 {
     return std.math.pow(f32, 10.0, lmin + (lmax - lmin) * pct);
 }
 
-// --- JSON shadow types ---
 // Field names match the JSON keys.  `active_texturepack` is a `[]const u8`
 // so the JSON parser can allocate it into the per-call arena; the caller
 // copies the value into the fixed buffer before the arena is freed.
@@ -463,8 +440,6 @@ const SaveJsonOptions = struct {
     new_3ds_use_old_controls: bool,
 };
 
-// --- public API ---
-
 /// Load options from `options.json` in `dir`.  Falls back to defaults when
 /// the file does not exist or cannot be parsed.
 pub fn load(io: Io, dir: std.Io.Dir) void {
@@ -480,8 +455,6 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
     };
     if (n == 0) return;
 
-    // A tiny stack arena for the JSON parser.  The heap allocations it makes
-    // for JsonOptions are the small string fields.
     var arena_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&arena_buf);
     const parsed = std.json.parseFromSlice(
@@ -518,7 +491,7 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
         json_float_f32(j.sensitivity orelse .{ .value = 3.0 }, SENS_MIN, 20.0);
     current.ambient_occlusion = j.ambient_occlusion;
     current.bouncy_chunks = j.bouncy_chunks;
-    current.vsync = effective_vsync(j.vsync);
+    current.vsync = j.vsync;
     current.controller_tooltips = blk: {
         const mode: ControllerTooltips = switch (j.controller_tooltips) {
             0 => .auto,
@@ -563,7 +536,7 @@ pub fn save(io: Io, dir: std.Io.Dir) void {
         .sensitivity = @intCast(sensitivity_percent(current.sensitivity)),
         .ambient_occlusion = current.ambient_occlusion,
         .bouncy_chunks = current.bouncy_chunks,
-        .vsync = effective_vsync(current.vsync),
+        .vsync = current.vsync,
         .controller_tooltips = @intFromEnum(current.controller_tooltips),
         .rain = current.rain,
         .fog = current.fog,

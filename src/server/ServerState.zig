@@ -18,7 +18,6 @@ const Commands = core.Commands;
 const outbound_queue = core.OutboundQueue;
 
 const log = std.log.scoped(.server);
-const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
 
 const SERVER_PORT: u16 = 25565;
 const HEARTBEAT_INTERVAL_MS: i64 = 45_000;
@@ -68,12 +67,6 @@ const ConnectionSlot = struct {
 var global_engine: ?*Engine = null;
 var global_listener: ?*std.Io.net.Server = null;
 
-// --- Admin console ---
-//
-// Stdout carries chat broadcasts and command replies; server logging
-// stays on stderr/aether.log so the two streams remain separate. PSPLink
-// surfaces both streams on the developer host, so no platform gates are
-// needed here.
 var stdout_buf: [512]u8 = undefined;
 var stdout_writer: std.Io.File.Writer = undefined;
 var stdout_iface: ?*std.Io.Writer = null;
@@ -119,8 +112,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             .world = .{ .seed = seed, .save_location = Server.default_save_location },
         },
     };
-    // Validate the save before the world materialises; a missing or corrupt
-    // primary is transparently replaced with the newest valid epoch backup.
     Backup.pre_init_validate_and_restore(engine.io, engine.dirs.data, alloc);
     try Server.init(alloc, alloc, engine.io, engine.dirs.data, config);
 
@@ -143,9 +134,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     // per-task IO stacks.
     self.compressor_thread = try CompressorThread.spawn(alloc);
 
-    // Backup owns the save cadence on the standalone server: it triggers a
-    // world save every `backup-autosave-seconds` and snapshots each
-    // completed save into the epoch buckets.
     self.backup = Backup.init(engine.io, engine.dirs.data);
     self.tasks.concurrent(engine.io, Backup.loop, .{ &self.backup, engine }) catch |err| {
         log.err("Failed to start backup task: {}", .{err});
@@ -168,14 +156,11 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     log.info("Starting server on port {d}", .{SERVER_PORT});
 
     const server_ip = try std.Io.net.IpAddress.parseIp4("0.0.0.0", SERVER_PORT);
-    // SO_REUSEADDR so a fresh server can rebind immediately after a client
-    // disconnects - otherwise the listening socket sits in TIME_WAIT for
-    // up to a minute and the next `zig build run-server` hits AddressInUse.
+    // Allow quick restarts while accepted sockets are still winding down.
     self.listener = try server_ip.listen(engine.io, .{ .reuse_address = true });
     global_listener = &self.listener;
 
-    // Publish console state before any connection task can broadcast chat.
-    const stdout_file = platform_stdout();
+    const stdout_file = std.Io.File.stdout();
     stdout_writer = stdout_file.writer(engine.io, &stdout_buf);
     stdout_iface = &stdout_writer.interface;
     Server.on_broadcast_chat = stdout_chat_hook;
@@ -189,24 +174,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     }
 
     self.tasks.concurrent(engine.io, console_loop, .{ self, engine }) catch unreachable;
-}
-
-// Standard library exposes std.Io.File.stdin/stdout via posix.STD*_FILENO,
-// which the PSP target doesn't define. The pspsdk routes those through
-// SceUID handles instead, and the engine's io vtable already speaks that
-// dialect, so wrapping them in a File here works on both targets.
-fn platform_stdin() std.Io.File {
-    if (comptime ae.platform == .psp) {
-        return .{ .handle = sdk.io.stdin(), .flags = .{ .nonblocking = false } };
-    }
-    return std.Io.File.stdin();
-}
-
-fn platform_stdout() std.Io.File {
-    if (comptime ae.platform == .psp) {
-        return .{ .handle = sdk.io.stdout(), .flags = .{ .nonblocking = false } };
-    }
-    return std.Io.File.stdout();
 }
 
 fn stdout_chat_hook(line: []const u8) void {
@@ -225,18 +192,24 @@ fn write_stripped_line(line: []const u8) void {
     const engine = global_engine orelse return;
     stdout_mutex.lockUncancelable(engine.io);
     defer stdout_mutex.unlock(engine.io);
+    write_without_color_codes(w, line) catch return;
+    w.writeAll("\n") catch return;
+    w.flush() catch return;
+}
+
+fn write_without_color_codes(writer: *std.Io.Writer, line: []const u8) std.Io.Writer.Error!void {
+    var start: usize = 0;
     var i: usize = 0;
     while (i < line.len) {
         if (line[i] == '&' and i + 1 < line.len and is_color_code(line[i + 1])) {
+            try writer.writeAll(line[start..i]);
             i += 2;
-            continue;
+            start = i;
+        } else {
+            i += 1;
         }
-        const next_amp = std.mem.indexOfScalarPos(u8, line, i, '&') orelse line.len;
-        w.writeAll(line[i..next_amp]) catch return;
-        i = next_amp;
     }
-    w.writeAll("\n") catch return;
-    w.flush() catch return;
+    try writer.writeAll(line[start..]);
 }
 
 fn is_color_code(c: u8) bool {
@@ -607,10 +580,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.tasks.cancel(engine.io);
     log.info("Shutting down server...", .{});
 
-    // The backup task is dead above; its state holds no owned handles (the
-    // save dir is borrowed from the core module, buckets open per op).
-    self.backup.deinit();
-
     self.connections_mutex.lockUncancelable(engine.io);
     for (self.connection_pool) |*slot| {
         if (slot.state != .free) self.release_slot_locked(slot, engine);
@@ -661,11 +630,6 @@ fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
         }
         log.info("Client connected: {}", .{conn.socket.address});
 
-        if (builtin.os.tag == .psp) {
-            sdk.extra.net.disableNagle(@intCast(conn.socket.handle)) catch |err|
-                log.warn("TCP_NODELAY failed: {}", .{err});
-        }
-
         // Canonicalise the peer IP and look up durable policy. This is a
         // snapshot-only check: accepting a TCP connection never creates a
         // recent-player record or writes players.json.
@@ -713,7 +677,7 @@ fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
 }
 
 fn console_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
-    const stdin_file = platform_stdin();
+    const stdin_file = std.Io.File.stdin();
     var reader_scratch: [512]u8 = undefined;
     var file_reader = stdin_file.reader(engine.io, &reader_scratch);
     const r = &file_reader.interface;
@@ -723,12 +687,10 @@ fn console_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
             error.EndOfStream => return,
             error.ReadFailed => return,
             error.StreamTooLong => {
-                // Discard the over-long line and keep going.
                 r.toss(r.bufferedLen());
                 continue;
             },
         };
-        // Skip past the newline so the next take() starts on fresh input.
         r.toss(1);
 
         const line = std.mem.trimEnd(u8, raw, " \t\r");
@@ -738,8 +700,6 @@ fn console_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
             const sink: Commands.Sink = .{ .ctx = self, .write_fn = stdout_console_write };
             Commands.dispatch(sink, line[1..], true);
         } else {
-            // Server chat: prefix and broadcast. The broadcast hook will
-            // also echo to stdout, so no need to print locally first.
             var msg_buf: core.protocol.Message = @splat(' ');
             const prefix = "&4[Server]: ";
             const n_pre = @min(prefix.len, msg_buf.len);
@@ -753,31 +713,7 @@ fn console_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
 }
 
 fn install_signal_handlers() void {
-    if (comptime builtin.os.tag == .psp) {
-        const kernel = sdk.kernel;
-
-        const exit_cb = struct {
-            fn cb(_: c_int, _: c_int, _: ?*anyopaque) callconv(.c) c_int {
-                if (global_engine) |e| e.quit();
-                return 0;
-            }
-        }.cb;
-
-        const cb_thread = struct {
-            fn entry(_: usize, _: ?*anyopaque) callconv(.c) c_int {
-                const cbid = kernel.create_callback("server_exit_cb", exit_cb, null) catch
-                    @panic("Could not create exit callback!");
-                kernel.register_exit_callback(cbid) catch
-                    @panic("Could not register exit callback!");
-                kernel.sleep_thread_cb() catch {};
-                return 0;
-            }
-        }.entry;
-
-        const tid = kernel.create_thread("server_exit_thread", cb_thread, 0x11, 0xFA0, .{ .user = true }, null) catch
-            @panic("Could not create exit callback thread!");
-        kernel.start_thread(tid, 0, null) catch {};
-    } else if (comptime builtin.os.tag == .windows) {
+    if (comptime builtin.os.tag == .windows) {
         const windows = std.os.windows;
         const ws2_shutdown = struct {
             extern "ws2_32" fn shutdown(s: *anyopaque, how: c_int) callconv(.winapi) c_int;
@@ -804,7 +740,7 @@ fn install_signal_handlers() void {
                 if (global_engine) |e| e.quit();
                 // Shutdown the listener socket to unblock accept().
                 if (global_listener) |l| {
-                    _ = std.os.linux.shutdown(l.socket.handle, 2);
+                    _ = std.posix.system.shutdown(l.socket.handle, 2);
                 }
             }
         }.handler;
@@ -816,5 +752,25 @@ fn install_signal_handlers() void {
         };
         std.posix.sigaction(std.posix.SIG.INT, &act, null);
         std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+    }
+}
+
+test "console color stripping preserves literal ampersands" {
+    const cases = [_]struct {
+        input: []const u8,
+        expected: []const u8,
+    }{
+        .{ .input = "plain", .expected = "plain" },
+        .{ .input = "&ehello&r", .expected = "hello" },
+        .{ .input = "A&B", .expected = "A&B" },
+        .{ .input = "trailing&", .expected = "trailing&" },
+        .{ .input = "&e&rtext", .expected = "text" },
+    };
+
+    for (cases) |case| {
+        var output: [64]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&output);
+        try write_without_color_codes(&writer, case.input);
+        try std.testing.expectEqualStrings(case.expected, writer.buffered());
     }
 }

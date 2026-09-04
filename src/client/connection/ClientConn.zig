@@ -99,11 +99,8 @@ pub fn drain_packets(self: *Self) void {
     while (self.try_process_packet()) {}
 }
 
-/// Blocking read loop: runs on an Io thread pool task for multiplayer
-/// (mirrors `src/server/main.zig:client_read_loop`). Reads one packet at
-/// a time and hands it to the protocol dispatcher; the callbacks mutate
-/// the shared World singleton and world renderer directly, the same way
-/// the server mutates its world from per-client read tasks.
+/// Blocking read loop for multiplayer. Reads one packet at a time and hands
+/// it to callbacks that update the shared world and renderer.
 ///
 /// Exits on `connected.* == false`, which the disconnect handler and any
 /// read/dispatch failure set so the game thread can observe the drop.
@@ -192,7 +189,9 @@ fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
     // wrote it to the shared World singleton, so this is a no-op echo there;
     // for real multiplayer it is the only path that updates the client world.
     const block: Block = @enumFromInt(event.block);
+    World.lock_world();
     World.set_block(event.x, event.y, event.z, block);
+    World.unlock_world();
     // Translate world block coords to (cx, sy, cz) section indices.
     const cx: u8 = @intCast(event.x >> 4);
     const cz: u8 = @intCast(event.z >> 4);

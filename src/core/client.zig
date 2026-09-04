@@ -300,7 +300,7 @@ pub fn init_remote_admitted(
     self.pose = .init(@bitCast(@as(u64, 0)));
 }
 
-fn read_packet(self: *Self, reader: *std.Io.Reader) !bool {
+fn read_packet(self: *Self, reader: *std.Io.Reader) !void {
     const packet_id = try reader.peekByte();
     const len = try proto.packet_length_to_server(packet_id);
 
@@ -308,7 +308,6 @@ fn read_packet(self: *Self, reader: *std.Io.Reader) !bool {
     @memcpy(self.buffer[0..len], buffer);
 
     reader.toss(len);
-    return true;
 }
 
 fn packet_allowed(phase: ConnectionPhase, packet_id: u8) bool {
@@ -345,8 +344,7 @@ fn process_packet(self: *Self, reader: *std.Io.Reader) !bool {
         return false;
     }
 
-    const received = try self.read_packet(reader);
-    if (!received) return false;
+    try self.read_packet(reader);
 
     try self.protocol.handle_packet(self.buffer[1..], self.buffer[0]);
     return true;
@@ -385,7 +383,7 @@ pub fn kick_slow(self: *Self) void {
 /// Write all queued outbound bytes to the socket. Runs only on the client's
 /// own connection thread, so a stuck peer blocks nobody else. The queue
 /// mutex is released before each socket write.
-fn drainOutbound(self: *Self) void {
+fn drain_outbound(self: *Self) void {
     const q = self.out orelse return;
     var buf: [drain_buf_bytes]u8 = undefined;
     var wrote_any = false;
@@ -441,8 +439,7 @@ pub fn send_player_position(self: *Self, id: i8, x: u16, y: u16, z: u16, yaw: u8
     try self.send_packet(proto.send_position_to_client, .{ id, x, y, z, yaw, pitch });
 }
 
-pub fn send_spawn(ctx: *Self, packet: *zb.SpawnPlayer) !void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
+pub fn send_spawn(self: *Self, packet: *zb.SpawnPlayer) !void {
     try self.send_packet(proto.send_spawn_to_client, .{packet});
 }
 
@@ -460,7 +457,7 @@ pub fn send_update_player_type(self: *Self, is_op: bool) !void {
 
 fn send_world(self: *Self) !void {
     try self.send_packet(proto.send_level_initialize_to_client, .{});
-    self.drainOutbound();
+    self.drain_outbound();
 
     if (self.local) {
         // Local client reads World.blocks directly - no chunks needed.
@@ -479,8 +476,8 @@ fn send_world(self: *Self) !void {
     // The worker streams chunks into the outbound queue; keep draining so a
     // slow peer stalls only this thread, never the compressor.
     var canceled = false;
-    while (!job.base.done.load(.acquire)) {
-        self.drainOutbound();
+    while (!job.base.is_done()) {
+        self.drain_outbound();
         if (canceled) {
             std.atomic.spinLoopHint();
         } else {
@@ -495,7 +492,7 @@ fn send_world(self: *Self) !void {
             };
         }
     }
-    self.drainOutbound();
+    self.drain_outbound();
     if (canceled) return error.Canceled;
     if (job.base.err) |e| return e;
 }
@@ -510,7 +507,7 @@ fn send_world_impl(self: *Self) !void {
 
     const out = self.out orelse return error.WriteFailed;
     const dims = world.data.dims;
-    const volume: usize = dims.volume();
+    const volume = dims.volume();
     var sender = ChunkSender.init(out, &chunk_buf, @intCast(volume + 4));
     try compress_worker.reset(&sender.interface);
 
@@ -591,7 +588,7 @@ pub fn handshake(self: *Self) !void {
     };
     self.store_pose(.{ .x = initial_spawn.x, .y = initial_spawn.y, .z = initial_spawn.z, .yaw = 0, .pitch = 0 });
     try self.send_packet(proto.send_spawn_to_client, .{&initial_spawn});
-    self.drainOutbound();
+    self.drain_outbound();
 
     // Send existing players to the new joiner before broadcasting the new joiner to others.
     Server.lock_roster_shared();
@@ -614,7 +611,7 @@ pub fn handshake(self: *Self) !void {
                 .pitch = pose.pitch,
             };
             try self.send_packet(proto.send_spawn_to_client, .{&player_spawn});
-            self.drainOutbound();
+            self.drain_outbound();
         }
     }
     Server.unlock_roster_shared();
@@ -625,7 +622,7 @@ pub fn handshake(self: *Self) !void {
 
     const own_pose = self.load_pose();
     try self.send_packet(proto.send_position_to_client, .{ -1, own_pose.x, own_pose.y, own_pose.z, 0, 0 });
-    self.drainOutbound();
+    self.drain_outbound();
 
     // Skip welcome + join-broadcast chat in singleplayer: the lone local
     // player would just be seeing themselves "join" their own world.
@@ -634,13 +631,13 @@ pub fn handshake(self: *Self) !void {
         std.mem.copyForwards(u8, &msg_buf, "&eWelcome to the world!");
 
         try self.send_message(self.id, &msg_buf);
-        self.drainOutbound();
+        self.drain_outbound();
 
         msg_buf = @splat(' ');
         _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
 
         Server.broadcast_chat_message(self.id, &msg_buf);
-        self.drainOutbound();
+        self.drain_outbound();
     }
 }
 
@@ -712,14 +709,14 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
 }
 
 fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void {
-    const self: *Self = ctx_to_client(ctx);
+    const self = ctx_to_client(ctx);
     if (!require_active(self)) return;
 
     self.store_pose(.{ .x = e.x, .y = e.y, .z = e.z, .yaw = e.yaw, .pitch = e.pitch });
 }
 
 fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
+    const self = ctx_to_client(ctx);
     if (!require_active(self)) return;
 
     // Strip the trailing space-padding the wire format mandates so
@@ -767,7 +764,7 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
 }
 
 fn slash_sink_write(ctx: *anyopaque, line: []const u8) void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
+    const self = ctx_to_client(ctx);
     var msg_buf: Message = @splat(' ');
     const n = @min(line.len, msg_buf.len);
     @memcpy(msg_buf[0..n], line[0..n]);
@@ -848,7 +845,7 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     world.enqueue_neighbors_of(event.x, event.y, event.z);
 
     if (mode == .create and block == .sponge) {
-        world.sponge_absorb(Server.immediate_block_change_sink, event.x, event.y, event.z);
+        world.sponge_absorb(Server.block_change_sink, event.x, event.y, event.z);
     }
     if (mode == .destroy and old_block == .sponge) {
         world.sponge_release(event.x, event.y, event.z);
@@ -906,7 +903,7 @@ pub fn read_loop(self: *Self) void {
     var in_len: usize = prefetched_len;
 
     while (self.is_connected()) {
-        self.drainOutbound();
+        self.drain_outbound();
         if (self.transport.?.load(.acquire) == .closing) {
             self.mark_closed();
             stream.shutdown(Server.io, .both) catch {};
@@ -940,7 +937,7 @@ pub fn read_loop(self: *Self) void {
                 },
             };
             if (!processed) {
-                self.drainOutbound();
+                self.drain_outbound();
                 self.mark_closed();
                 stream.shutdown(Server.io, .both) catch {};
                 return;

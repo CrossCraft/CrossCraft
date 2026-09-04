@@ -1,4 +1,4 @@
-// --- world.zig -- process-wide world state ---
+// Process-wide world state.
 //
 // CrossCraft has exactly one world per process: the standalone server,
 // the embedded singleplayer server, and the multiplayer client all
@@ -25,10 +25,7 @@ pub const DumpName = @import("world/DumpName.zig");
 pub const CreateName = @import("world/CreateName.zig");
 const fmt_mod = @import("world/SaveFormat.zig");
 pub const SaveFormat = fmt_mod.SaveFormat;
-pub const LoadOutcome = fmt_mod.LoadOutcome;
-pub const ClassicDat = fmt_mod.ClassicDat;
-pub const BlockChange = WorldSimulation.BlockChange;
-pub const BlockChangeSink = WorldSimulation.BlockChangeSink;
+const BlockChangeSink = WorldSimulation.BlockChangeSink;
 
 const Block = blocks.Block;
 const log = std.log.scoped(.world);
@@ -53,6 +50,22 @@ pub var data: WorldData = undefined;
 pub var sim: WorldSimulation = undefined;
 pub var saver: WorldSaver = undefined;
 var load_status_atomic: std.atomic.Value(u16) = .init(load_status_loading);
+
+pub fn lock_world() void {
+    data.lock(saver.io);
+}
+
+pub fn unlock_world() void {
+    data.unlock(saver.io);
+}
+
+pub fn lock_world_shared() void {
+    data.lock_shared(saver.io);
+}
+
+pub fn unlock_world_shared() void {
+    data.unlock_shared(saver.io);
+}
 
 pub fn get_load_status() LoadStatus {
     return decode_load_status(load_status_atomic.load(.acquire));
@@ -80,8 +93,6 @@ fn decode_load_status(encoded: u16) LoadStatus {
     return .loading;
 }
 
-// --- Lifecycle ---
-
 /// Allocate scheduler + block storage without populating block data.
 /// Used both by the full singleplayer init (which then generates or
 /// loads and flips `saver.owned_locally` to true) and by the multiplayer
@@ -97,7 +108,6 @@ pub fn init_empty(
     seed: u64,
     format: SaveFormat,
 ) !void {
-    blocks.init();
     try data.init_in_place(allocator, geometry, seed);
     errdefer data.deinit();
     sim = try WorldSimulation.init(allocator, seed);
@@ -134,16 +144,9 @@ pub fn init(
     }
 
     try init_empty(allocator, io, save_dir, save_file_name, load_geometry, seed, format);
-    var initialized_empty = true;
-    errdefer if (initialized_empty) {
-        const backing_allocator = data.backing_allocator;
-        sim.deinit(backing_allocator);
-        saver.deinit();
-        data.deinit();
-    };
+    errdefer deinit_components();
     saver.owned_locally = true;
 
-    // Let loadscreen catch up
     try io.sleep(.fromMilliseconds(250), .real);
 
     if (!saver.try_load(&data, scratch)) {
@@ -180,7 +183,6 @@ pub fn init(
         saver.save(&data);
     }
     finalize_loaded();
-    initialized_empty = false;
 }
 
 pub fn deinit() void {
@@ -188,17 +190,17 @@ pub fn deinit() void {
     saver.save(&data);
     saver.wait_for_save();
 
-    const allocator = data.backing_allocator;
-    sim.deinit(allocator);
-    saver.deinit();
-    data.deinit();
+    deinit_components();
 }
 
 pub fn deinit_after_init_error() void {
     saver.cancel_pending_before_compressor();
 
-    const allocator = data.backing_allocator;
-    sim.deinit(allocator);
+    deinit_components();
+}
+
+fn deinit_components() void {
+    sim.deinit(data.backing_allocator);
     saver.deinit();
     data.deinit();
 }
@@ -221,8 +223,6 @@ pub fn finalize_loaded() void {
     log.info("World seed: {d}", .{data.seed});
 }
 
-// --- Tick + simulation ---
-
 pub fn tick(sink: BlockChangeSink) u32 {
     return sim.tick(&data, sink);
 }
@@ -242,8 +242,6 @@ pub fn sponge_absorb(sink: BlockChangeSink, cx: u16, cy: u16, cz: u16) void {
 pub fn sponge_release(cx: u16, cy: u16, cz: u16) void {
     sim.sponge_release(&data, cx, cy, cz);
 }
-
-// --- Save ---
 
 pub fn save() void {
     saver.save(&data);
@@ -266,8 +264,6 @@ fn ensure_dump_dir() !void {
         };
     };
 }
-
-// --- Read-through helpers (shorthand for the most common drills) ---
 
 pub fn get_block(x: u16, y: u16, z: u16) Block {
     return data.get_block(x, y, z);

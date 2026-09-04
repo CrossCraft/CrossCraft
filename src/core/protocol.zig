@@ -6,8 +6,6 @@ const Writer = std.Io.Writer;
 
 pub const Message = @FieldType(zb.Message, "message");
 
-// --- Packet lengths ---
-
 pub fn packet_length_to_server(packet_id: u8) !u8 {
     return switch (packet_id) {
         0x00 => 131, // PlayerIDToServer
@@ -36,15 +34,10 @@ pub fn packet_length_to_client(packet_id: u8) !u16 {
     };
 }
 
-// --- Client -> Server (C->S) ---
-
 pub fn send_player_id_to_server(writer: *Writer, username: []const u8) !void {
-    var username_buf: [64]u8 = @splat(' ');
-    const len = @min(username.len, 64);
-    @memcpy(username_buf[0..len], username[0..len]);
     var packet = zb.PlayerIDToServer{
         .protocol_version = 0x07,
-        .username = username_buf,
+        .username = padded_string(username),
         .key = @splat(' '),
         .extension = 0,
     };
@@ -74,8 +67,6 @@ pub fn send_set_block_to_server(writer: *Writer, x: u16, y: u16, z: u16, mode: u
     try packet.write(writer);
 }
 
-// --- Server -> Client (S->C) ---
-
 pub fn send_player_id_to_client(writer: *Writer, server_name: *const [64]u8, server_motd: *const [64]u8, is_op: bool) !void {
     var packet = zb.PlayerIDToClient{
         .protocol_version = 0x07,
@@ -94,11 +85,8 @@ pub fn send_update_player_type_to_client(writer: *Writer, is_op: bool) !void {
 }
 
 pub fn send_disconnect_to_client(writer: *Writer, reason: []const u8) !void {
-    var reason_buf: [64]u8 = @splat(' ');
-    const len = @min(reason.len, 64);
-    @memcpy(reason_buf[0..len], reason[0..len]);
     var packet: zb.DisconnectPlayer = .{
-        .reason = reason_buf,
+        .reason = padded_string(reason),
     };
     try packet.write(writer);
     try writer.flush();
@@ -157,15 +145,17 @@ pub fn send_level_finalize_to_client(writer: *Writer, x: u16, y: u16, z: u16) !v
     try packet.write(writer);
 }
 
-// --- Bidirectional ---
-
 pub fn send_message(writer: *Writer, pid: i8, message: []const u8) !void {
-    var msg_buf: [64]u8 = @splat(' ');
-    const len = @min(message.len, 64);
-    @memcpy(msg_buf[0..len], message[0..len]);
     var packet = zb.Message{
         .pid = pid,
-        .message = msg_buf,
+        .message = padded_string(message),
     };
     try packet.write(writer);
+}
+
+fn padded_string(value: []const u8) [64]u8 {
+    var out: [64]u8 = @splat(' ');
+    const len = @min(value.len, out.len);
+    @memcpy(out[0..len], value[0..len]);
+    return out;
 }

@@ -1,5 +1,3 @@
-// --- WorldSimulation ---
-//
 // Block physics, fluid spread, vegetation growth, gravity. Owns the timer-
 // wheel scheduler, the dedup set, the RNG used for stochastic timing, and
 // a streaming change sink for server-visible updates.
@@ -64,7 +62,6 @@ pub const BlockChangeSink = struct {
 pub const MAX_BLOCK_CHANGES_PER_TICK: u32 = 2048;
 pub const MAX_DUE_UPDATES_PER_TICK: u32 = 2048;
 
-// --- Timer wheel ---
 // 1024 buckets (one per tick modulo WHEEL_SIZE). Each bucket is a circular
 // singly-linked list threaded through a pool of fixed-size nodes; its table
 // entry stores the tail index. Circular lists let a due bucket be appended to
@@ -92,7 +89,6 @@ pool_used: u32,
 pool_used_peak: u32,
 rng: std.Random.DefaultPrng,
 
-// --- Enqueue dedup (fixed-capacity flat set, linear scan) ---
 // At POOL_CAPACITY=8192 entries, a flat u32 array is 32 KiB and every op
 // fits in a single SIMD-friendly scan - faster and ~40x smaller than a
 // hashmap once the index table and load-factor padding are counted.
@@ -211,27 +207,25 @@ fn process_block_update(
             self.queue_block_change(data, sink, emitted, x, y, z, .air);
             self.queue_block_change(data, sink, emitted, x, y - 1, z, block);
         }
-    } else if (block == .dirt and data.has_direct_sunlight(x, y, z)) {
+    } else if (block == .dirt and data.is_sunlit(x, y, z)) {
         self.queue_block_change(data, sink, emitted, x, y, z, .grass);
-    } else if (block == .grass and !data.has_direct_sunlight(x, y, z)) {
+    } else if (block == .grass and !data.is_sunlit(x, y, z)) {
         self.queue_block_change(data, sink, emitted, x, y, z, .dirt);
-    } else if (block == .sapling and data.has_direct_sunlight(x, y, z)) {
+    } else if (block == .sapling and data.is_sunlit(x, y, z)) {
         const height: u32 = @intCast(self.rng.next() % 3 + 4);
         self.grow_tree(data, sink, emitted, x, y, z, height);
     } else if ((block == .sapling or block == .flower_1 or block == .flower_2) and
-        !data.has_direct_sunlight(x, y, z))
+        !data.is_sunlit(x, y, z))
     {
         self.queue_block_change(data, sink, emitted, x, y, z, .air);
     } else if ((block == .mushroom_1 or block == .mushroom_2) and
-        data.has_direct_sunlight(x, y, z))
+        data.is_sunlit(x, y, z))
     {
         self.queue_block_change(data, sink, emitted, x, y, z, .air);
     } else if (block.is_fluid()) {
         self.process_fluid(data, sink, emitted, x, y, z, block);
     }
 }
-
-// --- Timer wheel operations ---
 
 /// Push at the head of a circular list while retaining its tail index. This
 /// preserves the old wheel's newest-first order within a deadline bucket.
@@ -348,11 +342,11 @@ fn block_update_change_bound(data: *const WorldData, loc: Location) u32 {
 
     return switch (block) {
         .sand, .gravel => if (y > 0 and (data.get_block(x, y - 1, z).is_air() or data.get_block(x, y - 1, z).is_fluid())) 2 else 0,
-        .dirt => if (data.has_direct_sunlight(x, y, z)) 1 else 0,
-        .grass => if (!data.has_direct_sunlight(x, y, z)) 1 else 0,
-        .sapling => if (data.has_direct_sunlight(x, y, z)) MAX_TREE_CHANGES else 1,
-        .flower_1, .flower_2 => if (!data.has_direct_sunlight(x, y, z)) 1 else 0,
-        .mushroom_1, .mushroom_2 => if (data.has_direct_sunlight(x, y, z)) 1 else 0,
+        .dirt => if (data.is_sunlit(x, y, z)) 1 else 0,
+        .grass => if (!data.is_sunlit(x, y, z)) 1 else 0,
+        .sapling => if (data.is_sunlit(x, y, z)) MAX_TREE_CHANGES else 1,
+        .flower_1, .flower_2 => if (!data.is_sunlit(x, y, z)) 1 else 0,
+        .mushroom_1, .mushroom_2 => if (data.is_sunlit(x, y, z)) 1 else 0,
         .flowing_water, .still_water => water_change_bound(data, x, y, z, block),
         .flowing_lava, .still_lava => lava_change_bound(data, x, y, z, block),
         else => 0,
@@ -400,8 +394,6 @@ fn count_horizontal_air_neighbors(data: *const WorldData, x: u16, y: u16, z: u16
     if (z + 1 < data.dims.depth and data.get_block(x, y, z + 1).is_air()) count += 1;
     return count;
 }
-
-// --- Fluid physics ---
 
 fn process_fluid(
     self: *WorldSimulation,
@@ -664,8 +656,6 @@ const TestChangeRecorder = struct {
 };
 
 test "tick defers an overflow-sized fluid batch without buffering or dropping" {
-    blocks.init();
-
     var data: WorldData = undefined;
     try data.init_in_place(std.testing.allocator, wd.default, 0x1234);
     defer data.deinit();
@@ -713,8 +703,6 @@ test "tick defers an overflow-sized fluid batch without buffering or dropping" {
 }
 
 test "tick defers a multi-change update rather than partially committing it" {
-    blocks.init();
-
     var data: WorldData = undefined;
     try data.init_in_place(std.testing.allocator, wd.default, 0x1234);
     defer data.deinit();

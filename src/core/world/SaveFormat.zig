@@ -1,34 +1,24 @@
-// --- Save-format dispatch ---
-//
-// Tagged union over per-format state. `inline switch` gives comptime
-// dispatch with zero allocation; arms can carry per-format scratch state
-// (NBT tag stack, gzip ring) without growing the call signature.
-//
-// Adding a format: add an arm here, add a file under `formats/`. Both arms
-// must expose `save_world(...)`, `load_world(...)` and `sniff_dims(...)`
-// with matching signatures.
+// Save formats share the save, load, and dimension-sniffing interface below.
 
 const std = @import("std");
 const b = @import("../blocks.zig");
 const WorldDims = @import("../world_dims.zig").WorldDims;
+const WorldData = @import("WorldData.zig");
 
 const Block = b.Block;
 
 const classic_dat_mod = @import("formats/classic_dat.zig");
 const classic_cw_mod = @import("formats/classic_cw.zig");
 
-pub const ClassicDat = classic_dat_mod.ClassicDat;
-pub const ClassicCw = classic_cw_mod.ClassicCw;
+const ClassicDat = classic_dat_mod.ClassicDat;
+const ClassicCw = classic_cw_mod.ClassicCw;
 
-/// Everything a format may need to write a save. Formats are free to
-/// ignore the metadata fields they don't carry on disk -- classic_dat
-/// uses only dims/seed/tick_count/blocks; classic_cw consumes all
-/// of them.
 pub const SaveContext = struct {
     dims: WorldDims,
     seed: u64,
     tick_count: u64,
-    blocks: []const Block,
+    world: *WorldData,
+    io: std.Io,
     name: []const u8,
     uuid: [16]u8,
     spawn: [3]u16,
@@ -36,8 +26,6 @@ pub const SaveContext = struct {
     last_modified: i64,
 };
 
-/// Everything a format returns from a successful load. Formats that don't
-/// carry a field on disk fill it with a sensible default (zero / empty).
 pub const LoadOutcome = struct {
     dimensions: [3]u16,
     seed: u64,
@@ -52,63 +40,34 @@ pub const SaveFormat = union(enum) {
     classic_dat: ClassicDat,
     classic_cw: ClassicCw,
 
-    /// Parse a `save-format` string from server.properties. Unknown values
-    /// fall back to classic_dat. Empty string = caller-side default.
     pub fn parse(name: []const u8) ?SaveFormat {
         if (std.mem.eql(u8, name, "classic_dat")) return .{ .classic_dat = .{} };
         if (std.mem.eql(u8, name, "classic_cw")) return .{ .classic_cw = .{} };
         return null;
     }
 
-    /// Sniff the on-disk format from a file's leading bytes. classic_cw
-    /// files start with the gzip magic 1f 8b; anything else is treated as
-    /// classic_dat (whose header begins with the little-endian world
-    /// length, which never collides with the gzip magic for any sane
-    /// world dimension). The gzip arm is a *candidate* -- callers should
-    /// confirm with `verify_classic_cw` before committing, because legacy
-    /// formats (notably Minecraft Classic .mclevel) also use gzip but
-    /// carry a Java-serialized payload rather than NBT. Returns null when
-    /// the prefix is too short to classify.
+    /// Gzip identifies a ClassicWorld candidate; callers must verify it because
+    /// legacy Java-serialized levels also use gzip.
     pub fn detect(prefix: []const u8) ?SaveFormat {
         if (prefix.len < 2) return null;
         if (prefix[0] == 0x1f and prefix[1] == 0x8b) return .{ .classic_cw = .{} };
         return .{ .classic_dat = .{} };
     }
 
-    /// Confirm that a gzip-prefixed file is actually classic_cw by
-    /// inflating just enough to inspect the first NBT tag byte. Returns
-    /// true only when the inflated stream begins with TAG_Compound (0x0A),
-    /// matching the ClassicWorld outer compound. False on any decode
-    /// failure, short prefix, or non-NBT payload (e.g. Java serialization
-    /// magic ac ed in legacy .mclevel files). The caller-supplied prefix
-    /// must include the gzip header plus enough deflate bytes to yield
-    /// one inflated byte -- 256 bytes covers every real-world classic_cw
-    /// save by a wide margin.
+    /// Check that a gzip candidate inflates to an NBT compound.
     pub fn verify_classic_cw(prefix: []const u8, scratch: std.mem.Allocator) bool {
-        // Gzip header alone is 10 bytes; need at least one deflated byte
-        // beyond it to yield an inflated tag.
         if (prefix.len < 12) return false;
         var src = std.Io.Reader.fixed(prefix);
         const window_buf = scratch.alloc(u8, std.compress.flate.max_window_len) catch return false;
         defer scratch.free(window_buf);
         var decompress = std.compress.flate.Decompress.init(&src, .gzip, window_buf);
         const first = decompress.reader.takeByte() catch return false;
-        // 0x0A == nbt.Tag.compound; named here as a literal so this module
-        // doesn't pull in nbt for a single comparison.
         return first == 0x0A;
     }
 
-    /// Prefix length a sniff needs. Covers the gzip header plus enough
-    /// deflate output to inflate past the classic_cw X/Y/Z header tags;
-    /// short files fall back to shorter peeks.
     const sniff_prefix_len: usize = 16384;
 
-    /// Read the dimensions a save file announces in its header, without
-    /// touching the block payload. Existing saves boot at their own
-    /// geometry regardless of the configured world size, so `world.init`
-    /// and the backup validator call this before any buffer is allocated.
-    /// Returns null when the file is missing, unrecognized, or announces
-    /// dims outside the supported lattice.
+    /// Read dimensions from a save header without touching its block payload.
     pub fn sniff_dims(
         io: std.Io,
         dir: std.Io.Dir,
@@ -122,9 +81,6 @@ pub const SaveFormat = union(enum) {
         defer scratch.free(read_buf);
         var reader = file.reader(io, read_buf);
 
-        // Walk down the peek size on failure, mirroring WorldSaver.try_load:
-        // a shorter file only yields a shorter peek. The 6-byte floor is the
-        // classic_dat dimension header.
         const peek_sizes = [_]usize{ sniff_prefix_len, 8192, 4096, 1024, 256, 64, 12, 6 };
         var prefix: []const u8 = &.{};
         inline for (peek_sizes) |sz| {
@@ -150,9 +106,7 @@ pub const SaveFormat = union(enum) {
         }
     }
 
-    /// Load a save into `blocks`, which the caller allocated for `dims`. A
-    /// format must reject a file whose recorded dimensions differ before
-    /// writing into that buffer.
+    /// Formats must validate their dimensions before writing into `blocks`.
     pub fn load_world(
         self: SaveFormat,
         scratch: std.mem.Allocator,
@@ -166,10 +120,8 @@ pub const SaveFormat = union(enum) {
     }
 };
 
-/// Minimal ClassicWorld NBT header: compound + X/Y/Z short leaves, no
-/// payload tags. Written as raw bytes so this module stays nbt-free.
 const test_header_nbt = [_]u8{
-    0x0A, // TAG_Compound
+    0x0A,
     0x00,
     0x0C,
     'C',
@@ -194,7 +146,6 @@ test "sniff_dims reads the announced geometry from both formats" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    // classic_dat: dims are the raw little-endian header.
     {
         var dat: [8]u8 = @splat(0);
         std.mem.writeInt(u16, dat[0..2], 128, .little);
@@ -210,10 +161,6 @@ test "sniff_dims reads the announced geometry from both formats" {
         try std.testing.expectEqual(@as(u32, 128), dims.depth);
     }
 
-    // classic_cw: gzip the header NBT with std flate directly (the real
-    // writer goes through the shared compress worker). The file is padded
-    // past the sniff prefix because the peek walk must be able to hand the
-    // sniffer its full window, as it can for every real (megabyte) save.
     {
         var gz_buf: [512]u8 = undefined;
         var out = std.Io.Writer.fixed(&gz_buf);
@@ -222,6 +169,7 @@ test "sniff_dims reads the announced geometry from both formats" {
         try comp.writer.writeAll(&test_header_nbt);
         try comp.finish();
 
+        // Match the full prefix available from a real world file.
         var file_bytes: [16384 + 256]u8 = @splat(0);
         @memcpy(file_bytes[0..out.buffered().len], out.buffered());
 

@@ -55,7 +55,6 @@ pub fn main(init: std.process.Init) !void {
     };
     const output_path = args[3];
 
-    core.blocks.init();
     try CompressWorker.init(gpa, io);
     defer CompressWorker.deinit();
 
@@ -202,7 +201,7 @@ fn strip_extension(name: []const u8) []const u8 {
     return name;
 }
 
-fn save_classic_world(io: std.Io, output_path: []const u8, data: *const WorldData) !void {
+fn save_classic_world(io: std.Io, output_path: []const u8, data: *WorldData) !void {
     const file = try std.Io.Dir.cwd().createFile(io, output_path, .{});
     defer file.close(io);
 
@@ -217,7 +216,8 @@ fn save_classic_world(io: std.Io, output_path: []const u8, data: *const WorldDat
         .dims = data.dims,
         .seed = data.seed,
         .tick_count = data.tick_count,
-        .blocks = data.blocks,
+        .world = data,
+        .io = io,
         .name = data.name[0..data.name_len],
         .uuid = data.uuid,
         .spawn = data.find_spawn(io),

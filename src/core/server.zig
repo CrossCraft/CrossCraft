@@ -14,8 +14,6 @@ const log = std.log.scoped(.server);
 
 pub const MaxPlayers = 128;
 
-// --- Boot configuration ---
-
 /// Inputs the world needs to materialise. `save_location` is a relative
 /// path (under the engine data dir) to the world save *file*, including
 /// its filename -- e.g. "saves/world.cw" or "saves/foo.dat". The world spec
@@ -55,23 +53,17 @@ pub const root_default_save_file_name: []const u8 = "world.cw";
 /// v1.0 layout: a single classic_dat save file at the data dir root.
 pub const legacy_save_file_name: []const u8 = "world.dat";
 
-pub const StandaloneBoot = struct {
+const BootConfig = struct {
     world: WorldConfig,
 };
 
-pub const EmbeddedBoot = struct {
-    world: WorldConfig,
-};
-
-/// The host's chosen launch shape, captured once at boot.
 pub const GameConfig = union(enum) {
-    standalone: StandaloneBoot,
-    embedded: EmbeddedBoot,
+    standalone: BootConfig,
+    embedded: BootConfig,
 
     pub fn world(self: GameConfig) WorldConfig {
         return switch (self) {
-            .standalone => |s| s.world,
-            .embedded => |e| e.world,
+            .standalone, .embedded => |config| config.world,
         };
     }
 };
@@ -119,11 +111,8 @@ pub var on_broadcast_chat: ?*const fn ([]const u8) void = null;
 pub var players: FirstAvailableBuffer(Client, MaxPlayers) = .init();
 var player_generations: [MaxPlayers]u32 = @splat(0);
 
-/// Synchronization domains for the standalone server. They are intentionally
-/// separate: world simulation never contends with chat or position traffic,
-/// and roster readers may proceed concurrently while membership is stable.
+/// Roster synchronization is separate from the Core-owned world lock.
 var roster_lock: std.Io.RwLock = .init;
-var world_lock: std.Io.RwLock = .init;
 
 pub const PlayerHandle = struct {
     id: u8,
@@ -147,19 +136,19 @@ pub fn unlock_roster_shared() void {
 }
 
 pub fn lock_world() void {
-    world_lock.lockUncancelable(io);
+    world.lock_world();
 }
 
 pub fn unlock_world() void {
-    world_lock.unlock(io);
+    world.unlock_world();
 }
 
 pub fn lock_world_shared() void {
-    world_lock.lockSharedUncancelable(io);
+    world.lock_world_shared();
 }
 
 pub fn unlock_world_shared() void {
-    world_lock.unlockShared(io);
+    world.unlock_world_shared();
 }
 
 /// True when the server is hosted inside the client process for singleplayer.
@@ -167,19 +156,9 @@ pub fn unlock_world_shared() void {
 /// real network clients (server.properties I/O, join/leave chat spam, etc.).
 pub var internal_use: bool = false;
 
-/// Used for scheduler-driven changes: queue protocol packets into each
-/// client's existing writer buffer, then flush once at the end of Server.tick.
-const tick_change_sink: world.BlockChangeSink = .{ .emit_fn = emit_tick_block_change };
+pub const block_change_sink: world.WorldSimulation.BlockChangeSink = .{ .emit_fn = emit_block_change };
 
-/// Used by direct gameplay actions such as sponge absorption, where the
-/// caller preserves the pre-existing immediate-broadcast behavior.
-pub const immediate_block_change_sink: world.BlockChangeSink = .{ .emit_fn = emit_immediate_block_change };
-
-fn emit_tick_block_change(_: ?*anyopaque, change: world.BlockChange) void {
-    broadcast_block_change_buffered(change.x, change.y, change.z, change.block);
-}
-
-fn emit_immediate_block_change(_: ?*anyopaque, change: world.BlockChange) void {
+fn emit_block_change(_: ?*anyopaque, change: world.WorldSimulation.BlockChange) void {
     broadcast_block_change(change.x, change.y, change.z, change.block);
 }
 
@@ -204,7 +183,6 @@ pub fn init(
 ) !void {
     io = _io;
     roster_lock = .init;
-    world_lock = .init;
     player_generations = @splat(0);
 
     // Server globals survive an embedded-server teardown in the same
@@ -459,9 +437,8 @@ fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
                 const vlen = @min(value.len, 64);
                 @memcpy(server_motd[0..vlen], value[0..vlen]);
             } else if (std.mem.eql(u8, key, "seed")) {
-                // seed: applies on first generation only. world.load()
-                // restores the saved seed when world.dat already exists
-                // and silently ignores this value.
+                // Existing saves restore their own seed; this value applies
+                // only when generating a new world.
                 if (std.fmt.parseInt(u64, value, 10)) |parsed| {
                     wcfg.seed = parsed;
                 } else |_| {
@@ -502,13 +479,13 @@ fn load_config(data_dir: std.Io.Dir, wcfg: *WorldConfig) void {
                 }
             } else if (std.mem.eql(u8, key, "max-pending-logins")) {
                 if (std.fmt.parseInt(u32, value, 10)) |parsed| {
-                    max_pending_logins = std.math.clamp(parsed, 1, @as(u32, MaxPlayers));
+                    max_pending_logins = std.math.clamp(parsed, 1, MaxPlayers);
                 } else |_| {
                     log.warn("server.properties max-pending-logins value '{s}' is not a u32; ignoring", .{value});
                 }
             } else if (std.mem.eql(u8, key, "max-connections-per-ip")) {
                 if (std.fmt.parseInt(u32, value, 10)) |parsed| {
-                    max_connections_per_ip = std.math.clamp(parsed, 1, @as(u32, MaxPlayers));
+                    max_connections_per_ip = std.math.clamp(parsed, 1, MaxPlayers);
                 } else |_| {
                     log.warn("server.properties max-connections-per-ip value '{s}' is not a u32; ignoring", .{value});
                 }
@@ -848,23 +825,10 @@ pub fn broadcast_chat_message(id: i8, message: []u8) void {
         }
     }
     unlock_roster_shared();
-    // Mirror to the host's admin console (stdout in standalone). Hook is
-    // null in singleplayer / on PSP, so this is free in those builds.
     if (on_broadcast_chat) |hook| hook(std.mem.trimEnd(u8, message, " \x00"));
 }
 
 pub fn broadcast_block_change(x: u16, y: u16, z: u16, block: blocks.Block) void {
-    broadcast_block_change_impl(x, y, z, block);
-}
-
-fn broadcast_block_change_buffered(x: u16, y: u16, z: u16, block: blocks.Block) void {
-    broadcast_block_change_impl(x, y, z, block);
-}
-
-// Sends only enqueue into each client's outbound queue (pure CPU work), so
-// the buffered/immediate split above no longer differs in flush behavior;
-// both wrappers are kept so call sites stay put.
-fn broadcast_block_change_impl(x: u16, y: u16, z: u16, block: blocks.Block) void {
     var catchup_packet: [8]u8 = undefined;
     var fixed = std.Io.Writer.fixed(&catchup_packet);
     protocol.send_block_change_to_client(&fixed, x, y, z, block) catch unreachable;
@@ -916,7 +880,7 @@ var tick_counter: u32 = 0;
 
 pub fn tick() void {
     lock_world();
-    _ = world.tick(tick_change_sink);
+    _ = world.tick(block_change_sink);
     unlock_world();
 
     broadcast_player_positions();

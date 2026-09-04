@@ -1,17 +1,6 @@
-// --- Shared gzip compression worker ---
-//
 // One process-wide worker thread runs gzip jobs out of a lock-free LIFO
-// queue. Both world-send (network) and world-save (disk, any format) submit
-// here so save dispatch does not depend on std.Io task spawning, and so the
-// deep `flate.Compress` call frames stay out of small per-task IO stacks.
-//
-// This module owns the static state and the loop body. Spawning the OS
-// thread is the consumer's job (server's `ServerState`, client's
-// `GameState` / migration code) since the core module is platform-agnostic.
-// Pass `worker_main` as the spawn entry point.
-//
-// Concurrency: only one job runs at a time -- the compressor is global
-// and not reentrant.
+// queue. The host spawns `worker_main`; jobs run serially because the shared
+// compressor is not reentrant.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -19,9 +8,31 @@ const flate = std.compress.flate;
 
 pub const Job = struct {
     next: ?*Job = null,
-    done: std.atomic.Value(bool) = .init(false),
+    state: std.atomic.Value(State) = .init(.pending),
     err: ?anyerror = null,
     run: *const fn (*Job) anyerror!void,
+
+    const State = enum(u32) { pending, done };
+
+    pub fn is_done(self: *const Job) bool {
+        return self.state.load(.acquire) == .done;
+    }
+
+    /// Claim a completed reusable job for another submission.
+    pub fn try_begin(self: *Job) bool {
+        return self.state.cmpxchgStrong(.done, .pending, .acq_rel, .acquire) == null;
+    }
+
+    pub fn wait(self: *Job, io: std.Io) void {
+        while (self.state.load(.acquire) == .pending) {
+            io.futexWaitUncancelable(State, &self.state.raw, .pending);
+        }
+    }
+
+    pub fn mark_done(self: *Job, io: std.Io) void {
+        self.state.store(.done, .release);
+        io.futexWake(State, &self.state.raw, std.math.maxInt(u32));
+    }
 };
 
 var backing_allocator: std.mem.Allocator = undefined;
@@ -88,9 +99,9 @@ pub fn reset(output: *std.Io.Writer) !void {
     compressor.opts = .fastest;
 }
 
-/// Push a job onto the queue. Caller must keep `job` alive until
-/// `job.done` reads true.
+/// Push a pending job onto the queue. Caller must keep it alive until done.
 pub fn submit(job: *Job) void {
+    std.debug.assert(!job.is_done());
     while (true) {
         const head = queue_head.load(.monotonic);
         job.next = head;
@@ -110,7 +121,7 @@ pub fn cancel_pending_before_worker(job: *Job) bool {
         const next = current.next;
         if (current == job) {
             current.next = null;
-            current.done.store(true, .release);
+            current.mark_done(stored_io);
             canceled = true;
         } else {
             current.next = restore_head;
@@ -127,12 +138,8 @@ pub fn signal_exit() void {
     worker_exit.store(true, .release);
 }
 
-pub fn should_exit() bool {
-    return worker_exit.load(.acquire);
-}
-
 /// Drain one batch of pending jobs. Returns true if at least one job ran.
-pub fn drain_once() bool {
+fn drain_once() bool {
     const head = queue_head.swap(null, .acquire) orelse return false;
     var node: ?*Job = head;
     while (node) |j| {
@@ -140,10 +147,78 @@ pub fn drain_once() bool {
         j.run(j) catch |e| {
             j.err = e;
         };
-        j.done.store(true, .release);
+        j.mark_done(stored_io);
         node = next;
     }
     return true;
+}
+
+test "reusable job admits one submission at a time" {
+    const noop = struct {
+        fn run(_: *Job) anyerror!void {}
+    }.run;
+    var job: Job = .{ .state = .init(.done), .run = noop };
+
+    try std.testing.expect(job.is_done());
+    try std.testing.expect(job.try_begin());
+    try std.testing.expect(!job.try_begin());
+    try std.testing.expect(!job.is_done());
+
+    job.mark_done(std.testing.io);
+    try std.testing.expect(job.is_done());
+    try std.testing.expect(job.try_begin());
+    job.mark_done(std.testing.io);
+    job.wait(std.testing.io);
+}
+
+test "queued jobs publish errors and queued cancellation completes" {
+    const ProbeJob = struct {
+        base: Job,
+        runs: *u32,
+        fail: bool,
+
+        fn init(runs: *u32, fail: bool) @This() {
+            return .{
+                .base = .{ .state = .init(.done), .run = execute },
+                .runs = runs,
+                .fail = fail,
+            };
+        }
+
+        fn execute(base: *Job) anyerror!void {
+            const self: *@This() = @fieldParentPtr("base", base);
+            self.runs.* += 1;
+            if (self.fail) return error.ForcedFailure;
+        }
+    };
+
+    try std.testing.expect(queue_head.load(.acquire) == null);
+    defer queue_head.store(null, .release);
+    stored_io = std.testing.io;
+
+    var runs: u32 = 0;
+    var successful = ProbeJob.init(&runs, false);
+    var failing = ProbeJob.init(&runs, true);
+    try std.testing.expect(successful.base.try_begin());
+    try std.testing.expect(failing.base.try_begin());
+    submit(&successful.base);
+    submit(&failing.base);
+
+    try std.testing.expect(drain_once());
+    try std.testing.expectEqual(@as(u32, 2), runs);
+    try std.testing.expect(successful.base.is_done());
+    try std.testing.expect(failing.base.is_done());
+    try std.testing.expect(successful.base.err == null);
+    try std.testing.expectEqual(error.ForcedFailure, failing.base.err.?);
+    try std.testing.expect(!drain_once());
+
+    var canceled = ProbeJob.init(&runs, false);
+    try std.testing.expect(canceled.base.try_begin());
+    submit(&canceled.base);
+    try std.testing.expect(cancel_pending_before_worker(&canceled.base));
+    try std.testing.expect(canceled.base.is_done());
+    try std.testing.expectEqual(@as(u32, 2), runs);
+    try std.testing.expect(!drain_once());
 }
 
 /// Long-running thread entry point. Spawn this with a large stack on a
@@ -167,7 +242,7 @@ pub fn worker_main() void {
         } else |_| {}
     }
 
-    while (!should_exit()) {
+    while (!worker_exit.load(.acquire)) {
         if (!drain_once()) {
             std.Io.sleep(stored_io, .fromMilliseconds(10), .real) catch {};
         }

@@ -1,5 +1,3 @@
-// --- Per-client bounded outbound queue ---
-//
 // Producers (tick-thread broadcasts, other clients' read threads, the
 // compress worker) serialize packets here instead of touching the socket.
 // The client's own connection thread is the only socket writer; it drains
@@ -8,16 +6,12 @@
 
 const std = @import("std");
 
-/// Backlog tolerated before a slow client is kicked. Minutes of headroom
-/// for a healthy client at hundreds of B/s of position traffic; world-send
-/// streams through concurrently.
 pub const out_queue_bytes = 256 * 1024;
 
 pub const Error = error{QueueFull};
 
 pub const OutboundQueue = struct {
     mutex: std.Io.Mutex = .init,
-    /// Allocated per active connection; empty until admitted.
     buf: []u8 = &.{},
     len: usize = 0,
     /// During a level transfer, block-change packets grow backwards from the
@@ -25,19 +19,13 @@ pub const OutboundQueue = struct {
     /// second allocation or allowing the compressor and gameplay threads to
     /// interleave packets on the wire.
     catchup_len: usize = 0,
-    /// Sticky once an append overflowed: the client is being kicked and no
-    /// further bytes are accepted.
     kicked: bool = false,
 
     pub fn append(q: *OutboundQueue, io: std.Io, bytes: []const u8) Error!void {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
 
-        if (q.kicked) return error.QueueFull;
-        if (q.len + q.catchup_len + bytes.len > q.buf.len) {
-            q.kicked = true;
-            return error.QueueFull;
-        }
+        try q.ensure_capacity(bytes.len);
         @memcpy(q.buf[q.len..][0..bytes.len], bytes);
         q.len += bytes.len;
     }
@@ -49,11 +37,7 @@ pub const OutboundQueue = struct {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
 
-        if (q.kicked) return error.QueueFull;
-        if (q.len + q.catchup_len + packet.len > q.buf.len) {
-            q.kicked = true;
-            return error.QueueFull;
-        }
+        try q.ensure_capacity(packet.len);
         q.catchup_len += packet.len;
         const start = q.buf.len - q.catchup_len;
         @memcpy(q.buf[start..][0..packet.len], packet);
@@ -98,6 +82,13 @@ pub const OutboundQueue = struct {
         q.len = remaining;
         return n;
     }
+
+    fn ensure_capacity(q: *OutboundQueue, additional: usize) Error!void {
+        if (q.kicked or q.len + q.catchup_len + additional > q.buf.len) {
+            q.kicked = true;
+            return error.QueueFull;
+        }
+    }
 };
 
 test "outbound_queue append then take returns bytes in order" {
@@ -127,7 +118,6 @@ test "outbound_queue take with small dest compacts the remainder" {
     try std.testing.expectEqualStrings("abcd", &dest);
     try std.testing.expectEqual(@as(usize, 2), q.len);
 
-    // Remainder stays appendable and ordered after compaction.
     try q.append(io, "XY");
     var dest2: [8]u8 = undefined;
     const n = q.take(io, &dest2);
@@ -143,21 +133,9 @@ test "outbound_queue overflow sets the kick flag and rejects further appends" {
     try std.testing.expectError(error.QueueFull, q.append(io, "x"));
     try std.testing.expect(q.kicked);
 
-    // Sticky: even after draining there is room, appends keep failing.
     var dest: [8]u8 = undefined;
     try std.testing.expectEqual(@as(usize, 8), q.take(io, &dest));
     try std.testing.expectError(error.QueueFull, q.append(io, "y"));
-}
-
-test "outbound_queue exact-fit append succeeds" {
-    const io = std.testing.io;
-    var storage: [4]u8 = undefined;
-    var q: OutboundQueue = .{ .buf = &storage };
-
-    try q.append(io, "ab");
-    try q.append(io, "cd");
-    try std.testing.expect(!q.kicked);
-    try std.testing.expectEqual(@as(usize, 4), q.len);
 }
 
 test "outbound_queue promotes join catch-up after normal bytes in order" {

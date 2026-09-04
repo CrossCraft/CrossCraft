@@ -1,8 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-// SPSC ring buffer size - large enough for all non-world handshake packets
-// plus ongoing gameplay traffic (block changes, positions, pings) per tick.
 const RING_SIZE: u32 = 4096;
 const RING_MASK: u32 = RING_SIZE - 1;
 
@@ -11,35 +9,27 @@ comptime {
 }
 
 pub const FakeConn = struct {
-    // S->C: server writes (producer), client reads (consumer)
     s2c: [RING_SIZE]u8 = undefined,
     s2c_head: std.atomic.Value(u32) = .init(0),
     s2c_tail: std.atomic.Value(u32) = .init(0),
 
-    // C->S: client writes (producer), server reads (consumer)
     c2s: [RING_SIZE]u8 = undefined,
     c2s_head: std.atomic.Value(u32) = .init(0),
     c2s_tail: std.atomic.Value(u32) = .init(0),
 
     connected: bool = true,
 
-    // Internal buffers - writers accumulate here before draining to ring.
-    // Largest S->C packet is PlayerID at 131 bytes; 1024 is comfortable.
     server_write_buf: [1024]u8 = undefined,
-    // Largest C->S packet is PlayerIDToServer at 131 bytes.
     client_write_buf: [256]u8 = undefined,
 
-    // Reader scratch buffers for peek/fill.
     server_read_buf: [256]u8 = undefined,
     client_read_buf: [256]u8 = undefined,
 
-    // Server-facing interfaces - passed to local_join.
-    server_writer: std.Io.Writer = undefined, // server writes S->C here
-    server_reader: std.Io.Reader = undefined, // server reads C->S here (unused for local)
+    server_writer: std.Io.Writer = undefined,
+    server_reader: std.Io.Reader = undefined,
 
-    // Client-facing interfaces - GameState uses these.
-    client_writer: std.Io.Writer = undefined, // client writes C->S here
-    client_reader: std.Io.Reader = undefined, // client reads S->C here
+    client_writer: std.Io.Writer = undefined,
+    client_reader: std.Io.Reader = undefined,
 
     /// Must be called in-place (after the FakeConn reaches its final address)
     /// because writer/reader buffers point into this struct.
@@ -74,8 +64,6 @@ pub const FakeConn = struct {
         };
     }
 
-    // --- Ring helpers ---
-
     fn ring_write(buf: []u8, head: *const std.atomic.Value(u32), tail: *std.atomic.Value(u32), data: []const u8) u32 {
         const h = head.load(.acquire);
         const t = tail.load(.monotonic);
@@ -96,7 +84,37 @@ pub const FakeConn = struct {
         return n;
     }
 
-    // --- S->C writer (server_writer -> s2c ring) ---
+    fn ring_drain(
+        w: *std.Io.Writer,
+        data: []const []const u8,
+        buf: []u8,
+        head: *const std.atomic.Value(u32),
+        tail: *std.atomic.Value(u32),
+    ) std.Io.Writer.Error!usize {
+        const buffered = w.end;
+        if (buffered > 0) assert(ring_write(buf, head, tail, w.buffer[0..buffered]) == buffered);
+
+        var written: usize = 0;
+        for (data) |slice| {
+            if (slice.len == 0) continue;
+            assert(ring_write(buf, head, tail, slice) == slice.len);
+            written += slice.len;
+        }
+        return w.consume(buffered + written);
+    }
+
+    fn ring_stream(
+        r: *std.Io.Reader,
+        limit: std.Io.Limit,
+        buf: []const u8,
+        head: *std.atomic.Value(u32),
+        tail: *const std.atomic.Value(u32),
+    ) std.Io.Reader.StreamError!usize {
+        const n = ring_read(buf, head, tail, limit.slice(r.buffer[r.end..]));
+        if (n == 0) return error.ReadFailed;
+        r.end += n;
+        return 0;
+    }
 
     const s2c_writer_vtable: std.Io.Writer.VTable = .{ .drain = s2c_drain };
 
@@ -106,66 +124,30 @@ pub const FakeConn = struct {
     fn s2c_drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         _ = splat;
         const self: *FakeConn = @alignCast(@fieldParentPtr("server_writer", w));
-        const buf_end = w.end;
-        if (buf_end > 0) {
-            const n = ring_write(&self.s2c, &self.s2c_head, &self.s2c_tail, w.buffer[0..buf_end]);
-            assert(n == buf_end);
-        }
-        var data_written: usize = 0;
-        for (data) |slice| {
-            if (slice.len == 0) continue;
-            const n = ring_write(&self.s2c, &self.s2c_head, &self.s2c_tail, slice);
-            assert(n == slice.len);
-            data_written += slice.len;
-        }
-        return w.consume(buf_end + data_written);
+        return ring_drain(w, data, &self.s2c, &self.s2c_head, &self.s2c_tail);
     }
-
-    // --- S->C reader (s2c ring -> client_reader) ---
 
     const s2c_reader_vtable: std.Io.Reader.VTable = .{ .stream = s2c_stream };
 
     fn s2c_stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
         _ = w;
         const self: *FakeConn = @alignCast(@fieldParentPtr("client_reader", r));
-        const n = ring_read(&self.s2c, &self.s2c_head, &self.s2c_tail, limit.slice(r.buffer[r.end..]));
-        if (n == 0) return error.ReadFailed; // ring empty - caller treats as no data
-        r.end += n;
-        return 0; // data stored in r.buffer; caller serves it from there
+        return ring_stream(r, limit, &self.s2c, &self.s2c_head, &self.s2c_tail);
     }
-
-    // --- C->S writer (client_writer -> c2s ring) ---
 
     const c2s_writer_vtable: std.Io.Writer.VTable = .{ .drain = c2s_drain };
 
     fn c2s_drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         _ = splat;
         const self: *FakeConn = @alignCast(@fieldParentPtr("client_writer", w));
-        const buf_end = w.end;
-        if (buf_end > 0) {
-            const n = ring_write(&self.c2s, &self.c2s_head, &self.c2s_tail, w.buffer[0..buf_end]);
-            assert(n == buf_end);
-        }
-        var data_written: usize = 0;
-        for (data) |slice| {
-            if (slice.len == 0) continue;
-            const n = ring_write(&self.c2s, &self.c2s_head, &self.c2s_tail, slice);
-            assert(n == slice.len);
-            data_written += slice.len;
-        }
-        return w.consume(buf_end + data_written);
+        return ring_drain(w, data, &self.c2s, &self.c2s_head, &self.c2s_tail);
     }
-
-    // --- C->S reader (c2s ring -> server_reader) ---
 
     const c2s_reader_vtable: std.Io.Reader.VTable = .{ .stream = c2s_stream };
 
     fn c2s_stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
         _ = w;
         const self: *FakeConn = @alignCast(@fieldParentPtr("server_reader", r));
-        const n = ring_read(&self.c2s, &self.c2s_head, &self.c2s_tail, limit.slice(r.buffer[r.end..]));
-        if (n == 0) return error.ReadFailed;
-        r.end += n;
-        return 0;
+        return ring_stream(r, limit, &self.c2s, &self.c2s_head, &self.c2s_tail);
     }
 };

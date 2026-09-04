@@ -34,14 +34,6 @@ pub fn wid_for_row(i: u8) WidgetId {
     return widget_id.raw(row_base + @as(u16, i));
 }
 
-pub fn row_from_wid(id: WidgetId) ?u8 {
-    const raw = widget_id.value(id);
-    if (raw < row_base) return null;
-    const idx: u16 = raw - row_base;
-    if (idx > max_packs) return null;
-    return @intCast(idx);
-}
-
 pub const Entry = struct {
     label_buf: [max_path_len]u8 = undefined,
     label_len: u8 = 0,

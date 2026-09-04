@@ -25,6 +25,7 @@
         "saves",
         "build.zig",
         "build.zig.zon",
+        "protocol.zb",
         "src",
         "tools",
         "web",

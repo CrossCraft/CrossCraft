@@ -81,19 +81,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, cap_request: 
     const scratch_len: usize = @as(usize, cap) * json_bytes_per_record + 1024;
 
     std.debug.assert(!initialized);
-    errdefer {
-        if (records.len > 0) alloc.free(records);
-        if (json_records.len > 0) alloc.free(json_records);
-        if (json_scratch.len > 0) alloc.free(json_scratch);
-        records = &.{};
-        json_records = &.{};
-        json_scratch = &.{};
-        count = 0;
-        capacity = 0;
-        initialized = false;
-        accepting_legacy_import = false;
-        legacy_imported = false;
-    }
+    errdefer clear(alloc);
 
     records = try alloc.alloc(Policy, cap);
     json_records = try alloc.alloc(JsonRecord, cap);
@@ -117,9 +105,13 @@ pub fn deinit() void {
     mutex.lockUncancelable(save_io);
     defer mutex.unlock(save_io);
 
-    owning_alloc.free(records);
-    owning_alloc.free(json_records);
-    owning_alloc.free(json_scratch);
+    clear(owning_alloc);
+}
+
+fn clear(alloc: std.mem.Allocator) void {
+    if (records.len > 0) alloc.free(records);
+    if (json_records.len > 0) alloc.free(json_records);
+    if (json_scratch.len > 0) alloc.free(json_scratch);
     records = &.{};
     json_records = &.{};
     json_scratch = &.{};
@@ -135,7 +127,8 @@ pub fn lookup(ip: []const u8) Snapshot {
     mutex.lockUncancelable(save_io);
     defer mutex.unlock(save_io);
 
-    const rec = find_locked(ip) orelse return .{};
+    const index = find_index_locked(ip) orelse return .{};
+    const rec = &records[index];
     return .{
         .banned = rec.banned,
         .op = rec.op,
@@ -162,25 +155,20 @@ pub fn set_banned(ip: []const u8, banned: bool, reason: []const u8) !void {
 }
 
 pub fn set_op(ip: []const u8, op: bool) !void {
-    if (!initialized) return;
-    mutex.lockUncancelable(save_io);
-    defer mutex.unlock(save_io);
-
-    const index = if (op) try upsert_index_locked(ip) else find_index_locked(ip) orelse return;
-    const rec = &records[index];
-    rec.op = op;
-    remove_if_empty_locked(index);
-    try save_locked();
+    try set_flag(ip, op, "op");
 }
 
 pub fn set_whitelisted(ip: []const u8, whitelisted: bool) !void {
+    try set_flag(ip, whitelisted, "whitelisted");
+}
+
+fn set_flag(ip: []const u8, enabled: bool, comptime field: []const u8) !void {
     if (!initialized) return;
     mutex.lockUncancelable(save_io);
     defer mutex.unlock(save_io);
 
-    const index = if (whitelisted) try upsert_index_locked(ip) else find_index_locked(ip) orelse return;
-    const rec = &records[index];
-    rec.whitelisted = whitelisted;
+    const index = if (enabled) try upsert_index_locked(ip) else find_index_locked(ip) orelse return;
+    @field(records[index], field) = enabled;
     remove_if_empty_locked(index);
     try save_locked();
 }
@@ -230,11 +218,6 @@ fn find_index_locked(ip: []const u8) ?u32 {
         if (std.mem.eql(u8, records[i].ip_slice(), ip)) return @intCast(i);
     }
     return null;
-}
-
-fn find_locked(ip: []const u8) ?*Policy {
-    const index = find_index_locked(ip) orelse return null;
-    return &records[index];
 }
 
 fn upsert_index_locked(ip: []const u8) !u32 {

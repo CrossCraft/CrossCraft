@@ -14,8 +14,6 @@ const properties_file_name = "server.properties";
 const max_config_len: usize = 4096;
 const max_name_len: usize = 256;
 
-// --- Configuration ---
-
 pub const Config = struct {
     autosave_seconds: u32 = scheme.autosave_default_seconds,
 
@@ -36,8 +34,6 @@ fn read_properties(io: std.Io, data_dir: std.Io.Dir, buf: *[max_config_len]u8) [
     if (len == buf.len) log.warn("server.properties may exceed the backup config buffer", .{});
     return buf[0..len];
 }
-
-// --- Save location resolution ---
 
 fn file_exists(io: std.Io, dir: std.Io.Dir, path: []const u8) bool {
     const file = dir.openFile(io, path, .{}) catch return false;
@@ -259,7 +255,6 @@ fn newest_timestamp(io: std.Io, dir: std.Io.Dir) ?u64 {
     return newest;
 }
 
-/// Stream-copy `src_name` from `src_dir` to `dst_name` in `dst_dir`.
 fn copy_streaming(io: std.Io, src_dir: std.Io.Dir, src_name: []const u8, dst_dir: std.Io.Dir, dst_name: []const u8) !void {
     const src = try src_dir.openFile(io, src_name, .{});
     defer src.close(io);
@@ -341,10 +336,6 @@ pub fn init(io: std.Io, data_dir: std.Io.Dir) Backup {
     return self;
 }
 
-pub fn deinit(self: *Backup) void {
-    self.* = undefined;
-}
-
 fn current_save_name(self: *const Backup) []const u8 {
     return self.save_file_name[0..self.save_file_name_len];
 }
@@ -364,7 +355,7 @@ fn prepare_buckets(self: *Backup, io: std.Io) void {
 fn catch_up_snapshot(self: *Backup, io: std.Io) void {
     if (self.save_file_name_len == 0) return;
     if (!file_exists(io, self.save_dir, self.current_save_name())) return;
-    if (core.World.saver.save_in_flight.load(.acquire)) return;
+    if (core.World.saver.save_in_progress()) return;
     self.snapshot_into(io, 0);
 }
 
@@ -385,7 +376,7 @@ fn tick_once(self: *Backup, io: std.Io) void {
     if (now_ms - self.last_save_ms < @as(u64, self.config.autosave_seconds) * std.time.ms_per_s) return;
 
     // Never fight an in-flight save (initial generation, world dump).
-    if (core.World.saver.save_in_flight.load(.acquire)) return;
+    if (core.World.saver.save_in_progress()) return;
 
     core.World.save();
     core.World.wait_for_save();

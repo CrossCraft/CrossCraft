@@ -1,7 +1,7 @@
 /// ZIP archive reader for texture/resource pack loading.
 ///
-/// Wraps `std.zip` to provide a directory-like interface: iterate entries,
-/// open files by path, and stream decompressed contents via `Io.Reader`.
+/// Wraps `std.zip` to open files by path and stream decompressed contents via
+/// `Io.Reader`.
 /// Supports at most 2 simultaneous open file streams.
 ///
 /// The `Zip` struct is heap-allocated because each stream slot contains a
@@ -27,9 +27,6 @@ io: Io,
 file_read_buf: [4096]u8,
 file_reader: File.Reader,
 
-cd_record_count: u64,
-cd_zip_offset: u64,
-cd_size: u64,
 index: []IndexEntry,
 name_blob: []u8,
 
@@ -43,8 +40,6 @@ const IndexEntry = struct {
 
 const StreamSlot = struct {
     in_use: bool = false,
-    filename_buf: [max_filename_len]u8 = undefined,
-    filename_len: u32 = 0,
 
     stream_read_buf: [4096]u8 = undefined,
     stream_file_reader: File.Reader = undefined,
@@ -59,15 +54,6 @@ const StreamSlot = struct {
     uncompressed_size: u64 = 0,
 };
 
-pub const Entry = struct {
-    inner: zip.Iterator.Entry,
-    filename: []const u8,
-
-    pub fn is_directory(self: *const Entry) bool {
-        return self.filename.len > 0 and self.filename[self.filename.len - 1] == '/';
-    }
-};
-
 pub const Stream = struct {
     slot_index: u32,
     reader: *Io.Reader,
@@ -75,27 +61,6 @@ pub const Stream = struct {
     data_offset: u64,
     uncompressed_size: u64,
     compression_method: zip.CompressionMethod,
-};
-
-pub const Iterator = struct {
-    zip_state: *Zip,
-    inner: zip.Iterator,
-    filename_buf: [max_filename_len]u8 = undefined,
-
-    pub fn next(self: *Iterator) !?Entry {
-        const entry = try self.inner.next() orelse return null;
-
-        if (entry.filename_len > max_filename_len) return error.ZipFilenameTooLong;
-
-        const fr = &self.zip_state.file_reader;
-        try fr.seekTo(entry.header_zip_offset + @sizeOf(zip.CentralDirectoryFileHeader));
-        try fr.interface.readSliceAll(self.filename_buf[0..entry.filename_len]);
-
-        return .{
-            .inner = entry,
-            .filename = self.filename_buf[0..entry.filename_len],
-        };
-    }
 };
 
 /// Opens the archive at `path` (resolved against `dir`). Pass the
@@ -114,10 +79,6 @@ pub fn init(allocator: std.mem.Allocator, _io: Io, dir: std.Io.Dir, path: []cons
     self.io = _io;
     self.file_reader = File.Reader.init(self.file, _io, &self.file_read_buf);
 
-    const iter = try zip.Iterator.init(&self.file_reader);
-    self.cd_record_count = iter.cd_record_count;
-    self.cd_zip_offset = iter.cd_zip_offset;
-    self.cd_size = iter.cd_size;
     self.index = &.{};
     self.name_blob = &.{};
     errdefer self.free_index();
@@ -140,33 +101,12 @@ pub fn deinit(self: *Zip) void {
     allocator.destroy(self);
 }
 
-pub fn iterator(self: *Zip) Iterator {
-    return .{
-        .zip_state = self,
-        .inner = .{
-            .input = &self.file_reader,
-            .cd_record_count = self.cd_record_count,
-            .cd_zip_offset = self.cd_zip_offset,
-            .cd_size = self.cd_size,
-        },
-    };
-}
-
-fn raw_iterator(self: *Zip) zip.Iterator {
-    return .{
-        .input = &self.file_reader,
-        .cd_record_count = self.cd_record_count,
-        .cd_zip_offset = self.cd_zip_offset,
-        .cd_size = self.cd_size,
-    };
-}
-
 fn build_index(self: *Zip) !void {
-    if (self.cd_record_count > max_cd_entries) return error.ZipTooManyEntries;
+    var iter = try zip.Iterator.init(&self.file_reader);
+    if (iter.cd_record_count > max_cd_entries) return error.ZipTooManyEntries;
 
     var index_len: usize = 0;
     var name_bytes: usize = 0;
-    var iter = self.raw_iterator();
     while (try iter.next()) |entry| {
         if (entry.filename_len > max_filename_len) continue;
         index_len += 1;
@@ -180,7 +120,8 @@ fn build_index(self: *Zip) !void {
 
     var name_offset: usize = 0;
     var i: usize = 0;
-    iter = self.raw_iterator();
+    iter = try zip.Iterator.init(&self.file_reader);
+    if (iter.cd_record_count > max_cd_entries) return error.ZipTooManyEntries;
     while (try iter.next()) |entry| {
         if (entry.filename_len > max_filename_len) continue;
 
@@ -231,7 +172,6 @@ pub fn open(self: *Zip, path: []const u8) !Stream {
     const slot = &self.streams[slot_index];
     const index_entry = self.find_index_entry(path) orelse return error.FileNotFound;
 
-    slot.filename_len = index_entry.name_len;
     try setup_stream(self, slot, &index_entry.entry);
     slot.in_use = true;
 
@@ -296,86 +236,42 @@ pub fn close_stream(self: *Zip, stream: *const Stream) void {
     slot.in_use = false;
 }
 
-// --- Tests ---
-
 const testing = std.testing;
 
-fn open_test_zip() !*Zip {
+const TestZip = struct {
+    tmp: testing.TmpDir,
+    zip: *Zip,
+
+    fn deinit(self: *TestZip) void {
+        self.zip.deinit();
+        self.tmp.cleanup();
+    }
+};
+
+fn open_test_zip() !TestZip {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     errdefer tmp.cleanup();
 
-    // Write embedded test fixture to a temp file
-    const zip_data = @embedFile("testdata/test.zip");
-    const file = try tmp.dir.createFile(io, "test.zip", .{});
-    var write_buf: [4096]u8 = undefined;
-    var writer = file.writer(io, &write_buf);
-    try writer.interface.writeAll(zip_data);
-    try writer.interface.flush();
-    file.close(io);
-
-    // Re-open for reading
-    const read_file = try tmp.dir.openFile(io, "test.zip", .{});
-    const allocator = testing.allocator;
-    const self = try allocator.create(Zip);
-    errdefer allocator.destroy(self);
-
-    self.file = read_file;
-    errdefer self.file.close(io);
-
-    self.allocator = allocator;
-    self.io = io;
-    self.file_reader = File.Reader.init(self.file, io, &self.file_read_buf);
-
-    const it = try zip.Iterator.init(&self.file_reader);
-    self.cd_record_count = it.cd_record_count;
-    self.cd_zip_offset = it.cd_zip_offset;
-    self.cd_size = it.cd_size;
-    self.index = &.{};
-    self.name_blob = &.{};
-    errdefer self.free_index();
-    try self.build_index();
-
-    for (&self.streams) |*slot| {
-        slot.in_use = false;
+    {
+        const file = try tmp.dir.createFile(io, "test.zip", .{});
+        defer file.close(io);
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(io, &write_buf);
+        try writer.interface.writeAll(@embedFile("testdata/test.zip"));
+        try writer.interface.flush();
     }
 
-    return self;
-}
-
-test "init and deinit" {
-    const z = try open_test_zip();
-    defer z.deinit();
-
-    try testing.expect(z.cd_record_count == 3);
-}
-
-test "iterate entries" {
-    const z = try open_test_zip();
-    defer z.deinit();
-
-    var it = z.iterator();
-    var count: u32 = 0;
-    var found_hello = false;
-    var found_compressed = false;
-    var found_nested = false;
-
-    while (try it.next()) |entry| {
-        if (std.mem.eql(u8, entry.filename, "hello.txt")) found_hello = true;
-        if (std.mem.eql(u8, entry.filename, "compressed.txt")) found_compressed = true;
-        if (std.mem.eql(u8, entry.filename, "subdir/nested.txt")) found_nested = true;
-        count += 1;
-    }
-
-    try testing.expectEqual(@as(u32, 3), count);
-    try testing.expect(found_hello);
-    try testing.expect(found_compressed);
-    try testing.expect(found_nested);
+    return .{
+        .tmp = tmp,
+        .zip = try Zip.init(testing.allocator, io, tmp.dir, "test.zip"),
+    };
 }
 
 test "open by path stored" {
-    const z = try open_test_zip();
-    defer z.deinit();
+    var fixture = try open_test_zip();
+    defer fixture.deinit();
+    const z = fixture.zip;
 
     var stream = try z.open("hello.txt");
     defer z.close_stream(&stream);
@@ -388,8 +284,9 @@ test "open by path stored" {
 }
 
 test "open by path deflate" {
-    const z = try open_test_zip();
-    defer z.deinit();
+    var fixture = try open_test_zip();
+    defer fixture.deinit();
+    const z = fixture.zip;
 
     var stream = try z.open("compressed.txt");
     defer z.close_stream(&stream);
@@ -404,8 +301,9 @@ test "open by path deflate" {
 }
 
 test "open nested path" {
-    const z = try open_test_zip();
-    defer z.deinit();
+    var fixture = try open_test_zip();
+    defer fixture.deinit();
+    const z = fixture.zip;
 
     var stream = try z.open("subdir/nested.txt");
     defer z.close_stream(&stream);
@@ -418,16 +316,18 @@ test "open nested path" {
 }
 
 test "open nonexistent" {
-    const z = try open_test_zip();
-    defer z.deinit();
+    var fixture = try open_test_zip();
+    defer fixture.deinit();
+    const z = fixture.zip;
 
     const result = z.open("nope.txt");
     try testing.expectError(error.FileNotFound, result);
 }
 
 test "two simultaneous streams" {
-    const z = try open_test_zip();
-    defer z.deinit();
+    var fixture = try open_test_zip();
+    defer fixture.deinit();
+    const z = fixture.zip;
 
     var s1 = try z.open("hello.txt");
     defer z.close_stream(&s1);
@@ -448,8 +348,9 @@ test "two simultaneous streams" {
 }
 
 test "stream slot exhaustion" {
-    const z = try open_test_zip();
-    defer z.deinit();
+    var fixture = try open_test_zip();
+    defer fixture.deinit();
+    const z = fixture.zip;
 
     var s1 = try z.open("hello.txt");
     defer z.close_stream(&s1);

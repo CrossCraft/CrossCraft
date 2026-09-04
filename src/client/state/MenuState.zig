@@ -46,11 +46,6 @@ const embedded_pack: []const u8 =
 var menu_state: @This() = undefined;
 var menu_state_inst: State = undefined;
 
-pub fn initial_state() State {
-    menu_state_inst = menu_state.state();
-    return menu_state_inst;
-}
-
 pub fn transition_here(engine: *Engine) void {
     menu_state_inst = menu_state.state();
     engine.transition(&menu_state_inst);
@@ -279,7 +274,6 @@ fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.
         return;
     };
 
-    core.blocks.init();
     const data = alloc.create(World.WorldData) catch |err| {
         log.warn("legacy save migration: failed to allocate world data object: {}", .{err});
         return;

@@ -4,7 +4,7 @@ const assert = std.debug.assert;
 pub const BLOCK_CAPACITY: usize = 256;
 pub const INVENTORY_SLOTS: u8 = 45;
 pub const INVENTORY_FILLED: u8 = 42;
-pub const FIRST_EXTENSION_ID: u8 = 50;
+const classic_block_count = 50;
 
 pub const Face = enum(u3) {
     x_neg = 0,
@@ -85,7 +85,7 @@ pub const SubvoxelBounds = struct {
             self.max_x == 16 and self.max_y == 16 and self.max_z == 16;
     }
 
-    pub fn valid(self: SubvoxelBounds) bool {
+    fn valid(self: SubvoxelBounds) bool {
         return self.min_x <= self.max_x and self.max_x <= 16 and
             self.min_y <= self.max_y and self.max_y <= 16 and
             self.min_z <= self.max_z and self.max_z <= 16;
@@ -118,7 +118,7 @@ pub const SimProps = packed struct(u8) {
 /// Complete registration input for one block. Registry compiles this friendly
 /// aggregate into its hot-path structure-of-arrays tables. Strings are borrowed
 /// and must outlive the Registry.
-pub const Definition = struct {
+const Definition = struct {
     mesh: MeshProps = .{},
     simulation: SimProps = .{},
     face_tiles: FaceTiles = .all(0, 0),
@@ -129,7 +129,7 @@ pub const Definition = struct {
     display_name: []const u8 = "",
     inventory_slot: ?u8 = null,
 
-    pub fn valid(self: Definition) bool {
+    fn valid(self: Definition) bool {
         const inventory_slot_valid = if (self.inventory_slot) |slot|
             slot < INVENTORY_SLOTS
         else
@@ -140,8 +140,8 @@ pub const Definition = struct {
     }
 };
 
-/// Compact runtime identity. Named tags cover Classic blocks, while `_`
-/// permits values allocated to extensions during startup.
+/// Named tags cover Classic blocks; unnamed values support wire IDs and local
+/// sentinels without inflating the one-byte representation.
 pub const Block = enum(u8) {
     air = 0,
     stone = 1,
@@ -204,35 +204,35 @@ pub const Block = enum(u8) {
     }
 
     pub inline fn mesh_props(self: Block) MeshProps {
-        return global.mesh_props_for(self);
+        return global.mesh_props[index(self)];
     }
 
     pub inline fn sim_props(self: Block) SimProps {
-        return global.sim_props_for(self);
+        return global.sim_props[index(self)];
     }
 
     pub inline fn fluid_kind(self: Block) FluidKind {
-        return global.fluid_kind_for(self);
+        return global.fluid_kind[index(self)];
     }
 
     pub inline fn material(self: Block) Material {
-        return global.material_for(self);
+        return global.material[index(self)];
     }
 
     pub inline fn bounds(self: Block) SubvoxelBounds {
-        return global.bounds_for(self);
+        return global.bounds[index(self)];
     }
 
     pub inline fn face_tile(self: Block, face: Face) Tile {
-        return global.face_tile(self, face);
+        return global.face_tiles[index(self)].for_face(face);
     }
 
     pub inline fn display_name(self: Block) []const u8 {
-        return global.display_name_for(self);
+        return global.display_name[index(self)];
     }
 
     pub inline fn collision_height(self: Block) f32 {
-        const height = global.collision_height_16_for(self);
+        const height = global.collision_height_16[index(self)];
         return @as(f32, @floatFromInt(height)) * (1.0 / 16.0);
     }
 
@@ -240,28 +240,12 @@ pub const Block = enum(u8) {
         return self.mesh_props().@"opaque";
     }
 
-    pub inline fn is_visible(self: Block) bool {
-        return self.mesh_props().visible;
-    }
-
     pub inline fn is_fluid(self: Block) bool {
         return self.mesh_props().fluid;
     }
 
-    pub inline fn is_cross(self: Block) bool {
-        return self.mesh_props().cross;
-    }
-
-    pub inline fn is_leaf(self: Block) bool {
-        return self.mesh_props().leaf;
-    }
-
     pub inline fn is_slab(self: Block) bool {
         return self.mesh_props().slab;
-    }
-
-    pub inline fn is_glass(self: Block) bool {
-        return self.mesh_props().glass;
     }
 
     pub inline fn emits_light(self: Block) bool {
@@ -313,17 +297,8 @@ comptime {
     assert(@sizeOf(Block) == 1);
 }
 
-pub const RegistrationError = error{
-    AlreadyRegistered,
-    RegistryFull,
-    InventorySlotOccupied,
-    InvalidDefinition,
-};
-
-/// Runtime representation of registered definitions. Registration happens at
-/// startup; gameplay performs indexed reads from these parallel arrays.
-pub const Registry = struct {
-    registered: [BLOCK_CAPACITY]bool,
+/// Compile-time structure-of-arrays lookup table for gameplay hot paths.
+const Registry = struct {
     mesh_props: [BLOCK_CAPACITY]MeshProps,
     sim_props: [BLOCK_CAPACITY]SimProps,
     face_tiles: [BLOCK_CAPACITY]FaceTiles,
@@ -335,9 +310,8 @@ pub const Registry = struct {
     inventory_order: [INVENTORY_SLOTS]Block,
     inventory_used: [INVENTORY_SLOTS]bool,
 
-    pub fn empty() Registry {
+    fn empty() Registry {
         return .{
-            .registered = @splat(false),
             .mesh_props = @splat(MeshProps{}),
             .sim_props = @splat(SimProps{}),
             .face_tiles = @splat(FaceTiles.all(0, 0)),
@@ -351,24 +325,22 @@ pub const Registry = struct {
         };
     }
 
-    pub fn classic() Registry {
+    fn classic() Registry {
         var self = Registry.empty();
-        for (0..FIRST_EXTENSION_ID) |raw_id| {
+        for (0..classic_block_count) |raw_id| {
             const value: Block = @enumFromInt(raw_id);
-            self.register(value, classic_definition(value)) catch unreachable;
+            self.register(value, classic_definition(value));
         }
         return self;
     }
 
-    pub fn register(self: *Registry, value: Block, def: Definition) RegistrationError!void {
+    fn register(self: *Registry, value: Block, def: Definition) void {
         const id = index(value);
-        if (self.registered[id]) return error.AlreadyRegistered;
-        if (!def.valid()) return error.InvalidDefinition;
+        assert(def.valid());
         if (def.inventory_slot) |slot| {
-            if (self.inventory_used[slot]) return error.InventorySlotOccupied;
+            assert(!self.inventory_used[slot]);
         }
 
-        self.registered[id] = true;
         self.mesh_props[id] = def.mesh;
         self.sim_props[id] = def.simulation;
         self.face_tiles[id] = def.face_tiles;
@@ -383,69 +355,13 @@ pub const Registry = struct {
             self.inventory_used[slot] = true;
         }
     }
-
-    /// Allocate the first free value in the extension range.
-    pub fn register_extension(self: *Registry, def: Definition) RegistrationError!Block {
-        for (FIRST_EXTENSION_ID..BLOCK_CAPACITY) |raw_id| {
-            if (self.registered[raw_id]) continue;
-            const value: Block = @enumFromInt(raw_id);
-            try self.register(value, def);
-            return value;
-        }
-        return error.RegistryFull;
-    }
-
-    pub inline fn is_registered(self: *const Registry, value: Block) bool {
-        return self.registered[index(value)];
-    }
-
-    pub inline fn mesh_props_for(self: *const Registry, value: Block) MeshProps {
-        return self.mesh_props[index(value)];
-    }
-
-    pub inline fn sim_props_for(self: *const Registry, value: Block) SimProps {
-        return self.sim_props[index(value)];
-    }
-
-    pub inline fn fluid_kind_for(self: *const Registry, value: Block) FluidKind {
-        return self.fluid_kind[index(value)];
-    }
-
-    pub inline fn material_for(self: *const Registry, value: Block) Material {
-        return self.material[index(value)];
-    }
-
-    pub inline fn bounds_for(self: *const Registry, value: Block) SubvoxelBounds {
-        return self.bounds[index(value)];
-    }
-
-    pub inline fn collision_height_16_for(self: *const Registry, value: Block) u8 {
-        return self.collision_height_16[index(value)];
-    }
-
-    pub inline fn display_name_for(self: *const Registry, value: Block) []const u8 {
-        return self.display_name[index(value)];
-    }
-
-    pub inline fn face_tile(self: *const Registry, value: Block, face: Face) Tile {
-        return self.face_tiles[index(value)].for_face(face);
-    }
-
-    pub inline fn inventory_block(self: *const Registry, slot: u8) Block {
-        assert(slot < INVENTORY_SLOTS);
-        return self.inventory_order[slot];
-    }
 };
 
-/// Process-wide frozen registry used by Block's convenience methods.
-pub var global: Registry = undefined;
-
-pub fn init() void {
-    global = Registry.classic();
-}
+const global = Registry.classic();
 
 pub inline fn inventory_block(slot: u8) Block {
-    return global.inventory_block(slot);
+    assert(slot < INVENTORY_SLOTS);
+    return global.inventory_order[slot];
 }
 
 fn index(value: Block) usize {
@@ -493,19 +409,11 @@ fn classic_definition(value: Block) Definition {
             set_catalog(&def, "", .all(1, 1), .stone, null);
             def.simulation.breakable = false;
         },
-        .flowing_water => {
+        .flowing_water, .still_water => {
             set_catalog(&def, "", .all(14, 0), .grass, null);
             def.fluid_kind = .water;
         },
-        .still_water => {
-            set_catalog(&def, "", .all(14, 0), .grass, null);
-            def.fluid_kind = .water;
-        },
-        .flowing_lava => {
-            set_catalog(&def, "", .all(14, 1), .grass, null);
-            def.fluid_kind = .lava;
-        },
-        .still_lava => {
+        .flowing_lava, .still_lava => {
             set_catalog(&def, "", .all(14, 1), .grass, null);
             def.fluid_kind = .lava;
         },
@@ -619,13 +527,11 @@ fn classic_definition(value: Block) Definition {
 }
 
 test "classic registry preserves block properties" {
-    init();
-
     try std.testing.expect(Block.air.is_air());
     try std.testing.expect(!Block.stone.is_air());
     try std.testing.expect(Block.stone.is_opaque());
     try std.testing.expect(!Block.glass.is_opaque());
-    try std.testing.expect(Block.glass.is_glass());
+    try std.testing.expect(Block.glass.mesh_props().glass);
     try std.testing.expect(Block.still_water.is_water());
     try std.testing.expect(Block.flowing_lava.is_lava());
     try std.testing.expect(Block.still_water.is_fluid());
@@ -641,21 +547,4 @@ test "classic registry preserves block properties" {
     try std.testing.expectEqual(@as(f32, 0.0), Block.air.collision_height());
     try std.testing.expectEqual(@as(u8, 1), Block.stone.face_tile(.y_pos).col);
     try std.testing.expectEqual(Block.obsidian, inventory_block(41));
-}
-
-test "registry allocates an open enum value for an extension" {
-    var blocks = Registry.classic();
-    const marble = try blocks.register_extension(.{
-        .mesh = .{ .@"opaque" = true, .visible = true },
-        .simulation = .{ .solid = true, .selectable = true, .breakable = true, .step_sound = true },
-        .face_tiles = .all(6, 2),
-        .material = .stone,
-        .collision_height_16 = 16,
-        .display_name = "Marble",
-    });
-
-    try std.testing.expectEqual(@as(u8, FIRST_EXTENSION_ID), @intFromEnum(marble));
-    try std.testing.expect(blocks.is_registered(marble));
-    try std.testing.expect(blocks.mesh_props_for(marble).@"opaque");
-    try std.testing.expectEqualStrings("Marble", blocks.display_name_for(marble));
 }

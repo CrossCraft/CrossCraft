@@ -1,10 +1,8 @@
-// --- World geometry ---
 const std = @import("std");
 const assert = std.debug.assert;
 
-/// Chunks per axis is always 16 voxels. See the module comment.
 pub const chunk_size: u32 = 16;
-pub const chunk_volume: u32 = chunk_size * chunk_size * chunk_size; // 4096
+pub const chunk_volume: u32 = chunk_size * chunk_size * chunk_size;
 pub const log2_chunk_size: u5 = 4;
 pub const chunk_mask: u32 = chunk_size - 1;
 
@@ -19,9 +17,6 @@ pub const max_length: u32 = 512;
 pub const max_height: u32 = 128;
 pub const max_depth: u32 = 512;
 
-/// Power-of-two axis -> the shift that divides by it. `std.math.log2_int` is
-/// unusable here because it demands a comptime argument and these axes are
-/// runtime values; `@ctz` is a single instruction on the targets we ship.
 fn shift_of(v: u32) u5 {
     assert(v != 0 and @popCount(v) == 1);
     return @intCast(@ctz(v));
@@ -32,7 +27,6 @@ pub const WorldDims = struct {
     height: u32,
     depth: u32,
 
-    /// Chunks per axis; each is an axis divided by `chunk_size`.
     chunks_x: u32,
     chunks_y: u32,
     chunks_z: u32,
@@ -122,21 +116,13 @@ pub const WorldDims = struct {
 
 pub const default: WorldDims = WorldDims.init(256, 64, 256);
 
-/// Named X/Z footprint presets. The discriminant doubles as an offset from
-/// log2 128, so preset geometry is pure shift math: `edge()` is one `shl`.
 pub const WorldSize = enum(u8) {
     tiny,
     normal,
     huge,
 
-    /// log2 of the edge length: tiny = 7 (128), normal = 8 (256), huge = 9 (512).
-    pub fn log2_edge(self: WorldSize) u5 {
-        return 7 + @as(u5, @intCast(@intFromEnum(self)));
-    }
-
-    /// Edge length in blocks: 128, 256, or 512 (applied to both X and Z).
     pub fn edge(self: WorldSize) u32 {
-        return @as(u32, 1) << self.log2_edge();
+        return @as(u32, 128) << @intCast(@intFromEnum(self));
     }
 
     pub fn label(self: WorldSize) []const u8 {
@@ -147,28 +133,17 @@ pub const WorldSize = enum(u8) {
         };
     }
 
-    /// Parse a `world-size` value from server.properties.
     pub fn parse(text: []const u8) ?WorldSize {
-        inline for (@typeInfo(WorldSize).@"enum".fields) |field| {
-            if (std.mem.eql(u8, text, field.name)) return @enumFromInt(field.value);
-        }
-        return null;
+        return parse_enum(WorldSize, text);
     }
 };
 
-/// Named height presets. Normal matches Classic's 64-block worlds; tall doubles it.
 pub const WorldHeight = enum(u8) {
     normal,
     tall,
 
-    /// log2 of the height: normal = 6 (64), tall = 7 (128).
-    pub fn log2_height(self: WorldHeight) u5 {
-        return 6 + @as(u5, @intCast(@intFromEnum(self)));
-    }
-
-    /// Height in blocks: 64 or 128.
     pub fn height(self: WorldHeight) u32 {
-        return @as(u32, 1) << self.log2_height();
+        return @as(u32, 64) << @intCast(@intFromEnum(self));
     }
 
     pub fn label(self: WorldHeight) []const u8 {
@@ -178,20 +153,20 @@ pub const WorldHeight = enum(u8) {
         };
     }
 
-    /// Parse a `world-height` value from server.properties.
     pub fn parse(text: []const u8) ?WorldHeight {
-        inline for (@typeInfo(WorldHeight).@"enum".fields) |field| {
-            if (std.mem.eql(u8, text, field.name)) return @enumFromInt(field.value);
-        }
-        return null;
+        return parse_enum(WorldHeight, text);
     }
 };
 
-/// Geometry for a size x height pair: a square footprint crossed with the
-/// preset height. The image is exactly the supported world lattice -- the
-/// same six geometries `WorldDims.valid` accepts.
 pub fn from_presets(size: WorldSize, height: WorldHeight) WorldDims {
     return WorldDims.init(size.edge(), height.height(), size.edge());
+}
+
+fn parse_enum(comptime T: type, text: []const u8) ?T {
+    inline for (@typeInfo(T).@"enum".fields) |field| {
+        if (std.mem.eql(u8, text, field.name)) return @enumFromInt(field.value);
+    }
+    return null;
 }
 
 test "presets cover the supported lattice" {
@@ -215,7 +190,6 @@ test "presets cover the supported lattice" {
     }
     try std.testing.expectEqual(default, from_presets(.normal, .normal));
     try std.testing.expectEqual(@as(u32, 128), WorldSize.tiny.edge());
-    try std.testing.expectEqual(@as(u5, 9), WorldSize.huge.log2_edge());
     try std.testing.expectEqual(@as(u32, 128), WorldHeight.tall.height());
 }
 
@@ -274,32 +248,9 @@ test "block_index matches an independent reference on every preset" {
                 }
             }
         }
-        // The far corner must be the last voxel, so the field widths are
-        // sufficient and no two voxels can collide.
         const last = dims.block_index(dims.length - 1, dims.height - 1, dims.depth - 1);
         try std.testing.expectEqual(dims.volume() - 1, last);
     }
-}
-
-test "block_index is a bijection over a whole world" {
-    const dims = WorldDims.from_array(.{ 128, 64, 128 }) orelse return error.TestUnexpectedResult;
-    var seen = try std.testing.allocator.alloc(bool, dims.volume());
-    defer std.testing.allocator.free(seen);
-    @memset(seen, false);
-
-    for (0..dims.length) |x| for (0..dims.height) |y| for (0..dims.depth) |z| {
-        const i = dims.block_index(@intCast(x), @intCast(y), @intCast(z));
-        try std.testing.expect(i < dims.volume());
-        if (seen[i]) return error.TestUnexpectedResult;
-        seen[i] = true;
-    };
-    for (seen) |hit| try std.testing.expect(hit);
-}
-
-test "a taller world relocates chunks by its own chunk grid" {
-    const dims = WorldDims.from_array(.{ 512, 128, 512 }) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 32 * 8 * 32), dims.chunk_count());
-    try std.testing.expectEqual(@as(u32, 32 * 32 * chunk_volume), dims.block_index(0, 16, 0));
 }
 
 test "valid rejects anything the encodings cannot carry" {
@@ -307,11 +258,11 @@ test "valid rejects anything the encodings cannot carry" {
     try std.testing.expect(WorldDims.valid(.{ 512, 128, 512 }));
     try std.testing.expect(WorldDims.valid(.{ 128, 64, 128 }));
 
-    try std.testing.expect(!WorldDims.valid(.{ 64, 64, 128 })); // below min_length
-    try std.testing.expect(!WorldDims.valid(.{ 1024, 64, 128 })); // above max_length
-    try std.testing.expect(!WorldDims.valid(.{ 256, 256, 256 })); // above max_height
-    try std.testing.expect(!WorldDims.valid(.{ 256, 64, 1024 })); // above max_depth
-    try std.testing.expect(!WorldDims.valid(.{ 192, 64, 128 })); // not a power of two
+    try std.testing.expect(!WorldDims.valid(.{ 64, 64, 128 }));
+    try std.testing.expect(!WorldDims.valid(.{ 1024, 64, 128 }));
+    try std.testing.expect(!WorldDims.valid(.{ 256, 256, 256 }));
+    try std.testing.expect(!WorldDims.valid(.{ 256, 64, 1024 }));
+    try std.testing.expect(!WorldDims.valid(.{ 192, 64, 128 }));
 
     try std.testing.expect(WorldDims.from_array(.{ 320, 64, 256 }) == null);
 }

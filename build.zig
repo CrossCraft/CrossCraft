@@ -221,9 +221,7 @@ pub fn build(b: *std.Build) void {
 
         const run_server_step = b.step("run-server", "Run the server");
         const run_server_cmd = b.addRunArtifact(server_exe);
-        // Run from zig-out/bin/ so server.zig's cwd-rooted data files
-        // (world.dat, server.properties) land in the install dir instead of
-        // polluting the source tree.
+        // Keep server data under zig-out/bin instead of the source tree.
         run_server_cmd.setCwd(.{ .cwd_relative = b.getInstallPath(.bin, "") });
         run_server_cmd.step.dependOn(build_server_step);
         run_server_step.dependOn(&run_server_cmd.step);
@@ -368,22 +366,17 @@ pub fn build(b: *std.Build) void {
     }
     test_step.dependOn(&b.addRunArtifact(core_tests).step);
 
-    // Standalone build step for the pack_zip host tool.
-    // Usage: zig build pack-tool
-    // Produces zig-out/bin/pack_zip (host-native binary).
-    const pack_tool_step = b.step("pack-tool", "Build the pack_zip resource packing tool");
-    const pack_tool_exe = b.addExecutable(.{
-        .name = "pack_zip",
+    const worldgen_tests = b.addTest(.{
+        .name = "worldgen_tests",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/pack_zip.zig"),
-            .target = b.graph.host,
+            .root_source_file = b.path("src/core/worldgen/root.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
         }),
+        .filters = test_filters,
     });
-    pack_tool_step.dependOn(&b.addInstallArtifact(pack_tool_exe, .{}).step);
+    test_step.dependOn(&b.addRunArtifact(worldgen_tests).step);
 
-    // Standalone save conversion/editing tool.
-    // Usage: zig build savetool
-    // Produces zig-out/bin/savetool (host-native binary).
     const savetool_step = b.step("savetool", "Build the save conversion/editing tool");
     const savetool_exe = b.addExecutable(.{
         .name = "savetool",
@@ -401,8 +394,6 @@ pub fn build(b: *std.Build) void {
     // Golden-hash regression test for the worldgen module: regenerates 100
     // predetermined worlds and compares sha256 block-array hashes against
     // values captured from the Classic-Worldgen-RE black-box oracle.
-    // Usage: zig build worldgen-test -Doptimize=ReleaseSafe
-    // Produces and runs zig-out/bin/worldgen_test (host-native binary).
     const worldgen_test_step = b.step("worldgen-test", "Verify worldgen output against 100 oracle-captured golden hashes");
     const worldgen_test_exe = b.addExecutable(.{
         .name = "worldgen_test",
@@ -415,7 +406,6 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    worldgen_test_step.dependOn(&b.addInstallArtifact(worldgen_test_exe, .{}).step);
     worldgen_test_step.dependOn(&b.addRunArtifact(worldgen_test_exe).step);
 
     const web_target = Aether.config.webTarget(b);

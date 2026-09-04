@@ -7,23 +7,10 @@
 // Ported to Zig for CrossCraft (GPLv2; uses separate Aether-Engine).
 // Modifications Copyright (c) 2026 CrossCraft
 
-//! Swept-AABB entity/world collision.
-//!
-//! One tick of motion resolves as:
-//!   1. Build the entity AABB and the swept extent (AABB + velocity).
-//!   2. Broadphase: gather every solid block intersecting the extent,
-//!      tagging each with tSquared = tx^2 + ty^2 + tz^2 (per-axis slab time).
-//!   3. Sort candidates ascending by tSquared so closer colliders resolve
-//!      first -- no true 3-D sweep time is computed; ordering plus the face
-//!      classifier below recover the right clip.
-//!   4. For each candidate, recompute per-axis t against the (possibly
-//!      clipped) entity, project to contact, pick one face, and clip.
-//!      Horizontal clips try step-up first when the entity was grounded.
-//!
-//! The module lives in `core` and resolves against the `WorldData` handed to
-//! it: block lookups and the world bounds both come from that value, so there
-//! is one source of truth for the geometry. Block AABBs come from
-//! `blocks.global.bounds`.
+//! Swept-AABB entity/world collision. Each move gathers intersecting blocks,
+//! resolves the nearest candidates first, and attempts grounded step-up before
+//! clipping horizontal motion. World bounds and block geometry come from
+//! `WorldData` and `Block.bounds`.
 const std = @import("std");
 const blocks = @import("blocks.zig");
 const WorldData = @import("world/WorldData.zig");
@@ -36,14 +23,11 @@ pub const EPSILON: f32 = 0.001;
 /// Sentinel returned by `axis_time` when velocity on that axis is zero.
 const MATH_LARGE: f32 = 1.0e9;
 
-/// Hard ceiling on candidate blocks gathered in one tick. 256 * 32 B = 8 KB
-/// on stack. See comment on `MAX_TICK_VEL` for the broadphase footprint
-/// envelope this is sized against.
-const MAX_CANDIDATES: u32 = 256;
+/// A 0.6 x 1.8 player swept at `MAX_TICK_VEL` spans at most 7 x 8 x 7 cells.
+const MAX_CANDIDATES = 7 * 8 * 7;
 
-/// Per-axis velocity clamp applied before broadphase. Caps the worst-case
-/// extent box at ~(2*half_w + 2*MAX_TICK_VEL)^3 cells and keeps the
-/// candidate buffer bounded. 5.0 blocks/tick (100 blocks/sec at 20 TPS) is
+/// Per-axis velocity clamp applied before broadphase. It bounds the candidate
+/// extent. 5.0 blocks/tick (100 blocks/sec at 20 TPS) is
 /// well above terminal velocity (~4.0 under Classic drag/gravity) and any
 /// realistic input-driven motion; anything larger indicates a bug upstream.
 const MAX_TICK_VEL: f32 = 5.0;
@@ -88,8 +72,6 @@ const ResolveState = struct {
     hit_z: bool,
 };
 
-// --- Public API ---
-
 /// Resolve a proposed tick's worth of movement against the voxel world.
 /// `pos` is feet-centred (X/Z = centre, Y = base). `vel` is per-tick
 /// displacement (blocks/tick). `half_w` and `height` define the entity AABB.
@@ -104,8 +86,6 @@ pub fn move_and_wall_slide(
     step_size: f32,
     was_on_ground: bool,
 ) MoveResult {
-    // Degenerate input: no motion -> no clip work; return position verbatim
-    // with all flags cleared.
     if (vel[0] == 0.0 and vel[1] == 0.0 and vel[2] == 0.0) {
         return .{
             .x = pos[0],
@@ -137,14 +117,11 @@ pub fn move_and_wall_slide(
     };
 
     var buf: [MAX_CANDIDATES]Candidate = undefined;
-    var count: u32 = 0;
+    var count: usize = 0;
     broadphase(data, state.entity, state.vel, buf[0..], &count);
     insertion_sort(buf[0..count]);
 
-    var i: u32 = 0;
-    while (i < count) : (i += 1) {
-        resolve_candidate(data, &state, buf[i]);
-    }
+    for (buf[0..count]) |candidate| resolve_candidate(data, &state, candidate);
 
     // Integrate remaining velocity. Axes that collided are zero (the clip
     // already snapped the entity flush to the face); non-colliding axes
@@ -187,16 +164,12 @@ pub fn try_step_up(
     std.debug.assert(step_size > 0.0);
     const raised_y = pos[1] + step_size;
 
-    // Clearance at raised height, before horizontal motion.
     const raised = entity_aabb(pos[0], raised_y, pos[2], half_w, height);
     if (overlaps_any_solid(data, raised)) return null;
 
-    // Horizontal slide at raised height. Disable further step-up here
-    // (step_size = 0) so probes don't recurse.
     const moved = move_and_wall_slide(data, .{ pos[0], raised_y, pos[2] }, .{ dx, 0.0, dz }, half_w, height, 0.0, false);
     if (moved.x == pos[0] and moved.z == pos[2]) return null;
 
-    // Drop-down to find the surface under the stepped-to position.
     const landed_y = find_landing_y(data, moved.x, raised_y, moved.z, half_w, height, step_size) orelse return null;
     if (landed_y < pos[1]) return null;
 
@@ -219,8 +192,6 @@ pub fn is_on_ground(
     box.max_y -= EPSILON;
     return overlaps_any_solid(data, box);
 }
-
-// --- Broadphase ---
 
 fn entity_aabb(px: f32, py: f32, pz: f32, half_w: f32, height: f32) Aabb {
     return .{
@@ -249,7 +220,7 @@ fn broadphase(
     entity: Aabb,
     vel: [3]f32,
     out: []Candidate,
-    count: *u32,
+    count: *usize,
 ) void {
     const extent = extent_of(entity, vel);
 
@@ -260,8 +231,6 @@ fn broadphase(
     const by_max: i32 = floor_i32(extent.max_y);
     const bz_max: i32 = floor_i32(extent.max_z);
 
-    // YZX order matches the world storage layout; not critical for the few
-    // cells this typically visits, but cheap to follow.
     var by: i32 = by_min;
     while (by <= by_max) : (by += 1) {
         var bz: i32 = bz_min;
@@ -269,15 +238,12 @@ fn broadphase(
             var bx: i32 = bx_min;
             while (bx <= bx_max) : (bx += 1) {
                 const bb = solid_block_aabb(data, bx, by, bz) orelse continue;
-                // Non-full block bounds may not touch the extent even if
-                // the unit cell did; guard the intersection explicitly.
                 if (!intersects(extent, bb)) continue;
 
                 const t = calc_time(entity, bb, vel);
                 if (t[0] > 1.0 or t[1] > 1.0 or t[2] > 1.0) continue;
 
-                std.debug.assert(count.* < MAX_CANDIDATES);
-                if (count.* >= MAX_CANDIDATES) return;
+                if (count.* >= out.len) return;
                 out[count.*] = .{
                     .bounds = bb,
                     .t_squared = t[0] * t[0] + t[1] * t[1] + t[2] * t[2],
@@ -340,8 +306,6 @@ fn full_cube(bx: i32, by: i32, bz: i32) Aabb {
     };
 }
 
-// --- Narrowphase: per-axis slab time ---
-
 fn calc_time(entity: Aabb, block: Aabb, vel: [3]f32) [3]f32 {
     return .{
         axis_time(entity.min_x, entity.max_x, block.min_x, block.max_x, vel[0]),
@@ -359,8 +323,6 @@ fn axis_time(e_min: f32, e_max: f32, b_min: f32, b_max: f32, v: f32) f32 {
     return @abs(d / v);
 }
 
-// --- Sorting ---
-
 fn insertion_sort(buf: []Candidate) void {
     if (buf.len < 2) return;
     var i: usize = 1;
@@ -374,15 +336,11 @@ fn insertion_sort(buf: []Candidate) void {
     }
 }
 
-// --- Resolution ---
-
 fn resolve_candidate(
     data: *const WorldData,
     state: *ResolveState,
     cand: Candidate,
 ) void {
-    // Earlier clips may have shrunk extent on some axes; re-check overlap
-    // before spending effort on this candidate.
     const ext = extent_of(state.entity, state.vel);
     if (!intersects(ext, cand.bounds)) return;
 
@@ -399,12 +357,10 @@ fn resolve_candidate(
     const face = classify_face(final, cand.bounds, state.hit_y_above);
     switch (face) {
         .none => {},
-        .y_max => clip_y_max(state, cand.bounds),
-        .y_min => clip_y_min(state, cand.bounds),
-        .x_min => if (!try_step(data, state, final, cand.bounds)) clip_x_min(state, cand.bounds),
-        .x_max => if (!try_step(data, state, final, cand.bounds)) clip_x_max(state, cand.bounds),
-        .z_min => if (!try_step(data, state, final, cand.bounds)) clip_z_min(state, cand.bounds),
-        .z_max => if (!try_step(data, state, final, cand.bounds)) clip_z_max(state, cand.bounds),
+        .y_max, .y_min => clip(state, cand.bounds, face),
+        .x_min, .x_max, .z_min, .z_max => {
+            if (!try_step(data, state, final, cand.bounds)) clip(state, cand.bounds, face);
+        },
     }
 }
 
@@ -427,67 +383,37 @@ fn classify_face(final: Aabb, block: Aabb, ceiling_hit: bool) Face {
     return .none;
 }
 
-// --- Clip primitives ---
-// Each clip snaps the entity flush to the collided face with a small
-// EPSILON gap, zeroes the velocity component on that axis, and sets the
-// corresponding hit flag. No helper factoring -- the six are small enough
-// that inlining each keeps the code easy to trace against the spec.
-
-fn clip_y_max(state: *ResolveState, block: Aabb) void {
-    const height = state.entity.max_y - state.entity.min_y;
-    const new_y = block.max_y + EPSILON;
-    state.entity.min_y = new_y;
-    state.entity.max_y = new_y + height;
-    state.vel[1] = 0;
-    state.on_ground = true;
+fn clip(state: *ResolveState, block: Aabb, face: Face) void {
+    switch (face) {
+        .y_max => {
+            clip_interval(&state.entity.min_y, &state.entity.max_y, &state.vel[1], block.max_y, true);
+            state.on_ground = true;
+        },
+        .y_min => {
+            clip_interval(&state.entity.min_y, &state.entity.max_y, &state.vel[1], block.min_y, false);
+            state.hit_y_above = true;
+        },
+        .x_max => clip_interval(&state.entity.min_x, &state.entity.max_x, &state.vel[0], block.max_x, true),
+        .x_min => clip_interval(&state.entity.min_x, &state.entity.max_x, &state.vel[0], block.min_x, false),
+        .z_max => clip_interval(&state.entity.min_z, &state.entity.max_z, &state.vel[2], block.max_z, true),
+        .z_min => clip_interval(&state.entity.min_z, &state.entity.max_z, &state.vel[2], block.min_z, false),
+        .none => unreachable,
+    }
+    if (face == .x_min or face == .x_max) state.hit_x = true;
+    if (face == .z_min or face == .z_max) state.hit_z = true;
 }
 
-fn clip_y_min(state: *ResolveState, block: Aabb) void {
-    const height = state.entity.max_y - state.entity.min_y;
-    const new_y = block.min_y - height - EPSILON;
-    state.entity.min_y = new_y;
-    state.entity.max_y = new_y + height;
-    state.vel[1] = 0;
-    state.hit_y_above = true;
+fn clip_interval(min: *f32, max: *f32, velocity: *f32, barrier: f32, move_min: bool) void {
+    const size = max.* - min.*;
+    if (move_min) {
+        min.* = barrier + EPSILON;
+        max.* = min.* + size;
+    } else {
+        max.* = barrier - EPSILON;
+        min.* = max.* - size;
+    }
+    velocity.* = 0;
 }
-
-fn clip_x_max(state: *ResolveState, block: Aabb) void {
-    const width = state.entity.max_x - state.entity.min_x;
-    const new_min = block.max_x + EPSILON;
-    state.entity.min_x = new_min;
-    state.entity.max_x = new_min + width;
-    state.vel[0] = 0;
-    state.hit_x = true;
-}
-
-fn clip_x_min(state: *ResolveState, block: Aabb) void {
-    const width = state.entity.max_x - state.entity.min_x;
-    const new_max = block.min_x - EPSILON;
-    state.entity.max_x = new_max;
-    state.entity.min_x = new_max - width;
-    state.vel[0] = 0;
-    state.hit_x = true;
-}
-
-fn clip_z_max(state: *ResolveState, block: Aabb) void {
-    const depth = state.entity.max_z - state.entity.min_z;
-    const new_min = block.max_z + EPSILON;
-    state.entity.min_z = new_min;
-    state.entity.max_z = new_min + depth;
-    state.vel[2] = 0;
-    state.hit_z = true;
-}
-
-fn clip_z_min(state: *ResolveState, block: Aabb) void {
-    const depth = state.entity.max_z - state.entity.min_z;
-    const new_max = block.min_z - EPSILON;
-    state.entity.max_z = new_max;
-    state.entity.min_z = new_max - depth;
-    state.vel[2] = 0;
-    state.hit_z = true;
-}
-
-// --- DidSlide (in-loop step-up) ---
 
 /// In-loop step-up. Gated on `was_on_ground` and `step_size > 0`; computes
 /// the raise height from the block top, verifies clearance with a
@@ -525,8 +451,6 @@ fn try_step(
     state.on_ground = true;
     return true;
 }
-
-// --- Overlap / landing helpers ---
 
 fn overlaps_any_solid(data: *const WorldData, box: Aabb) bool {
     const bx_min: i32 = floor_i32(box.min_x);
@@ -610,4 +534,113 @@ fn floor_i32(v: f32) i32 {
     if (!(f >= -2147483648.0)) return std.math.minInt(i32);
     if (!(f <= 2147483647.0)) return std.math.maxInt(i32);
     return @intFromFloat(f);
+}
+
+test "movement clips against blocks, slabs, ceilings, and world edges" {
+    var data: WorldData = undefined;
+    try data.init_in_place(std.testing.allocator, @import("world_dims.zig").default, 1);
+    defer data.deinit();
+
+    data.blocks[data.get_index(10, 0, 10)] = .stone;
+    const floor = move_and_wall_slide(&data, .{ 10.5, 1.4, 10.5 }, .{ 0, -0.6, 0 }, 0.3, 1.8, 0, false);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0 + EPSILON), floor.y, 0.0001);
+    try std.testing.expect(floor.on_ground);
+
+    data.blocks[data.get_index(20, 0, 20)] = .slab;
+    const slab = move_and_wall_slide(&data, .{ 20.5, 1.0, 20.5 }, .{ 0, -0.8, 0 }, 0.3, 1.8, 0, false);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5 + EPSILON), slab.y, 0.0001);
+    try std.testing.expect(slab.on_ground);
+
+    data.blocks[data.get_index(12, 1, 10)] = .stone;
+    const wall = move_and_wall_slide(&data, .{ 11.2, 1.0, 10.5 }, .{ 1, 0, 0 }, 0.3, 1.8, 0, false);
+    try std.testing.expectApproxEqAbs(@as(f32, 12.0 - EPSILON - 0.3), wall.x, 0.0001);
+    try std.testing.expect(wall.hit_x);
+
+    data.blocks[data.get_index(30, 3, 30)] = .stone;
+    const ceiling = move_and_wall_slide(&data, .{ 30.5, 1.0, 30.5 }, .{ 0, 0.5, 0 }, 0.3, 1.8, 0, false);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0 - EPSILON - 1.8), ceiling.y, 0.0001);
+    try std.testing.expect(ceiling.hit_y_above);
+
+    const edge = move_and_wall_slide(&data, .{ 0.4, 2.0, 10.5 }, .{ -1, 0, 0 }, 0.3, 1.8, 0, false);
+    try std.testing.expectApproxEqAbs(@as(f32, EPSILON + 0.3), edge.x, 0.0001);
+    try std.testing.expect(edge.hit_x);
+}
+
+test "grounded movement steps onto a clear reachable slab" {
+    var data: WorldData = undefined;
+    try data.init_in_place(std.testing.allocator, @import("world_dims.zig").default, 1);
+    defer data.deinit();
+
+    data.blocks[data.get_index(11, 1, 10)] = .slab;
+    const stepped = move_and_wall_slide(&data, .{ 10.2, 1.0, 10.5 }, .{ 1.0, 0, 0 }, 0.3, 1.8, 0.5, true);
+    try std.testing.expectApproxEqAbs(@as(f32, 11.2), stepped.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.5 + EPSILON), stepped.y, 0.0001);
+    try std.testing.expect(stepped.on_ground);
+    try std.testing.expect(!stepped.hit_x);
+
+    data.blocks[data.get_index(21, 1, 10)] = .slab;
+    const airborne = move_and_wall_slide(&data, .{ 20.2, 1.0, 10.5 }, .{ 1.0, 0, 0 }, 0.3, 1.8, 0.5, false);
+    try std.testing.expectApproxEqAbs(@as(f32, 21.0 - EPSILON - 0.3), airborne.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), airborne.y, 0.0001);
+    try std.testing.expect(airborne.hit_x);
+
+    data.blocks[data.get_index(31, 1, 10)] = .stone;
+    const too_high = move_and_wall_slide(&data, .{ 30.2, 1.0, 10.5 }, .{ 1.0, 0, 0 }, 0.3, 1.8, 0.5, true);
+    try std.testing.expectApproxEqAbs(@as(f32, 31.0 - EPSILON - 0.3), too_high.x, 0.0001);
+    try std.testing.expect(too_high.hit_x);
+
+    data.blocks[data.get_index(41, 1, 10)] = .slab;
+    data.blocks[data.get_index(41, 3, 10)] = .stone;
+    const blocked = move_and_wall_slide(&data, .{ 40.2, 1.0, 10.5 }, .{ 1.0, 0, 0 }, 0.3, 1.8, 0.5, true);
+    try std.testing.expectApproxEqAbs(@as(f32, 41.0 - EPSILON - 0.3), blocked.x, 0.0001);
+    try std.testing.expect(blocked.hit_x);
+}
+
+test "try_step_up lands on a reachable slab and rejects blocked probes" {
+    var data: WorldData = undefined;
+    try data.init_in_place(std.testing.allocator, @import("world_dims.zig").default, 1);
+    defer data.deinit();
+
+    data.blocks[data.get_index(51, 1, 10)] = .slab;
+    const stepped = try_step_up(&data, .{ 50.2, 1.0, 10.5 }, 1.0, 0, 0.3, 1.8, 0.5).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 51.2), stepped[0], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.5), stepped[1], 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 10.5), stepped[2], 0.0001);
+
+    data.blocks[data.get_index(60, 3, 10)] = .stone;
+    try std.testing.expectEqual(
+        @as(?[3]f32, null),
+        try_step_up(&data, .{ 60.2, 1.0, 10.5 }, 1.0, 0, 0.3, 1.8, 0.5),
+    );
+
+    data.blocks[data.get_index(71, 1, 10)] = .stone;
+    try std.testing.expectEqual(
+        @as(?[3]f32, null),
+        try_step_up(&data, .{ 70.2, 1.0, 10.5 }, 1.0, 0, 0.3, 1.8, 0.5),
+    );
+}
+
+test "broadphase holds a maximum-speed dense sweep" {
+    var data: WorldData = undefined;
+    try data.init_in_place(std.testing.allocator, @import("world_dims.zig").default, 1);
+    defer data.deinit();
+
+    for (10..18) |y| {
+        for (10..17) |z| {
+            for (10..17) |x| {
+                data.blocks[data.get_index(@intCast(x), @intCast(y), @intCast(z))] = .stone;
+            }
+        }
+    }
+
+    var candidates: [MAX_CANDIDATES]Candidate = undefined;
+    var count: usize = 0;
+    broadphase(
+        &data,
+        entity_aabb(10.75, 10.25, 10.75, 0.3, 1.8),
+        .{ MAX_TICK_VEL, MAX_TICK_VEL, MAX_TICK_VEL },
+        &candidates,
+        &count,
+    );
+    try std.testing.expectEqual(@as(usize, 392), count);
 }

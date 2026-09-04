@@ -14,101 +14,50 @@ const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Options = @import("../Options.zig");
 const collision = @import("../player/collision.zig");
 
-// --- Tunables ---
-
-/// Keep the falling streak grid at 9x9 on every platform; the separate splash
-/// particle budget remains platform-specific below.
 const EXTENT: i32 = 4;
 const EXTENT_U: u32 = @intCast(EXTENT);
 const EXTENT_F: f32 = @floatFromInt(EXTENT);
 
-/// Streak is cut into SECTION_HEIGHT-tall quad slices stacked vertically so
-/// V_PER_BLOCK can be much larger than a single i16 would allow across the
-/// full streak, giving a proper drop density instead of ~1 repeat per 30
-/// blocks.  Each section covers close to one texture repeat and tiles
-/// seamlessly into its neighbors via SNORM16 wrap.
+// Sections keep their dense V span representable as positive SNORM16.
 const SECTION_HEIGHT: f32 = 8.0;
 const V_PER_BLOCK_F: f32 = 4000.0;
-/// Per-section V delta must fit signed i16.  SECTION_HEIGHT * V_PER_BLOCK_F
-/// = 32000 which sits safely inside [0, 32767].
 const SECTION_V_DIFF: i32 = @intFromFloat(SECTION_HEIGHT * V_PER_BLOCK_F);
 comptime {
     std.debug.assert(SECTION_V_DIFF > 0 and SECTION_V_DIFF <= 32767);
 }
-/// V scroll rate (SNORM16 units per second).  FALL_SPEED / V_PER_BLOCK_F
-/// is the visual fall speed in blocks/second.
 const FALL_SPEED: i32 = @intFromFloat(12.0 * V_PER_BLOCK_F);
-/// Streak plane width in world blocks.  Two X-shaped crossed planes per
-/// column already double up at every viewing angle, so keep width ~1
-/// block so drop pixels aren't smeared across extra world space.
 const STREAK_WIDTH: f32 = 1.0;
-/// Horizontal half-offset: plane spans [cx - STREAK_HALF, cx + STREAK_HALF]
-/// around each column's center (so total width = STREAK_WIDTH).
 const STREAK_HALF: f32 = STREAK_WIDTH * 0.5;
-/// SNORM16 U units across the streak width.  Chosen proportional to
-/// STREAK_WIDTH so drop aspect stays consistent regardless of how wide the
-/// quad extends.  Full SNORM16 range (32767) shows the whole texture's
-/// horizontal extent across the quad -- larger U range compresses more
-/// drop pixels into the same world distance, giving thinner drops.
 const U_SPAN: i32 = @intFromFloat(32767.0 * STREAK_WIDTH);
-/// Peak alpha at grid center (out of 255).  Held at full 255 so drop
-/// pixels from rain.png render at their texture-native alpha -- anything
-/// less multiplies every pixel's alpha down and lets semi-transparent
-/// between-drop pixels pass the 0.1 discard threshold as a gray wash,
-/// which makes closer planes visually block the planes behind them.
 const BASE_ALPHA: f32 = 255.0;
 
-/// Impact splash pool size.
 const SPLASH_MAX: u16 = 192;
-/// Particles spawned per second (subject to column availability).  With
-/// ~0.4 s life the steady-state onscreen count settles near SPLASH_MAX.
-/// PSP runs a much lower spawn rate to keep splash mesh build / fill cost
-/// in budget; ~150 spawns/s gives a sparse but still visible splash field.
 const SPLASH_SPAWNS_PER_SEC: f32 = if (ae.platform == .psp) 150.0 else 500.0;
 const SPLASH_GRAVITY: f32 = 12.0;
 const SPLASH_LIFE_MIN: f32 = 0.25;
 const SPLASH_LIFE_MAX: f32 = 0.55;
-/// Billboard + collision radius.
 const SPLASH_HALF_SIZE: f32 = 0.12;
-/// Small vertical offset above the surface at spawn -- must exceed
-/// SPLASH_HALF_SIZE so the AABB-based collision test doesn't immediately
-/// intersect the floor block and kill the particle on frame 1.
+// Must exceed the collision radius to avoid an immediate floor hit.
 const SPLASH_SPAWN_OFFSET: f32 = 0.18;
 
-/// particles.png is 128x128 arranged as a 16x16 grid of 8x8-pixel tiles --
-/// the Minecraft Classic convention.  The raindrop sprite sits at
-/// tile (col=0, row=1).
 const PARTICLE_ATLAS_SIZE: u32 = 128;
 const PARTICLE_ATLAS_TILES: u32 = 16;
 const DROP_TILE_COL: u32 = 0;
 const DROP_TILE_ROW: u32 = 1;
 
-/// Absolute-world i16 encoding shared with ParticleSystem: vertex = world * 128,
-/// shader dequantizes / 32768 then model scale * 256 reproduces the value.
-/// Rain encodes positions in a camera-local window (origin = cam tile) so
-/// the used range stays tiny (EXTENT blocks) and comfortably in i16.
+// Shared with ParticleSystem; streaks remain camera-local to fit i16.
 const POS_SCALE: f32 = 128.0;
 const MODEL_SCALE: f32 = 256.0;
 
-const QUADS_PER_SECTION: u32 = 2; // crossed X-plane + Z-plane per section
+const QUADS_PER_SECTION: u32 = 2;
 const COLUMNS_DIAM: u32 = 2 * EXTENT_U + 1;
 const MAX_COLUMNS: u32 = COLUMNS_DIAM * COLUMNS_DIAM;
 const SPLASH_MAX_QUADS: u32 = @as(u32, SPLASH_MAX);
 
-/// Upper bound on sections per column. Each section may be split once at the
-/// SNORM V wrap to keep stored UVs monotonic, so budget 2x after the base
-/// world-height count. World height is a property of the live world rather
-/// than a compile-time constant, so the budget is computed, not declared.
-fn max_sections_per_column() u32 {
-    const base: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(World.data.dims.height)) / SECTION_HEIGHT));
-    return base * 2;
-}
-
 fn streak_max_quads() u32 {
-    return MAX_COLUMNS * max_sections_per_column() * QUADS_PER_SECTION;
+    const base: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(World.data.dims.height)) / SECTION_HEIGHT));
+    return MAX_COLUMNS * (base * 2) * QUADS_PER_SECTION;
 }
-
-// --- Types ---
 
 const Splash = struct {
     px: f32,
@@ -136,8 +85,6 @@ splashes: [SPLASH_MAX]Splash,
 splash_count: u16,
 rng: std.Random.DefaultPrng,
 allocator: std.mem.Allocator,
-
-// --- Lifecycle ---
 
 pub fn init(allocator: std.mem.Allocator) !Self {
     var self: Self = .{
@@ -172,8 +119,6 @@ pub fn mark_dirty(self: *Self) void {
     self.streak_mesh_dirty = true;
 }
 
-// --- Update ---
-
 pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
     if (!Options.current.rain) {
         self.splash_count = 0;
@@ -181,21 +126,17 @@ pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
         return;
     }
 
-    // V scroll: i32 accumulates; draw_streaks converts @mod(scroll_v, 32768)
-    // to a normalized UV offset so the streak mesh stays static.
     const dv: i32 = @intFromFloat(@as(f32, @floatFromInt(FALL_SPEED)) * dt);
     self.scroll_v +%= dv;
 
     self.update_splashes(dt);
 
-    // Spawn fractional accumulator: rate * dt particles per frame.
     self.spawn_accum += dt * SPLASH_SPAWNS_PER_SEC;
     while (self.spawn_accum >= 1.0) {
         self.spawn_accum -= 1.0;
         if (self.splash_count >= SPLASH_MAX) break;
         self.maybe_spawn_splash(camera);
     }
-    // Guard against huge dt (pause, load stall) piling a burst.
     if (self.spawn_accum > 64.0) self.spawn_accum = 0;
 
     self.rebuild_streak_mesh(camera);
@@ -216,7 +157,6 @@ fn update_splashes(self: *Self, dt: f32) void {
         const nx = p.px + p.vx * dt;
         const ny = p.py + p.vy * dt;
         const nz = p.pz + p.vz * dt;
-        // Splashes pass through air and die on first terrain contact or exit.
         if (out_of_world(nx, ny, nz) or aabb_hits_solid(nx, ny, nz)) {
             self.splash_count -= 1;
             self.splashes[i] = self.splashes[self.splash_count];
@@ -256,8 +196,6 @@ fn maybe_spawn_splash(self: *Self, camera: *const Camera) void {
     self.splash_count += 1;
 }
 
-// --- Drawing ---
-
 /// Draw the scrolling streak planes.  Caller must bind rain.png.
 pub fn draw_streaks(self: *Self, camera: *const Camera) void {
     if (!Options.current.rain) return;
@@ -268,14 +206,9 @@ pub fn draw_streaks(self: *Self, camera: *const Camera) void {
     const cam_tile_x: f32 = @floatFromInt(cam_tile_x_i);
     const cam_tile_z: f32 = @floatFromInt(cam_tile_z_i);
 
-    // Transparent sheet: alpha blend on, depth write off so overlapping
-    // quads don't occlude each other on the depth buffer.
     Rendering.gfx.api.set_alpha_blend(true);
     Rendering.gfx.api.set_depth_write(false);
     defer Rendering.gfx.api.set_depth_write(true);
-    // Streaks sit close to the camera and span tall vertical columns; on PSP
-    // the MODEL_SCALE * world coordinate can exit the 4096 virtual viewport,
-    // so enable hardware clip planes to guarantee correct GU clipping.
     Rendering.gfx.api.set_clip_planes(true);
     defer Rendering.gfx.api.set_clip_planes(false);
     Rendering.gfx.api.set_culling(false);
@@ -293,8 +226,6 @@ pub fn draw_splashes(self: *Self) void {
     if (!Options.current.rain) return;
     if (self.splash_count == 0) return;
 
-    // Splashes use absolute-world encoding (no translation) so we can share
-    // MODEL_SCALE with ParticleSystem and use a plain scaling matrix.
     Rendering.gfx.api.set_alpha_blend(true);
     Rendering.gfx.api.set_depth_write(true);
     Rendering.gfx.api.set_culling(false);
@@ -326,8 +257,6 @@ fn rebuild_splash_mesh(self: *Self, camera: *const Camera) void {
     self.splash_data.clear_retaining_capacity();
     if (self.splash_count == 0) return;
 
-    // Same billboard basis as ParticleSystem: right is yaw-only (no roll),
-    // up tilts with pitch so quads face the camera when looking up/down.
     const cy = @cos(camera.yaw);
     const sy = @sin(camera.yaw);
     const cp = @cos(camera.pitch);
@@ -355,8 +284,6 @@ fn streak_v_offset(scroll_v: i32) f32 {
     return @as(f32, @floatFromInt(@mod(scroll_v, 32768))) / 32768.0;
 }
 
-// --- Streak mesh build ---
-
 fn build_streaks(mesh: *Rendering.MeshDataType(Vertex), cam_tile_x: i32, cam_tile_z: i32) void {
     const world_ceiling: f32 = @as(f32, @floatFromInt(World.data.dims.height));
 
@@ -374,8 +301,6 @@ fn build_streaks(mesh: *Rendering.MeshDataType(Vertex), cam_tile_x: i32, cam_til
             const surface_f: f32 = @as(f32, @floatFromInt(surface_i));
             if (world_ceiling <= surface_f) continue;
 
-            // Linear fade from 1 at center to 0 at grid edge.  Columns past
-            // EXTENT blocks horizontally disappear entirely.
             const dist_sq: f32 = @as(f32, @floatFromInt(dx * dx + dz * dz));
             const dist: f32 = @sqrt(dist_sq);
             const fade = @max(0.0, 1.0 - dist / EXTENT_F);
@@ -388,12 +313,7 @@ fn build_streaks(mesh: *Rendering.MeshDataType(Vertex), cam_tile_x: i32, cam_til
     }
 }
 
-/// Emit the streak's crossed vertical quads for a column.  To keep V_PER_BLOCK
-/// high (dense drops) while the per-quad SNORM16 delta stays within i16, the
-/// streak is stacked as SECTION_HEIGHT-tall quads.  Section boundaries share
-/// the same i32 V value (computed from world Y via a single linear formula),
-/// so their @mod(32768) SNORM16s tile seamlessly across the seam.  When a
-/// section crosses the SNORM16 wrap, split it so UVs stay monotonic.
+// Split sections at SNORM16 wrap points so interpolated V stays monotonic.
 fn emit_column_quads(
     mesh: *Rendering.MeshDataType(Vertex),
     dx: i32,
@@ -415,8 +335,6 @@ fn emit_column_quads(
         const section_diff: i32 = @intFromFloat(@round(section_h * V_PER_BLOCK_F));
         std.debug.assert(section_diff >= 0 and section_diff <= 32767);
 
-        // V(y) = y * V_PER_BLOCK (in i32).  Animation is a uniform texture
-        // offset, so this base mesh only has to keep each section monotonic.
         const v_bot_raw: i32 = @intFromFloat(@round(section_bottom * V_PER_BLOCK_F));
         const v_bot_mod: i32 = @mod(v_bot_raw, 32768);
         const v_top_from_bot: i32 = v_bot_mod + section_diff;
@@ -433,11 +351,6 @@ fn emit_column_quads(
                 color,
             );
         } else {
-            // Wrap at v_raw = v_bot_raw + (32768 - v_bot_mod); in the quad's
-            // local fraction that's (32768 - v_bot_mod) / section_diff of
-            // the way up.  Lower sub-quad runs v_bot_mod..32767 (1 SNORM
-            // unit below the true wrap boundary -- REPEAT samples the same
-            // texel), upper sub-quad runs 0..(v_top_from_bot - 32768).
             const wrap_offset: f32 = @floatFromInt(32768 - v_bot_mod);
             const section_diff_f: f32 = @floatFromInt(section_diff);
             const wrap_y: f32 = section_bottom + (wrap_offset / section_diff_f) * section_h;
@@ -468,9 +381,6 @@ fn emit_column_quads(
     }
 }
 
-/// Emit the crossed X-shaped pair of quads that make up a single section (or
-/// sub-section after a wrap split).  v_bot/v_top must both be non-negative
-/// so PSP hardware interpolates a monotonically increasing UV.
 fn emit_section_geom(
     mesh: *Rendering.MeshDataType(Vertex),
     x_ctr: f32,
@@ -481,10 +391,6 @@ fn emit_section_geom(
     v_top: i16,
     color: u32,
 ) void {
-    // X-shaped (diagonal) crossed planes.  An axis-aligned + cross reads
-    // edge-on when the camera looks along X or Z.  Rotating the cross 45
-    // degrees means neither plane is ever edge-on simultaneously and the
-    // streak always has visual mass regardless of yaw.
     const x_lo = x_ctr - STREAK_HALF;
     const x_hi = x_ctr + STREAK_HALF;
     const z_lo = z_ctr - STREAK_HALF;
@@ -494,100 +400,40 @@ fn emit_section_geom(
 
     const by = encode(y_bot);
     const ty = encode(y_top);
+    const uvs: [4][2]i16 = .{
+        .{ u_left, v_bot },
+        .{ u_right, v_bot },
+        .{ u_right, v_top },
+        .{ u_left, v_top },
+    };
 
-    // Diagonal A: runs from (x_lo, z_lo) to (x_hi, z_hi). Low-Y corners
-    // get v_bot, high-Y corners v_top so V increases with world Y; the
-    // per-draw UV offset supplies the falling animation.
-    emit_quad(
-        mesh,
-        encode(x_lo),
-        by,
-        encode(z_lo),
-        u_left,
-        v_bot,
-        encode(x_hi),
-        by,
-        encode(z_hi),
-        u_right,
-        v_bot,
-        encode(x_hi),
-        ty,
-        encode(z_hi),
-        u_right,
-        v_top,
-        encode(x_lo),
-        ty,
-        encode(z_lo),
-        u_left,
-        v_top,
-        color,
-    );
+    emit_quad(mesh, .{
+        .{ encode(x_lo), by, encode(z_lo) },
+        .{ encode(x_hi), by, encode(z_hi) },
+        .{ encode(x_hi), ty, encode(z_hi) },
+        .{ encode(x_lo), ty, encode(z_lo) },
+    }, uvs, color);
 
-    // Diagonal B: runs from (x_lo, z_hi) to (x_hi, z_lo), crossing A at
-    // the column center to form the X shape.
-    emit_quad(
-        mesh,
-        encode(x_lo),
-        by,
-        encode(z_hi),
-        u_left,
-        v_bot,
-        encode(x_hi),
-        by,
-        encode(z_lo),
-        u_right,
-        v_bot,
-        encode(x_hi),
-        ty,
-        encode(z_lo),
-        u_right,
-        v_top,
-        encode(x_lo),
-        ty,
-        encode(z_hi),
-        u_left,
-        v_top,
-        color,
-    );
+    emit_quad(mesh, .{
+        .{ encode(x_lo), by, encode(z_hi) },
+        .{ encode(x_hi), by, encode(z_lo) },
+        .{ encode(x_hi), ty, encode(z_lo) },
+        .{ encode(x_lo), ty, encode(z_hi) },
+    }, uvs, color);
 }
 
 fn emit_quad(
     mesh: *Rendering.MeshDataType(Vertex),
-    // bottom-left
-    x0: i16,
-    y0: i16,
-    z0: i16,
-    tu0: i16,
-    tv0: i16,
-    // bottom-right
-    x1: i16,
-    y1: i16,
-    z1: i16,
-    tu1: i16,
-    tv1: i16,
-    // top-right
-    x2: i16,
-    y2: i16,
-    z2: i16,
-    tu2: i16,
-    tv2: i16,
-    // top-left
-    x3: i16,
-    y3: i16,
-    z3: i16,
-    tu3: i16,
-    tv3: i16,
+    positions: [4][3]i16,
+    uvs: [4][2]i16,
     color: u32,
 ) void {
-    const bl: Vertex = .{ .pos = .{ x0, y0, z0 }, .uv = .{ tu0, tv0 }, .color = color };
-    const br: Vertex = .{ .pos = .{ x1, y1, z1 }, .uv = .{ tu1, tv1 }, .color = color };
-    const tr: Vertex = .{ .pos = .{ x2, y2, z2 }, .uv = .{ tu2, tv2 }, .color = color };
-    const tl: Vertex = .{ .pos = .{ x3, y3, z3 }, .uv = .{ tu3, tv3 }, .color = color };
-
-    mesh.add_quad_assume_capacity(bl, br, tr, tl);
+    var vertices: [4]Vertex = undefined;
+    inline for (&vertices, positions, uvs) |*vertex, pos, uv| {
+        vertex.* = .{ .pos = pos, .uv = uv, .color = color };
+    }
+    mesh.add_quad_assume_capacity(vertices[0], vertices[1], vertices[2], vertices[3]);
 }
-
-// --- Splash mesh build ---
 
 fn emit_splash(
     mesh: *Rendering.MeshDataType(Vertex),
@@ -610,17 +456,12 @@ fn emit_splash(
     mesh.add_quad_assume_capacity(bl, br, tr, tl);
 }
 
-// --- Utility ---
-
 fn encode(world: f32) i16 {
     const scaled = @round(world * POS_SCALE);
     const clamped = @max(-32768.0, @min(32767.0, scaled));
     return @intFromFloat(clamped);
 }
 
-/// Classic-era per-column heightmap: Y+1 of the highest light-blocking block.
-/// Updated by the world on every block change (src/core/world.zig:424) so we
-/// get invalidation for free by reading it directly.
 fn light_map_at(x: i32, z: i32) i32 {
     std.debug.assert(x >= 0 and x < World.data.dims.length);
     std.debug.assert(z >= 0 and z < World.data.dims.depth);
@@ -628,12 +469,7 @@ fn light_map_at(x: i32, z: i32) i32 {
     return @intCast(World.data.light_map[idx]);
 }
 
-/// Y+1 of the highest block that physically blocks rain in column (x, z).
-/// Differs from light_map_at: leaves and glass pass light but still stop a
-/// streak visually and catch splash spawns, so we walk down from the world
-/// ceiling to find the topmost block with non-zero collision height.  Scan
-/// bails at light_map_at since any collision block at or below that point is
-/// already covered by a light-blocker above it.
+// Leaves and glass stop rain despite not appearing in the light map.
 fn rain_surface_at(x: i32, z: i32) i32 {
     const light_surface: i32 = light_map_at(x, z);
     var y: i32 = @as(i32, @intCast(World.data.dims.height)) - 1;
@@ -651,10 +487,6 @@ fn out_of_world(wx: f32, wy: f32, wz: f32) bool {
     return false;
 }
 
-/// Full-AABB solidity test: every block that overlaps the particle's box
-/// is checked.  Matches ParticleSystem.aabb_hits_solid so splash quads
-/// can't clip into walls the way a single-point test at the center would
-/// let them.
 fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
     const r: f32 = SPLASH_HALF_SIZE;
     const bx0: i32 = @intFromFloat(@floor(wx - r));

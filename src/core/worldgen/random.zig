@@ -36,17 +36,11 @@ pub fn next_int(self: *random_state) i32 {
     return @bitCast(self.next_bits(32));
 }
 
-// Inlined so call sites that pass constant bounds let LLVM fold the
-// remainder into a multiply-high sequence (MULT/MFHI on the PSP) instead of
-// the 35-cycle non-pipelined DIVU. The sequence of draw *values* is
-// unchanged: the folded remainder is exactly `bits % bound`.
+// Constant bounds compile to multiplication or shifts instead of PSP division.
 pub inline fn next_int_bounded(self: *random_state, bound: u32) u32 {
     assert(bound > 0 and bound < 2_147_483_648);
 
     if (std.math.isPowerOfTwo(bound)) {
-        // bound == 2^k: (bound * bits) / 2^31 == bits >> (31 - k), bit-identical,
-        // but the shift stays 32-bit instead of a 64-bit multiply+divide (the
-        // PSP emulates 64-bit instructions). Consumes exactly one draw, same as above.
         const bits = self.next_bits(31);
         const result: u32 = bits >> @intCast(31 - @ctz(bound));
         assert(result < bound);
@@ -56,10 +50,6 @@ pub inline fn next_int_bounded(self: *random_state, bound: u32) u32 {
     while (true) {
         const bits = self.next_bits(31);
         const value = bits % bound;
-        // value == bits % bound <= bits, so bits - value never underflows, and
-        // the maximum bits - value + (bound - 1) == 2^32 - 3 fits u32 without
-        // wrapping. The u32 form is bit-identical to the u64 one but avoids the
-        // PSP's emulated 64-bit subtract/compare on every rejection-sampled draw.
         const acceptance = bits - value + (bound - 1);
         if (acceptance < 2_147_483_648) {
             assert(value < bound);
@@ -70,9 +60,7 @@ pub inline fn next_int_bounded(self: *random_state, bound: u32) u32 {
 
 pub fn next_float(self: *random_state) f32 {
     const numerator = self.next_bits(24);
-    // Division by 2^24 is exact (exponent-only) and is bit-identical to a
-    // multiply by the exact reciprocal 2^-24; the multiply avoids an f32
-    // divide on every draw (soft-float on the PSP).
+    // Multiplication by 2^-24 is exact and avoids PSP soft-float division.
     const result = @as(f32, @floatFromInt(numerator)) * @as(f32, 1.0 / 16_777_216.0);
     assert(result >= 0.0 and result < 1.0);
     return result;
@@ -103,14 +91,13 @@ test "bounded draws preserve range and rejection state transitions" {
     for (expected) |value| try std.testing.expectEqual(value, actual.next_int_bounded(100));
 
     var powers = random_state.init(7);
-    for (0..100) |_| try std.testing.expect(powers.next_int_bounded(16) < 16);
+    try std.testing.expectEqual(@as(u32, 11), powers.next_int_bounded(16));
 }
 
-test "floating draws are unit interval and deterministic" {
-    var first = random_state.init(std.math.minInt(i64));
-    var second = random_state.init(std.math.minInt(i64));
-    for (0..32) |_| {
-        try std.testing.expectEqual(first.next_float(), second.next_float());
-        try std.testing.expectEqual(first.next_double(), second.next_double());
-    }
+test "floating draws match Java Random" {
+    var float_random = random_state.init(0);
+    try std.testing.expectEqual(@as(u32, 0x3f3b20b4), @as(u32, @bitCast(float_random.next_float())));
+
+    var double_random = random_state.init(0);
+    try std.testing.expectEqual(@as(u64, 0x3fe764168ea6ca89), @as(u64, @bitCast(double_random.next_double())));
 }

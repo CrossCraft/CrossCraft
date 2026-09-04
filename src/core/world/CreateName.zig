@@ -10,17 +10,7 @@ pub const Result = struct {
 
 pub fn build_path(input: []const u8, path_out: []u8, name_out: []u8) !Result {
     const name = try sanitize_name(input, name_out);
-    if (path_out.len < "saves/".len + name.len + ".cw".len) return error.NoSpaceLeft;
-
-    var pos: usize = 0;
-    @memcpy(path_out[pos..][0.."saves/".len], "saves/");
-    pos += "saves/".len;
-    @memcpy(path_out[pos..][0..name.len], name);
-    pos += name.len;
-    @memcpy(path_out[pos..][0..".cw".len], ".cw");
-    pos += ".cw".len;
-
-    return .{ .path = path_out[0..pos], .name = name };
+    return .{ .path = try std.fmt.bufPrint(path_out, "saves/{s}.cw", .{name}), .name = name };
 }
 
 pub fn sanitize_name(input: []const u8, out: []u8) ![]const u8 {

@@ -117,9 +117,6 @@ pause_font_batcher: FontBatcher,
 /// initialised state -- e.g. `init` errored on OOM after enough world reload
 /// cycles -- does not crash on undefined sub-allocations.
 inited: bool,
-trace_first_tick: bool,
-trace_first_update: bool,
-trace_first_draw: bool,
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
@@ -127,9 +124,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.mp_read_thread = null;
     self.sp_compressor_thread = null;
     self.mp_compressor_thread = null;
-    self.trace_first_tick = true;
-    self.trace_first_update = true;
-    self.trace_first_draw = true;
     // Push the gameplay context up front so any later init failure is
     // matched by the deinit pop below.
     const gameplay_set = try bindings.init(&engine.input);
@@ -204,7 +198,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         },
     }
 
-    // Redistribute memory for game state
     @import("../config.zig").apply_runtime_budgets(engine);
 
     // Player -- owns the camera; spawn Y is eye-level from the server.
@@ -251,16 +244,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         &self.player.camera,
     );
 
-    // Let block-change packets find the renderer so they can mark sections.
     self.conn.world_renderer = &self.world;
 
-    // Wire break particles now that both player and world exist.
     self.player.particle_sink = &self.world.particles;
 
-    // UI sprite batcher for HUD overlay (crosshair, hotbar bg, selector).
     self.ui_batcher = try SpriteBatcher.init(render_alloc);
 
-    // Font batcher used by the inventory tooltip.
     self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
 
     // Iso-projected block icons for hotbar + inventory slots; draws to the
@@ -318,13 +307,10 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.dump_world_name = @splat(0);
     self.dump_world_name_len = 0;
 
-    // Block selection outline (line mesh, drawn after the world pass).
     self.selection = try SelectionOutline.init(render_alloc);
 
-    // Remote player Steve model renderer.
     self.steve = try SteveModel.init(render_alloc);
 
-    // Held-block viewmodel. Uses the same terrain atlas as the world.
     self.held = try BlockHand.init(render_alloc, ResourcePack.atlas);
     self.player.held_renderer = &self.held;
 
@@ -436,23 +422,14 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
 
 fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    if (self.trace_first_tick) log.info("trace: first tick begin", .{});
     // MP updates arrive as packets; no local world tick.
     if (Session.mode == .singleplayer) {
         Server.drain_local_packets();
-        if (self.trace_first_tick) log.info("trace: first tick drained local packets", .{});
         Server.tick();
-        if (self.trace_first_tick) log.info("trace: first tick server tick done", .{});
         try self.ensure_sp_compressor_started(engine);
-        if (self.trace_first_tick) log.info("trace: first tick compressor ready", .{});
     }
     ResourcePack.tick_animations();
-    if (self.trace_first_tick) log.info("trace: first tick animations done", .{});
     send_player_position(&self.player);
-    if (self.trace_first_tick) {
-        log.info("trace: first tick end", .{});
-        self.trace_first_tick = false;
-    }
 }
 
 fn ensure_sp_compressor_started(self: *@This(), engine: *Engine) !void {
@@ -824,8 +801,6 @@ fn empty_input() ui_input.UiInput {
 
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    const trace = self.trace_first_update;
-    if (trace) log.info("trace: first update begin dt={d}", .{dt});
 
     // Controller Select/Back toggles the social overlay (player list + chat
     // cursor). Keyboard Tab still uses the Classic hold-to-show player list.
@@ -941,13 +916,10 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             const block_id = World.data.get_block(hit.x, hit.y, hit.z);
             if (!block_id.is_air()) try self.selection.update(block_id.bounds());
         }
-        if (trace) log.info("trace: first update player done", .{});
     }
 
     self.steve.update(dt, &self.player_list, &self.font_batcher);
-    if (trace) log.info("trace: first update steve done", .{});
     self.world.update(dt, budget, &self.player.camera);
-    if (trace) log.info("trace: first update world done", .{});
     SoundManager.update(
         dt,
         self.player.camera.x,
@@ -956,7 +928,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         self.player.camera.yaw,
         self.player.camera.pitch,
     );
-    if (trace) log.info("trace: first update sound done", .{});
 
     self.report_timer += dt;
     if (self.report_timer >= 10.0) {
@@ -981,10 +952,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         if (self.hotbar_tooltip_timer < 0) self.hotbar_tooltip_timer = 0;
     }
     try prepare_ui_batches(self, engine);
-    if (trace) {
-        log.info("trace: first update end", .{});
-        self.trace_first_update = false;
-    }
 }
 
 fn handle_fly_tap(self: *@This()) void {
@@ -1163,13 +1130,10 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
 
 fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    const trace = self.trace_first_draw;
-    if (trace) log.info("trace: first draw begin", .{});
     // SP drains packets on the game thread; MP has the bg read-loop
     // task doing it and just checks the connection flag here.
     if (Session.mode == .singleplayer) {
         self.conn.drain_packets();
-        if (trace) log.info("trace: first draw drained packets", .{});
     } else if (!Session.mp_connected.load(.acquire)) {
         DisconnectState.transition_here(engine);
         return;
@@ -1179,21 +1143,17 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         return;
     }
     self.player.camera.apply();
-    if (trace) log.info("trace: first draw camera applied", .{});
     self.world.draw_world_pass(&self.player.camera);
-    if (trace) log.info("trace: first draw world pass done", .{});
 
     // Rain: streaks + impact splashes.  No-op when Options.rain is off.
     // Slotted here so streaks depth-test against opaque+transparent terrain
     // and the fluid pass still draws on top of rain in submerged areas.
     self.world.draw_rain_pass(&self.player.camera);
-    if (trace) log.info("trace: first draw rain pass done", .{});
 
     // Remote player models: drawn in the 3D pass, depth-tested against the world.
     // Slotted before the fluid pass so water/lava correctly occludes them.
     self.steve.draw(&self.player);
     self.steve.draw_nametags(&self.player, &self.font_batcher);
-    if (trace) log.info("trace: first draw steve done", .{});
 
     // Selection outline: still in the 3D pass, depth-tested against the world.
     // Nudge the whole outline toward the camera by a tiny world-space amount.
@@ -1232,13 +1192,11 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         };
         self.selection.draw(&t);
     }
-    if (trace) log.info("trace: first draw selection done", .{});
 
     // Fluid pass last so water/lava alpha-blends over the outline, steve
     // models, and particles drawn just above instead of the depth-writeless
     // fluid letting those overlays bleed through.
     self.world.draw_fluid_pass();
-    if (trace) log.info("trace: first draw fluid pass done", .{});
 
     // Held-block viewmodel: swaps in its own projection + identity view,
     // clears depth internally so it never z-fights against nearby world
@@ -1247,7 +1205,6 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (!self.hud_hidden) {
         self.held.draw(ResourcePack.get_tex(.terrain), &self.player.camera);
     }
-    if (trace) log.info("trace: first draw held done", .{});
 
     // UI pass: orthographic overlay drawn on top of the 3D scene.
     Rendering.gfx.api.set_fog(false, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
@@ -1258,15 +1215,12 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // tooltip. A depth clear between each pass keeps z-tests clean.
     Rendering.gfx.api.clear_depth();
     self.ui_batcher.draw();
-    if (trace) log.info("trace: first draw ui sprites flushed", .{});
 
     Rendering.gfx.api.clear_depth();
     self.iso_blocks.draw();
-    if (trace) log.info("trace: first draw iso flushed", .{});
 
     Rendering.gfx.api.clear_depth();
     self.font_batcher.draw();
-    if (trace) log.info("trace: first draw font flushed", .{});
 
     // Pause overlay uses its own batchers so it flushes cleanly after every
     // gameplay UI pass without depending on cross-batcher layer ordering.
@@ -1276,10 +1230,6 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
 
         Rendering.gfx.api.clear_depth();
         self.pause_font_batcher.draw();
-    }
-    if (trace) {
-        log.info("trace: first draw end", .{});
-        self.trace_first_draw = false;
     }
 }
 

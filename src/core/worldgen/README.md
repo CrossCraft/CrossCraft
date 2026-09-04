@@ -1,8 +1,10 @@
-# Classic-Worldgen Fast
+# Classic world generation
 
-This is a variant of the Classic-Worldgen finely tuned and optimized for PSP and general case to be faster. The code was iterated via LLM loop and is non-trivial. Many of the techniques are worth studying but this code is not intended to be touched regularly. Unlike the prior worldgen which has negligible performance difference, worldgen is *SIGNIFICANTLY* faster on `ReleaseFast`
+This core module generates the same deterministic block buffer for the playable client and the dedicated server. `root.zig` is the public entry point; `level.zig` owns the pipeline, while terrain, carving, ore, noise, and Java-compatible randomness are kept in focused modules.
 
-After touching it would be necessary to rerun the fuzzer to check 100% byte accuracy. Existing unit tests get general accuracy.
+Generation is byte-accurate and tuned for constrained targets, especially PSP. Preserve floating-point operation order and random draw order when changing it.
+
+Run `zig build test` for focused behavior checks and `zig build worldgen-test -Doptimize=ReleaseSafe` for the 100-case golden-hash corpus.
 
 ## Provenance
 

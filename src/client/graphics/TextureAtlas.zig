@@ -1,9 +1,7 @@
 const std = @import("std");
 const SNORM_UV_MAX: i32 = 32767;
 const SNORM_UV_STEPS: i32 = SNORM_UV_MAX + 1;
-// Avoid exact atlas boundaries without visibly cropping the source tile. The
-// max edge uses one extra step so the last atlas tile never emits SNORM 32767,
-// which repeat samplers treat as UV 1.0.
+// Keep the last tile below UV 1.0 for repeat samplers.
 const MIN_GUARD: u16 = 1;
 const MAX_GUARD: u16 = 2;
 
@@ -23,14 +21,13 @@ pub const TextureAtlas = struct {
         std.debug.assert(std.math.isPowerOfTwo(res_y));
         std.debug.assert(std.math.isPowerOfTwo(rows));
         std.debug.assert(std.math.isPowerOfTwo(cols));
-        const guards = edge_guards();
         return .{
             .col_log2 = @intCast(@ctz(cols)),
             .row_log2 = @intCast(@ctz(rows)),
-            .min_guard_u = guards.min,
-            .min_guard_v = guards.min,
-            .max_guard_u = guards.max,
-            .max_guard_v = guards.max,
+            .min_guard_u = MIN_GUARD,
+            .min_guard_v = MIN_GUARD,
+            .max_guard_u = MAX_GUARD,
+            .max_guard_v = MAX_GUARD,
         };
     }
 
@@ -65,20 +62,10 @@ pub const TextureAtlas = struct {
     }
 };
 
-const EdgeGuards = struct {
-    min: u16,
-    max: u16,
-};
-
-fn edge_guards() EdgeGuards {
-    return .{ .min = MIN_GUARD, .max = MAX_GUARD };
-}
-
-test "default atlas inset follows platform" {
+test "atlas tiles stay inside sampling boundaries" {
     const atlas = TextureAtlas.init(256, 256, 16, 16);
-    const guards = edge_guards();
-    const expected_min: i16 = @intCast(guards.min);
-    const expected_max: i16 = @intCast(guards.max);
+    const expected_min: i16 = MIN_GUARD;
+    const expected_max: i16 = MAX_GUARD;
     const stride: i16 = 2048;
 
     try std.testing.expectEqual(expected_min, atlas.tileU(0));

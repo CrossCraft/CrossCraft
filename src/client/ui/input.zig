@@ -285,10 +285,10 @@ pub fn build_frame(sys: *input.InputSystem, dt: f32, repeat: *Repeat) UiInput {
     runtime.prev.inventory = inventory;
 
     const held = [4]bool{
-        sys.button(actions.up).pressed(),
-        sys.button(actions.down).pressed(),
-        sys.button(actions.left).pressed(),
-        sys.button(actions.right).pressed(),
+        nav_button_held(sys.button(actions.up)),
+        nav_button_held(sys.button(actions.down)),
+        nav_button_held(sys.button(actions.left)),
+        nav_button_held(sys.button(actions.right)),
     };
     const nav = resolve_nav(held, dt, repeat);
 
@@ -332,6 +332,10 @@ fn rising_edge(prev: input.ButtonState, cur: input.ButtonState) bool {
     return prev == .released and cur == .pressed;
 }
 
+fn nav_button_held(button: input.ButtonQuery) bool {
+    return button.down();
+}
+
 test "title exit is limited to handheld console targets" {
     try std.testing.expect(title_exit_enabled_for(.psp));
     try std.testing.expect(title_exit_enabled_for(.nintendo_3ds));
@@ -368,24 +372,56 @@ fn read_cursor(sys: *input.InputSystem) Cursor {
 /// Up takes priority over Down, Left over Right (matches typical menu UX).
 fn resolve_nav(held: [4]bool, dt: f32, repeat: *Repeat) NavDir {
     const dirs = [_]NavDir{ .up, .down, .left, .right };
-    var fired: NavDir = .none;
-    for (held, 0..) |is_held, i| {
-        if (!is_held) {
+    const active = for (held, 0..) |is_held, i| {
+        if (is_held) break i;
+    } else {
+        repeat.* = .{};
+        return .none;
+    };
+
+    for (0..held.len) |i| {
+        if (i != active) {
             repeat.timers[i] = 0;
             repeat.fired_first[i] = false;
-            continue;
-        }
-        if (!repeat.fired_first[i]) {
-            repeat.fired_first[i] = true;
-            repeat.timers[i] = 0;
-            if (fired == .none) fired = dirs[i];
-            continue;
-        }
-        repeat.timers[i] += dt;
-        if (repeat.timers[i] >= REPEAT_DELAY) {
-            repeat.timers[i] -= REPEAT_RATE;
-            if (fired == .none) fired = dirs[i];
         }
     }
-    return fired;
+
+    if (!repeat.fired_first[active]) {
+        repeat.fired_first[active] = true;
+        repeat.timers[active] = 0;
+        return dirs[active];
+    }
+    repeat.timers[active] += dt;
+    if (repeat.timers[active] < REPEAT_DELAY) return .none;
+    repeat.timers[active] -= REPEAT_RATE;
+    return dirs[active];
+}
+
+test "navigation repeats while held and resets on release" {
+    var repeat: Repeat = .{};
+    const down = [4]bool{ false, true, false, false };
+    const released = [4]bool{ false, false, false, false };
+
+    try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0, &repeat));
+    try std.testing.expectEqual(NavDir.none, resolve_nav(down, REPEAT_DELAY - 0.01, &repeat));
+    try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0.02, &repeat));
+
+    try std.testing.expectEqual(NavDir.none, resolve_nav(released, 0, &repeat));
+    try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0, &repeat));
+}
+
+test "navigation resolves opposing directions once per frame" {
+    var repeat: Repeat = .{};
+    try std.testing.expectEqual(NavDir.up, resolve_nav(.{ true, true, true, true }, 0, &repeat));
+    try std.testing.expectEqual(NavDir.down, resolve_nav(.{ false, true, true, true }, 0, &repeat));
+}
+
+test "navigation treats a continued button press as held" {
+    const first: input.ButtonQuery = .{ .current = .pressed, .previous = .released };
+    const continued: input.ButtonQuery = .{ .current = .pressed, .previous = .pressed };
+    const released: input.ButtonQuery = .{ .current = .released, .previous = .pressed };
+
+    try std.testing.expect(nav_button_held(first));
+    try std.testing.expect(nav_button_held(continued));
+    try std.testing.expect(!nav_button_held(released));
 }

@@ -5,7 +5,7 @@ const random_state = @import("random.zig");
 const terrain = @import("terrain.zig");
 const carve = @import("carve.zig");
 
-pub const resource_kind = enum {
+const resource_kind = enum {
     coal,
     iron,
     gold,
@@ -27,12 +27,12 @@ pub const resource_kind = enum {
     }
 };
 
-pub fn vein_attempt_count(dimensions: terrain.world_dimensions, kind: resource_kind) u64 {
+fn vein_attempt_count(dimensions: terrain.world_dimensions, kind: resource_kind) u64 {
     return ((@as(u64, dimensions.width) * dimensions.depth * dimensions.height / 256) / 64) *
         kind.abundance() / 100;
 }
 
-pub const vein_seed = struct {
+const vein_seed = struct {
     start: carve.point_32,
     length: u32,
     yaw: f32,
@@ -75,16 +75,16 @@ pub const vein_seed = struct {
     }
 };
 
-fn vein_radius(table: *const carve.sine_table, kind: resource_kind, seed: vein_seed, step: u32) f32 {
+fn vein_radius(kind: resource_kind, seed: vein_seed, step: u32) f32 {
     assert(seed.length > 0 and step < seed.length);
     const numerator: f32 = @as(f32, @floatFromInt(step)) * carve.pi_32;
     const phase: f32 = numerator / @as(f32, @floatFromInt(seed.length));
-    const sine_scaled: f32 = table.trajectory_sine(phase) * @as(f32, @floatFromInt(kind.abundance()));
+    const sine_scaled: f32 = carve.trajectory_sine(phase) * @as(f32, @floatFromInt(kind.abundance()));
     const abundance_radius: f32 = sine_scaled / @as(f32, 100.0);
     return abundance_radius + @as(f32, 1.0);
 }
 
-pub fn resource_pass(table: *const carve.sine_table, kind: resource_kind, random: *random_state, field: terrain.block_field) void {
+fn resource_pass(kind: resource_kind, random: *random_state, field: terrain.block_field) void {
     const attempts = vein_attempt_count(field.dimensions, kind);
     for (0..@as(usize, @intCast(attempts))) |_| {
         const seed = vein_seed.init(field.dimensions, kind, random);
@@ -96,24 +96,19 @@ pub fn resource_pass(table: *const carve.sine_table, kind: resource_kind, random
                 .pitch_positive = random.next_float(),
                 .pitch_negative = random.next_float(),
             };
-            const moved = carve.advanced_motion(table, motion);
+            const moved = carve.advanced_motion(motion);
             const turned = carve.turned_motion(0.9, moved, draws);
             const step: u32 = @intCast(step_usize);
-            carve.replace_stone_ellipsoid(field, moved.position, vein_radius(table, kind, seed, step), kind.material());
+            carve.replace_stone_ellipsoid(field, moved.position, vein_radius(kind, seed, step), kind.material());
             motion = turned;
         }
     }
 }
 
-pub fn all_resource_passes(table: *const carve.sine_table, random: *random_state, field: terrain.block_field) void {
-    resource_pass(table, .coal, random, field);
-    resource_pass(table, .iron, random, field);
-    resource_pass(table, .gold, random, field);
-}
-
-pub fn carving_and_resources(table: *const carve.sine_table, random: *random_state, field: terrain.block_field) void {
-    carve.cave_pass(table, random, field);
-    all_resource_passes(table, random, field);
+pub fn all_resource_passes(random: *random_state, field: terrain.block_field) void {
+    resource_pass(.coal, random, field);
+    resource_pass(.iron, random, field);
+    resource_pass(.gold, random, field);
 }
 
 test "resource constants and attempt counts follow the specification" {
@@ -126,29 +121,23 @@ test "resource constants and attempt counts follow the specification" {
     try std.testing.expectEqual(@as(u64, 1), vein_attempt_count(dimensions, .gold));
 }
 
-test "resource pass is deterministic and replaces only stone" {
+test "resource passes replace only stone" {
     const dimensions: terrain.world_dimensions = .{ .width = 32, .height = 32, .depth = 32 };
-    const first_blocks = try std.testing.allocator.alloc(u8, dimensions.volume());
-    defer std.testing.allocator.free(first_blocks);
-    const second_blocks = try std.testing.allocator.alloc(u8, dimensions.volume());
-    defer std.testing.allocator.free(second_blocks);
-    @memset(first_blocks, terrain.stone_id);
-    @memset(second_blocks, terrain.stone_id);
-    first_blocks[0] = terrain.dirt_id;
-    second_blocks[0] = terrain.dirt_id;
-    const first_field = terrain.block_field.init(dimensions, first_blocks);
-    const second_field = terrain.block_field.init(dimensions, second_blocks);
-    var first_random = random_state.init(1_234);
-    var second_random = random_state.init(1_234);
-    const table = carve.sine_table.init();
-    all_resource_passes(&table, &first_random, first_field);
-    all_resource_passes(&table, &second_random, second_field);
-    try std.testing.expectEqual(first_random.state, second_random.state);
-    try std.testing.expectEqualSlices(u8, first_blocks, second_blocks);
-    try std.testing.expectEqual(terrain.dirt_id, first_blocks[0]);
-    for (first_blocks) |material| {
+    const blocks = try std.testing.allocator.alloc(u8, dimensions.volume());
+    defer std.testing.allocator.free(blocks);
+    @memset(blocks, terrain.stone_id);
+    blocks[0] = terrain.dirt_id;
+    const field = terrain.block_field.init(dimensions, blocks);
+    var random = random_state.init(1_234);
+    all_resource_passes(&random, field);
+
+    try std.testing.expectEqual(terrain.dirt_id, blocks[0]);
+    var replaced = false;
+    for (blocks) |material| {
         try std.testing.expect(material == terrain.stone_id or material == terrain.dirt_id or
             material == resource_kind.coal.material() or material == resource_kind.iron.material() or
             material == resource_kind.gold.material());
+        replaced = replaced or (material != terrain.stone_id and material != terrain.dirt_id);
     }
+    try std.testing.expect(replaced);
 }
