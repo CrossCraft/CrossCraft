@@ -19,6 +19,10 @@
             .url = "git+https://codeberg.org/GasInfinity/zitrus#4482d4988b368385aefbe4dffec56feee5b3488a",
             .hash = "zitrus-0.0.0-Ewix9DbxHABJbXBbOueD9Y15rNb-9HCuYq_-TL0FAJiT",
         },
+        .lint = .{
+            .url = "git+https://gitlab.com/hanabi_dev/tiger_lint#0f82046a7d8480ef76ad3baba6dbdaf31981ef3e",
+            .hash = "tiger_lint-0.0.0-bKhmM30qAwB3B8RoNal-TZ_Bm819_thnwoIpM_DagBbg",
+        },
     },
     .paths = .{
         "assets",
@@ -31,5 +35,6 @@
         "web",
         "LICENSE",
         "README.md",
+        "tiger_lint.json",
     },
 }

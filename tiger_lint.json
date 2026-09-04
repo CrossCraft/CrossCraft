@@ -1,0 +1,26 @@
+{
+  "rules": {
+    "control_characters": true,
+    "ascii_only": true,
+    "error_comparison": true,
+    "debug_assert": true,
+    "self_type": true,
+    "comptime_not": true,
+    "configured_text_bans": true,
+    "leftover_reminders": true,
+    "symbol_bans": false,
+    "packed_fields": true,
+    "line_length": false,
+    "trailing_whitespace": true,
+    "type_function_names": true,
+    "function_names": true,
+    "dead_declarations": true,
+    "function_length": false,
+    "operator_precedence": true,
+    "defer_newline": true,
+    "deinit_undefined": true,
+    "dead_files": true,
+    "file_size": true,
+    "assertion_density": true
+  }
+}

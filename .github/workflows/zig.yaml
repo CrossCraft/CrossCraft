@@ -15,6 +15,7 @@ concurrency:
 # still ships Node 20, so keep the runner-level Node 24 opt-in until mlugg
 # cuts a Node 24 release; drop this once it does.
 env:
+  CI: "true"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:

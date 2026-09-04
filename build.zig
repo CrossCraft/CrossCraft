@@ -7,6 +7,21 @@ pub fn build(b: *std.Build) void {
     const web_host = b.option([]const u8, "web-host", "serve-web: bind host (default: 127.0.0.1)") orelse "127.0.0.1";
     const web_port = b.option(u16, "web-port", "serve-web: bind port (default: 8080)") orelse 8080;
 
+    const lint_dep = b.dependency("lint", .{
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    const run_lint = b.addRunArtifact(lint_dep.artifact("lint"));
+    run_lint.setCwd(b.path("."));
+    if (b.graph.environ_map.get("CI") != null) {
+        run_lint.addArg("--check-only");
+    }
+    run_lint.addArg(".");
+
+    const lint_step = b.step("lint", "Lint the codebase with tiger_lint");
+    lint_step.dependOn(&run_lint.step);
+    b.getInstallStep().dependOn(lint_step);
+
     const overrides: Aether.config.Config.Overrides = .{
         .gfx = b.option(Aether.config.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
         .audio = b.option(Aether.config.Audio, "audio", "Audio backend override (default: auto-detect from target)"),
@@ -214,6 +229,7 @@ pub fn build(b: *std.Build) void {
         server_root.addImport("core", core);
 
         const build_server_step = b.step("server", "Build the server");
+        build_server_step.dependOn(lint_step);
         build_server_step.dependOn(&b.addInstallArtifact(server_exe, .{}).step);
 
         const run_server_step = b.step("run-server", "Run the server");
@@ -230,6 +246,7 @@ pub fn build(b: *std.Build) void {
         const unsupported_server = b.addFail("Standalone server builds are supported only on PC targets (Linux, macOS, Windows).");
 
         const build_server_step = b.step("server", "Build the server");
+        build_server_step.dependOn(lint_step);
         build_server_step.dependOn(&unsupported_server.step);
 
         const run_server_step = b.step("run-server", "Run the server");
@@ -237,6 +254,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const build_game_step = b.step("game", "Build the game");
+    build_game_step.dependOn(lint_step);
     // macOS ships the exe inside CrossCraft-Classic.app (wired by
     // Aether.exportArtifactWithOutputs onto b.getInstallStep()). Installing a flat
     // copy alongside would duplicate the binary and confuse downstream
@@ -320,6 +338,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(lint_step);
 
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &.{};
     const unit_tests = b.addTest(.{
