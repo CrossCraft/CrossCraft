@@ -1,6 +1,7 @@
 // Classic 64x32 skins mirror right-side UVs onto the left limbs.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
@@ -9,13 +10,12 @@ const core = @import("core");
 const collision = @import("../player/collision.zig");
 const Vertex = @import("aether").Rendering.Vertex;
 const Colors = @import("../graphics/Color.zig");
-const Color = Colors.Color;
 const Player = @import("../player/Player.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
 const FontBatcher = ae.UI.FontBatcher;
 const ResourcePack = @import("../ResourcePack.zig");
 
-const Self = @This();
+const SteveModel = @This();
 
 // SNORM16 scale: 1 block = 2048 units (matches face.zig:encode_pos).
 // Model matrix scales by 16.0 to recover world units.
@@ -72,8 +72,8 @@ name_aspects: [core.Server.MaxPlayers]f32,
 anim_time: f32,
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator) !Self {
-    var self: Self = .{
+pub fn init(allocator: std.mem.Allocator) !SteveModel {
+    var self: SteveModel = .{
         .torso_data = try BatchMeshData.init(allocator),
         .torso = try BatchMesh.init(&.{}),
         .head_data = try BatchMeshData.init(allocator),
@@ -117,13 +117,13 @@ pub fn init(allocator: std.mem.Allocator) !Self {
     emit_box(&self.left_leg_data, -32, -192, -32, 32, 0, 32, &left_leg_uvs);
     for (data_meshes, render_meshes) |data, mesh| {
         const expected_verts: usize = if (Rendering.mesh.indexing_enabled) LIMB_QUADS * 4 else LIMB_VERTS;
-        std.debug.assert(data.vertices.items.len == expected_verts);
+        assert(data.vertices.items.len == expected_verts);
         mesh.update(data);
     }
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *SteveModel) void {
     for (&self.name_tags) |*nt| {
         if (nt.*) |*m| {
             m.deinit(self.allocator);
@@ -142,9 +142,10 @@ pub fn deinit(self: *Self) void {
     };
     for (render_meshes) |m| m.deinit();
     for (data_meshes) |m| m.deinit(self.allocator);
+    self.* = undefined;
 }
 
-pub fn update(self: *Self, dt: f32, player_list: *const PlayerList, fonts: *const FontBatcher) void {
+pub fn update(self: *SteveModel, dt: f32, player_list: *const PlayerList, fonts: *const FontBatcher) void {
     const tau = std.math.tau;
     const pi = std.math.pi;
     const f = 1.0 - @exp(-INTERP_SPEED * dt);
@@ -217,7 +218,7 @@ fn lerp_angle(current: f32, target: f32, f_factor: f32) f32 {
     return current + diff * f_factor;
 }
 
-pub fn draw(self: *Self, local: *const Player) void {
+pub fn draw(self: *SteveModel, local: *const Player) void {
     const local_x = local.pos_x;
     const local_y = local.pos_y;
     const local_z = local.pos_z;
@@ -276,7 +277,7 @@ pub fn draw(self: *Self, local: *const Player) void {
     }
 }
 
-pub fn draw_nametags(self: *Self, local: *const Player, fonts: *const FontBatcher) void {
+pub fn draw_nametags(self: *SteveModel, local: *const Player, fonts: *const FontBatcher) void {
     Rendering.gfx.api.bind_texture(fonts.texture.handle);
 
     for (&self.states, &self.name_tags, &self.name_aspects) |*st, *nt, aspect| {

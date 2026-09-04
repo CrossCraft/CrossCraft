@@ -8,6 +8,7 @@
 // Modifications Copyright (c) 2026 CrossCraft
 
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
@@ -46,7 +47,7 @@ const SENTINEL: Block = @enumFromInt(0xFF);
 
 const SwingKind = enum { idle, place, dig };
 
-const Self = @This();
+const BlockHand = @This();
 
 const hand_near_plane: f32 = if (ae.platform == .psp) 0.3 else Camera.near_plane;
 const hand_far_plane: f32 = if (ae.platform == .nintendo_3ds) Camera.far_plane else 128.0;
@@ -63,8 +64,8 @@ swing_period: f32,
 prev_swing_y: f32,
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
-    var self: Self = .{
+pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !BlockHand {
+    var self: BlockHand = .{
         .atlas = atlas,
         .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
         .mesh = try Rendering.MeshType(Vertex).init(&.{}),
@@ -81,27 +82,28 @@ pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *BlockHand) void {
     self.mesh.deinit();
     self.mesh_data.deinit(self.allocator);
+    self.* = undefined;
 }
 
-pub fn trigger_dig(self: *Self) void {
+pub fn trigger_dig(self: *BlockHand) void {
     self.swing_kind = .dig;
     self.swing_period = DIG_PERIOD;
     self.swing_time = 0;
     self.prev_swing_y = 0;
 }
 
-pub fn trigger_place(self: *Self) void {
+pub fn trigger_place(self: *BlockHand) void {
     self.swing_kind = .place;
     self.swing_period = PLACE_PERIOD;
     self.swing_time = 0;
     self.prev_swing_y = 0;
 }
 
-pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
-    std.debug.assert(dt >= 0);
+pub fn update(self: *BlockHand, dt: f32, current_block: Block, shadowed: bool) void {
+    assert(dt >= 0);
 
     if (self.cached_block == SENTINEL) {
         self.rebuild(current_block, shadowed);
@@ -160,7 +162,7 @@ pub fn update(self: *Self, dt: f32, current_block: Block, shadowed: bool) void {
     }
 }
 
-fn rebuild(self: *Self, block: Block, shadowed: bool) void {
+fn rebuild(self: *BlockHand, block: Block, shadowed: bool) void {
     self.mesh_data.clear_retaining_capacity();
     if (block.is_air()) {
         self.mesh.update(&self.mesh_data);
@@ -190,11 +192,11 @@ fn rebuild(self: *Self, block: Block, shadowed: bool) void {
         v.color = uniform;
     }
 
-    std.debug.assert(self.mesh_data.vertices.items.len <= VERT_CAPACITY);
+    assert(self.mesh_data.vertices.items.len <= VERT_CAPACITY);
     self.mesh.update(&self.mesh_data);
 }
 
-pub fn draw(self: *Self, terrain: *const Rendering.Texture, camera: *const Camera) void {
+pub fn draw(self: *BlockHand, terrain: *const Rendering.Texture, camera: *const Camera) void {
     if (self.cached_block.is_air() or self.mesh_data.vertices.items.len == 0) return;
 
     Rendering.gfx.api.clear_depth();
@@ -254,7 +256,7 @@ const Anim = struct {
     pitch: f32,
 };
 
-fn compute_anim(self: *const Self) Anim {
+fn compute_anim(self: *const BlockHand) Anim {
     if (self.swing_kind == .idle) return .{ .dx = 0, .dy = 0, .dz = 0, .yaw = 0, .pitch = 0 };
 
     const t = self.swing_time / self.swing_period;

@@ -125,6 +125,7 @@ test "resource passes replace only stone" {
     const dimensions: terrain.world_dimensions = .{ .width = 32, .height = 32, .depth = 32 };
     const blocks = try std.testing.allocator.alloc(u8, dimensions.volume());
     defer std.testing.allocator.free(blocks);
+
     @memset(blocks, terrain.stone_id);
     blocks[0] = terrain.dirt_id;
     const field = terrain.block_field.init(dimensions, blocks);

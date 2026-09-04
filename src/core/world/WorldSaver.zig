@@ -71,9 +71,8 @@ pub fn deinit(self: *WorldSaver) void {
 /// Dispatch an asynchronous, single-flight save.
 pub fn save(self: *WorldSaver, data: *WorldData) void {
     if (!self.owned_locally) return;
-    self.dispatch_save(data, self.format, null) catch |err| {
-        std.debug.assert(err == error.SaveInFlight);
-        log.warn("save already in flight; skipping", .{});
+    self.dispatch_save(data, self.format, null) catch |err| switch (err) {
+        error.SaveInFlight => log.warn("save already in flight; skipping", .{}),
     };
 }
 
@@ -102,7 +101,7 @@ const SaveOverride = struct {
     world_name: []const u8,
 };
 
-fn dispatch_save(self: *WorldSaver, data: *WorldData, format: SaveFormat, override: ?SaveOverride) !void {
+fn dispatch_save(self: *WorldSaver, data: *WorldData, format: SaveFormat, override: ?SaveOverride) error{SaveInFlight}!void {
     if (!self.cw_job.try_begin()) return error.SaveInFlight;
 
     self.cw_job.next = null;
@@ -119,6 +118,7 @@ fn dispatch_save(self: *WorldSaver, data: *WorldData, format: SaveFormat, overri
 
     if (comptime builtin.os.tag == .wasi) {
         defer self.cw_job.mark_done(self.io);
+
         save_worker(self);
         return;
     }
@@ -298,6 +298,7 @@ pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator)
         return false;
     };
     defer scratch.free(read_buf);
+
     var reader = file.reader(self.io, read_buf);
 
     // A gzip stream may need roughly 1 KiB before yielding its first inflated
@@ -363,6 +364,7 @@ test "save promotion preserves the previous file on write failure" {
     {
         const file = try tmp.dir.createFile(io, "world.dat", .{});
         defer file.close(io);
+
         try file.writeStreamingAll(io, "old");
     }
 
@@ -379,6 +381,7 @@ test "save promotion preserves the previous file on write failure" {
     {
         const file = try tmp.dir.openFile(io, "world.dat", .{});
         defer file.close(io);
+
         const len = try file.readPositionalAll(io, &read_buf, 0);
         try std.testing.expectEqualStrings("new", read_buf[0..len]);
     }
@@ -395,6 +398,7 @@ test "save promotion preserves the previous file on write failure" {
 
     const file = try tmp.dir.openFile(io, "world.dat", .{});
     defer file.close(io);
+
     const len = try file.readPositionalAll(io, &read_buf, 0);
     try std.testing.expectEqualStrings("new", read_buf[0..len]);
 }

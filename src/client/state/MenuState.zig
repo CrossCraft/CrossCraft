@@ -123,6 +123,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             const file = engine.dirs.data.createFile(engine.io, "pack.zip", .{}) catch |err|
                 return menu_init_error(.extract_pack_create, err);
             defer file.close(engine.io);
+
             file.writeStreamingAll(engine.io, embedded_pack) catch |err| {
                 log.err("failed to extract pack.zip to data dir: {}", .{err});
                 return menu_init_error(.extract_pack_write, err);
@@ -209,7 +210,10 @@ const MenuInitStage = enum {
 };
 
 fn menu_init_error(comptime stage: MenuInitStage, err: anyerror) anyerror {
-    if (err != error.Unexpected) return err;
+    switch (err) {
+        error.Unexpected => {},
+        else => return err,
+    }
 
     return switch (stage) {
         .extract_pack_create => error.MenuInitExtractPackCreateUnexpected,
@@ -357,6 +361,7 @@ fn write_converted_legacy_save(
 
     var saver = World.WorldSaver.init(io, saves_dir, dest_name, World.default_format);
     defer saver.deinit();
+
     saver.owned_locally = true;
     saver.save(data);
     saver.wait_for_save();
@@ -366,6 +371,7 @@ fn write_converted_legacy_save(
         return false;
     };
     defer file.close(io);
+
     const st = file.stat(io) catch |err| {
         log.warn("legacy save migration: converted save stat failed: {}", .{err});
         return false;

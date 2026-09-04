@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
@@ -29,7 +30,7 @@ const CLOUD_UV_PERIOD: f32 = PLANE_SIZE * @as(f32, @floatFromInt(CLOUD_TEX_SCALE
 const CLOUD_Y_MARGIN: u32 = 8;
 const CLOUD_SPEED: f32 = 0.175;
 
-const Self = @This();
+const Sky = @This();
 
 plane_data: BatchMeshData,
 plane_mesh: BatchMesh,
@@ -38,8 +39,8 @@ cloud_mesh: BatchMesh,
 scroll: f32,
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator) !Self {
-    var self: Self = .{
+pub fn init(allocator: std.mem.Allocator) !Sky {
+    var self: Sky = .{
         .plane_data = try BatchMeshData.init(allocator),
         .plane_mesh = try BatchMesh.init(&.{}),
         .cloud_data = try BatchMeshData.init(allocator),
@@ -54,14 +55,15 @@ pub fn init(allocator: std.mem.Allocator) !Self {
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *Sky) void {
     self.plane_mesh.deinit();
     self.cloud_mesh.deinit();
     self.plane_data.deinit(self.allocator);
     self.cloud_data.deinit(self.allocator);
+    self.* = undefined;
 }
 
-pub fn update(self: *Self, dt: f32) void {
+pub fn update(self: *Sky, dt: f32) void {
     self.scroll += dt * CLOUD_SPEED;
     while (self.scroll >= CLOUD_UV_PERIOD) self.scroll -= CLOUD_UV_PERIOD;
 }
@@ -78,7 +80,7 @@ pub fn clear(submerged: ?collision.Liquid) void {
     );
 }
 
-pub fn draw_plane(self: *Self, camera: *const Camera, submerged: ?collision.Liquid) void {
+pub fn draw_plane(self: *Sky, camera: *const Camera, submerged: ?collision.Liquid) void {
     set_sky_fog(submerged);
     Rendering.gfx.api.set_alpha_blend(false);
     const m = Math.Mat4.scaling(PLANE_SIZE, 1.0, PLANE_SIZE)
@@ -90,7 +92,7 @@ pub fn draw_plane(self: *Self, camera: *const Camera, submerged: ?collision.Liqu
     self.plane_mesh.draw(&m);
 }
 
-pub fn draw_clouds(self: *Self, _: *const Camera, submerged: ?collision.Liquid) void {
+pub fn draw_clouds(self: *Sky, _: *const Camera, submerged: ?collision.Liquid) void {
     set_sky_fog(submerged);
     Rendering.gfx.api.set_alpha_blend(true);
     const dims = World.data.dims;
@@ -140,13 +142,13 @@ fn fog_params(submerged: ?collision.Liquid) [2]f32 {
 
 /// Map sky grid index [0, PLANE_GRID] to SNORM16 [0, 32767].
 fn encode_plane(i: u32) i16 {
-    std.debug.assert(i <= PLANE_GRID);
+    assert(i <= PLANE_GRID);
     return @intCast(@min(@as(i32, @intCast(i)) * (32768 / PLANE_GRID), 32767));
 }
 
 /// Map cloud grid index [0, CLOUD_GRID] to SNORM16 [0, 32767].
 fn encode_cloud_pos(i: u32) i16 {
-    std.debug.assert(i <= CLOUD_GRID);
+    assert(i <= CLOUD_GRID);
     return @intCast(@min(@as(i32, @intCast(i)) * (32768 / CLOUD_GRID), 32767));
 }
 

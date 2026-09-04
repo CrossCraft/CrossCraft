@@ -399,8 +399,10 @@ test "remap_yzx_to_chunk_aware matches row scatter" {
     const rows = volume / wd.chunk_size;
     const yzx = try std.testing.allocator.alloc(u8, volume);
     defer std.testing.allocator.free(yzx);
+
     const chunked = try std.testing.allocator.alloc(u8, volume);
     defer std.testing.allocator.free(chunked);
+
     const visited = try std.testing.allocator.alloc(u8, rows / 8);
     defer std.testing.allocator.free(visited);
 
@@ -441,6 +443,7 @@ test "copy_blocks_yzx_band preserves wire row order" {
 
     const band = try std.testing.allocator.alloc(u8, data.dims.band_len());
     defer std.testing.allocator.free(band);
+
     data.copy_blocks_yzx_band(y, z_start, band);
     for (0..wd.chunk_size) |z_offset| {
         for (0..data.dims.length) |x| {
@@ -484,6 +487,7 @@ test "write_blocks_yzx releases the lock before writing each band" {
 
             if (!self.world.access_lock.tryLock(io)) return error.WriteFailed;
             defer self.world.access_lock.unlock(io);
+
             if (self.calls == 0) {
                 self.world.blocks[self.world.get_index(0, 0, wd.chunk_size)] = .stone;
             }
@@ -506,6 +510,7 @@ test "apply_block maintains the sunlight column" {
     var data: WorldData = undefined;
     try data.init_in_place(std.testing.allocator, wd.default, 1);
     defer data.deinit();
+
     data.compute_chunk_counts();
     data.compute_light_map();
 

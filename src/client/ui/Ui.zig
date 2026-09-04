@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 const input_api = ae.Core.input;
@@ -70,7 +71,7 @@ pub const Padding = struct {
     }
 };
 
-const Self = @This();
+const Ui = @This();
 
 pub const MAX_DEPTH: u8 = 8;
 pub const MAX_ITEMS: u8 = 96;
@@ -143,7 +144,7 @@ const Scope = struct {
 };
 
 pub const ScopeHandle = struct {
-    ui: *Self,
+    ui: *Ui,
     pub fn end(self: ScopeHandle) void {
         self.ui.pop_scope();
     }
@@ -160,8 +161,8 @@ pub const InitArgs = struct {
     layer_base: u8 = 0,
 };
 
-pub fn begin(args: InitArgs) Self {
-    var self: Self = .{
+pub fn begin(args: InitArgs) Ui {
+    var self: Ui = .{
         .draw = args.draw,
         .state = args.state,
         .input = args.input,
@@ -202,14 +203,14 @@ pub fn begin(args: InitArgs) Self {
     return self;
 }
 
-fn input_system(self: *const Self) ?*input_api.InputSystem {
+fn input_system(self: *const Ui) ?*input_api.InputSystem {
     return self.input.input_system;
 }
 
 /// End the engine session alongside the UI-side field state. Aether permits
 /// only one non-terminal text session, so clearing just `UiState.active_text`
 /// leaves the next pointer-selected field unable to begin editing.
-fn cancel_active_text(self: *Self) void {
+fn cancel_active_text(self: *Ui) void {
     if (self.state.active_text != null) {
         if (self.input_system()) |sys| {
             if (sys.current_text_session()) |session| {
@@ -220,8 +221,8 @@ fn cancel_active_text(self: *Self) void {
     self.state.cancel_active_text();
 }
 
-pub fn end(self: *Self) void {
-    std.debug.assert(self.depth == 1);
+pub fn end(self: *Ui) void {
+    assert(self.depth == 1);
 
     self.state.focusable_count = self.focus_count;
     var i: u8 = 0;
@@ -263,7 +264,7 @@ pub const StackOpts = struct {
     box: Box = .{},
 };
 
-pub fn stack(self: *Self, opts: StackOpts) ScopeHandle {
+pub fn stack(self: *Ui, opts: StackOpts) ScopeHandle {
     self.push_scope(.{
         .axis = opts.axis,
         .anchor = opts.anchor,
@@ -277,7 +278,7 @@ pub fn stack(self: *Self, opts: StackOpts) ScopeHandle {
     return .{ .ui = self };
 }
 
-pub fn label(self: *Self, text: []const u8) void {
+pub fn label(self: *Ui, text: []const u8) void {
     const draw_start = self.draw.count;
     const focus_start = self.focus_count;
     const scroll_start = self.scroll_view_count;
@@ -299,7 +300,7 @@ pub fn label(self: *Self, text: []const u8) void {
     self.record_child(draw_start, self.draw.count, focus_start, self.focus_count, scroll_start, self.scroll_view_count, rect);
 }
 
-pub fn spacer(self: *Self, w: i16, h: i16) void {
+pub fn spacer(self: *Ui, w: i16, h: i16) void {
     const draw_start = self.draw.count;
     const focus_start = self.focus_count;
     const scroll_start = self.scroll_view_count;
@@ -314,7 +315,7 @@ pub const ButtonOpts = struct {
     style: *const ButtonStyle = &ButtonStyle.classic,
 };
 
-pub fn button(self: *Self, id: WidgetId, text: []const u8, opts: ButtonOpts) bool {
+pub fn button(self: *Ui, id: WidgetId, text: []const u8, opts: ButtonOpts) bool {
     const draw_start = self.draw.count;
     const focus_start = self.focus_count;
     const scroll_start = self.scroll_view_count;
@@ -357,7 +358,7 @@ pub const SliderOpts = struct {
     style: *const SliderStyle = &SliderStyle.classic,
 };
 
-pub fn slider(self: *Self, id: WidgetId, value: *f32, opts: SliderOpts) bool {
+pub fn slider(self: *Ui, id: WidgetId, value: *f32, opts: SliderOpts) bool {
     const draw_start = self.draw.count;
     const focus_start = self.focus_count;
     const scroll_start = self.scroll_view_count;
@@ -409,7 +410,7 @@ pub const TextOpts = struct {
     style: *const TextFieldStyle = &TextFieldStyle.classic,
 };
 
-pub fn text_field(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) TextEvent {
+pub fn text_field(self: *Ui, id: WidgetId, buf: *TextBuf, opts: TextOpts) TextEvent {
     const draw_start = self.draw.count;
     const focus_start = self.focus_count;
     const scroll_start = self.scroll_view_count;
@@ -467,7 +468,7 @@ pub const SlotGridOpts = struct {
     highlight_color: Color = Color.rgba(255, 255, 255, 48),
 };
 
-pub fn slot_grid(self: *Self, id: WidgetId, opts: SlotGridOpts) ?u8 {
+pub fn slot_grid(self: *Ui, id: WidgetId, opts: SlotGridOpts) ?u8 {
     const draw_start = self.draw.count;
     const focus_start = self.focus_count;
     const scroll_start = self.scroll_view_count;
@@ -507,7 +508,7 @@ pub const ScrollListOpts = struct {
     wheel_step: i16 = 22,
 };
 
-pub fn scroll_list(self: *Self, id: WidgetId, opts: ScrollListOpts) ScopeHandle {
+pub fn scroll_list(self: *Ui, id: WidgetId, opts: ScrollListOpts) ScopeHandle {
     const parent = &self.scopes[self.depth - 1];
     const rect = self.reserve_rect(parent, .{ .x = opts.width, .y = opts.height });
     const scroll_y = self.state.scroll_y(id);
@@ -536,7 +537,7 @@ pub fn scroll_list(self: *Self, id: WidgetId, opts: ScrollListOpts) ScopeHandle 
     return .{ .ui = self };
 }
 
-pub fn prompts(self: *Self, list: []const Prompt) void {
+pub fn prompts(self: *Ui, list: []const Prompt) void {
     prompt_strip.draw_into(
         self.draw,
         self.glyphs_tex,
@@ -550,7 +551,7 @@ pub fn prompts(self: *Self, list: []const Prompt) void {
     );
 }
 
-pub fn contextual_prompts(self: *Self) void {
+pub fn contextual_prompts(self: *Ui) void {
     if (self.state.captured) |id| {
         if (self.current_focusable_kind(id)) |kind| {
             if (kind == .slider) {
@@ -579,19 +580,19 @@ pub fn contextual_prompts(self: *Self) void {
     }
 }
 
-pub fn cancel_pressed(self: *const Self) bool {
+pub fn cancel_pressed(self: *const Ui) bool {
     return self.input.cancel_edge and !self.cancel_consumed and !self.claimed_confirm;
 }
 
-pub fn inventory_pressed(self: *const Self) bool {
+pub fn inventory_pressed(self: *const Ui) bool {
     return self.input.inventory_edge and !self.cancel_consumed and !self.claimed_confirm;
 }
 
-pub fn close_request(self: *Self) void {
+pub fn close_request(self: *Ui) void {
     self.close_requested = true;
 }
 
-pub fn fmt(self: *Self, comptime f: []const u8, args: anytype) []const u8 {
+pub fn fmt(self: *Ui, comptime f: []const u8, args: anytype) []const u8 {
     if (self.label_used >= self.label_buf.len) return &.{};
     const remaining = self.label_buf[self.label_used..];
     const out = std.fmt.bufPrint(remaining, f, args) catch return &.{};
@@ -615,8 +616,8 @@ const ScopeInit = struct {
     scroll_wheel_step: i16 = 0,
 };
 
-fn push_scope(self: *Self, a: ScopeInit) void {
-    std.debug.assert(self.depth < MAX_DEPTH);
+fn push_scope(self: *Ui, a: ScopeInit) void {
+    assert(self.depth < MAX_DEPTH);
     self.scopes[self.depth] = .{
         .axis = a.axis,
         .anchor = a.anchor,
@@ -646,8 +647,8 @@ fn push_scope(self: *Self, a: ScopeInit) void {
     self.depth += 1;
 }
 
-fn pop_scope(self: *Self) void {
-    std.debug.assert(self.depth > 1);
+fn pop_scope(self: *Ui) void {
+    assert(self.depth > 1);
     const idx = self.depth - 1;
     var s = &self.scopes[idx];
 
@@ -691,12 +692,12 @@ fn pop_scope(self: *Self) void {
     self.record_child(s.draw_start, self.draw.count, s.focus_start, self.focus_count, s.scroll_start, self.scroll_view_count, rect);
 }
 
-fn alloc_rect(self: *Self, sz: Point) LogicalRect {
+fn alloc_rect(self: *Ui, sz: Point) LogicalRect {
     const s = &self.scopes[self.depth - 1];
     return self.reserve_rect(s, sz);
 }
 
-fn reserve_rect(_: *Self, s: *Scope, sz: Point) LogicalRect {
+fn reserve_rect(_: *Ui, s: *Scope, sz: Point) LogicalRect {
     if (s.children > 0) s.cursor_main += s.gap;
     const rect: LogicalRect = if (s.axis == .vertical)
         .{
@@ -721,7 +722,7 @@ fn reserve_rect(_: *Self, s: *Scope, sz: Point) LogicalRect {
 }
 
 fn record_child(
-    self: *Self,
+    self: *Ui,
     draw_start: u16,
     draw_end: u16,
     focus_start: u8,
@@ -732,7 +733,7 @@ fn record_child(
 ) void {
     if (self.depth == 0) return;
     const s = &self.scopes[self.depth - 1];
-    std.debug.assert(self.item_count < MAX_ITEMS);
+    assert(self.item_count < MAX_ITEMS);
     const item_idx = self.item_count;
     self.items[item_idx] = .{
         .draw_start = draw_start,
@@ -748,7 +749,7 @@ fn record_child(
     s.item_count += 1;
 }
 
-fn align_scope_children(self: *Self, s: *Scope) void {
+fn align_scope_children(self: *Ui, s: *Scope) void {
     const content_cross: i16 = if (s.axis == .vertical)
         @max(s.size.x - s.padding.horizontal(), 0)
     else
@@ -800,21 +801,21 @@ fn parent_rect(s: Scope) LogicalRect {
     return .{ .x0 = s.origin.x, .y0 = s.origin.y, .x1 = s.origin.x + s.size.x, .y1 = s.origin.y + s.size.y };
 }
 
-fn push_focusable(self: *Self, f_in: UiState.Focusable) void {
-    std.debug.assert(self.focus_count < MAX_FOCUSABLES);
+fn push_focusable(self: *Ui, f_in: UiState.Focusable) void {
+    assert(self.focus_count < MAX_FOCUSABLES);
     var f = f_in;
     if (f.scroll_clip == null) f.scroll_clip = self.current_scroll_clip();
     self.focusables[self.focus_count] = f;
     self.focus_count += 1;
 }
 
-fn push_scroll_view(self: *Self, v: UiState.ScrollView) void {
+fn push_scroll_view(self: *Ui, v: UiState.ScrollView) void {
     if (self.scroll_view_count >= UiState.MAX_SCROLLS) return;
     self.scroll_views[self.scroll_view_count] = v;
     self.scroll_view_count += 1;
 }
 
-fn current_scroll_clip(self: *const Self) ?UiState.ScrollClip {
+fn current_scroll_clip(self: *const Ui) ?UiState.ScrollClip {
     if (self.depth == 0) return null;
     return self.scopes[self.depth - 1].scroll_clip;
 }
@@ -834,7 +835,7 @@ fn first_visible_focusable_idx(focusables: []const UiState.Focusable) ?u8 {
     return fallback;
 }
 
-fn offset_focus_range(self: *Self, start: u8, finish: u8, dx: i16, dy: i16) void {
+fn offset_focus_range(self: *Ui, start: u8, finish: u8, dx: i16, dy: i16) void {
     if (dx == 0 and dy == 0) return;
     var i = start;
     while (i < finish) : (i += 1) {
@@ -851,7 +852,7 @@ fn offset_focus_range(self: *Self, start: u8, finish: u8, dx: i16, dy: i16) void
     }
 }
 
-fn offset_scroll_range(self: *Self, start: u8, finish: u8, dx: i16, dy: i16) void {
+fn offset_scroll_range(self: *Ui, start: u8, finish: u8, dx: i16, dy: i16) void {
     if (dx == 0 and dy == 0) return;
     var i = start;
     while (i < finish) : (i += 1) {
@@ -862,7 +863,7 @@ fn offset_scroll_range(self: *Self, start: u8, finish: u8, dx: i16, dy: i16) voi
     }
 }
 
-fn route_pre_frame(self: *Self) void {
+fn route_pre_frame(self: *Ui) void {
     if (self.input.cancel_edge and self.state.active_text != null) {
         self.cancel_active_text();
         self.cancel_consumed = true;
@@ -914,7 +915,7 @@ fn route_pre_frame(self: *Self) void {
     }
 }
 
-fn handle_wheel(self: *Self, x: i16, y: i16, wheel_dy: i8) void {
+fn handle_wheel(self: *Ui, x: i16, y: i16, wheel_dy: i8) void {
     var i: u8 = 0;
     while (i < self.state.scroll_view_count) : (i += 1) {
         const v = self.state.scroll_views[i];
@@ -932,7 +933,7 @@ fn clamp_scroll(v: UiState.ScrollView, desired: i32) i16 {
     return @intCast(std.math.clamp(desired, 0, max_scroll));
 }
 
-fn pick_previous(self: *const Self, x: i16, y: i16) ?u8 {
+fn pick_previous(self: *const Ui, x: i16, y: i16) ?u8 {
     var i: u8 = 0;
     while (i < self.state.focusable_count) : (i += 1) {
         const f = self.state.focusables[i];
@@ -945,7 +946,7 @@ fn pick_previous(self: *const Self, x: i16, y: i16) ?u8 {
     return null;
 }
 
-fn find_previous_id(self: *const Self, id: WidgetId) ?u8 {
+fn find_previous_id(self: *const Ui, id: WidgetId) ?u8 {
     var i: u8 = 0;
     while (i < self.state.focusable_count) : (i += 1) {
         if (self.state.focusables[i].id == id) return i;
@@ -953,12 +954,12 @@ fn find_previous_id(self: *const Self, id: WidgetId) ?u8 {
     return null;
 }
 
-fn focused_previous_idx(self: *const Self) ?u8 {
+fn focused_previous_idx(self: *const Ui) ?u8 {
     const id = self.state.focused orelse return null;
     return self.find_previous_id(id);
 }
 
-fn find_current_id(self: *const Self, id: WidgetId) ?u8 {
+fn find_current_id(self: *const Ui, id: WidgetId) ?u8 {
     var i: u8 = 0;
     while (i < self.focus_count) : (i += 1) {
         if (self.focusables[i].id == id) return i;
@@ -966,19 +967,19 @@ fn find_current_id(self: *const Self, id: WidgetId) ?u8 {
     return null;
 }
 
-fn find_current_visible_id(self: *const Self, id: WidgetId) ?u8 {
+fn find_current_visible_id(self: *const Ui, id: WidgetId) ?u8 {
     const idx = self.find_current_id(id) orelse return null;
     const f = self.focusables[idx];
     if (!focusable_in_clip(f.rect, f.scroll_clip)) return null;
     return idx;
 }
 
-fn current_focusable_kind(self: *const Self, id: WidgetId) ?UiState.FocusableKind {
+fn current_focusable_kind(self: *const Ui, id: WidgetId) ?UiState.FocusableKind {
     const idx = self.find_current_id(id) orelse return null;
     return self.focusables[idx].kind;
 }
 
-fn prompt_focusable_kind(self: *const Self) ?UiState.FocusableKind {
+fn prompt_focusable_kind(self: *const Ui) ?UiState.FocusableKind {
     if (self.state.focused) |id| return self.current_focusable_kind(id);
     if (self.state.focus_source == .pad) {
         if (first_visible_focusable_idx(self.focusables[0..self.focus_count])) |idx| return self.focusables[idx].kind;
@@ -986,7 +987,7 @@ fn prompt_focusable_kind(self: *const Self) ?UiState.FocusableKind {
     return null;
 }
 
-fn spatial_advance(self: *Self, from_idx: u8, dir: ui_input.NavDir) void {
+fn spatial_advance(self: *Ui, from_idx: u8, dir: ui_input.NavDir) void {
     if (dir == .none) return;
     const cur_focus = &self.state.focusables[from_idx];
     const cur = cur_focus.rect;
@@ -1042,7 +1043,7 @@ fn nav_candidate_visible(cur: *const UiState.Focusable, candidate: *const UiStat
     return cur_clip.list_id == candidate_clip.list_id;
 }
 
-fn autoscroll_to_focus(self: *Self) void {
+fn autoscroll_to_focus(self: *Ui) void {
     const fid = self.state.focused orelse return;
     const idx = self.find_previous_id(fid) orelse return;
     const f = self.state.focusables[idx];
@@ -1062,22 +1063,22 @@ fn autoscroll_to_focus(self: *Self) void {
     }
 }
 
-fn state_focused_eq(self: *const Self, id: WidgetId) bool {
+fn state_focused_eq(self: *const Ui, id: WidgetId) bool {
     const f = self.state.focused orelse return false;
     return f == id;
 }
 
-fn state_hovered_eq(self: *const Self, id: WidgetId) bool {
+fn state_hovered_eq(self: *const Ui, id: WidgetId) bool {
     const h = self.state.hovered orelse return false;
     return h == id;
 }
 
-fn state_active_text_eq(self: *const Self, id: WidgetId) bool {
+fn state_active_text_eq(self: *const Ui, id: WidgetId) bool {
     const a = self.state.active_text orelse return false;
     return a == id;
 }
 
-fn persist(self: *Self, text: []const u8) []const u8 {
+fn persist(self: *Ui, text: []const u8) []const u8 {
     if (self.label_used + text.len > self.label_buf.len) return text;
     const dst = self.label_buf[self.label_used .. self.label_used + text.len];
     @memcpy(dst, text);
@@ -1114,7 +1115,7 @@ fn slider_value_from_pos(opts: SliderOpts, pos: f32) f32 {
     };
 }
 
-fn set_slider_from_cursor(self: *Self, id: WidgetId, value: *f32, opts: SliderOpts) bool {
+fn set_slider_from_cursor(self: *Ui, id: WidgetId, value: *f32, opts: SliderOpts) bool {
     const idx = self.find_previous_id(id) orelse return false;
     const rect = self.state.focusables[idx].rect;
     const usable: i32 = @as(i32, rect.width()) - @as(i32, opts.style.knob_w);
@@ -1140,7 +1141,7 @@ fn nudge_slider_value(value: *f32, opts: SliderOpts, dir: ui_input.NavDir) bool 
     return true;
 }
 
-fn set_active_text(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) void {
+fn set_active_text(self: *Ui, id: WidgetId, buf: *TextBuf, opts: TextOpts) void {
     if (self.state.active_text != null and self.state.active_text.? == id and self.state.text_session_started) return;
     self.cancel_active_text();
     self.state.active_text = id;
@@ -1175,7 +1176,7 @@ fn uses_modal_text_input() bool {
     };
 }
 
-fn fire_modal_text_input(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {
+fn fire_modal_text_input(self: *Ui, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {
     const sys = self.input_system() orelse return false;
     if (sys.current_text_session()) |s| {
         if (!s.is_terminal()) sys.cancel_text() catch {};
@@ -1209,7 +1210,7 @@ fn fire_modal_text_input(self: *Self, id: WidgetId, buf: *TextBuf, opts: TextOpt
     return changed;
 }
 
-fn sync_session_to_field(self: *Self, id: WidgetId, buf: *TextBuf) TextEvent {
+fn sync_session_to_field(self: *Ui, id: WidgetId, buf: *TextBuf) TextEvent {
     if (self.state.active_text == null or self.state.active_text.? != id or !self.state.text_session_started) return .none;
     const sys = self.input_system() orelse return .none;
     const session = sys.current_text_session() orelse return .none;
@@ -1226,7 +1227,7 @@ fn sync_session_to_field(self: *Self, id: WidgetId, buf: *TextBuf) TextEvent {
     return if (copy_session_to_buf(session.buffer.items, buf)) .changed else .none;
 }
 
-fn apply_text_session_events(self: *Self, session_const: *const input_api.TextInputSession) void {
+fn apply_text_session_events(self: *Ui, session_const: *const input_api.TextInputSession) void {
     if (!self.input.text_events or session_const.status != .active) return;
     const sys = self.input_system() orelse return;
     const session: *input_api.TextInputSession = @constCast(session_const);
@@ -1240,7 +1241,7 @@ fn apply_text_session_events(self: *Self, session_const: *const input_api.TextIn
     }
 }
 
-fn text_submit_edge(self: *const Self) bool {
+fn text_submit_edge(self: *const Ui) bool {
     if (!self.input.text_events) return false;
     const sys = self.input_system() orelse return false;
     for (sys.frame_events()) |ev| {
@@ -1266,7 +1267,7 @@ fn pop_text_codepoint(session: *input_api.TextInputSession) void {
     session.buffer.items.len = start;
 }
 
-fn finish_active_text(self: *Self) void {
+fn finish_active_text(self: *Ui) void {
     self.state.active_text = null;
     self.state.text_session_started = false;
 }
@@ -1303,7 +1304,7 @@ test "pointer text-field transitions release the prior text session" {
         .wheel_dy = 0,
         .text_events = true,
     };
-    var ui: Self = undefined;
+    var ui: Ui = undefined;
     ui.state = &state;
     ui.input = &in;
 
@@ -1374,7 +1375,7 @@ fn cell_at(opts: SlotGridOpts, inner: LogicalRect, x: i16, y: i16) ?u8 {
     return @intCast(row_i * @as(i16, @intCast(opts.cols)) + col_i);
 }
 
-fn snap_slot_to_cursor(self: *Self, id: WidgetId, opts: SlotGridOpts) bool {
+fn snap_slot_to_cursor(self: *Ui, id: WidgetId, opts: SlotGridOpts) bool {
     const idx = self.find_previous_id(id) orelse return false;
     const inner = slot_grid_inner_rect(opts, self.state.focusables[idx].rect);
     const slot = cell_at(opts, inner, self.input.cursor_x, self.input.cursor_y) orelse return false;
@@ -1405,7 +1406,7 @@ fn slot_valid(opts: SlotGridOpts, idx: u8) bool {
     return !opts.blocks[idx].is_air();
 }
 
-fn draw_button(ui: *Self, rect: LogicalRect, text: []const u8, focused: bool, opts: ButtonOpts) void {
+fn draw_button(ui: *Ui, rect: LogicalRect, text: []const u8, focused: bool, opts: ButtonOpts) void {
     const style = opts.style;
     const region = if (!opts.enabled) style.disabled else if (focused) style.hover else style.normal;
     const elide = switch (style.sizing) {
@@ -1443,7 +1444,7 @@ fn draw_button(ui: *Self, rect: LogicalRect, text: []const u8, focused: bool, op
     });
 }
 
-fn draw_rect_outline(ui: *Self, rect: LogicalRect, thickness: i16, color: Color, layer: u8) void {
+fn draw_rect_outline(ui: *Ui, rect: LogicalRect, thickness: i16, color: Color, layer: u8) void {
     const w = rect.width();
     const h = rect.height();
     if (thickness <= 0 or w <= 0 or h <= 0) return;
@@ -1480,7 +1481,7 @@ fn draw_rect_outline(ui: *Self, rect: LogicalRect, thickness: i16, color: Color,
     });
 }
 
-fn draw_slider(ui: *Self, rect: LogicalRect, id: WidgetId, value: f32, opts: SliderOpts, focused: bool) void {
+fn draw_slider(ui: *Ui, rect: LogicalRect, id: WidgetId, value: f32, opts: SliderOpts, focused: bool) void {
     const style = opts.style;
     const elide = switch (style.sizing) {
         .center_elide => |c| c,
@@ -1538,7 +1539,7 @@ fn draw_slider(ui: *Self, rect: LogicalRect, id: WidgetId, value: f32, opts: Sli
     });
 }
 
-fn draw_textfield(ui: *Self, rect: LogicalRect, id: WidgetId, buf: *TextBuf, opts: TextOpts) void {
+fn draw_textfield(ui: *Ui, rect: LogicalRect, id: WidgetId, buf: *TextBuf, opts: TextOpts) void {
     const style = opts.style;
     const elide = switch (style.sizing) {
         .center_elide => |c| c,
@@ -1610,7 +1611,7 @@ fn draw_textfield(ui: *Self, rect: LogicalRect, id: WidgetId, buf: *TextBuf, opt
     }
 }
 
-fn draw_slot_grid(ui: *Self, rect: LogicalRect, opts: SlotGridOpts) void {
+fn draw_slot_grid(ui: *Ui, rect: LogicalRect, opts: SlotGridOpts) void {
     if (opts.style == .pause) {
         ui.draw.add_rect(&.{
             .pos_offset = .{ .x = rect.x0, .y = rect.y0 },

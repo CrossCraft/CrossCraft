@@ -44,9 +44,9 @@ anim_progress: f32,
 first_build: bool,
 allocator: std.mem.Allocator,
 
-const Self = @This();
+const ChunkMesh = @This();
 
-pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !Self {
+pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !ChunkMesh {
     return .{
         .opaque_data = try BatchMeshData.init(allocator),
         .@"opaque" = try BatchMesh.init(&.{}),
@@ -66,30 +66,31 @@ pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !Self {
 }
 
 /// Advance the bouncy rise animation. No-op once the section is at rest.
-pub fn update_animation(self: *Self, dt: f32) void {
+pub fn update_animation(self: *ChunkMesh, dt: f32) void {
     if (self.anim_progress < 1.0) {
         self.anim_progress = @min(self.anim_progress + dt, 1.0);
     }
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *ChunkMesh) void {
     self.@"opaque".deinit();
     self.trans.deinit();
     self.fluid.deinit();
     self.opaque_data.deinit(self.allocator);
     self.trans_data.deinit(self.allocator);
     self.fluid_data.deinit(self.allocator);
+    self.* = undefined;
 }
 
 /// Release vertex data but keep GPU handles alive for reuse.
-pub fn clear(self: *Self) void {
+pub fn clear(self: *ChunkMesh) void {
     const a = self.allocator;
     self.opaque_data.clear_and_free(a);
     self.trans_data.clear_and_free(a);
     self.fluid_data.clear_and_free(a);
 }
 
-pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{ OutOfMemory, IndexOverflow }!void {
+pub fn rebuild(self: *ChunkMesh, atlas: *const TextureAtlas) error{ OutOfMemory, IndexOverflow }!void {
     // All-air chunks have no visible faces -- skip pack/count/emit entirely.
     if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) {
         self.opaque_data.clear_retaining_capacity();
@@ -124,32 +125,32 @@ pub fn rebuild(self: *Self, atlas: *const TextureAtlas) error{ OutOfMemory, Inde
     }
 }
 
-pub fn center_x(self: *const Self) f32 {
+pub fn center_x(self: *const ChunkMesh) f32 {
     return @as(f32, @floatFromInt(self.cx * 16)) + 8.0;
 }
-pub fn center_y(self: *const Self) f32 {
+pub fn center_y(self: *const ChunkMesh) f32 {
     return @as(f32, @floatFromInt(self.sy * 16)) + 8.0;
 }
-pub fn center_z(self: *const Self) f32 {
+pub fn center_z(self: *const ChunkMesh) f32 {
     return @as(f32, @floatFromInt(self.cz * 16)) + 8.0;
 }
 
 /// Draw opaque geometry only. Call front-to-back.
-pub fn draw_opaque(self: *Self) void {
+pub fn draw_opaque(self: *ChunkMesh) void {
     if (self.opaque_data.vertices.items.len == 0) return;
     const m = model_matrix(self, scale_opaque);
     self.@"opaque".draw(&m);
 }
 
 /// Draw transparent geometry (leaves, glass, cross-plants). Call back-to-front.
-pub fn draw_transparent(self: *Self) void {
+pub fn draw_transparent(self: *ChunkMesh) void {
     if (self.trans_data.vertices.items.len == 0) return;
     const m = model_matrix(self, scale_trans);
     self.trans.draw(&m);
 }
 
 /// Draw fluid geometry (water, lava). Call back-to-front with depth writes off.
-pub fn draw_fluid(self: *Self) void {
+pub fn draw_fluid(self: *ChunkMesh) void {
     if (self.fluid_data.vertices.items.len == 0) return;
     const m = model_matrix(self, scale_trans);
     self.fluid.draw(&m);
@@ -163,7 +164,7 @@ pub fn draw_fluid(self: *Self) void {
 const scale_opaque: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32753.0 else 16.0;
 const scale_trans: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32763.0 else 16.0;
 
-fn model_matrix(self: *const Self, s: f32) Math.Mat4 {
+fn model_matrix(self: *const ChunkMesh, s: f32) Math.Mat4 {
     const wx: f32 = @floatFromInt(self.cx * 16);
     const base_wy: f32 = @floatFromInt(self.sy * 16);
     const wz: f32 = @floatFromInt(self.cz * 16);

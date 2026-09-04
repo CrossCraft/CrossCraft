@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const SNORM_UV_MAX: i32 = 32767;
 const SNORM_UV_STEPS: i32 = SNORM_UV_MAX + 1;
 // Keep the last tile below UV 1.0 for repeat samplers.
@@ -17,8 +18,8 @@ pub const TextureAtlas = struct {
     max_guard_v: u16,
 
     pub fn init(rows: u32, cols: u32) TextureAtlas {
-        std.debug.assert(std.math.isPowerOfTwo(rows));
-        std.debug.assert(std.math.isPowerOfTwo(cols));
+        assert(std.math.isPowerOfTwo(rows));
+        assert(std.math.isPowerOfTwo(cols));
         return .{
             .col_log2 = @intCast(@ctz(cols)),
             .row_log2 = @intCast(@ctz(rows)),
@@ -29,29 +30,29 @@ pub const TextureAtlas = struct {
         };
     }
 
-    pub fn tileWidth(self: TextureAtlas) i16 {
-        return @intCast(self.tileSpanU() - @as(i32, self.min_guard_u) - @as(i32, self.max_guard_u));
+    pub fn tile_width(self: TextureAtlas) i16 {
+        return @intCast(self.tile_span_u() - @as(i32, self.min_guard_u) - @as(i32, self.max_guard_u));
     }
 
-    pub fn tileHeight(self: TextureAtlas) i16 {
-        return @intCast(self.tileSpanV() - @as(i32, self.min_guard_v) - @as(i32, self.max_guard_v));
+    pub fn tile_height(self: TextureAtlas) i16 {
+        return @intCast(self.tile_span_v() - @as(i32, self.min_guard_v) - @as(i32, self.max_guard_v));
     }
 
-    pub fn tileU(self: TextureAtlas, x: u32) i16 {
-        std.debug.assert(x < (@as(u32, 1) << self.col_log2));
-        return @intCast(@as(i32, @intCast(x)) * self.tileSpanU() + @as(i32, self.min_guard_u));
+    pub fn tile_u(self: TextureAtlas, x: u32) i16 {
+        assert(x < (@as(u32, 1) << self.col_log2));
+        return @intCast(@as(i32, @intCast(x)) * self.tile_span_u() + @as(i32, self.min_guard_u));
     }
 
-    pub fn tileV(self: TextureAtlas, y: u32) i16 {
-        std.debug.assert(y < (@as(u32, 1) << self.row_log2));
-        return @intCast(@as(i32, @intCast(y)) * self.tileSpanV() + @as(i32, self.min_guard_v));
+    pub fn tile_v(self: TextureAtlas, y: u32) i16 {
+        assert(y < (@as(u32, 1) << self.row_log2));
+        return @intCast(@as(i32, @intCast(y)) * self.tile_span_v() + @as(i32, self.min_guard_v));
     }
 
-    fn tileSpanU(self: TextureAtlas) i32 {
+    fn tile_span_u(self: TextureAtlas) i32 {
         return SNORM_UV_STEPS >> self.col_log2;
     }
 
-    fn tileSpanV(self: TextureAtlas) i32 {
+    fn tile_span_v(self: TextureAtlas) i32 {
         return SNORM_UV_STEPS >> self.row_log2;
     }
 };
@@ -62,10 +63,10 @@ test "atlas tiles stay inside sampling boundaries" {
     const expected_max: i16 = MAX_GUARD;
     const stride: i16 = 2048;
 
-    try std.testing.expectEqual(expected_min, atlas.tileU(0));
-    try std.testing.expectEqual(expected_min, atlas.tileV(0));
-    try std.testing.expectEqual(stride + expected_min, atlas.tileU(1));
-    try std.testing.expectEqual(stride - expected_min - expected_max, atlas.tileWidth());
-    try std.testing.expectEqual(stride - expected_min - expected_max, atlas.tileHeight());
-    try std.testing.expectEqual(SNORM_UV_STEPS - expected_max, atlas.tileU(15) + atlas.tileWidth());
+    try std.testing.expectEqual(expected_min, atlas.tile_u(0));
+    try std.testing.expectEqual(expected_min, atlas.tile_v(0));
+    try std.testing.expectEqual(stride + expected_min, atlas.tile_u(1));
+    try std.testing.expectEqual(stride - expected_min - expected_max, atlas.tile_width());
+    try std.testing.expectEqual(stride - expected_min - expected_max, atlas.tile_height());
+    try std.testing.expectEqual(SNORM_UV_STEPS - expected_max, atlas.tile_u(15) + atlas.tile_width());
 }

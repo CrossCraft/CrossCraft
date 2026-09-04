@@ -1,6 +1,7 @@
 //! Controller and keyboard prompt-strip layout.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 
@@ -25,7 +26,7 @@ pub const Prompt = struct {
 
 comptime {
     // Guard against accidental Prompt bloat -- PSP-friendly budget.
-    std.debug.assert(@sizeOf(Prompt) <= 64);
+    assert(@sizeOf(Prompt) <= 64);
 }
 
 pub fn enabled() bool {

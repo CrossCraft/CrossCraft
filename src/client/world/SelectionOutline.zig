@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 const Transform = Rendering.Transform;
@@ -21,7 +22,7 @@ const COLOR: u32 = 0xAA202020;
 const QUAD_COUNT: usize = 72;
 const VERTEX_COUNT: usize = QUAD_COUNT * 6;
 
-const Self = @This();
+const SelectionOutline = @This();
 
 const Axis = enum(u2) { x, y, z };
 const PerAxis = struct { x: i16, y: i16, z: i16 };
@@ -32,8 +33,8 @@ mesh: Rendering.MeshType(Vertex),
 allocator: std.mem.Allocator,
 last_bounds: ?SubvoxelBounds = null,
 
-pub fn init(allocator: std.mem.Allocator) !Self {
-    var self: Self = .{
+pub fn init(allocator: std.mem.Allocator) !SelectionOutline {
+    var self: SelectionOutline = .{
         .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
         .mesh = try Rendering.MeshType(Vertex).init(&.{}),
         .allocator = allocator,
@@ -42,12 +43,13 @@ pub fn init(allocator: std.mem.Allocator) !Self {
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *SelectionOutline) void {
     self.mesh.deinit();
     self.mesh_data.deinit(self.allocator);
+    self.* = undefined;
 }
 
-pub fn update(self: *Self, bounds: SubvoxelBounds) !void {
+pub fn update(self: *SelectionOutline, bounds: SubvoxelBounds) !void {
     if (self.last_bounds) |prev| {
         if (std.meta.eql(prev, bounds)) return;
     }
@@ -55,11 +57,11 @@ pub fn update(self: *Self, bounds: SubvoxelBounds) !void {
     self.mesh_data.clear_retaining_capacity();
     build_edges(&self.mesh_data, compute_thick(bounds));
     const expected_verts: usize = if (Rendering.mesh.indexing_enabled) QUAD_COUNT * 4 else VERTEX_COUNT;
-    std.debug.assert(self.mesh_data.vertices.items.len == expected_verts);
+    assert(self.mesh_data.vertices.items.len == expected_verts);
     self.mesh.update(&self.mesh_data);
 }
 
-pub fn draw(self: *Self, transform: *const Transform) void {
+pub fn draw(self: *SelectionOutline, transform: *const Transform) void {
     const m = transform.get_matrix();
     self.mesh.draw(&m);
 }

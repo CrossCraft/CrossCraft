@@ -109,7 +109,7 @@ pub fn interpolate(weight: f32, lower: f32, upper: f32) f32 {
     return lower + weight * (upper - lower);
 }
 
-// With z=0, each Perlin gradient is a coefficient pair in {-1, 0, 1}².
+// With z=0, each Perlin gradient is a coefficient pair in {-1, 0, 1} squared.
 // Precomputing the pairs avoids branchy gradient selection on MIPS.
 const gradient_2d_coefficients = blk: {
     @setEvalBranchQuota(2_000);

@@ -1,6 +1,7 @@
 //! Per-screen UI command buffer lowered into the rendering batchers.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 
@@ -14,7 +15,7 @@ const Color = Colors.Color;
 pub const Anchor = layout.Anchor;
 pub const Point = layout.Point;
 
-const Self = @This();
+const UiDrawList = @This();
 
 pub const SpriteCmd = SpriteBatcher.Sprite;
 pub const ElidedSpriteCmd = SpriteBatcher.ElidedSprite;
@@ -46,51 +47,51 @@ pub const MAX_CMDS: u16 = if (ae.platform == .psp) 96 else 192;
 cmds: [MAX_CMDS]DrawCmd = undefined,
 count: u16 = 0,
 
-pub fn add_sprite(self: *Self, cmd: *const SpriteCmd) void {
-    std.debug.assert(self.count < MAX_CMDS);
+pub fn add_sprite(self: *UiDrawList, cmd: *const SpriteCmd) void {
+    assert(self.count < MAX_CMDS);
     self.cmds[self.count] = .{ .sprite = cmd.* };
     self.count += 1;
 }
 
-pub fn add_sprite_elided(self: *Self, cmd: *const ElidedSpriteCmd) void {
-    std.debug.assert(self.count < MAX_CMDS);
+pub fn add_sprite_elided(self: *UiDrawList, cmd: *const ElidedSpriteCmd) void {
+    assert(self.count < MAX_CMDS);
     self.cmds[self.count] = .{ .elided_sprite = cmd.* };
     self.count += 1;
 }
 
-pub fn add_rect(self: *Self, cmd: *const RectCmd) void {
-    std.debug.assert(self.count < MAX_CMDS);
+pub fn add_rect(self: *UiDrawList, cmd: *const RectCmd) void {
+    assert(self.count < MAX_CMDS);
     self.cmds[self.count] = .{ .rect = cmd.* };
     self.count += 1;
 }
 
-pub fn add_text(self: *Self, cmd: *const TextCmd) void {
-    std.debug.assert(self.count < MAX_CMDS);
+pub fn add_text(self: *UiDrawList, cmd: *const TextCmd) void {
+    assert(self.count < MAX_CMDS);
     self.cmds[self.count] = .{ .text = cmd.* };
     self.count += 1;
 }
 
-pub fn add_iso_block(self: *Self, cmd: *const IsoBlockCmd) void {
-    std.debug.assert(self.count < MAX_CMDS);
+pub fn add_iso_block(self: *UiDrawList, cmd: *const IsoBlockCmd) void {
+    assert(self.count < MAX_CMDS);
     self.cmds[self.count] = .{ .iso_block = cmd.* };
     self.count += 1;
 }
 
-pub fn push_clip(self: *Self, rect: layout.LogicalRect) void {
-    std.debug.assert(self.count < MAX_CMDS);
+pub fn push_clip(self: *UiDrawList, rect: layout.LogicalRect) void {
+    assert(self.count < MAX_CMDS);
     self.cmds[self.count] = .{ .clip_push = rect };
     self.count += 1;
 }
 
-pub fn pop_clip(self: *Self) void {
-    std.debug.assert(self.count < MAX_CMDS);
+pub fn pop_clip(self: *UiDrawList) void {
+    assert(self.count < MAX_CMDS);
     self.cmds[self.count] = .{ .clip_pop = {} };
     self.count += 1;
 }
 
-pub fn offset_range(self: *Self, start: u16, end: u16, dx: i16, dy: i16) void {
-    std.debug.assert(start <= end);
-    std.debug.assert(end <= self.count);
+pub fn offset_range(self: *UiDrawList, start: u16, end: u16, dx: i16, dy: i16) void {
+    assert(start <= end);
+    assert(end <= self.count);
     if (dx == 0 and dy == 0) return;
 
     var i: u16 = start;
@@ -129,7 +130,7 @@ pub fn offset_range(self: *Self, start: u16, end: u16, dx: i16, dy: i16) void {
 
 /// `iso` is required only when the list contains an `iso_block` command.
 pub fn flush_into(
-    self: *const Self,
+    self: *const UiDrawList,
     sprites: *SpriteBatcher,
     fonts: *FontBatcher,
     iso: ?*IsoBlockDrawer,
@@ -141,12 +142,12 @@ pub fn flush_into(
     while (i < self.count) : (i += 1) {
         switch (self.cmds[i]) {
             .clip_push => |r| {
-                std.debug.assert(depth < MAX_CLIP_DEPTH);
+                assert(depth < MAX_CLIP_DEPTH);
                 stack[depth] = if (depth == 0) r else intersect(stack[depth - 1], r);
                 depth += 1;
             },
             .clip_pop => {
-                std.debug.assert(depth > 0);
+                assert(depth > 0);
                 depth -= 1;
             },
             .sprite => |*s| {
@@ -173,7 +174,7 @@ pub fn flush_into(
             },
         }
     }
-    std.debug.assert(depth == 0);
+    assert(depth == 0);
 }
 
 const MAX_CLIP_DEPTH: u8 = 4;

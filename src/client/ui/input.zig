@@ -1,5 +1,6 @@
 /// Per-frame snapshot of the shared menu action set.
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 const input = ae.Core.input;
@@ -237,7 +238,7 @@ fn refresh_active_context(sys: *input.InputSystem, previous: input.ActionSetHand
 
 /// `repeat` is owned by the active screen and persists across frames.
 pub fn build_frame(sys: *input.InputSystem, dt: f32, repeat: *Repeat) UiInput {
-    std.debug.assert(dt >= 0);
+    assert(dt >= 0);
     Buttons.note_input_mode(sys.last_input_mode());
 
     const cursor = read_cursor(sys);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const Ui = @import("../Ui.zig");
 const Prompts = @import("../Prompts.zig");
 const widget_id = @import("../widget_id.zig");
@@ -30,7 +31,7 @@ pub const default_path = "pack.zip";
 pub const row_base: u16 = 100;
 
 pub fn wid_for_row(i: u8) WidgetId {
-    std.debug.assert(i <= max_packs);
+    assert(i <= max_packs);
     return widget_id.raw(row_base + @as(u16, i));
 }
 

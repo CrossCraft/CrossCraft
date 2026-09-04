@@ -71,6 +71,7 @@ pub fn main(init: std.process.Init) !void {
 
     const compress_window = try gpa.create([flate.max_window_len]u8);
     defer gpa.destroy(compress_window);
+
     const comp_storage = try gpa.create(flate.Compress);
     defer gpa.destroy(comp_storage);
 

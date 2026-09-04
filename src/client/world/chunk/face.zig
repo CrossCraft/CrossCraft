@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const core = @import("core");
 const blocks = core.blocks;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
@@ -10,13 +11,13 @@ pub const Face = blocks.Face;
 
 /// Map local coordinate [0, 16] to SNORM16 [0, 32767].
 pub fn encode_pos(local: u32) i16 {
-    std.debug.assert(local <= 16);
+    assert(local <= 16);
     return @intCast(@min(@as(i32, @intCast(local)) * 2048, 32767));
 }
 
 /// Encode position with fractional offset (units of 1/256 block).
 pub fn encode_pos_frac(local: u32, frac256: u32) i16 {
-    std.debug.assert(local <= 16);
+    assert(local <= 16);
     return @intCast(@min(@as(i32, @intCast(local)) * 2048 + @as(i32, @intCast(frac256)) * 8, 32767));
 }
 
@@ -41,13 +42,13 @@ pub fn apply_shadow(color: u32) u32 {
 const UVRect = struct { tu0: i16, tv0: i16, tu1: i16, tv1: i16 };
 
 fn tile_uvs(tile: blocks.Tile, atlas: *const TextureAtlas) UVRect {
-    const base_u = atlas.tileU(tile.col);
-    const base_v = atlas.tileV(tile.row);
+    const base_u = atlas.tile_u(tile.col);
+    const base_v = atlas.tile_v(tile.row);
     return .{
-        .tu0 = @intCast(@as(i32, base_u) + @as(i32, atlas.tileWidth())),
+        .tu0 = @intCast(@as(i32, base_u) + @as(i32, atlas.tile_width())),
         .tv0 = base_v,
         .tu1 = base_u,
-        .tv1 = @intCast(@as(i32, base_v) + @as(i32, atlas.tileHeight())),
+        .tv1 = @intCast(@as(i32, base_v) + @as(i32, atlas.tile_height())),
     };
 }
 
@@ -244,7 +245,7 @@ pub fn emit_fluid_side_face(
     shadowed: bool,
     above_is_fluid: bool,
 ) void {
-    std.debug.assert(face != .y_pos and face != .y_neg);
+    assert(face != .y_pos and face != .y_neg);
     const base = face_color(face);
     const color = if (shadowed) apply_shadow(base) else base;
     const uv = tile_uvs(tile, atlas);

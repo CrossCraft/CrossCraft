@@ -40,7 +40,7 @@ pub const ScrollEntry = struct {
 pub const MAX_FOCUSABLES: u8 = 64;
 pub const MAX_SCROLLS: u8 = 4;
 
-const Self = @This();
+const UiState = @This();
 
 focused: ?WidgetId = null,
 hovered: ?WidgetId = null,
@@ -60,7 +60,7 @@ scroll_count: u8 = 0,
 
 /// Reset transient state on screen entry. `seed_focus = true` arms
 /// pad-style nav so the first focusable is highlighted after the first frame.
-pub fn open(self: *Self, seed_focus: bool) void {
+pub fn open(self: *UiState, seed_focus: bool) void {
     self.cancel_active_text();
     self.focused = null;
     self.hovered = null;
@@ -72,7 +72,7 @@ pub fn open(self: *Self, seed_focus: bool) void {
     self.scroll_count = 0;
 }
 
-pub fn scroll_y(self: *const Self, id: WidgetId) i16 {
+pub fn scroll_y(self: *const UiState, id: WidgetId) i16 {
     var i: u8 = 0;
     while (i < self.scroll_count) : (i += 1) {
         if (self.scroll_entries[i].id == id) return self.scroll_entries[i].y;
@@ -80,7 +80,7 @@ pub fn scroll_y(self: *const Self, id: WidgetId) i16 {
     return 0;
 }
 
-pub fn set_scroll_y(self: *Self, id: WidgetId, y: i16) void {
+pub fn set_scroll_y(self: *UiState, id: WidgetId, y: i16) void {
     var i: u8 = 0;
     while (i < self.scroll_count) : (i += 1) {
         if (self.scroll_entries[i].id == id) {
@@ -93,7 +93,7 @@ pub fn set_scroll_y(self: *Self, id: WidgetId, y: i16) void {
     self.scroll_count += 1;
 }
 
-pub fn cancel_active_text(self: *Self) void {
+pub fn cancel_active_text(self: *UiState) void {
     self.active_text = null;
     self.text_session_started = false;
 }

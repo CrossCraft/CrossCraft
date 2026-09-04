@@ -136,6 +136,7 @@ test "writer and loader round trip chunk-aware blocks and counters" {
     var source: WorldData = undefined;
     try source.init_in_place(std.testing.allocator, dims, 0x0123_4567_89ab_cdef);
     defer source.deinit();
+
     source.tick_count = 0xfedc_ba98_7654_3210;
 
     const markers = [_]struct { x: u16, y: u16, z: u16, block: Block }{
@@ -151,6 +152,7 @@ test "writer and loader round trip chunk-aware blocks and counters" {
 
     const encoded = try std.testing.allocator.alloc(u8, dims.volume() + 26);
     defer std.testing.allocator.free(encoded);
+
     var writer = std.Io.Writer.fixed(encoded);
     try ClassicDat.save_world(.{}, .{
         .dims = dims,
@@ -167,6 +169,7 @@ test "writer and loader round trip chunk-aware blocks and counters" {
 
     const loaded = try std.testing.allocator.alloc(Block, dims.volume());
     defer std.testing.allocator.free(loaded);
+
     @memset(loaded, .bedrock);
     var reader = std.Io.Reader.fixed(writer.buffered());
     const outcome = try ClassicDat.load_world(.{}, std.testing.allocator, dims, loaded, &reader);

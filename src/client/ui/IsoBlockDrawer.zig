@@ -9,6 +9,7 @@
 // Projects the three visible cube faces into a screen-space SNORM16 mesh.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const UI = ae.UI;
 const Math = ae.Math;
@@ -21,7 +22,7 @@ const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Face = @import("../world/chunk/face.zig").Face;
 const Scaling = UI.Scaling;
 
-const Self = @This();
+const IsoBlockDrawer = @This();
 
 const ROT_Y_RAD: f32 = std.math.pi * 0.25;
 const ROT_X_RAD: f32 = -std.math.pi / 6.0;
@@ -53,9 +54,9 @@ pub fn init(
     allocator: std.mem.Allocator,
     terrain: *const Rendering.Texture,
     atlas: TextureAtlas,
-) !Self {
+) !IsoBlockDrawer {
     const iso = Math.Mat4.rotationY(ROT_Y_RAD).mul(Math.Mat4.rotationX(ROT_X_RAD));
-    var self: Self = .{
+    var self: IsoBlockDrawer = .{
         .terrain = terrain,
         .atlas = atlas,
         .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
@@ -67,27 +68,28 @@ pub fn init(
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *IsoBlockDrawer) void {
     self.mesh.deinit();
     self.mesh_data.deinit(self.allocator);
+    self.* = undefined;
 }
 
-pub fn begin(self: *Self) void {
+pub fn begin(self: *IsoBlockDrawer) void {
     self.mesh_data.clear_retaining_capacity();
 }
 
-pub fn add_payload(self: *Self, payload: Payload) void {
+pub fn add_payload(self: *IsoBlockDrawer, payload: Payload) void {
     self.add_block(payload.block, payload.cx, payload.cy, payload.half_extent_px);
 }
 
 pub fn add_block(
-    self: *Self,
+    self: *IsoBlockDrawer,
     block: Block,
     cx: f32,
     cy: f32,
     half_extent_px: f32,
 ) void {
-    std.debug.assert(half_extent_px > 0);
+    assert(half_extent_px > 0);
     if (block.is_air()) return;
 
     const p = block.mesh_props();
@@ -108,12 +110,12 @@ pub fn add_block(
     self.emit_iso_face(.y_pos, h, y_bot, y_top, cx, cy, block, is_slab);
 }
 
-pub fn update(self: *Self) void {
+pub fn update(self: *IsoBlockDrawer) void {
     if (self.mesh_data.vertices.items.len == 0) return;
     self.mesh.update(&self.mesh_data);
 }
 
-pub fn draw(self: *Self) void {
+pub fn draw(self: *IsoBlockDrawer) void {
     if (self.mesh_data.vertices.items.len == 0) return;
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
@@ -133,7 +135,7 @@ fn face_shading(face: Face) u32 {
     };
 }
 
-fn project_xy(self: *const Self, vx: f32, vy: f32, vz: f32, cx: f32, cy: f32) [2]f32 {
+fn project_xy(self: *const IsoBlockDrawer, vx: f32, vy: f32, vz: f32, cx: f32, cy: f32) [2]f32 {
     const m = self.iso_xform.data;
     const ox = vx * m[0][0] + vy * m[1][0] + vz * m[2][0] + m[3][0];
     const oy = vx * m[0][1] + vy * m[1][1] + vz * m[2][1] + m[3][1];
@@ -160,7 +162,7 @@ fn ndc_xy(px_log: f32, py_log: f32) [2]i16 {
 }
 
 fn emit_iso_face(
-    self: *Self,
+    self: *IsoBlockDrawer,
     face: Face,
     h: f32,
     y_bot: f32,
@@ -171,10 +173,10 @@ fn emit_iso_face(
     is_slab: bool,
 ) void {
     const tile = block.face_tile(face);
-    const base_u: i32 = self.atlas.tileU(tile.col);
-    const base_v: i32 = self.atlas.tileV(tile.row);
-    const tw: i32 = self.atlas.tileWidth();
-    const th: i32 = self.atlas.tileHeight();
+    const base_u: i32 = self.atlas.tile_u(tile.col);
+    const base_v: i32 = self.atlas.tile_v(tile.row);
+    const tw: i32 = self.atlas.tile_width();
+    const th: i32 = self.atlas.tile_height();
 
     const tu0: i16 = @intCast(base_u);
     const tu1: i16 = @intCast(base_u + tw);
@@ -227,12 +229,12 @@ fn emit_iso_face(
     self.emit_quad(&verts);
 }
 
-fn add_flat(self: *Self, block: Block, cx: f32, cy: f32, scale: f32) void {
+fn add_flat(self: *IsoBlockDrawer, block: Block, cx: f32, cy: f32, scale: f32) void {
     const tile = block.face_tile(.z_pos);
-    const base_u: i32 = self.atlas.tileU(tile.col);
-    const base_v: i32 = self.atlas.tileV(tile.row);
-    const tw: i32 = self.atlas.tileWidth();
-    const th: i32 = self.atlas.tileHeight();
+    const base_u: i32 = self.atlas.tile_u(tile.col);
+    const base_v: i32 = self.atlas.tile_v(tile.row);
+    const tw: i32 = self.atlas.tile_width();
+    const th: i32 = self.atlas.tile_height();
 
     const tu0: i16 = @intCast(base_u);
     const tu1: i16 = @intCast(base_u + tw);
@@ -261,7 +263,7 @@ fn add_flat(self: *Self, block: Block, cx: f32, cy: f32, scale: f32) void {
     self.emit_quad(&verts);
 }
 
-fn emit_quad(self: *Self, verts: *const [4]Vertex) void {
+fn emit_quad(self: *IsoBlockDrawer, verts: *const [4]Vertex) void {
     const ax: i32 = verts[1].pos[0] - verts[0].pos[0];
     const ay: i32 = verts[1].pos[1] - verts[0].pos[1];
     const bx: i32 = verts[2].pos[0] - verts[0].pos[0];

@@ -321,11 +321,13 @@ pub fn sensitivity_from_percent(percent: u32) f32 {
 const JsonNumber = struct {
     value: f64 = 0.0,
 
-    fn fromInt(value: i64) JsonNumber {
+    fn from_int(value: i64) JsonNumber {
         return .{ .value = @as(f64, @floatFromInt(value)) };
     }
 
-    pub fn jsonParse(
+    pub const jsonParse = json_parse;
+
+    fn json_parse(
         allocator: std.mem.Allocator,
         source: anytype,
         options: std.json.ParseOptions,
@@ -340,7 +342,9 @@ const JsonNumber = struct {
         return .{ .value = value };
     }
 
-    pub fn jsonParseFromValue(
+    pub const jsonParseFromValue = json_parse_from_value;
+
+    fn json_parse_from_value(
         allocator: std.mem.Allocator,
         source: std.json.Value,
         options: std.json.ParseOptions,
@@ -443,20 +447,20 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
     current.set_active_texturepack(j.active_texturepack);
     current.render_distance = j.render_distance;
     current.sound_volume = if (integer_json)
-        json_percent_to_unit(j.sound_volume orelse JsonNumber.fromInt(100))
+        json_percent_to_unit(j.sound_volume orelse JsonNumber.from_int(100))
     else
         json_float_f32(j.sound_volume orelse .{ .value = 1.0 }, 0.0, 1.0);
     current.music_volume = if (integer_json)
-        json_percent_to_unit(j.music_volume orelse JsonNumber.fromInt(50))
+        json_percent_to_unit(j.music_volume orelse JsonNumber.from_int(50))
     else
         json_float_f32(j.music_volume orelse .{ .value = 0.5 }, 0.0, 1.0);
     current.fov = if (integer_json)
-        json_rounded_f32(j.fov orelse JsonNumber.fromInt(70), 10.0, 170.0)
+        json_rounded_f32(j.fov orelse JsonNumber.from_int(70), 10.0, 170.0)
     else
         json_float_f32(j.fov orelse .{ .value = 70.0 }, 10.0, 170.0);
     current.fancy_leaves = j.fancy_leaves and fancy_leaves_supported();
     current.sensitivity = if (integer_json)
-        sensitivity_from_percent(json_percent(j.sensitivity orelse JsonNumber.fromInt(sensitivity_percent(3.0))))
+        sensitivity_from_percent(json_percent(j.sensitivity orelse JsonNumber.from_int(sensitivity_percent(3.0))))
     else
         json_float_f32(j.sensitivity orelse .{ .value = 3.0 }, SENS_MIN, 20.0);
     current.ambient_occlusion = j.ambient_occlusion;
@@ -529,6 +533,7 @@ pub fn save(io: Io, dir: std.Io.Dir) void {
         return;
     };
     defer file.close(io);
+
     file.writeStreamingAll(io, slice) catch |err| {
         log.err("write options.json failed: {}", .{err});
     };
@@ -622,6 +627,7 @@ test "versioned options json accepts legacy floats and new integer values" {
         .{ .ignore_unknown_fields = true },
     );
     defer legacy.deinit();
+
     try std.testing.expectEqual(@as(u8, 1), legacy.value.version);
     try std.testing.expectEqual(@as(f32, 1.0), json_float_f32(legacy.value.sound_volume.?, 0.0, 1.0));
     try std.testing.expectEqual(@as(f32, 0.5), json_float_f32(legacy.value.music_volume.?, 0.0, 1.0));
@@ -639,6 +645,7 @@ test "versioned options json accepts legacy floats and new integer values" {
         .{ .ignore_unknown_fields = true },
     );
     defer integer.deinit();
+
     try std.testing.expectEqual(@as(u8, 2), integer.value.version);
     try std.testing.expectEqual(@as(f32, 1.0), json_percent_to_unit(integer.value.sound_volume.?));
     try std.testing.expectEqual(@as(f32, 0.5), json_percent_to_unit(integer.value.music_volume.?));

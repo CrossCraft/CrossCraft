@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 
 const log = std.log.scoped(.access_control);
 
@@ -80,7 +81,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, cap_request: 
     const cap = std.math.clamp(cap_request, 1, max_capacity);
     const scratch_len: usize = @as(usize, cap) * json_bytes_per_record + 1024;
 
-    std.debug.assert(!initialized);
+    assert(!initialized);
     errdefer clear(alloc);
 
     records = try alloc.alloc(Policy, cap);
@@ -186,6 +187,7 @@ pub fn import_legacy(
     if (!initialized or !accepting_legacy_import) return;
     mutex.lockUncancelable(save_io);
     defer mutex.unlock(save_io);
+
     if (!accepting_legacy_import) return;
     if (!banned and !op and !whitelisted) return;
 
@@ -207,6 +209,7 @@ pub fn finish_legacy_migration() !void {
     if (!initialized or !accepting_legacy_import) return;
     mutex.lockUncancelable(save_io);
     defer mutex.unlock(save_io);
+
     if (!accepting_legacy_import) return;
 
     accepting_legacy_import = false;
@@ -261,6 +264,7 @@ fn load_locked() !bool {
 
     var arena = std.heap.ArenaAllocator.init(owning_alloc);
     defer arena.deinit();
+
     const parsed = std.json.parseFromSliceLeaky(
         JsonFile,
         arena.allocator(),
@@ -317,6 +321,7 @@ fn save_locked() !void {
         return err;
     };
     defer file.close(save_io);
+
     file.writeStreamingAll(save_io, writer.buffered()) catch |err| {
         log.err("write {s} failed: {}", .{ file_name, err });
         return err;
@@ -352,6 +357,7 @@ test "legacy policy import persists as canonical access control" {
 
     try init(std.testing.allocator, io, tmp.dir, 2);
     defer deinit();
+
     const policy = lookup("198.51.100.7");
     try std.testing.expect(policy.banned);
     try std.testing.expect(policy.op);

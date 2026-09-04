@@ -16,7 +16,9 @@ pub fn build(b: *std.Build) void {
     if (b.graph.environ_map.get("CI") != null) {
         run_lint.addArg("--check-only");
     }
-    run_lint.addArg(".");
+    // Build-system roots are not reached through Zig @imports, so identify
+    // them explicitly for the linter's dead-file analysis.
+    run_lint.addArgs(&.{ ".", "src/unit.zig", "src/client/web_main.zig" });
 
     const lint_step = b.step("lint", "Lint the codebase with tiger_lint");
     lint_step.dependOn(&run_lint.step);
@@ -110,7 +112,7 @@ pub fn build(b: *std.Build) void {
     //   3DS: install beside the 3dsx; users copy the directory to SDMC.
     //   Switch: install beside the NRO; users copy the directory to SDMC.
     //   macOS: routed through Aether.exportArtifactWithOutputs into the .app bundle's
-    //     Contents/Resources/ — see below.
+    //     Contents/Resources/ -- see below.
     //   Desktop, embedding: pack.zip is baked into the binary; no loose file.
     //   Desktop, -Duse-cwd: install to zig-out/bin/ so run-game (which cd's
     //     into the install dir before exec) and distribution zips both find it.

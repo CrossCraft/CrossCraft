@@ -49,6 +49,7 @@ fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratc
         return false;
     };
     defer scratch.free(read_buf);
+
     var reader = file.reader(io, read_buf);
 
     const peek_sizes = [_]usize{ read_prefix_buf_len, 8192, 4096, 1024, 256, 64, 12 };
@@ -75,6 +76,7 @@ fn validate_save_file(io: std.Io, dir: std.Io.Dir, file_name: []const u8, scratc
         return false;
     };
     defer scratch.free(raw);
+
     const blocks: []Block = @ptrCast(raw);
 
     const outcome = sniff.load_world(scratch, dims, blocks, &reader.interface) catch |err| {
@@ -105,6 +107,7 @@ pub fn pre_init_validate_and_restore(
 ) void {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
+
     const scratch = arena.allocator();
 
     const loc = scheme.split_save_location(save_location) orelse return;

@@ -621,6 +621,7 @@ test "tick defers an overflow-sized fluid batch without buffering or dropping" {
     var data: WorldData = undefined;
     try data.init_in_place(std.testing.allocator, wd.default, 0x1234);
     defer data.deinit();
+
     data.compute_chunk_counts();
 
     var sim = try WorldSimulation.init(std.testing.allocator, 0x5678);
@@ -662,6 +663,7 @@ test "tick defers a multi-change update rather than partially committing it" {
     var data: WorldData = undefined;
     try data.init_in_place(std.testing.allocator, wd.default, 0x1234);
     defer data.deinit();
+
     data.compute_chunk_counts();
 
     var sim = try WorldSimulation.init(std.testing.allocator, 0x5678);

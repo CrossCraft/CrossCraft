@@ -3,7 +3,7 @@ const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const Self = @This();
+const Camera = @This();
 
 pub const near_plane: f32 = if (ae.platform == .psp) 0.3275 else 0.1;
 pub const far_plane: f32 = if (ae.platform == .psp) 132.0 else 256.0;
@@ -24,7 +24,7 @@ tilt: Math.Mat4,
 bob_hor: f32,
 bob_ver: f32,
 
-pub fn init(x: f32, y: f32, z: f32) Self {
+pub fn init(x: f32, y: f32, z: f32) Camera {
     return .{
         .x = x,
         .y = y,
@@ -40,7 +40,7 @@ pub fn init(x: f32, y: f32, z: f32) Self {
 }
 
 /// Build view + projection matrices, upload to GPU, extract frustum planes.
-pub fn apply(self: *Self) void {
+pub fn apply(self: *Camera) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
@@ -59,7 +59,7 @@ pub fn apply(self: *Self) void {
 }
 
 /// Conservative AABB frustum test for a 16x16x16 section.
-pub fn section_visible(self: *const Self, cx: u32, sy: u32, cz: u32) bool {
+pub fn section_visible(self: *const Camera, cx: u32, sy: u32, cz: u32) bool {
     const wx: f32 = @floatFromInt(cx * 16);
     const wy: f32 = @floatFromInt(sy * 16);
     const wz: f32 = @floatFromInt(cz * 16);
@@ -71,7 +71,7 @@ pub fn section_visible(self: *const Self, cx: u32, sy: u32, cz: u32) bool {
 }
 
 /// Squared 3D distance from camera to a world point.
-pub fn distance_sq(self: *const Self, wx: f32, wy: f32, wz: f32) f32 {
+pub fn distance_sq(self: *const Camera, wx: f32, wy: f32, wz: f32) f32 {
     const dx = wx - self.x;
     const dy = wy - self.y;
     const dz = wz - self.z;

@@ -433,6 +433,7 @@ pub fn generate(self: *level, scratch: std.mem.Allocator, seed: i64, dimensions:
     const elevation = terrain.elevation_noise.init(&generator_random);
     var heights = try terrain.elevation_cache.init(scratch, &elevation, dimensions);
     defer heights.deinit(scratch);
+
     terrain.soil(field, &heights);
 
     carve.cave_pass(&generator_random, field);
@@ -462,10 +463,12 @@ test "flower and mushroom pass attempt counts consume specified draws" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, terrain.air_id);
     defer std.testing.allocator.free(field.blocks);
+
     var elevation_random = random_state.init(4);
     const elevation = terrain.elevation_noise.init(&elevation_random);
     var heights = try terrain.elevation_cache.init(std.testing.allocator, &elevation, dimensions);
     defer heights.deinit(std.testing.allocator);
+
     var actual = random_state.init(88);
     mushroom_pass(&actual, field, &heights);
 
@@ -492,10 +495,12 @@ test "flower clusters consume ten five-step walks" {
     const dimensions: world_dimensions = .{ .width = 64, .height = 16, .depth = 64 };
     const field = try test_field(dimensions, terrain.air_id);
     defer std.testing.allocator.free(field.blocks);
+
     var elevation_random = random_state.init(17);
     const elevation = terrain.elevation_noise.init(&elevation_random);
     var heights = try terrain.elevation_cache.init(std.testing.allocator, &elevation, dimensions);
     defer heights.deinit(std.testing.allocator);
+
     var actual = random_state.init(-808);
     flower_pass(&actual, field, &heights);
 
@@ -519,6 +524,7 @@ test "tree base placement delivers falling notifications recursively" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, terrain.stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     const base: terrain.block_position = .{ .x = 8, .y = 8, .z = 8 };
 
     field.set(base.x, base.y - 1, base.z, terrain.grass_id);
@@ -540,6 +546,7 @@ test "placement into air notifies axis neighbors" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, terrain.stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     const position: terrain.block_position = .{ .x = 8, .y = 7, .z = 8 };
 
     field.set(position.x, position.y, position.z, terrain.air_id);
@@ -557,6 +564,7 @@ test "notifying placement converts exposed still fluid to flowing" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, terrain.stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     const position: terrain.block_position = .{ .x = 8, .y = 8, .z = 8 };
 
     field.set(position.x, position.y, position.z, terrain.air_id);
@@ -574,6 +582,7 @@ test "notifying opposite fluid solidifies and notifies neighbors" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, terrain.stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     const position: terrain.block_position = .{ .x = 8, .y = 8, .z = 8 };
 
     field.set(position.x, position.y, position.z, terrain.air_id);
@@ -593,6 +602,7 @@ test "boundary still fluid is exposed through lattice block lookup" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, terrain.stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     const position: terrain.block_position = .{ .x = 1, .y = 8, .z = 8 };
 
     field.set(position.x, position.y, position.z, terrain.air_id);
@@ -607,6 +617,7 @@ test "falling movement notifies source fluid neighbors with air" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, terrain.stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     const source: terrain.block_position = .{ .x = 8, .y = 8, .z = 8 };
 
     field.set(source.x, source.y, source.z, terrain.sand_id);
@@ -624,6 +635,7 @@ test "canopy placement into air notifies axis neighbors" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, terrain.stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     const base: terrain.block_position = .{ .x = 8, .y = 8, .z = 8 };
 
     field.set(6, 9, 8, terrain.air_id);
@@ -642,6 +654,7 @@ test "trunk placement into air notifies axis neighbors" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, terrain.stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     const base: terrain.block_position = .{ .x = 8, .y = 8, .z = 8 };
 
     field.set(base.x, base.y, base.z, terrain.air_id);
@@ -659,6 +672,7 @@ test "unchanged notifying placement does not deliver falling notifications" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, terrain.stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     const position: terrain.block_position = .{ .x = 8, .y = 7, .z = 8 };
 
     field.set(position.x, position.y, position.z, terrain.dirt_id);
@@ -676,6 +690,7 @@ test "tree success consumes height plus sixteen corner draws" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 32, .depth = 16 };
     const field = try test_field(dimensions, terrain.air_id);
     defer std.testing.allocator.free(field.blocks);
+
     const base: terrain.block_position = .{ .x = 8, .y = 8, .z = 8 };
     field.set(base.x, base.y - 1, base.z, terrain.grass_id);
     var actual = random_state.init(777);

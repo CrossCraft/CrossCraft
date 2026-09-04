@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
@@ -12,7 +13,6 @@ const Color = Colors.Color;
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Options = @import("../Options.zig");
-const collision = @import("../player/collision.zig");
 
 const EXTENT: i32 = 4;
 const EXTENT_U: u32 = @intCast(EXTENT);
@@ -23,7 +23,7 @@ const SECTION_HEIGHT: f32 = 8.0;
 const V_PER_BLOCK_F: f32 = 4000.0;
 const SECTION_V_DIFF: i32 = @intFromFloat(SECTION_HEIGHT * V_PER_BLOCK_F);
 comptime {
-    std.debug.assert(SECTION_V_DIFF > 0 and SECTION_V_DIFF <= 32767);
+    assert(SECTION_V_DIFF > 0 and SECTION_V_DIFF <= 32767);
 }
 const FALL_SPEED: i32 = @intFromFloat(12.0 * V_PER_BLOCK_F);
 const STREAK_WIDTH: f32 = 1.0;
@@ -68,7 +68,7 @@ const Splash = struct {
     life: f32,
 };
 
-const Self = @This();
+const Rain = @This();
 
 streak_data: Rendering.MeshDataType(Vertex),
 streak_mesh: Rendering.MeshType(Vertex),
@@ -85,8 +85,8 @@ splash_count: u16,
 rng: std.Random.DefaultPrng,
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator) !Self {
-    var self: Self = .{
+pub fn init(allocator: std.mem.Allocator) !Rain {
+    var self: Rain = .{
         .streak_data = try Rendering.MeshDataType(Vertex).init(allocator),
         .streak_mesh = try Rendering.MeshType(Vertex).init(&.{}),
         .splash_data = try Rendering.MeshDataType(Vertex).init(allocator),
@@ -107,18 +107,19 @@ pub fn init(allocator: std.mem.Allocator) !Self {
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *Rain) void {
     self.streak_mesh.deinit();
     self.streak_data.deinit(self.allocator);
     self.splash_mesh.deinit();
     self.splash_data.deinit(self.allocator);
+    self.* = undefined;
 }
 
-pub fn mark_dirty(self: *Self) void {
+pub fn mark_dirty(self: *Rain) void {
     self.streak_mesh_dirty = true;
 }
 
-pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
+pub fn update(self: *Rain, dt: f32, camera: *const Camera) void {
     if (!Options.current.rain) {
         self.splash_count = 0;
         self.spawn_accum = 0;
@@ -142,7 +143,7 @@ pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
     self.rebuild_splash_mesh(camera);
 }
 
-fn update_splashes(self: *Self, dt: f32) void {
+fn update_splashes(self: *Rain, dt: f32) void {
     var i: u16 = 0;
     while (i < self.splash_count) {
         const p = &self.splashes[i];
@@ -168,7 +169,7 @@ fn update_splashes(self: *Self, dt: f32) void {
     }
 }
 
-fn maybe_spawn_splash(self: *Self, camera: *const Camera) void {
+fn maybe_spawn_splash(self: *Rain, camera: *const Camera) void {
     var rand = self.rng.random();
     const cam_tile_x: i32 = @intFromFloat(@floor(camera.x));
     const cam_tile_z: i32 = @intFromFloat(@floor(camera.z));
@@ -196,7 +197,7 @@ fn maybe_spawn_splash(self: *Self, camera: *const Camera) void {
 }
 
 /// Draw the scrolling streak planes.  Caller must bind rain.png.
-pub fn draw_streaks(self: *Self, camera: *const Camera) void {
+pub fn draw_streaks(self: *Rain, camera: *const Camera) void {
     if (!Options.current.rain) return;
     const cam_tile_x_i: i32 = @intFromFloat(@floor(camera.x));
     const cam_tile_z_i: i32 = @intFromFloat(@floor(camera.z));
@@ -208,10 +209,13 @@ pub fn draw_streaks(self: *Self, camera: *const Camera) void {
     Rendering.gfx.api.set_alpha_blend(true);
     Rendering.gfx.api.set_depth_write(false);
     defer Rendering.gfx.api.set_depth_write(true);
+
     Rendering.gfx.api.set_clip_planes(true);
     defer Rendering.gfx.api.set_clip_planes(false);
+
     Rendering.gfx.api.set_culling(false);
     defer Rendering.gfx.api.set_culling(true);
+
     Rendering.gfx.api.set_uv_offset(0.0, @as(f32, @floatFromInt(@mod(self.scroll_v, 32768))) / 32768.0);
     defer Rendering.gfx.api.set_uv_offset(0.0, 0.0);
 
@@ -221,7 +225,7 @@ pub fn draw_streaks(self: *Self, camera: *const Camera) void {
 }
 
 /// Build and draw impact splashes.  Caller must bind particles.png.
-pub fn draw_splashes(self: *Self) void {
+pub fn draw_splashes(self: *Rain) void {
     if (!Options.current.rain) return;
     if (self.splash_count == 0) return;
 
@@ -229,12 +233,13 @@ pub fn draw_splashes(self: *Self) void {
     Rendering.gfx.api.set_depth_write(true);
     Rendering.gfx.api.set_culling(false);
     defer Rendering.gfx.api.set_culling(true);
+
     Rendering.gfx.api.set_uv_offset(0.0, 0.0);
     const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
     self.splash_mesh.draw(&m);
 }
 
-fn rebuild_streak_mesh(self: *Self, camera: *const Camera) void {
+fn rebuild_streak_mesh(self: *Rain, camera: *const Camera) void {
     const cam_tile_x_i: i32 = @intFromFloat(@floor(camera.x));
     const cam_tile_z_i: i32 = @intFromFloat(@floor(camera.z));
     if (!self.streak_mesh_dirty and
@@ -252,7 +257,7 @@ fn rebuild_streak_mesh(self: *Self, camera: *const Camera) void {
     self.streak_mesh_dirty = false;
 }
 
-fn rebuild_splash_mesh(self: *Self, camera: *const Camera) void {
+fn rebuild_splash_mesh(self: *Rain, camera: *const Camera) void {
     self.splash_data.clear_retaining_capacity();
     if (self.splash_count == 0) return;
 
@@ -266,10 +271,10 @@ fn rebuild_splash_mesh(self: *Self, camera: *const Camera) void {
     const upy = cp * SPLASH_HALF_SIZE;
     const upz = -cy * sp * SPLASH_HALF_SIZE;
 
-    const tu0 = self.particle_atlas.tileU(DROP_TILE_COL);
-    const tv0 = self.particle_atlas.tileV(DROP_TILE_ROW);
-    const tu1 = tu0 + self.particle_atlas.tileWidth();
-    const tv1 = tv0 + self.particle_atlas.tileHeight();
+    const tu0 = self.particle_atlas.tile_u(DROP_TILE_COL);
+    const tv0 = self.particle_atlas.tile_v(DROP_TILE_ROW);
+    const tu1 = tu0 + self.particle_atlas.tile_width();
+    const tv1 = tv0 + self.particle_atlas.tile_height();
     const color: u32 = @bitCast(Color.rgba(180, 180, 220, 255));
 
     var i: u16 = 0;
@@ -328,7 +333,7 @@ fn emit_column_quads(
         const section_h: f32 = section_top - section_bottom;
         if (section_h <= 0.0) break;
         const section_diff: i32 = @intFromFloat(@round(section_h * V_PER_BLOCK_F));
-        std.debug.assert(section_diff >= 0 and section_diff <= 32767);
+        assert(section_diff >= 0 and section_diff <= 32767);
 
         const v_bot_raw: i32 = @intFromFloat(@round(section_bottom * V_PER_BLOCK_F));
         const v_bot_mod: i32 = @mod(v_bot_raw, 32768);
@@ -458,8 +463,8 @@ fn encode(world: f32) i16 {
 }
 
 fn light_map_at(x: i32, z: i32) i32 {
-    std.debug.assert(x >= 0 and x < World.data.dims.length);
-    std.debug.assert(z >= 0 and z < World.data.dims.depth);
+    assert(x >= 0 and x < World.data.dims.length);
+    assert(z >= 0 and z < World.data.dims.depth);
     const idx: u32 = @intCast(z * @as(i32, @intCast(World.data.dims.length)) + x);
     return @intCast(World.data.light_map[idx]);
 }

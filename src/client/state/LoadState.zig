@@ -63,7 +63,7 @@ fn start_server_task(
     save_location: []const u8,
 ) TaskHandle {
     if (comptime ae.platform == .wasm) {
-        serverTask(alloc, scratch, seed, data_dir, save_location);
+        run_server_task(alloc, scratch, seed, data_dir, save_location);
         return .none;
     }
 
@@ -73,7 +73,7 @@ fn start_server_task(
             .stack_size = 1024 * 1024,
             .priority = .normal,
             .allocator = alloc,
-        }, serverTask, .{ alloc, scratch, seed, data_dir, save_location }) catch |err| {
+        }, run_server_task, .{ alloc, scratch, seed, data_dir, save_location }) catch |err| {
             log.err("server task thread unavailable: {}", .{err});
             session_error = err;
             server_ready.store(true, .release);
@@ -98,7 +98,7 @@ fn start_connect_task(
         .stack_size = 512 * 1024,
         .priority = .normal,
         .allocator = alloc,
-    }, connectTask, .{ alloc, seed, data_dir }) catch |err| {
+    }, connect_task, .{ alloc, seed, data_dir }) catch |err| {
         log.err("connect task thread unavailable: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
@@ -114,7 +114,7 @@ fn ensure_loading_set(engine: *Engine) !ae.Core.input.ActionSetHandle {
     return set;
 }
 
-fn serverTask(
+fn run_server_task(
     alloc: std.mem.Allocator,
     scratch: std.mem.Allocator,
     seed: u64,
@@ -145,7 +145,7 @@ fn serverTask(
     server_ready.store(true, .release);
 }
 
-fn connectTask(alloc: std.mem.Allocator, seed: u64, data_dir: std.Io.Dir) void {
+fn connect_task(alloc: std.mem.Allocator, seed: u64, data_dir: std.Io.Dir) void {
     connect_inner(alloc, seed, task_io, data_dir) catch |err| {
         log.err("multiplayer connect failed: {}", .{err});
         session_error = err;
@@ -204,6 +204,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
 
     var compressed: std.ArrayList(u8) = .empty;
     defer compressed.deinit(alloc);
+
     var announced: ?World.WorldDims = null;
 
     done: while (true) {
@@ -256,6 +257,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     var src = std.Io.Reader.fixed(compressed.items);
     const window_buf = try alloc.alloc(u8, flate.max_window_len);
     defer alloc.free(window_buf);
+
     var decompress = flate.Decompress.init(&src, .gzip, window_buf);
 
     // The stream opens with the raw level size. Trusting it only as a check:

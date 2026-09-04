@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const blocks = @import("blocks.zig");
 const protocol = @import("protocol.zig");
 pub const Client = @import("client.zig");
@@ -466,8 +467,10 @@ pub fn local_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bo
 
     lock_roster();
     defer unlock_roster();
+
     const i = players.add(client) orelse {
         defer connected.* = false;
+
         client.send_disconnect("Server is full!") catch return null;
         return null;
     };
@@ -515,6 +518,7 @@ pub const ClientSnapshot = struct {
 pub fn find_client_by_name(name: []const u8) ?ClientSnapshot {
     lock_roster_shared();
     defer unlock_roster_shared();
+
     for (0..MaxPlayers) |i| {
         const client = &(players.items[i] orelse continue);
         if (!client.initialized) continue;
@@ -535,6 +539,7 @@ fn client_from_handle_locked(handle: PlayerHandle) ?*Client {
 pub fn disconnect_handle(handle: PlayerHandle, reason: []const u8) bool {
     lock_roster();
     defer unlock_roster();
+
     const client = client_from_handle_locked(handle) orelse return false;
     client.send_disconnect(reason) catch {};
     return true;
@@ -543,6 +548,7 @@ pub fn disconnect_handle(handle: PlayerHandle, reason: []const u8) bool {
 pub fn grant_op_handle(handle: PlayerHandle) bool {
     lock_roster();
     defer unlock_roster();
+
     const client = client_from_handle_locked(handle) orelse return false;
     client.is_op.store(true, .release);
     client.send_update_player_type(true) catch {};
@@ -592,6 +598,7 @@ pub fn remove_client(handle: PlayerHandle) void {
 pub fn broadcast_spawn_player(sender_id: i8, packet: *zb.SpawnPlayer) void {
     lock_roster_shared();
     defer unlock_roster_shared();
+
     for (0..MaxPlayers) |i| {
         const client = &(players.items[i] orelse continue);
         if (!client.initialized or client.id == sender_id) continue;
@@ -617,13 +624,14 @@ pub fn broadcast_block_change(x: u16, y: u16, z: u16, block: blocks.Block) void 
 
     lock_roster_shared();
     defer unlock_roster_shared();
+
     for (0..MaxPlayers) |i| {
         const client = &(players.items[i] orelse continue);
         if (client.initialized or client.catchup_mode.load(.acquire) == .direct) {
             client.send_block_change(x, y, z, block) catch continue;
         } else if (client.catchup_mode.load(.acquire) == .capturing) {
             const out = client.out orelse continue;
-            out.appendCatchup(io, &catchup_packet) catch client.kick_slow();
+            out.append_catchup(io, &catchup_packet) catch client.kick_slow();
         }
     }
 }
@@ -631,6 +639,7 @@ pub fn broadcast_block_change(x: u16, y: u16, z: u16, block: blocks.Block) void 
 pub fn broadcast_player_positions() void {
     lock_roster_shared();
     defer unlock_roster_shared();
+
     for (0..MaxPlayers) |i| {
         const recipient = &(players.items[i] orelse continue);
         if (!recipient.initialized) continue;
@@ -673,6 +682,7 @@ pub fn tick() void {
 fn broadcast_ping() void {
     lock_roster_shared();
     defer unlock_roster_shared();
+
     for (0..MaxPlayers) |i| {
         const client = &(players.items[i] orelse continue);
         if (!client.initialized) continue;
@@ -694,7 +704,7 @@ pub const PlayerSlots = struct {
     }
 
     fn remove(self: *PlayerSlots, id: usize) void {
-        std.debug.assert(self.items[id] != null);
+        assert(self.items[id] != null);
         self.items[id] = null;
     }
 };

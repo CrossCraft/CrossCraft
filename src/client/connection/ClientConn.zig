@@ -12,7 +12,7 @@ const Session = @import("../state/Session.zig");
 
 const log = std.log.scoped(.client_conn);
 
-const Self = @This();
+const ClientConn = @This();
 
 reader: *std.Io.Reader,
 writer: *std.Io.Writer,
@@ -44,7 +44,7 @@ chat: ?*Chat,
 
 buffer: [1028]u8,
 
-pub fn init(self: *Self, reader: *std.Io.Reader, writer: *std.Io.Writer) void {
+pub fn init(self: *ClientConn, reader: *std.Io.Reader, writer: *std.Io.Writer) void {
     self.reader = reader;
     self.writer = writer;
     self.spawn_x = 0;
@@ -73,13 +73,13 @@ pub fn init(self: *Self, reader: *std.Io.Reader, writer: *std.Io.Writer) void {
     };
 }
 
-pub fn join(self: *Self, username: []const u8) !void {
+pub fn join(self: *ClientConn, username: []const u8) !void {
     try proto.send_player_id_to_server(self.writer, username);
     try self.writer.flush();
 }
 
 /// Non-blocking: read and process one server packet if available.
-pub fn try_process_packet(self: *Self) bool {
+pub fn try_process_packet(self: *ClientConn) bool {
     const packet_id = self.reader.peekByte() catch return false;
     const len = proto.packet_length_to_client(packet_id) catch |err| {
         log.err("unknown packet id 0x{x:0>2}: {}", .{ packet_id, err });
@@ -95,7 +95,7 @@ pub fn try_process_packet(self: *Self) bool {
     return true;
 }
 
-pub fn drain_packets(self: *Self) void {
+pub fn drain_packets(self: *ClientConn) void {
     while (self.try_process_packet()) {}
 }
 
@@ -104,7 +104,7 @@ pub fn drain_packets(self: *Self) void {
 ///
 /// Exits on `connected.* == false`, which the disconnect handler and any
 /// read/dispatch failure set so the game thread can observe the drop.
-pub fn read_loop(self: *Self, connected: *std.atomic.Value(bool)) void {
+pub fn read_loop(self: *ClientConn, connected: *std.atomic.Value(bool)) void {
     while (connected.load(.acquire)) {
         const packet_id = self.reader.peekByte() catch |err| {
             log.info("read_loop: {} - closing", .{err});
@@ -151,7 +151,7 @@ fn on_level_data_chunk(_: *anyopaque, event: zb.LevelDataChunk) !void {
 }
 
 fn on_level_finalize(ctx: *anyopaque, event: zb.LevelFinalize) !void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
+    const self: *ClientConn = @ptrCast(@alignCast(ctx));
     self.world_x = event.x;
     self.world_y = event.y;
     self.world_z = event.z;
@@ -159,7 +159,7 @@ fn on_level_finalize(ctx: *anyopaque, event: zb.LevelFinalize) !void {
 }
 
 fn on_spawn(ctx: *anyopaque, event: zb.SpawnPlayer) !void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
+    const self: *ClientConn = @ptrCast(@alignCast(ctx));
     log.info("SpawnPlayer: pid={d} pos=({d},{d},{d})", .{ event.pid, event.x, event.y, event.z });
     if (event.pid == -1) {
         self.spawn_x = event.x;
@@ -172,18 +172,18 @@ fn on_spawn(ctx: *anyopaque, event: zb.SpawnPlayer) !void {
 }
 
 fn on_position(ctx: *anyopaque, event: zb.SetPositionOrientation) !void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
+    const self: *ClientConn = @ptrCast(@alignCast(ctx));
     if (self.player_list) |pl| pl.update_position(event.pid, event.x, event.y, event.z, event.yaw, event.pitch);
 }
 
 fn on_message(ctx: *anyopaque, event: zb.Message) !void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
+    const self: *ClientConn = @ptrCast(@alignCast(ctx));
     log.info("Message: pid={d} {s}", .{ event.pid, &event.message });
     if (self.chat) |ch| ch.receive(&event.message);
 }
 
 fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
+    const self: *ClientConn = @ptrCast(@alignCast(ctx));
     const wr = self.world_renderer orelse return;
     // Apply the change locally. Singleplayer's in-process server already
     // wrote it to the shared World singleton, so this is a no-op echo there;
@@ -223,13 +223,13 @@ fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
 }
 
 fn on_despawn(ctx: *anyopaque, event: zb.DespawnPlayer) !void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
+    const self: *ClientConn = @ptrCast(@alignCast(ctx));
     log.info("Despawn: pid={d}", .{event.pid});
     if (self.player_list) |pl| pl.despawn(event.pid);
 }
 
 fn on_disconnect(ctx: *anyopaque, event: zb.DisconnectPlayer) !void {
-    const self: *Self = @ptrCast(@alignCast(ctx));
+    const self: *ClientConn = @ptrCast(@alignCast(ctx));
     log.info("Disconnect: {s}", .{&event.reason});
     // Save trimmed reason so DisconnectState can display it. Written before
     // quit_requested is set; the game thread reads it after observing quit_requested.

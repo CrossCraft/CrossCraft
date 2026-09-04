@@ -4,6 +4,7 @@
 /// Headerless and version 1 payloads use XZY order. Version 2 adds a dimensions
 /// header; version 3 keeps that header and stores blocks in YZX order.
 const std = @import("std");
+const assert = std.debug.assert;
 const core = @import("core");
 
 const World = core.World;
@@ -72,6 +73,7 @@ fn load_legacy_ccc(
 
     const window_buf = try allocator.alloc(u8, std.compress.flate.max_window_len);
     defer allocator.free(window_buf);
+
     var decompress = std.compress.flate.Decompress.init(&file_reader.interface, .gzip, window_buf);
 
     const legacy_bytes = try allocator.alloc(u8, LEGACY_MAX_BYTES);
@@ -110,7 +112,7 @@ fn load_legacy_ccc(
 }
 
 fn validate_legacy_dimensions(raw_dimensions: []const u8) !void {
-    std.debug.assert(raw_dimensions.len == LEGACY_DIMENSIONS_BYTES);
+    assert(raw_dimensions.len == LEGACY_DIMENSIONS_BYTES);
     const length = std.mem.readInt(u32, raw_dimensions[0..4], .little);
     const height = std.mem.readInt(u32, raw_dimensions[4..8], .little);
     const depth = std.mem.readInt(u32, raw_dimensions[8..12], .little);
@@ -120,7 +122,7 @@ fn validate_legacy_dimensions(raw_dimensions: []const u8) !void {
 }
 
 fn scatter_legacy_blocks(legacy_blocks: []const u8, data: *WorldData) void {
-    std.debug.assert(legacy_blocks.len == WORLD_VOLUME);
+    assert(legacy_blocks.len == WORLD_VOLUME);
     for (0..data.dims.length) |x| {
         for (0..data.dims.height) |y| {
             for (0..data.dims.depth) |z| {

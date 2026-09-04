@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Util = ae.Util;
 const Rendering = ae.Rendering;
@@ -7,7 +8,6 @@ const core = @import("core");
 const World = core.World;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Colors = @import("../graphics/Color.zig");
-const Color = Colors.Color;
 const Camera = @import("../player/Camera.zig");
 const collision = @import("../player/collision.zig");
 const config = @import("../config.zig");
@@ -22,15 +22,15 @@ const MAX_ACTIVE: u32 = @import("../config.zig").max_sections();
 comptime {
     // GridRef carries each chunk coord in a u8; the supported world lattice
     // never exceeds that.
-    std.debug.assert(core.world_dims.max_length / core.world_dims.chunk_size <= std.math.maxInt(u8));
-    std.debug.assert(core.world_dims.max_depth / core.world_dims.chunk_size <= std.math.maxInt(u8));
-    std.debug.assert(core.world_dims.max_height / core.world_dims.chunk_size <= std.math.maxInt(u8));
+    assert(core.world_dims.max_length / core.world_dims.chunk_size <= std.math.maxInt(u8));
+    assert(core.world_dims.max_depth / core.world_dims.chunk_size <= std.math.maxInt(u8));
+    assert(core.world_dims.max_height / core.world_dims.chunk_size <= std.math.maxInt(u8));
 }
 
 /// Four simultaneous block changes and their six neighboring sections.
 const MAX_DIRTY_BUF: u32 = 32;
 
-const Self = @This();
+const WorldRenderer = @This();
 
 /// Power-of-two world geometry permits shift-based flat indexing.
 grid_cx: u32,
@@ -87,17 +87,17 @@ io: std.Io,
 const GridRef = packed struct { cx: u8, cz: u8, sy: u8 };
 
 /// Flat column id from chunk coords: (cz << log2_cx) | cx.
-fn column_index(self: *const Self, cx: usize, cz: usize) u32 {
+fn column_index(self: *const WorldRenderer, cx: usize, cz: usize) u32 {
     return @intCast((cz << self.log2_cx) | cx);
 }
 
 /// Flat section id from chunk coords and Y section.
-fn section_index(self: *const Self, cx: usize, cz: usize, sy: usize) u32 {
+fn section_index(self: *const WorldRenderer, cx: usize, cz: usize, sy: usize) u32 {
     return @intCast((@as(usize, self.column_index(cx, cz)) << self.log2_sy) | sy);
 }
 
 pub fn init_in_place(
-    self: *Self,
+    self: *WorldRenderer,
     allocator: std.mem.Allocator,
     io: std.Io,
     terrain: *const Rendering.Texture,
@@ -181,7 +181,7 @@ pub fn init_in_place(
     }
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *WorldRenderer) void {
     self.rain.deinit();
     self.particles.deinit();
     self.sky.deinit();
@@ -196,9 +196,10 @@ pub fn deinit(self: *Self) void {
     self.allocator.free(self.built);
     self.allocator.free(self.in_queue);
     self.allocator.free(self.needed);
+    self.* = undefined;
 }
 
-pub fn update(self: *Self, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
+pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
     self.sky.update(dt);
     self.particles.update(dt, camera);
     self.rain.update(dt, camera);
@@ -288,7 +289,7 @@ fn mark_first_built(sec: *ChunkMesh) void {
 }
 
 /// Populate visibility and draw every world layer preceding fluids.
-pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
+pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera) void {
     const submerged = collision.liquid_at_point(camera.x, camera.y, camera.z);
 
     Rendering.gfx.api.bind_texture(Rendering.Texture.Default.handle);
@@ -360,7 +361,7 @@ pub fn draw_world_pass(self: *Self, camera: *const Camera) void {
 }
 
 /// Rain renders after terrain and particles but before fluid overlays.
-pub fn draw_rain_pass(self: *Self, camera: *const Camera) void {
+pub fn draw_rain_pass(self: *WorldRenderer, camera: *const Camera) void {
     if (!Options.current.rain) return;
     Rendering.gfx.api.bind_texture(self.rain_tex.handle);
     self.rain.draw_streaks(camera);
@@ -369,7 +370,7 @@ pub fn draw_rain_pass(self: *Self, camera: *const Camera) void {
 }
 
 /// Consume this frame's visibility list after callers insert world overlays.
-pub fn draw_fluid_pass(self: *Self) void {
+pub fn draw_fluid_pass(self: *WorldRenderer) void {
     const visible = self.frame_visible[0..self.frame_visible_count];
     const clip_count = self.frame_clip_count;
 
@@ -395,7 +396,7 @@ pub fn draw_fluid_pass(self: *Self) void {
     Rendering.gfx.api.set_depth_write(true);
 }
 
-fn recollect(self: *Self, camera: *const Camera) void {
+fn recollect(self: *WorldRenderer, camera: *const Camera) void {
     self.cam_cx = camera_chunk(camera.x);
     self.cam_cz = camera_chunk(camera.z);
     self.applied_render_distance = Options.capped_render_distance();
@@ -455,7 +456,7 @@ fn recollect(self: *Self, camera: *const Camera) void {
     self.lod_check_z = camera.z;
 }
 
-fn init_column(self: *Self, cx: u8, cz: u8, cam: *const Camera) bool {
+fn init_column(self: *WorldRenderer, cx: u8, cz: u8, cam: *const Camera) bool {
     var count: u32 = 0;
     for (0..self.grid_sy) |sy| {
         self.grid[self.section_index(cx, cz, sy)] = ChunkMesh.init(
@@ -476,7 +477,7 @@ fn init_column(self: *Self, cx: u8, cz: u8, cam: *const Camera) bool {
     return true;
 }
 
-fn deinit_column(self: *Self, cx: u8, cz: u8) void {
+fn deinit_column(self: *WorldRenderer, cx: u8, cz: u8) void {
     for (0..self.grid_sy) |sy| {
         const idx = self.section_index(cx, cz, sy);
         self.grid[idx].deinit();
@@ -486,7 +487,7 @@ fn deinit_column(self: *Self, cx: u8, cz: u8) void {
     self.loaded[self.column_index(cx, cz)] = false;
 }
 
-fn queue_unbuilt_sections(self: *Self, cam: *const Camera) void {
+fn queue_unbuilt_sections(self: *WorldRenderer, cam: *const Camera) void {
     @memset(self.in_queue, false);
     var build_idx: u32 = 0;
     for (0..self.grid_cx) |cx| {
@@ -495,7 +496,7 @@ fn queue_unbuilt_sections(self: *Self, cam: *const Camera) void {
             for (0..self.grid_sy) |sy| {
                 const idx = self.section_index(cx, cz, sy);
                 if (!self.built[idx]) {
-                    std.debug.assert(build_idx < MAX_ACTIVE);
+                    assert(build_idx < MAX_ACTIVE);
                     self.build_queue[build_idx] = .{
                         .cx = @intCast(cx),
                         .cz = @intCast(cz),
@@ -515,7 +516,7 @@ fn queue_unbuilt_sections(self: *Self, cam: *const Camera) void {
 }
 
 /// Insert dirty sections directly, falling back to a full rescan on overflow.
-fn flush_dirty_sections(self: *Self, cam: *const Camera) void {
+fn flush_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
     if (self.dirty_preserve_order) {
         self.flush_ordered_dirty_sections(cam);
         return;
@@ -541,7 +542,7 @@ fn flush_dirty_sections(self: *Self, cam: *const Camera) void {
 }
 
 /// Move dirty sections ahead of background work while preserving their order.
-fn flush_ordered_dirty_sections(self: *Self, cam: *const Camera) void {
+fn flush_ordered_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
     var front: [MAX_DIRTY_BUF]GridRef = undefined;
     var front_len: u32 = 0;
 
@@ -583,7 +584,7 @@ fn flush_ordered_dirty_sections(self: *Self, cam: *const Camera) void {
     self.build_end = count;
 }
 
-fn try_evict_farthest(self: *Self, cam: *const Camera) bool {
+fn try_evict_farthest(self: *WorldRenderer, cam: *const Camera) bool {
     var best_dist: f32 = -1.0;
     var best_cx: u8 = 0;
     var best_cz: u8 = 0;
@@ -615,7 +616,7 @@ fn try_evict_farthest(self: *Self, cam: *const Camera) bool {
     return true;
 }
 
-pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
+pub fn mark_section_dirty(self: *WorldRenderer, cx: u8, sy: u8, cz: u8) void {
     self.mark_section_dirty_impl(cx, sy, cz, false, false);
 }
 
@@ -623,7 +624,7 @@ pub fn mark_section_dirty(self: *Self, cx: u8, sy: u8, cz: u8) void {
 /// avoids one-frame gaps at section edges. Removals rebuild neighbors before
 /// the owner so newly exposed neighbor faces are hidden by the old owner mesh
 /// until the owner rebuild commits. Additions do the inverse.
-pub fn mark_block_change_dirty(self: *Self, cx: u8, sy: u8, cz: u8, lx: u16, ly: u16, lz: u16, removing: bool) void {
+pub fn mark_block_change_dirty(self: *WorldRenderer, cx: u8, sy: u8, cz: u8, lx: u16, ly: u16, lz: u16, removing: bool) void {
     if (removing) {
         self.mark_block_neighbor_sections_dirty(cx, sy, cz, lx, ly, lz);
         self.mark_section_dirty_impl(cx, sy, cz, true, true);
@@ -633,7 +634,7 @@ pub fn mark_block_change_dirty(self: *Self, cx: u8, sy: u8, cz: u8, lx: u16, ly:
     }
 }
 
-fn mark_block_neighbor_sections_dirty(self: *Self, cx: u8, sy: u8, cz: u8, lx: u16, ly: u16, lz: u16) void {
+fn mark_block_neighbor_sections_dirty(self: *WorldRenderer, cx: u8, sy: u8, cz: u8, lx: u16, ly: u16, lz: u16) void {
     if (lx == 0 and cx > 0) self.mark_section_dirty_impl(cx - 1, sy, cz, true, true);
     if (lx == 15) self.mark_section_dirty_impl(cx + 1, sy, cz, true, true);
     if (lz == 0 and cz > 0) self.mark_section_dirty_impl(cx, sy, cz - 1, true, true);
@@ -642,7 +643,7 @@ fn mark_block_neighbor_sections_dirty(self: *Self, cx: u8, sy: u8, cz: u8, lx: u
     if (ly == 15) self.mark_section_dirty_impl(cx, sy + 1, cz, true, true);
 }
 
-fn mark_section_dirty_impl(self: *Self, cx: u8, sy: u8, cz: u8, track_queued: bool, preserve_order: bool) void {
+fn mark_section_dirty_impl(self: *WorldRenderer, cx: u8, sy: u8, cz: u8, track_queued: bool, preserve_order: bool) void {
     if (cx >= self.grid_cx or cz >= self.grid_cz or sy >= self.grid_sy) return;
     const idx = self.section_index(cx, cz, sy);
     const col = self.column_index(cx, cz);
@@ -655,7 +656,7 @@ fn mark_section_dirty_impl(self: *Self, cx: u8, sy: u8, cz: u8, track_queued: bo
     self.record_dirty_ref(.{ .cx = cx, .cz = cz, .sy = sy }, preserve_order);
 }
 
-fn record_dirty_ref(self: *Self, ref: GridRef, preserve_order: bool) void {
+fn record_dirty_ref(self: *WorldRenderer, ref: GridRef, preserve_order: bool) void {
     if (!self.dirty_overflow) {
         if (contains_grid_ref(self.dirty_buf[0..self.dirty_buf_len], ref)) {
             if (preserve_order) self.dirty_preserve_order = true;
@@ -680,7 +681,7 @@ fn contains_grid_ref(haystack: []const GridRef, needle: GridRef) bool {
 }
 
 /// Invalidate loaded sections whose AO state changed.
-fn apply_ao_toggle(self: *Self) void {
+fn apply_ao_toggle(self: *WorldRenderer) void {
     const target = Options.current.ambient_occlusion;
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
@@ -698,7 +699,7 @@ fn apply_ao_toggle(self: *Self) void {
     self.applied_ao = target;
 }
 
-fn apply_fancy_leaves_toggle(self: *Self, cam: *const Camera) void {
+fn apply_fancy_leaves_toggle(self: *WorldRenderer, cam: *const Camera) void {
     self.refresh_lod_states(cam);
     self.applied_fancy_leaves = Options.current.fancy_leaves;
     self.lod_check_x = cam.x;
@@ -707,7 +708,7 @@ fn apply_fancy_leaves_toggle(self: *Self, cam: *const Camera) void {
 }
 
 /// Remesh loaded sections that cross the near-LOD boundary.
-fn refresh_lod_states(self: *Self, cam: *const Camera) void {
+fn refresh_lod_states(self: *WorldRenderer, cam: *const Camera) void {
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
             if (!self.loaded[self.column_index(cx, cz)]) continue;

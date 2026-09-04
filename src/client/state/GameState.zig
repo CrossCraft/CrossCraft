@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Core = ae.Core;
 const Util = ae.Util;
@@ -709,7 +710,7 @@ fn update_inventory_tree(self: *@This(), engine: *Engine, in: *const ui_input.Ui
     switch (action) {
         .none => {},
         .select => {
-            std.debug.assert(self.player.selected_slot < Player.HOTBAR_SLOTS);
+            assert(self.player.selected_slot < Player.HOTBAR_SLOTS);
             self.player.hotbar[self.player.selected_slot] = blocks.inventory_block(self.inventory_slot);
             close_inventory(self, engine);
         },

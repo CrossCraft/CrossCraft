@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const core = @import("core");
 const World = core.World;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
@@ -153,7 +154,7 @@ fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
             cur.solid_leaf = cur.leaf &
                 (cov_cur >> 1) & (cov_cur << 1) &
                 cov_zp & cov_zn & cov_yp & cov_yn;
-            std.debug.assert((cur.solid_leaf & ~cur.leaf) == 0);
+            assert((cur.solid_leaf & ~cur.leaf) == 0);
         }
     }
 }
@@ -430,10 +431,10 @@ pub fn count_section(buf: *const SectionBuf) SectionCounts {
 fn assert_has_room(mesh: *const BatchMesh, quad_count: u32) void {
     const quads: usize = quad_count;
     if (Rendering.mesh.indexing_enabled) {
-        std.debug.assert(mesh.vertices.items.len + quads * 4 <= mesh.vertices.capacity);
-        std.debug.assert(mesh.indices.items.len + quads * 6 <= mesh.indices.capacity);
+        assert(mesh.vertices.items.len + quads * 4 <= mesh.vertices.capacity);
+        assert(mesh.indices.items.len + quads * 6 <= mesh.indices.capacity);
     } else {
-        std.debug.assert(mesh.vertices.items.len + quads * 6 <= mesh.vertices.capacity);
+        assert(mesh.vertices.items.len + quads * 6 <= mesh.vertices.capacity);
     }
 }
 

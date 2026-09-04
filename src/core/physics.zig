@@ -12,6 +12,7 @@
 //! clipping horizontal motion. World bounds and block geometry come from
 //! `WorldData` and `Block.bounds`.
 const std = @import("std");
+const assert = std.debug.assert;
 const WorldData = @import("world/WorldData.zig");
 
 /// Separation epsilon. Absorbs floating-point slop in face classification
@@ -156,7 +157,7 @@ pub fn try_step_up(
     height: f32,
     step_size: f32,
 ) ?[3]f32 {
-    std.debug.assert(step_size > 0.0);
+    assert(step_size > 0.0);
     const raised_y = pos[1] + step_size;
 
     const raised = entity_aabb(pos[0], raised_y, pos[2], half_w, height);
@@ -475,7 +476,7 @@ fn find_landing_y(
     height: f32,
     max_drop: f32,
 ) ?f32 {
-    std.debug.assert(max_drop >= 0.0);
+    assert(max_drop >= 0.0);
     const target_y = start_y - max_drop;
     const box = entity_aabb(px, start_y, pz, half_w, height);
 

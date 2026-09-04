@@ -366,6 +366,7 @@ test "ellipsoid replacement touches only interior stone" {
     const dimensions: terrain.world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const blocks = try std.testing.allocator.alloc(u8, dimensions.volume());
     defer std.testing.allocator.free(blocks);
+
     @memset(blocks, terrain.dirt_id);
     const field = terrain.block_field.init(dimensions, blocks);
     field.set(8, 8, 8, terrain.stone_id);
@@ -381,6 +382,7 @@ test "zero-volume cave count preserves field and state" {
     const dimensions: terrain.world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const blocks = try std.testing.allocator.alloc(u8, dimensions.volume());
     defer std.testing.allocator.free(blocks);
+
     @memset(blocks, terrain.stone_id);
     const field = terrain.block_field.init(dimensions, blocks);
     var random = random_state.init(99);
@@ -393,6 +395,7 @@ test "cave pass only removes stone" {
     const dimensions: terrain.world_dimensions = .{ .width = 32, .height = 32, .depth = 32 };
     const blocks = try std.testing.allocator.alloc(u8, dimensions.volume());
     defer std.testing.allocator.free(blocks);
+
     @memset(blocks, terrain.stone_id);
     const field = terrain.block_field.init(dimensions, blocks);
     var random = random_state.init(-300);

@@ -49,6 +49,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
     {
         var row = ui.stack(.{ .axis = .horizontal, .gap = 4 });
         defer row.end();
+
         _ = ui.slider(wid(.music), &opt.music_volume, .{
             .label = ui.fmt("Music: {d}%", .{pct_round(opt.music_volume)}),
             .width = WIDGET_W,
@@ -67,6 +68,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
     {
         var row = ui.stack(.{ .axis = .horizontal, .gap = 4 });
         defer row.end();
+
         if (ui.slider(wid(.fov), &opt.fov, .{
             .label = ui.fmt("FOV: {d}", .{@as(u32, @intFromFloat(@round(opt.fov)))}),
             .width = WIDGET_W,
@@ -89,6 +91,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
     {
         var row = ui.stack(.{ .axis = .horizontal, .gap = 4 });
         defer row.end();
+
         const rd_max_u8: u8 = @intCast(@min(@as(u32, 255), config.current().chunk_radius));
         const rd_max: f32 = @floatFromInt(rd_max_u8);
         if (ui.slider(wid(.render_distance), rd_view, .{
@@ -116,6 +119,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
     {
         var row = ui.stack(.{ .axis = .horizontal, .gap = 4 });
         defer row.end();
+
         if (ui.button(wid(.controller_tooltips), ui.fmt("Controllers: {s}", .{ct_label(opt.controller_tooltips)}), .{ .width = WIDGET_W })) {
             opt.controller_tooltips = ct_next(opt.controller_tooltips);
         }
@@ -154,6 +158,7 @@ const Toggle = struct {
 fn cycle_row(ui: *Ui, opt: *Options.Options, a: Toggle, b: Toggle) void {
     var row = ui.stack(.{ .axis = .horizontal, .gap = 4 });
     defer row.end();
+
     inline for (.{ a, b }) |t| {
         const ptr = switch (t.field) {
             .fancy_leaves => &opt.fancy_leaves,

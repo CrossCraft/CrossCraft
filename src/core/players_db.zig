@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const access_control = @import("access_control.zig");
 
 const log = std.log.scoped(.players_db);
@@ -71,7 +72,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, cap_request: 
     const cap = std.math.clamp(cap_request, 1, max_capacity);
     const scratch_len: usize = @as(usize, cap) * 256 + 1024;
 
-    std.debug.assert(!initialized);
+    assert(!initialized);
     errdefer clear(alloc);
 
     records = try alloc.alloc(PlayerRecord, cap);
@@ -139,6 +140,7 @@ pub fn record_completed_login(ip: []const u8, name: []const u8) void {
     if (!initialized) return;
     mutex.lockUncancelable(save_io);
     defer mutex.unlock(save_io);
+
     if (!initialized) return;
 
     const now = now_unix();
@@ -159,6 +161,7 @@ pub fn flush_if_due() void {
     if (!initialized or !dirty) return;
     mutex.lockUncancelable(save_io);
     defer mutex.unlock(save_io);
+
     if (!initialized or !dirty) return;
     flush_if_due_locked(now_unix());
 }
@@ -241,6 +244,7 @@ fn load_locked() !void {
 
     var arena = std.heap.ArenaAllocator.init(owning_alloc);
     defer arena.deinit();
+
     const parsed = std.json.parseFromSliceLeaky(
         LegacyJsonFile,
         arena.allocator(),
@@ -309,6 +313,7 @@ fn save_locked() !void {
         return err;
     };
     defer file.close(save_io);
+
     file.writeStreamingAll(save_io, writer.buffered()) catch |err| {
         log.warn("write {s} failed: {}", .{ file_name, err });
         return err;
@@ -329,6 +334,7 @@ test "completed login is batched before players json is written" {
 
     mutex.lockUncancelable(save_io);
     defer mutex.unlock(save_io);
+
     flush_if_due_locked(dirty_since_unix + flush_period_seconds - 1);
     try std.testing.expect(dirty);
     flush_if_due_locked(dirty_since_unix + flush_period_seconds);
@@ -336,6 +342,7 @@ test "completed login is batched before players json is written" {
 
     const file = try tmp.dir.openFile(io, file_name, .{});
     defer file.close(io);
+
     var contents: [512]u8 = undefined;
     const n = try file.readPositionalAll(io, &contents, 0);
     try std.testing.expect(std.mem.indexOf(u8, contents[0..n], "203.0.113.42") != null);
@@ -361,8 +368,10 @@ test "legacy players flags migrate into access control" {
 
     try access_control.init(std.testing.allocator, io, tmp.dir, 2);
     defer access_control.deinit();
+
     try init(std.testing.allocator, io, tmp.dir, 2);
     defer deinit();
+
     try access_control.finish_legacy_migration();
 
     const first = access_control.lookup("198.51.100.1");

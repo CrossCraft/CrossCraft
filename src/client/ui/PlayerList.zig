@@ -11,7 +11,7 @@ const Scaling = ae.UI.Scaling;
 const Colors = @import("../graphics/Color.zig");
 const Color = Colors.Color;
 
-const Self = @This();
+const PlayerList = @This();
 
 const ROW_H: i16 = 10;
 const PAD: i16 = 6;
@@ -40,13 +40,13 @@ const Entry = struct {
 
 entries: [core.Server.MaxPlayers]Entry,
 
-pub fn init() Self {
+pub fn init() PlayerList {
     return .{ .entries = std.mem.zeroes([core.Server.MaxPlayers]Entry) };
 }
 
 /// Register a remote player. `raw` is the 64-byte space-padded name from the
 /// SpawnPlayer packet. Only the first 16 non-space bytes are stored.
-pub fn spawn(self: *Self, pid: i8, raw: []const u8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) void {
+pub fn spawn(self: *PlayerList, pid: i8, raw: []const u8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) void {
     if (pid < 0) return;
     const idx: usize = @intCast(pid);
     if (idx >= core.Server.MaxPlayers) return;
@@ -66,14 +66,14 @@ pub fn spawn(self: *Self, pid: i8, raw: []const u8, x: u16, y: u16, z: u16, yaw:
     self.entries[idx].active = true;
 }
 
-pub fn despawn(self: *Self, pid: i8) void {
+pub fn despawn(self: *PlayerList, pid: i8) void {
     if (pid < 0) return;
     const idx: usize = @intCast(pid);
     if (idx >= core.Server.MaxPlayers) return;
     self.entries[idx].active = false;
 }
 
-pub fn update_position(self: *Self, pid: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) void {
+pub fn update_position(self: *PlayerList, pid: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) void {
     if (pid < 0) return;
     const idx: usize = @intCast(pid);
     if (idx >= core.Server.MaxPlayers) return;
@@ -85,7 +85,7 @@ pub fn update_position(self: *Self, pid: i8, x: u16, y: u16, z: u16, yaw: u8, pi
     self.entries[idx].pitch = pitch;
 }
 
-pub fn draw_into(self: *const Self, list: *UiDrawList, local_name: []const u8) void {
+pub fn draw_into(self: *const PlayerList, list: *UiDrawList, local_name: []const u8) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const scale = Scaling.compute(screen_w, screen_h);

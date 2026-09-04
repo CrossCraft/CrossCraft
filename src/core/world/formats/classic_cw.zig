@@ -47,6 +47,7 @@ pub const ClassicCw = struct {
     ) !LoadOutcome {
         const window_buf = try scratch.alloc(u8, std.compress.flate.max_window_len);
         defer scratch.free(window_buf);
+
         var decompress = std.compress.flate.Decompress.init(reader, .gzip, window_buf);
         return try read_classic_world_compound(&decompress.reader, dims, blocks);
     }
@@ -59,6 +60,7 @@ pub const ClassicCw = struct {
         if (!fmt_mod.SaveFormat.verify_classic_cw(prefix, scratch)) return null;
         const window_buf = scratch.alloc(u8, std.compress.flate.max_window_len) catch return null;
         defer scratch.free(window_buf);
+
         var src = std.Io.Reader.fixed(prefix);
         var decompress = std.compress.flate.Decompress.init(&src, .gzip, window_buf);
         return peek_classic_world_dims(&decompress.reader);
@@ -336,8 +338,10 @@ test "loader accepts shuffled dimensions before BlockArray" {
     const dims = WorldDims.init(128, 64, 128);
     const encoded = try std.testing.allocator.alloc(u8, dims.volume() + 128);
     defer std.testing.allocator.free(encoded);
+
     const blocks = try std.testing.allocator.alloc(Block, dims.volume());
     defer std.testing.allocator.free(blocks);
+
     @memset(blocks, .stone);
 
     var w = std.Io.Writer.fixed(encoded);
@@ -475,10 +479,12 @@ test "writer and loader round trip chunk-aware blocks and metadata" {
     const time_created: i64 = 1_725_000_123_456;
     const encoded = try std.testing.allocator.alloc(u8, 64 * 1024);
     defer std.testing.allocator.free(encoded);
+
     var writer = std.Io.Writer.fixed(encoded);
 
     try compress_worker.init(std.testing.allocator, io);
     defer compress_worker.deinit();
+
     try ClassicCw.save_world(.{}, .{
         .dims = dims,
         .seed = source.seed,
@@ -494,6 +500,7 @@ test "writer and loader round trip chunk-aware blocks and metadata" {
 
     const loaded = try std.testing.allocator.alloc(Block, dims.volume());
     defer std.testing.allocator.free(loaded);
+
     @memset(loaded, .bedrock);
     var reader = std.Io.Reader.fixed(writer.buffered());
     const outcome = try ClassicCw.load_world(.{}, std.testing.allocator, dims, loaded, &reader);

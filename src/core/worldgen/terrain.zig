@@ -529,6 +529,7 @@ pub const elevation_cache = struct {
     pub fn deinit(self: *elevation_cache, allocator: std.mem.Allocator) void {
         allocator.free(self.dirt);
         allocator.free(self.stone);
+        self.* = undefined;
     }
 
     fn index(self: *const elevation_cache, dimensions: world_dimensions, x: u32, z: u32) usize {
@@ -671,6 +672,7 @@ pub fn flood_fill(allocator: std.mem.Allocator, field: block_field, source: bloc
 
     var work: std.ArrayList(flood_span) = .empty;
     defer work.deinit(allocator);
+
     try work.ensureTotalCapacity(allocator, @min(@as(usize, field.dimensions.width) * field.dimensions.depth / 8, @as(usize, 1 << 14)));
 
     const dimensions = field.dimensions;
@@ -848,6 +850,7 @@ test "flood fill moves horizontally and downward but never upward" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     field.set(4, 8, 4, air_id);
     field.set(5, 8, 4, air_id);
     field.set(5, 7, 4, air_id);
@@ -861,6 +864,7 @@ test "lava over water converts the lower cell to stone" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     field.set(3, 4, 3, air_id);
     field.set(3, 3, 3, still_water_id);
     try flood_fill(std.testing.allocator, field, .{ .x = 3, .y = 4, .z = 3 }, still_lava_id);
@@ -871,6 +875,7 @@ test "boundary water fills only boundary-connected downward air" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     const water_y = dimensions.sea_level() - 1;
     field.set(0, water_y, 6, air_id);
     field.set(1, water_y, 6, air_id);
@@ -886,6 +891,7 @@ test "boundary water submits a westward air interval behind a blocked source" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, stone_id);
     defer std.testing.allocator.free(field.blocks);
+
     const water_y = dimensions.sea_level() - 1;
 
     // The right boundary source is blocked, but its westward air interval is valid.
@@ -934,11 +940,13 @@ test "surface pass changes only the computed top to a dry surface material" {
     const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
     const field = try test_field(dimensions, air_id);
     defer std.testing.allocator.free(field.blocks);
+
     var random = random_state.init(55);
     const elevation = elevation_noise.init(&random);
     const sampled_surface_noise = surface_noise.init(&random);
     var heights = try elevation_cache.init(std.testing.allocator, &elevation, dimensions);
     defer heights.deinit(std.testing.allocator);
+
     soil(field, &heights);
 
     const x: u32 = 7;
@@ -957,8 +965,10 @@ test "soil preserves stone above a column's dirt top" {
     const count = @as(usize, dimensions.width) * dimensions.depth;
     const dirt = try std.testing.allocator.alloc(i16, count);
     defer std.testing.allocator.free(dirt);
+
     const stone = try std.testing.allocator.alloc(i16, count);
     defer std.testing.allocator.free(stone);
+
     @memset(dirt, 3);
     @memset(stone, 3);
 
@@ -969,6 +979,7 @@ test "soil preserves stone above a column's dirt top" {
 
     const field = try test_field(dimensions, air_id);
     defer std.testing.allocator.free(field.blocks);
+
     const cache: elevation_cache = .{ .dirt = dirt, .stone = stone };
     soil(field, &cache);
 

@@ -1,7 +1,5 @@
 /// Streams audio from the active pack, with two shared DEFLATE slots for
 /// compatibility with compressed audio entries.
-const SoundManager = @This();
-
 const std = @import("std");
 const ae = @import("aether");
 const Audio = ae.Audio;

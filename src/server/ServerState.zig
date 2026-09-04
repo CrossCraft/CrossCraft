@@ -72,7 +72,7 @@ var stdout_writer: std.Io.File.Writer = undefined;
 var stdout_iface: ?*std.Io.Writer = null;
 var stdout_mutex: std.Io.Mutex = .init;
 
-const Self = @This();
+const ServerState = @This();
 
 conn_handles: []?*ConnectionSlot,
 pending_handles: []?*ConnectionSlot,
@@ -86,7 +86,7 @@ heartbeat_salt: [16]u8,
 heartbeat_users: std.atomic.Value(u32),
 backup: Backup,
 
-pub fn state(self: *Self) State {
+pub fn state(self: *ServerState) State {
     return .{ .ptr = self, .tab = &.{
         .init = init,
         .deinit = deinit,
@@ -97,7 +97,7 @@ pub fn state(self: *Self) State {
 }
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
-    var self = Util.ctx_to_self(Self, ctx);
+    var self = Util.ctx_to_self(ServerState, ctx);
 
     const alloc = engine.allocator(.user);
 
@@ -188,6 +188,7 @@ fn write_stripped_line(line: []const u8) void {
     const engine = global_engine orelse return;
     stdout_mutex.lockUncancelable(engine.io);
     defer stdout_mutex.unlock(engine.io);
+
     write_without_color_codes(w, line) catch return;
     w.writeAll("\n") catch return;
     w.flush() catch return;
@@ -211,7 +212,7 @@ fn write_without_color_codes(writer: *std.Io.Writer, line: []const u8) std.Io.Wr
 }
 
 fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
-    var self = Util.ctx_to_self(Self, ctx);
+    var self = Util.ctx_to_self(ServerState, ctx);
 
     Server.tick();
     self.reap_finished_connections(engine);
@@ -237,7 +238,7 @@ fn slot_ip(slot: *const ConnectionSlot) []const u8 {
     return std.mem.sliceTo(slot.data.ip[0..], 0);
 }
 
-fn count_connections_for_ip_locked(self: *Self, ip: []const u8) usize {
+fn count_connections_for_ip_locked(self: *ServerState, ip: []const u8) usize {
     var count: usize = 0;
 
     for (self.pending_handles) |maybe_slot| {
@@ -253,7 +254,7 @@ fn count_connections_for_ip_locked(self: *Self, ip: []const u8) usize {
 }
 
 fn reserve_pending_slot_locked(
-    self: *Self,
+    self: *ServerState,
     conn: std.Io.net.Stream,
     ip: []const u8,
     is_op: bool,
@@ -295,7 +296,7 @@ fn reserve_pending_slot_locked(
     return .{ .accepted = slot };
 }
 
-fn release_slot_locked(self: *Self, slot: *ConnectionSlot, engine: *Engine) void {
+fn release_slot_locked(self: *ServerState, slot: *ConnectionSlot, engine: *Engine) void {
     if (slot.pending_index) |index| {
         self.pending_handles[index] = null;
         slot.pending_index = null;
@@ -326,7 +327,7 @@ fn reject_slot_locked(slot: *ConnectionSlot, engine: *Engine, reason: []const u8
     slot.data.transport.store(.closed, .release);
 }
 
-fn finish_pending_worker(self: *Self, slot: *ConnectionSlot, engine: *Engine) void {
+fn finish_pending_worker(self: *ServerState, slot: *ConnectionSlot, engine: *Engine) void {
     self.connections_mutex.lockUncancelable(engine.io);
     defer self.connections_mutex.unlock(engine.io);
 
@@ -334,14 +335,14 @@ fn finish_pending_worker(self: *Self, slot: *ConnectionSlot, engine: *Engine) vo
     slot.worker_done = true;
 }
 
-fn finish_active_worker(self: *Self, slot: *ConnectionSlot, engine: *Engine) void {
+fn finish_active_worker(self: *ServerState, slot: *ConnectionSlot, engine: *Engine) void {
     self.connections_mutex.lockUncancelable(engine.io);
     defer self.connections_mutex.unlock(engine.io);
 
     if (slot.state == .active) slot.worker_done = true;
 }
 
-fn reap_finished_connections(self: *Self, engine: *Engine) void {
+fn reap_finished_connections(self: *ServerState, engine: *Engine) void {
     self.connections_mutex.lockUncancelable(engine.io);
     defer self.connections_mutex.unlock(engine.io);
 
@@ -363,7 +364,7 @@ fn reap_finished_connections(self: *Self, engine: *Engine) void {
     }
 }
 
-fn promote_ready_logins(self: *Self, engine: *Engine) void {
+fn promote_ready_logins(self: *ServerState, engine: *Engine) void {
     self.connections_mutex.lockUncancelable(engine.io);
     defer self.connections_mutex.unlock(engine.io);
 
@@ -439,7 +440,7 @@ const LoginRaceResult = union(enum) {
     timeout: std.Io.Cancelable!void,
 };
 
-fn pending_login_loop(self: *Self, slot: *ConnectionSlot, engine: *Engine) std.Io.Cancelable!void {
+fn pending_login_loop(self: *ServerState, slot: *ConnectionSlot, engine: *Engine) std.Io.Cancelable!void {
     defer finish_pending_worker(self, slot, engine);
 
     const LoginSelect = std.Io.Select(LoginRaceResult);
@@ -492,21 +493,26 @@ fn pending_login_loop(self: *Self, slot: *ConnectionSlot, engine: *Engine) std.I
 }
 
 fn client_login_loop(
-    self: *Self,
+    self: *ServerState,
     slot: *ConnectionSlot,
     client: *Server.Client,
     engine: *Engine,
 ) std.Io.Cancelable!void {
     defer finish_active_worker(self, slot, engine);
 
-    client.finish_login() catch |err| {
-        client.mark_closed();
-        if (err == error.Canceled) return error.Canceled;
-        // The reaper waits for this task's worker_done publication before it
-        // removes the generation-checked player entry. Do not add accesses
-        // after the task returns and publishes that completion.
-        log.info("Login failed: {}", .{err});
-        return;
+    client.finish_login() catch |err| switch (err) {
+        error.Canceled => {
+            client.mark_closed();
+            return error.Canceled;
+        },
+        else => {
+            client.mark_closed();
+            // The reaper waits for this task's worker_done publication before it
+            // removes the generation-checked player entry. Do not add accesses
+            // after the task returns and publishes that completion.
+            log.info("Login failed: {}", .{err});
+            return;
+        },
     };
     client.read_loop();
 }
@@ -531,6 +537,7 @@ fn count_initialized_users() u32 {
     var count: u32 = 0;
     Server.lock_roster_shared();
     defer Server.unlock_roster_shared();
+
     for (0..Server.players.items.len) |i| {
         const client = &(Server.players.items[i] orelse continue);
         if (client.initialized and client.is_connected()) count += 1;
@@ -538,7 +545,7 @@ fn count_initialized_users() u32 {
     return count;
 }
 
-fn heartbeat_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
+fn heartbeat_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
     var client: std.http.Client = .{
         .allocator = engine.allocator(.user),
         .io = engine.io,
@@ -566,7 +573,7 @@ fn heartbeat_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
 }
 
 fn deinit(ctx: *anyopaque, engine: *Engine) void {
-    var self = Util.ctx_to_self(Self, ctx);
+    var self = Util.ctx_to_self(ServerState, ctx);
 
     self.tasks.cancel(engine.io);
     log.info("Shutting down server...", .{});
@@ -608,7 +615,7 @@ fn reject_connection(conn: std.Io.net.Stream, engine: *Engine, reason: []const u
     c.close(engine.io);
 }
 
-fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
+fn accept_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
     while (engine.running) {
         var conn = self.listener.accept(engine.io) catch |err| {
             if (!engine.running) return;
@@ -667,7 +674,7 @@ fn accept_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
     }
 }
 
-fn console_loop(self: *Self, engine: *Engine) std.Io.Cancelable!void {
+fn console_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
     const stdin_file = std.Io.File.stdin();
     var reader_scratch: [512]u8 = undefined;
     var file_reader = stdin_file.reader(engine.io, &reader_scratch);

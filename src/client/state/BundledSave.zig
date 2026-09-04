@@ -63,6 +63,7 @@ test "imports bundled save when destination is absent" {
     const io = std.testing.io;
     var resources_tmp = std.testing.tmpDir(.{});
     defer resources_tmp.cleanup();
+
     var data_tmp = std.testing.tmpDir(.{});
     defer data_tmp.cleanup();
 
@@ -78,6 +79,7 @@ test "imports bundled save when destination is absent" {
 
     const destination = try data_tmp.dir.openFile(io, relative_path, .{});
     defer destination.close(io);
+
     var contents: [32]u8 = undefined;
     const len = try destination.readPositionalAll(io, &contents, 0);
     try std.testing.expectEqualStrings("bundled world", contents[0..len]);
@@ -87,6 +89,7 @@ test "does not overwrite an existing user save" {
     const io = std.testing.io;
     var resources_tmp = std.testing.tmpDir(.{});
     defer resources_tmp.cleanup();
+
     var data_tmp = std.testing.tmpDir(.{});
     defer data_tmp.cleanup();
 
@@ -107,6 +110,7 @@ test "does not overwrite an existing user save" {
 
     const destination = try data_tmp.dir.openFile(io, relative_path, .{});
     defer destination.close(io);
+
     var contents: [32]u8 = undefined;
     const len = try destination.readPositionalAll(io, &contents, 0);
     try std.testing.expectEqualStrings("user world", contents[0..len]);
@@ -116,6 +120,7 @@ test "missing bundled save is not an import failure" {
     const io = std.testing.io;
     var resources_tmp = std.testing.tmpDir(.{});
     defer resources_tmp.cleanup();
+
     var data_tmp = std.testing.tmpDir(.{});
     defer data_tmp.cleanup();
 

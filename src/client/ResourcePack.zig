@@ -1,9 +1,8 @@
 /// Owns the active archive and the textures requested by game states.
-const ResourcePack = @This();
-
 const SoundManager = @import("SoundManager.zig");
 
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Rendering = ae.Rendering;
 const Image = ae.Util.Image;
@@ -82,7 +81,7 @@ pub fn init(
     path: []const u8,
 ) !void {
     if (pack_initialized) return;
-    std.debug.assert(path.len > 0 and path.len <= max_pack_path_len);
+    assert(path.len > 0 and path.len <= max_pack_path_len);
     alloc = render_alloc;
     tex_loaded = 0;
     anim_loaded = 0;
@@ -116,8 +115,8 @@ pub fn deinit() void {
 /// Stage all resident textures before swapping archives, preserving cached
 /// texture pointers and leaving the current pack intact on failure.
 pub fn switch_pack(dir: std.Io.Dir, path: []const u8) !void {
-    std.debug.assert(pack_initialized);
-    std.debug.assert(path.len > 0 and path.len <= max_pack_path_len);
+    assert(pack_initialized);
+    assert(path.len > 0 and path.len <= max_pack_path_len);
 
     if (same_dir(dir, pack_dir) and
         std.mem.eql(u8, path, pack_path_buf[0..pack_path_len])) return;
@@ -206,9 +205,9 @@ fn same_dir(a: std.Io.Dir, b: std.Io.Dir) bool {
 }
 
 pub fn get_tex(id: Tex) *const Rendering.Texture {
-    std.debug.assert(!is_anim_source(id));
+    assert(!is_anim_source(id));
     const i = @intFromEnum(id);
-    std.debug.assert(tex_loaded & (@as(u16, 1) << @intCast(i)) != 0);
+    assert(tex_loaded & (@as(u16, 1) << @intCast(i)) != 0);
     return &textures[i];
 }
 
@@ -274,8 +273,8 @@ pub fn tick_animations() void {
     const t_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.terrain);
     const w_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.water_still);
     const l_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.lava_still);
-    std.debug.assert(tex_loaded & t_bit == t_bit);
-    std.debug.assert(anim_loaded & (w_bit | l_bit) == (w_bit | l_bit));
+    assert(tex_loaded & t_bit == t_bit);
+    assert(anim_loaded & (w_bit | l_bit) == (w_bit | l_bit));
 
     anim_tick +%= 1;
     if (anim_tick % anim_period_ticks != 0) return;
@@ -326,9 +325,9 @@ fn is_anim_source(id: Tex) bool {
 }
 
 fn image_pixel(img: *const Image.Image, x: u32, y: u32) [4]u8 {
-    std.debug.assert(img.mode == .rgba8);
-    std.debug.assert(x < img.width);
-    std.debug.assert(y < img.height);
+    assert(img.mode == .rgba8);
+    assert(x < img.width);
+    assert(y < img.height);
     const offset = (@as(usize, y) * img.width + x) * 4;
     return img.data[offset..][0..4].*;
 }
@@ -338,6 +337,7 @@ fn load_texture_from_zip(id: Tex) !Rendering.Texture {
     const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{tex_path(id)});
     var stream = try pack.open(path);
     defer pack.close_stream(&stream);
+
     return try Rendering.Texture.load_from_reader(alloc, stream.reader, &.{ .cpu_access = .read_write });
 }
 
@@ -346,6 +346,7 @@ fn load_image_from_zip(id: Tex) !Image.Image {
     const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{tex_path(id)});
     var stream = try pack.open(path);
     defer pack.close_stream(&stream);
+
     return try Image.load_png_ex(alloc, alloc, stream.reader, .rgba8);
 }
 

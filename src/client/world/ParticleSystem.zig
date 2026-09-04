@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
@@ -10,7 +11,6 @@ const Vertex = @import("aether").Rendering.Vertex;
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const face_mod = @import("chunk/face.zig");
-const collision = @import("../player/collision.zig");
 const Block = core.blocks.Block;
 
 const MAX_PARTICLES: u16 = 512;
@@ -49,7 +49,7 @@ fn gravity_for(block_id: Block) f32 {
     };
 }
 
-const Self = @This();
+const ParticleSystem = @This();
 
 mesh_data: Rendering.MeshDataType(Vertex),
 mesh: Rendering.MeshType(Vertex),
@@ -59,8 +59,8 @@ count: u16,
 rng: std.Random.DefaultPrng,
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
-    var self: Self = .{
+pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !ParticleSystem {
+    var self: ParticleSystem = .{
         .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
         .mesh = try Rendering.MeshType(Vertex).init(&.{}),
         .atlas = atlas,
@@ -73,19 +73,20 @@ pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *ParticleSystem) void {
     self.mesh.deinit();
     self.mesh_data.deinit(self.allocator);
+    self.* = undefined;
 }
 
-pub fn spawn_break(self: *Self, block_id: Block, bx: u16, by: u16, bz: u16) void {
-    std.debug.assert(!block_id.is_air());
+pub fn spawn_break(self: *ParticleSystem, block_id: Block, bx: u16, by: u16, bz: u16) void {
+    assert(!block_id.is_air());
 
     const tile = block_id.face_tile(.x_neg);
-    const tu = self.atlas.tileU(tile.col);
-    const tv = self.atlas.tileV(tile.row);
-    const tw = self.atlas.tileWidth();
-    const th = self.atlas.tileHeight();
+    const tu = self.atlas.tile_u(tile.col);
+    const tv = self.atlas.tile_v(tile.row);
+    const tw = self.atlas.tile_width();
+    const th = self.atlas.tile_height();
     const du: i16 = @divTrunc(tw, SUBTILE_DIV);
     const dv: i16 = @divTrunc(th, SUBTILE_DIV);
 
@@ -127,8 +128,8 @@ pub fn spawn_break(self: *Self, block_id: Block, bx: u16, by: u16, bz: u16) void
     }
 }
 
-pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
-    std.debug.assert(dt >= 0);
+pub fn update(self: *ParticleSystem, dt: f32, camera: *const Camera) void {
+    assert(dt >= 0);
 
     var i: u16 = 0;
     while (i < self.count) {
@@ -230,13 +231,13 @@ fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
     return World.is_sunlit(@intCast(bx), @intCast(by), @intCast(bz));
 }
 
-pub fn draw(self: *Self) void {
+pub fn draw(self: *ParticleSystem) void {
     if (self.count == 0) return;
     const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
     self.mesh.draw(&m);
 }
 
-fn rebuild_mesh(self: *Self, camera: *const Camera) void {
+fn rebuild_mesh(self: *ParticleSystem, camera: *const Camera) void {
     self.mesh_data.clear_retaining_capacity();
     if (self.count == 0) return;
 

@@ -2,7 +2,7 @@ const std = @import("std");
 
 const Policy = enum { create, dump };
 
-fn SaveName(comptime policy: Policy) type {
+fn SaveNameType(comptime policy: Policy) type {
     return struct {
         pub const NAME_MAX: u8 = switch (policy) {
             .create => 20,
@@ -55,8 +55,8 @@ fn SaveName(comptime policy: Policy) type {
     };
 }
 
-pub const Create = SaveName(.create);
-pub const Dump = SaveName(.dump);
+pub const Create = SaveNameType(.create);
+pub const Dump = SaveNameType(.dump);
 
 test "create save-name policy" {
     var path_buf: [Create.PATH_MAX]u8 = undefined;

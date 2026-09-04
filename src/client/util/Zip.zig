@@ -67,7 +67,7 @@ pub const Stream = struct {
 /// engine-owned resources or data dir -- not `Io.Dir.cwd()`, which is not
 /// guaranteed to match the app root under Finder-launched `.app` bundles.
 pub fn init(allocator: std.mem.Allocator, _io: Io, dir: std.Io.Dir, path: []const u8) !*Zip {
-    std.debug.assert(path.len > 0);
+    assert(path.len > 0);
 
     const self = try allocator.create(Zip);
     errdefer allocator.destroy(self);
@@ -98,6 +98,7 @@ pub fn deinit(self: *Zip) void {
     self.free_index();
     self.file.close(self.io);
     const allocator = self.allocator;
+    self.* = undefined;
     allocator.destroy(self);
 }
 
@@ -245,6 +246,7 @@ const TestZip = struct {
     fn deinit(self: *TestZip) void {
         self.zip.deinit();
         self.tmp.cleanup();
+        self.* = undefined;
     }
 };
 
@@ -256,6 +258,7 @@ fn open_test_zip() !TestZip {
     {
         const file = try tmp.dir.createFile(io, "test.zip", .{});
         defer file.close(io);
+
         var write_buf: [4096]u8 = undefined;
         var writer = file.writer(io, &write_buf);
         try writer.interface.writeAll(@embedFile("testdata/test.zip"));
@@ -271,6 +274,7 @@ fn open_test_zip() !TestZip {
 test "open by path stored" {
     var fixture = try open_test_zip();
     defer fixture.deinit();
+
     const z = fixture.zip;
 
     var stream = try z.open("hello.txt");
@@ -286,6 +290,7 @@ test "open by path stored" {
 test "open by path deflate" {
     var fixture = try open_test_zip();
     defer fixture.deinit();
+
     const z = fixture.zip;
 
     var stream = try z.open("compressed.txt");
@@ -303,6 +308,7 @@ test "open by path deflate" {
 test "open nested path" {
     var fixture = try open_test_zip();
     defer fixture.deinit();
+
     const z = fixture.zip;
 
     var stream = try z.open("subdir/nested.txt");
@@ -318,6 +324,7 @@ test "open nested path" {
 test "open nonexistent" {
     var fixture = try open_test_zip();
     defer fixture.deinit();
+
     const z = fixture.zip;
 
     const result = z.open("nope.txt");
@@ -327,6 +334,7 @@ test "open nonexistent" {
 test "two simultaneous streams" {
     var fixture = try open_test_zip();
     defer fixture.deinit();
+
     const z = fixture.zip;
 
     var s1 = try z.open("hello.txt");
@@ -350,6 +358,7 @@ test "two simultaneous streams" {
 test "stream slot exhaustion" {
     var fixture = try open_test_zip();
     defer fixture.deinit();
+
     const z = fixture.zip;
 
     var s1 = try z.open("hello.txt");

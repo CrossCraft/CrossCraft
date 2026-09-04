@@ -336,6 +336,7 @@ test "missing server properties writes the effective defaults" {
 
     const file = try tmp.dir.openFile(io, properties_file_name, .{});
     defer file.close(io);
+
     var buf: [1024]u8 = undefined;
     const len = try file.readPositionalAll(io, &buf, 0);
     try std.testing.expect(std.mem.indexOf(u8, buf[0..len], "seed:1234\n") != null);

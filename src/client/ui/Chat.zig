@@ -1,6 +1,7 @@
 // PSP text sessions resolve synchronously through the system OSK.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const input = ae.Core.input;
 const proto = @import("core").protocol;
@@ -8,13 +9,10 @@ const proto = @import("core").protocol;
 const Player = @import("../player/Player.zig");
 const FontBatcher = ae.UI.FontBatcher;
 const UiDrawList = @import("UiDrawList.zig");
-const Scaling = ae.UI.Scaling;
 const Colors = @import("../graphics/Color.zig");
 const Color = Colors.Color;
 const TextWrap = @import("TextWrap.zig");
-const ui_input = @import("input.zig");
-
-const Self = @This();
+const Chat = @This();
 
 pub const MAX_MESSAGES: u8 = 10;
 const MSG_MAX_LEN: u8 = 96;
@@ -91,7 +89,7 @@ chat_was_active: bool,
 render_lines: [RENDER_LINE_MAX][WRAP_LINE_MAX_BYTES]u8,
 render_line_count: u8,
 
-pub fn init() Self {
+pub fn init() Chat {
     return .{
         .messages = std.mem.zeroes([MAX_MESSAGES]Entry),
         .msg_head = 0,
@@ -106,7 +104,7 @@ pub fn init() Self {
     };
 }
 
-pub fn receive(self: *Self, raw: []const u8) void {
+pub fn receive(self: *Chat, raw: []const u8) void {
     var len: u8 = 0;
     const lim = @min(raw.len, MSG_MAX_LEN);
     {
@@ -125,7 +123,7 @@ pub fn receive(self: *Self, raw: []const u8) void {
     if (self.msg_count < MAX_MESSAGES) self.msg_count += 1;
 }
 
-pub fn open_overlay(self: *Self, sys: *input.InputSystem, player: *Player, slash_prefix: bool) void {
+pub fn open_overlay(self: *Chat, sys: *input.InputSystem, player: *Player, slash_prefix: bool) void {
     if (self.open) return;
     self.open = true;
     self.prev_send = .released;
@@ -152,7 +150,7 @@ pub fn open_overlay(self: *Self, sys: *input.InputSystem, player: *Player, slash
 }
 
 /// Open social mode without starting text entry; Confirm starts it later.
-pub fn open_overlay_social(self: *Self, sys: *input.InputSystem, _: *Player) void {
+pub fn open_overlay_social(self: *Chat, sys: *input.InputSystem, _: *Player) void {
     if (self.open) return;
     self.open = true;
     self.prev_send = .released;
@@ -174,7 +172,7 @@ pub fn open_overlay_social(self: *Self, sys: *input.InputSystem, _: *Player) voi
     };
 }
 
-fn begin_session(self: *Self, sys: *input.InputSystem, slash_prefix: bool) void {
+fn begin_session(self: *Chat, sys: *input.InputSystem, slash_prefix: bool) void {
     const target: input.TextInputTarget = .{ .id = "chat" };
     const slash_buf = [_]u8{'/'};
     const opts: input.TextInputOptions = .{
@@ -185,7 +183,7 @@ fn begin_session(self: *Self, sys: *input.InputSystem, slash_prefix: bool) void 
     self.session_active = true;
 }
 
-fn handle_terminal_if_done(self: *Self, sys: *input.InputSystem, player: *Player) void {
+fn handle_terminal_if_done(self: *Chat, sys: *input.InputSystem, player: *Player) void {
     const session = sys.current_text_session() orelse return;
     if (session.status == .submitted) {
         send_session(sys, player);
@@ -195,7 +193,7 @@ fn handle_terminal_if_done(self: *Self, sys: *input.InputSystem, player: *Player
     }
 }
 
-pub fn close_overlay(self: *Self, sys: *input.InputSystem, player: *Player) void {
+pub fn close_overlay(self: *Chat, sys: *input.InputSystem, player: *Player) void {
     if (!self.open) return;
     self.open = false;
     if (self.session_active) {
@@ -207,7 +205,7 @@ pub fn close_overlay(self: *Self, sys: *input.InputSystem, player: *Player) void
     player.look_delta = .{ 0, 0 };
 }
 
-pub fn tick(self: *Self, dt: f32) void {
+pub fn tick(self: *Chat, dt: f32) void {
     if (self.open) return;
     var i: u8 = 0;
     while (i < self.msg_count) : (i += 1) {
@@ -215,8 +213,8 @@ pub fn tick(self: *Self, dt: f32) void {
     }
 }
 
-pub fn update(self: *Self, sys: *input.InputSystem, player: *Player) void {
-    std.debug.assert(self.open);
+pub fn update(self: *Chat, sys: *input.InputSystem, player: *Player) void {
+    assert(self.open);
 
     if (self.session_active) {
         const session_const = sys.current_text_session() orelse return;
@@ -280,7 +278,7 @@ fn send_session(sys: *input.InputSystem, player: *Player) void {
     player.writer.flush() catch {};
 }
 
-pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts: *const FontBatcher, y_shift: i16) void {
+pub fn draw_into(self: *Chat, sys: *input.InputSystem, list: *UiDrawList, fonts: *const FontBatcher, y_shift: i16) void {
     self.render_line_count = 0;
 
     const base: i16 = BOTTOM_PAD + y_shift;
@@ -470,7 +468,7 @@ pub fn draw_into(self: *Self, sys: *input.InputSystem, list: *UiDrawList, fonts:
     });
 }
 
-fn store_render_line(self: *Self, line: []const u8) ?[]const u8 {
+fn store_render_line(self: *Chat, line: []const u8) ?[]const u8 {
     if (line.len == 0 or line.len > WRAP_LINE_MAX_BYTES) return null;
     if (@as(usize, self.render_line_count) >= RENDER_LINE_MAX) return null;
 

@@ -162,6 +162,7 @@ pub fn main(init: std.process.Init) !void {
 
         const generated = try worldgen.generate(gpa, scratch.allocator(), case.seed, dimensions);
         defer gpa.free(generated.blocks);
+
         total_blocks += generated.blocks.len;
 
         var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;

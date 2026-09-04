@@ -33,7 +33,7 @@ pub const OutboundQueue = struct {
     /// Append one already-serialized SetBlockToClient packet to the temporary
     /// join journal. Protocol block-change packets are always eight bytes, so
     /// the reverse-growing records can later be reversed without metadata.
-    pub fn appendCatchup(q: *OutboundQueue, io: std.Io, packet: *const [8]u8) Error!void {
+    pub fn append_catchup(q: *OutboundQueue, io: std.Io, packet: *const [8]u8) Error!void {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
 
@@ -46,7 +46,7 @@ pub const OutboundQueue = struct {
     /// Move the reverse-growing join journal behind normal outbound bytes.
     /// The caller performs the world catch-up state transition while holding
     /// the world lock, so no new catch-up record can race this promotion.
-    pub fn promoteCatchup(q: *OutboundQueue, io: std.Io) void {
+    pub fn promote_catchup(q: *OutboundQueue, io: std.Io) void {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
 
@@ -146,9 +146,9 @@ test "outbound_queue promotes join catch-up after normal bytes in order" {
     const second: [8]u8 = "second--".*;
 
     try q.append(io, "level");
-    try q.appendCatchup(io, &first);
-    try q.appendCatchup(io, &second);
-    q.promoteCatchup(io);
+    try q.append_catchup(io, &first);
+    try q.append_catchup(io, &second);
+    q.promote_catchup(io);
 
     var dest: [32]u8 = undefined;
     const n = q.take(io, &dest);
@@ -162,6 +162,6 @@ test "outbound_queue shares capacity between normal and catch-up bytes" {
     const change: [8]u8 = @splat(0xaa);
 
     try q.append(io, "12345678");
-    try q.appendCatchup(io, &change);
+    try q.append_catchup(io, &change);
     try std.testing.expectError(error.QueueFull, q.append(io, "x"));
 }

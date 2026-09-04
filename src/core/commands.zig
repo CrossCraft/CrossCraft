@@ -179,9 +179,8 @@ fn rest_of(tok: *Tokens) []const u8 {
 }
 
 fn report_policy_error(sink: Sink, err: anyerror) void {
-    if (err == error.PolicyStoreFull) {
-        sink.write("&cAccess-control store is full; raise max-policy-records and restart the server");
-    } else {
-        sink.write("&cFailed to persist access-control policy");
+    switch (err) {
+        error.PolicyStoreFull => sink.write("&cAccess-control store is full; raise max-policy-records and restart the server"),
+        else => sink.write("&cFailed to persist access-control policy"),
     }
 }

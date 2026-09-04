@@ -3,6 +3,7 @@
 // compressor is not reentrant.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const builtin = @import("builtin");
 const flate = std.compress.flate;
 
@@ -101,7 +102,7 @@ pub fn reset(output: *std.Io.Writer) !void {
 
 /// Push a pending job onto the queue. Caller must keep it alive until done.
 pub fn submit(job: *Job) void {
-    std.debug.assert(!job.is_done());
+    assert(!job.is_done());
     while (true) {
         const head = queue_head.load(.monotonic);
         job.next = head;
@@ -193,6 +194,7 @@ test "queued jobs publish errors and queued cancellation completes" {
 
     try std.testing.expect(queue_head.load(.acquire) == null);
     defer queue_head.store(null, .release);
+
     stored_io = std.testing.io;
 
     var runs: u32 = 0;

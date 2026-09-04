@@ -58,6 +58,7 @@ pub const SaveFormat = union(enum) {
         var src = std.Io.Reader.fixed(prefix);
         const window_buf = scratch.alloc(u8, std.compress.flate.max_window_len) catch return false;
         defer scratch.free(window_buf);
+
         var decompress = std.compress.flate.Decompress.init(&src, .gzip, window_buf);
         const first = decompress.reader.takeByte() catch return false;
         return first == 0x0A;
@@ -77,6 +78,7 @@ pub const SaveFormat = union(enum) {
 
         const read_buf = scratch.alloc(u8, sniff_prefix_len) catch return null;
         defer scratch.free(read_buf);
+
         var reader = file.reader(io, read_buf);
 
         const peek_sizes = [_]usize{ sniff_prefix_len, 8192, 4096, 1024, 256, 64, 12, 6 };
@@ -151,6 +153,7 @@ test "sniff_dims reads the announced geometry from both formats" {
         std.mem.writeInt(u16, dat[4..6], 128, .little);
         const file = try tmp.dir.createFile(io, "world.dat", .{});
         defer file.close(io);
+
         try file.writeStreamingAll(io, &dat);
 
         const dims = SaveFormat.sniff_dims(io, tmp.dir, "world.dat", std.testing.allocator).?;
@@ -173,6 +176,7 @@ test "sniff_dims reads the announced geometry from both formats" {
 
         const file = try tmp.dir.createFile(io, "world.cw", .{});
         defer file.close(io);
+
         try file.writeStreamingAll(io, &file_bytes);
 
         const dims = SaveFormat.sniff_dims(io, tmp.dir, "world.cw", std.testing.allocator).?;
@@ -191,6 +195,7 @@ test "sniff_dims returns null for missing and unrecognized files" {
 
     const file = try tmp.dir.createFile(io, "garbage.dat", .{});
     defer file.close(io);
+
     try file.writeStreamingAll(io, "not a save at all");
     try std.testing.expect(SaveFormat.sniff_dims(io, tmp.dir, "garbage.dat", std.testing.allocator) == null);
 }

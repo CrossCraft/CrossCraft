@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 
 const COLOR_PREFIX: u8 = '&';
 
@@ -11,10 +12,10 @@ pub fn wrap(
     out: *[MAX_LINES][MAX_LINE_BYTES]u8,
     lens: *[MAX_LINES]u8,
 ) u8 {
-    std.debug.assert(MAX_LINES > 0);
-    std.debug.assert(MAX_LINES <= std.math.maxInt(u8));
-    std.debug.assert(MAX_LINE_BYTES > 0);
-    std.debug.assert(MAX_LINE_BYTES <= std.math.maxInt(u8));
+    assert(MAX_LINES > 0);
+    assert(MAX_LINES <= std.math.maxInt(u8));
+    assert(MAX_LINE_BYTES > 0);
+    assert(MAX_LINE_BYTES <= std.math.maxInt(u8));
 
     if (text.len == 0 or max_w <= 0) return 0;
 
@@ -64,12 +65,12 @@ fn write_line(
 ) u8 {
     var n: usize = 0;
     if (prefix_color) |c| {
-        std.debug.assert(n + 2 <= MAX_LINE_BYTES);
+        assert(n + 2 <= MAX_LINE_BYTES);
         out[n] = COLOR_PREFIX;
         out[n + 1] = c;
         n += 2;
     }
-    std.debug.assert(n + text.len <= MAX_LINE_BYTES);
+    assert(n + text.len <= MAX_LINE_BYTES);
     @memcpy(out[n .. n + text.len], text);
     n += text.len;
     return @intCast(n);

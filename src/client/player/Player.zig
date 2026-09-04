@@ -8,6 +8,7 @@
 // Modifications Copyright (c) 2026 CrossCraft
 
 const std = @import("std");
+const assert = std.debug.assert;
 const builtin = @import("builtin");
 const ae = @import("aether");
 const Math = ae.Math;
@@ -104,7 +105,7 @@ const HOTBAR_SCROLL_DEADBAND: f32 = 0.5;
 
 const LOOK_PIXEL_TO_RAD: f32 = 0.002;
 
-const Self = @This();
+const Player = @This();
 
 // Client-side collision prediction until a placed block round-trips.
 const PendingBlock = struct {
@@ -242,7 +243,7 @@ walk_swing_prev: f32,
 bob_amount: f32,
 bob_amount_prev: f32,
 
-pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
+pub fn init(self: *Player, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     const feet_y = y - collision.EYE_HEIGHT;
     self.* = .{
         .camera = Camera.init(x, y, z),
@@ -306,22 +307,22 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     };
 }
 
-pub fn consume_fly_tap_event(self: *Self) ?FlyTapEvent {
+pub fn consume_fly_tap_event(self: *Player) ?FlyTapEvent {
     const event = self.fly_tap_event;
     self.fly_tap_event = null;
     return event;
 }
 
-pub fn clear_fly_tap_state(self: *Self) void {
+pub fn clear_fly_tap_state(self: *Player) void {
     self.fly_tap_event = null;
     self.reset_jump_taps();
 }
 
-pub fn toggle_fly(self: *Self) void {
+pub fn toggle_fly(self: *Player) void {
     self.set_fly(!self.fly);
 }
 
-pub fn set_fly(self: *Self, enabled: bool) void {
+pub fn set_fly(self: *Player, enabled: bool) void {
     if (self.fly == enabled) return;
 
     self.fly = enabled;
@@ -338,8 +339,8 @@ pub fn set_fly(self: *Self, enabled: bool) void {
     }
 }
 
-pub fn update(self: *Self, sys: *input.InputSystem, dt: f32) void {
-    std.debug.assert(dt >= 0);
+pub fn update(self: *Player, sys: *input.InputSystem, dt: f32) void {
+    assert(dt >= 0);
 
     self.mouse_captured = sys.effective_cursor_mode() == .captured;
 
@@ -400,7 +401,7 @@ pub fn update(self: *Self, sys: *input.InputSystem, dt: f32) void {
     self.selected = self.raycast_block(REACH);
 }
 
-fn apply_look(self: *Self, dt: f32) void {
+fn apply_look(self: *Player, dt: f32) void {
     if (self.mouse_captured) {
         self.camera.yaw -= self.look_delta[0];
         self.camera.pitch += self.look_delta[1];
@@ -429,7 +430,7 @@ fn apply_stick_curve(raw: [2]f32) [2]f32 {
     return .{ raw[0] * scale, raw[1] * scale };
 }
 
-fn update_noclip(self: *Self, dt: f32) void {
+fn update_noclip(self: *Player, dt: f32) void {
     const sin_yaw = @sin(self.camera.yaw);
     const cos_yaw = @cos(self.camera.yaw);
     const strafe = self.move_dir[0];
@@ -448,7 +449,7 @@ fn update_noclip(self: *Self, dt: f32) void {
     self.prev_z = self.pos_z;
 }
 
-fn update_fly(self: *Self, dt: f32) void {
+fn update_fly(self: *Player, dt: f32) void {
     const clamped = @min(dt, MAX_FRAME_DT);
     const sin_yaw = @sin(self.camera.yaw);
     const cos_yaw = @cos(self.camera.yaw);
@@ -488,7 +489,7 @@ fn update_fly(self: *Self, dt: f32) void {
     self.prev_z = self.pos_z;
 }
 
-fn run_ticks(self: *Self, dt: f32) void {
+fn run_ticks(self: *Player, dt: f32) void {
     const clamped = @min(dt, MAX_FRAME_DT);
     self.tick_remainder += clamped;
 
@@ -500,7 +501,7 @@ fn run_ticks(self: *Self, dt: f32) void {
 
 /// One Classic physics tick. Order matches the spec:
 /// input -> vertical state -> accel -> collide+integrate -> drag -> gravity -> friction
-fn physics_tick(self: *Self) void {
+fn physics_tick(self: *Player) void {
     self.prev_x = self.pos_x;
     self.prev_y = self.pos_y;
     self.prev_z = self.pos_z;
@@ -548,7 +549,7 @@ fn physics_tick(self: *Self) void {
     self.advance_view_bob();
 }
 
-fn advance_view_bob(self: *Self) void {
+fn advance_view_bob(self: *Player) void {
     self.walk_phase_prev = self.walk_phase;
     self.walk_swing_prev = self.walk_swing;
     self.bob_amount_prev = self.bob_amount;
@@ -592,7 +593,7 @@ const ViewBob = struct {
     tilt: Math.Mat4,
 };
 
-fn compute_view_bob(self: *const Self, alpha: f32) ViewBob {
+fn compute_view_bob(self: *const Player, alpha: f32) ViewBob {
     const phase = self.walk_phase_prev + (self.walk_phase - self.walk_phase_prev) * alpha;
     const swing = self.walk_swing_prev + (self.walk_swing - self.walk_swing_prev) * alpha;
     const amount = self.bob_amount_prev + (self.bob_amount - self.bob_amount_prev) * alpha;
@@ -621,7 +622,7 @@ fn compute_view_bob(self: *const Self, alpha: f32) ViewBob {
 }
 
 fn update_vertical_state(
-    self: *Self,
+    self: *Player,
     liq_feet: ?collision.Liquid,
     liq_body: ?collision.Liquid,
 ) void {
@@ -661,7 +662,7 @@ fn frac(v: f32) f32 {
     return v - @floor(v);
 }
 
-fn block_under_feet(self: *const Self) Block {
+fn block_under_feet(self: *const Player) Block {
     const by_f = @floor(self.pos_y - 0.01);
     const bx_f = @floor(self.pos_x);
     const bz_f = @floor(self.pos_z);
@@ -676,7 +677,7 @@ fn block_under_feet(self: *const Self) Block {
     );
 }
 
-fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
+fn collide_and_move(self: *Player, liquid: ?collision.Liquid) void {
     const was_on_ground = self.on_ground;
 
     var result = collision.move_and_collide(
@@ -735,7 +736,7 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
     self.on_ground = result.on_ground;
 }
 
-fn sync_camera(self: *Self) void {
+fn sync_camera(self: *Player) void {
     if (self.noclip or self.fly) {
         self.camera.x = self.pos_x;
         self.camera.y = self.pos_y + collision.EYE_HEIGHT;
@@ -762,18 +763,18 @@ fn sync_camera(self: *Self) void {
 }
 
 /// Amanatides-Woo voxel traversal using fixed-point distances.
-pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
-    std.debug.assert(range >= 0.0);
-    std.debug.assert(range <= 64.0);
+pub fn raycast_block(self: *const Player, range: f32) ?RaycastHit {
+    assert(range >= 0.0);
+    assert(range <= 64.0);
 
     const cp = @cos(self.camera.pitch);
-    const dir_x = toFP(-@sin(self.camera.yaw) * cp);
-    const dir_y = toFP(-@sin(self.camera.pitch));
-    const dir_z = toFP(-@cos(self.camera.yaw) * cp);
+    const dir_x = to_fp(-@sin(self.camera.yaw) * cp);
+    const dir_y = to_fp(-@sin(self.camera.pitch));
+    const dir_z = to_fp(-@cos(self.camera.yaw) * cp);
 
-    const fp_ox = toFP(self.camera.x);
-    const fp_oy = toFP(self.camera.y);
-    const fp_oz = toFP(self.camera.z);
+    const fp_ox = to_fp(self.camera.x);
+    const fp_oy = to_fp(self.camera.y);
+    const fp_oz = to_fp(self.camera.z);
 
     const fx = @floor(self.camera.x);
     const fy = @floor(self.camera.y);
@@ -801,7 +802,7 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     var dist_y: i32 = if (step_y > 0) ONE - frac_y else if (step_y < 0) frac_y else std.math.maxInt(i32);
     var dist_z: i32 = if (step_z > 0) ONE - frac_z else if (step_z < 0) frac_z else std.math.maxInt(i32);
 
-    const range_fp: i32 = toFP(range);
+    const range_fp: i32 = to_fp(range);
 
     if (in_world(bx, by, bz)) {
         if (is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) {
@@ -823,17 +824,17 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     const max_iters: u32 = 64;
     var i: u32 = 0;
     while (i < max_iters) : (i += 1) {
-        if (tExceedsRange(dist_x, adx, dist_y, ady, dist_z, adz, range_fp)) return null;
+        if (t_exceeds_range(dist_x, adx, dist_y, ady, dist_z, adz, range_fp)) return null;
 
         const prev_x = bx;
         const prev_y = by;
         const prev_z = bz;
 
         // t_max_a <= t_max_b <-> dist_a * abs_b <= dist_b * abs_a (cross multiply).
-        if (tLE(dist_x, adx, dist_y, ady) and tLE(dist_x, adx, dist_z, adz)) {
+        if (t_le(dist_x, adx, dist_y, ady) and t_le(dist_x, adx, dist_z, adz)) {
             bx += step_x;
             dist_x += ONE;
-        } else if (tLE(dist_y, ady, dist_z, adz)) {
+        } else if (t_le(dist_y, ady, dist_z, adz)) {
             by += step_y;
             dist_y += ONE;
         } else {
@@ -884,17 +885,17 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
 const FRAC: u5 = 8;
 const ONE: i32 = 1 << FRAC;
 
-fn toFP(f: f32) i32 {
+fn to_fp(f: f32) i32 {
     return @intFromFloat(f * @as(f32, @floatFromInt(ONE)));
 }
 
-fn tLE(dist_a: i32, abs_a: i32, dist_b: i32, abs_b: i32) bool {
+fn t_le(dist_a: i32, abs_a: i32, dist_b: i32, abs_b: i32) bool {
     if (abs_a == 0) return false;
     if (abs_b == 0) return true;
     return @as(i64, dist_a) * @as(i64, abs_b) <= @as(i64, dist_b) * @as(i64, abs_a);
 }
 
-fn tExceedsRange(dx: i32, adx: i32, dy: i32, ady: i32, dz: i32, adz: i32, range_fp: i32) bool {
+fn t_exceeds_range(dx: i32, adx: i32, dy: i32, ady: i32, dz: i32, adz: i32, range_fp: i32) bool {
     const xv = adx != 0 and @as(i64, dx) * ONE <= @as(i64, range_fp) * @as(i64, adx);
     const yv = ady != 0 and @as(i64, dy) * ONE <= @as(i64, range_fp) * @as(i64, ady);
     const zv = adz != 0 and @as(i64, dz) * ONE <= @as(i64, range_fp) * @as(i64, adz);
@@ -955,8 +956,8 @@ fn ray_sub_aabb_fp(
     var face: Face = .y_pos;
 
     if (dx != 0) {
-        const t0 = fpDiv(x0 - ox, dx);
-        const t1 = fpDiv(x1 - ox, dx);
+        const t0 = fp_div(x0 - ox, dx);
+        const t1 = fp_div(x1 - ox, dx);
         const t_lo = @min(t0, t1);
         const t_hi = @max(t0, t1);
         if (t_lo > t_near) {
@@ -969,8 +970,8 @@ fn ray_sub_aabb_fp(
     }
 
     if (dy != 0) {
-        const t0 = fpDiv(y0 - oy, dy);
-        const t1 = fpDiv(y1 - oy, dy);
+        const t0 = fp_div(y0 - oy, dy);
+        const t1 = fp_div(y1 - oy, dy);
         const t_lo = @min(t0, t1);
         const t_hi = @max(t0, t1);
         if (t_lo > t_near) {
@@ -983,8 +984,8 @@ fn ray_sub_aabb_fp(
     }
 
     if (dz != 0) {
-        const t0 = fpDiv(z0 - oz, dz);
-        const t1 = fpDiv(z1 - oz, dz);
+        const t0 = fp_div(z0 - oz, dz);
+        const t1 = fp_div(z1 - oz, dz);
         const t_lo = @min(t0, t1);
         const t_hi = @max(t0, t1);
         if (t_lo > t_near) {
@@ -1003,7 +1004,7 @@ fn ray_sub_aabb_fp(
     return face;
 }
 
-fn fpDiv(num: i32, den: i32) i32 {
+fn fp_div(num: i32, den: i32) i32 {
     if (den == 0) return if (num >= 0) std.math.maxInt(i32) else std.math.minInt(i32);
     const wide = @divTrunc(@as(i64, num) <<| FRAC, @as(i64, den));
     return @intCast(std.math.clamp(wide, std.math.minInt(i32), std.math.maxInt(i32)));
@@ -1021,13 +1022,13 @@ fn face_normal(face: Face) [3]i32 {
 }
 
 pub fn draw_ui_into(
-    self: *Self,
+    self: *Player,
     list: *UiDrawList,
     gui: *const Rendering.Texture,
     hide_crosshair: bool,
     hud_y_shift: i16,
 ) void {
-    std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
+    assert(self.selected_slot < HOTBAR_SLOTS);
 
     if (!hide_crosshair) {
         list.add_sprite(&.{
@@ -1074,7 +1075,7 @@ pub fn draw_ui_into(
 
 const HOTBAR_BLOCK_HALF_EXTENT: f32 = 3.5;
 
-fn draw_hotbar_blocks(self: *const Self, list: *UiDrawList, hud_y_shift: i16) void {
+fn draw_hotbar_blocks(self: *const Player, list: *UiDrawList, hud_y_shift: i16) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const ui_scale = Scaling.compute(screen_w, screen_h);
@@ -1097,7 +1098,7 @@ fn draw_hotbar_blocks(self: *const Self, list: *UiDrawList, hud_y_shift: i16) vo
     }
 }
 
-fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
+fn poll_inputs(self: *Player, sys: *input.InputSystem, dt: f32) void {
     const actions = bindings.actions();
     const active_now = is_gameplay_active(sys);
     const fresh_activation = active_now and !self.gameplay_was_active;
@@ -1301,13 +1302,13 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
     }
 }
 
-fn age_jump_taps(self: *Self, dt: f32) void {
+fn age_jump_taps(self: *Player, dt: f32) void {
     if (self.jump_tap_count == 0) return;
     self.jump_tap_elapsed += dt;
     if (self.jump_tap_elapsed > FLY_TAP_WINDOW) self.reset_jump_taps();
 }
 
-fn record_jump_tap(self: *Self) void {
+fn record_jump_tap(self: *Player) void {
     if (self.jump_tap_count == 0) {
         self.jump_tap_count = 1;
         self.jump_tap_elapsed = 0;
@@ -1324,7 +1325,7 @@ fn record_jump_tap(self: *Self) void {
     }
 }
 
-fn reset_jump_taps(self: *Self) void {
+fn reset_jump_taps(self: *Player) void {
     self.jump_tap_count = 0;
     self.jump_tap_elapsed = 0;
 }
@@ -1356,7 +1357,7 @@ fn playerlist_controller_pressed_this_frame(sys: *input.InputSystem) bool {
     return false;
 }
 
-fn do_break(self: *Self) void {
+fn do_break(self: *Player) void {
     if (!self.mouse_captured) return;
     if (self.held_renderer) |hr| hr.trigger_dig();
     const hit = self.selected orelse return;
@@ -1371,13 +1372,13 @@ fn do_break(self: *Self) void {
     send_block_change(self.writer, hit.x, hit.y, hit.z, 0, .air);
 }
 
-fn do_pick_block(self: *Self) void {
+fn do_pick_block(self: *Player) void {
     if (!self.mouse_captured) return;
     const hit = self.selected orelse return;
     const block = World.data.get_block(hit.x, hit.y, hit.z);
     if (!block.in_inventory()) return;
 
-    std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
+    assert(self.selected_slot < HOTBAR_SLOTS);
     if (self.hotbar[self.selected_slot] == block) return;
 
     var i: u8 = 0;
@@ -1391,11 +1392,11 @@ fn do_pick_block(self: *Self) void {
     self.hotbar[self.selected_slot] = block;
 }
 
-fn do_place(self: *Self) void {
+fn do_place(self: *Player) void {
     if (!self.mouse_captured) return;
     const hit = self.selected orelse return;
     if (!hit.has_place) return;
-    std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
+    assert(self.selected_slot < HOTBAR_SLOTS);
     const block = self.hotbar[self.selected_slot];
     if (block.is_air()) return;
     const target = World.data.get_block(hit.place_x, hit.place_y, hit.place_z);
