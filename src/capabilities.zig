@@ -297,7 +297,7 @@ pub fn ClientType(comptime ae: type) type {
             pub const multiplayer = ae.platform != .wasm;
 
             pub fn prepare() bool {
-                return if (ae.platform == .psp) ae.Psp.showNetDialog() else true;
+                return if (ae.platform == .psp) ae.Psp.show_net_dialog() else true;
             }
 
             pub fn release() void {

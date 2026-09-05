@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
         .width = 854,
         .height = 480,
         .title = aether_options.title,
-        .app_name = ae.AppOptions.resolveAppName(aether_options),
+        .app_name = ae.AppOptions.resolve_app_name(aether_options),
         .vsync = true,
         .resizable = true,
     }, &state);

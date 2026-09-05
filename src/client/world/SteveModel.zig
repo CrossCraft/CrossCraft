@@ -238,37 +238,37 @@ pub fn draw(self: *SteveModel, local: *const Player) void {
         if (dx * dx + dy * dy + dz * dz > RenderDistSq) continue;
 
         const scale = Math.Mat4.scaling(WorldUnitScale, WorldUnitScale, WorldUnitScale);
-        const rot_y = Math.Mat4.rotationY(st.yaw);
+        const rot_y = Math.Mat4.rotation_y(st.yaw);
         const world_t = Math.Mat4.translation(st.x, feet_y, st.z);
 
         const torso_model = scale.mul(rot_y).mul(world_t);
         self.torso.draw(&torso_model);
 
-        const rot_x = Math.Mat4.rotationX(st.pitch);
+        const rot_x = Math.Mat4.rotation_x(st.pitch);
         const neck_t = Math.Mat4.translation(0, 1.5, 0);
         const head_model = scale.mul(rot_x).mul(neck_t).mul(rot_y).mul(world_t);
         self.head.draw(&head_model);
 
         const walk_swing = walk_phase * WalkAmplitude * st.walk_blend;
 
-        const r_arm_walk = Math.Mat4.rotationX(walk_swing);
-        const r_arm_idle = Math.Mat4.rotationZ(-idle_swing);
+        const r_arm_walk = Math.Mat4.rotation_x(walk_swing);
+        const r_arm_idle = Math.Mat4.rotation_z(-idle_swing);
         const r_shoulder = Math.Mat4.translation(-0.375, 1.5, 0);
         const r_arm_model = scale.mul(r_arm_walk).mul(r_arm_idle).mul(r_shoulder).mul(rot_y).mul(world_t);
         self.right_arm.draw(&r_arm_model);
 
-        const l_arm_walk = Math.Mat4.rotationX(-walk_swing);
-        const l_arm_idle = Math.Mat4.rotationZ(idle_swing);
+        const l_arm_walk = Math.Mat4.rotation_x(-walk_swing);
+        const l_arm_idle = Math.Mat4.rotation_z(idle_swing);
         const l_shoulder = Math.Mat4.translation(0.375, 1.5, 0);
         const l_arm_model = scale.mul(l_arm_walk).mul(l_arm_idle).mul(l_shoulder).mul(rot_y).mul(world_t);
         self.left_arm.draw(&l_arm_model);
 
-        const r_leg_swing = Math.Mat4.rotationX(-walk_swing);
+        const r_leg_swing = Math.Mat4.rotation_x(-walk_swing);
         const r_hip = Math.Mat4.translation(-0.125, 0.75, 0);
         const r_leg_model = scale.mul(r_leg_swing).mul(r_hip).mul(rot_y).mul(world_t);
         self.right_leg.draw(&r_leg_model);
 
-        const l_leg_swing = Math.Mat4.rotationX(walk_swing);
+        const l_leg_swing = Math.Mat4.rotation_x(walk_swing);
         const l_hip = Math.Mat4.translation(0.125, 0.75, 0);
         const l_leg_model = scale.mul(l_leg_swing).mul(l_hip).mul(rot_y).mul(world_t);
         self.left_leg.draw(&l_leg_model);
@@ -292,7 +292,7 @@ pub fn draw_nametags(self: *SteveModel, local: *const Player, fonts: *const Font
         const half_h = TagHeight / 2.0;
         const half_w = half_h * aspect;
         const sca = Math.Mat4.scaling(half_w, half_h, 0.001);
-        const rot = Math.Mat4.rotationY(local.camera.yaw);
+        const rot = Math.Mat4.rotation_y(local.camera.yaw);
         const trans = Math.Mat4.translation(st.x, feet_y + TagYOffset, st.z);
         const model = sca.mul(rot).mul(trans);
         mesh.draw(&model);

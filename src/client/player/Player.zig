@@ -611,9 +611,9 @@ fn compute_view_bob(self: *const Player, alpha: f32) ViewBob {
     const vy = self.vel_y_prev + (self.vel_y - self.vel_y_prev) * alpha;
     const fall = -(vy + FallTiltGravityOffset) * FallTiltGain;
 
-    const tilt = Math.Mat4.rotationZ(roll_z)
-        .mul(Math.Mat4.rotationX(pitch_x))
-        .mul(Math.Mat4.rotationX(fall));
+    const tilt = Math.Mat4.rotation_z(roll_z)
+        .mul(Math.Mat4.rotation_x(pitch_x))
+        .mul(Math.Mat4.rotation_x(fall));
 
     return .{ .hor = hor, .ver = ver, .tilt = tilt };
 }

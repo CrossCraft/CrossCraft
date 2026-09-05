@@ -126,7 +126,7 @@ pub fn build(b: *std.Build) void {
 
     const client_name = "CrossCraft-Classic";
 
-    const client_exe = Aether.modules.addGame(ae_dep.builder, b, .{
+    const client_exe = Aether.modules.add_game(ae_dep.builder, b, .{
         .name = client_name,
         .root_source_file = b.path("src/client/main.zig"),
         .target = target,
@@ -137,7 +137,7 @@ pub fn build(b: *std.Build) void {
         client_exe.use_llvm = true;
         client_exe.use_lld = true;
     }
-    const client_root = Aether.modules.userRootModule(client_exe);
+    const client_root = Aether.modules.user_root_module(client_exe);
     client_root.addImport("core", core);
     client_root.addImport("capabilities", capabilities);
     if (client_root.import_table.get("pspsdk")) |sdk| capabilities.addImport("pspsdk", sdk);
@@ -162,7 +162,7 @@ pub fn build(b: *std.Build) void {
         }
         break :blk &.{.{ .path = archival_save_path, .name = "saves/origins.cw" }};
     } else &.{};
-    const packaged = Aether.packaging.exportArtifactWithOutputs(ae_dep.builder, b, client_exe, config, .{
+    const packaged = Aether.packaging.export_artifact_with_outputs(ae_dep.builder, b, client_exe, config, .{
         .title = "CrossCraft Classic",
         .output_dir = console_client_dir,
         .bundle_id = "com.iridescentrose.crosscraft-classic",
@@ -183,14 +183,14 @@ pub fn build(b: *std.Build) void {
         const server_overrides: Aether.config.Config.Overrides = .{
             .use_cwd = true,
         };
-        const server_exe = Aether.modules.addHeadless(ae_dep.builder, b, .{
+        const server_exe = Aether.modules.add_headless(ae_dep.builder, b, .{
             .name = "CrossCraft-Classic-Server",
             .root_source_file = b.path("src/server/main.zig"),
             .target = target,
             .optimize = optimize,
             .overrides = server_overrides,
         });
-        const server_root = Aether.modules.userRootModule(server_exe);
+        const server_root = Aether.modules.user_root_module(server_exe);
         server_root.addImport("core", core);
         server_root.addImport("capabilities", capabilities);
 
@@ -233,7 +233,7 @@ pub fn build(b: *std.Build) void {
     const run_client_step = b.step("run-game", "Run the app");
     if (policy.launch == .network_3ds) {
         const threedsx = packaged.nintendo_3dsx orelse unreachable;
-        const link_cmd = Aether.packaging.addLink3dsx(b, threedsx, .{
+        const link_cmd = Aether.packaging.add_link3dsx(b, threedsx, .{
             .address = b.option([]const u8, "3dslink-address", "3DS: target IP for 3dslink push (default: broadcast auto-discover)"),
             .retries = b.option(u32, "3dslink-retries", "3DS: broadcast-discovery retry count (default: Zitrus default)"),
         });
@@ -395,19 +395,19 @@ pub fn build(b: *std.Build) void {
     });
     worldgen_test_step.dependOn(&b.addRunArtifact(worldgen_test_exe).step);
 
-    const web_target = Aether.config.webTarget(b);
+    const web_target = Aether.config.web_target(b);
     const web_overrides: Aether.config.Config.Overrides = .{
         .gfx = .webgl,
         .use_cwd = true,
     };
-    const web_exe = Aether.modules.addGame(ae_dep.builder, b, .{
+    const web_exe = Aether.modules.add_game(ae_dep.builder, b, .{
         .name = "CrossCraft-Classic",
         .root_source_file = b.path("src/client/web_main.zig"),
         .target = web_target,
         .optimize = optimize,
         .overrides = web_overrides,
     });
-    const web_root = Aether.modules.userRootModule(web_exe);
+    const web_root = Aether.modules.user_root_module(web_exe);
     web_root.addImport("core", core);
     web_root.addImport("capabilities", capabilities);
     web_root.addImport("protocol", protocol);
@@ -420,7 +420,7 @@ pub fn build(b: *std.Build) void {
         &.{.{ .path = pack_zip, .name = "pack.zip" }}
     else
         &.{};
-    const web_install = Aether.packaging.addWebBundle(ae_dep.builder, b, web_exe, .{
+    const web_install = Aether.packaging.add_web_bundle(ae_dep.builder, b, web_exe, .{
         .web_resource_files = web_resource_files,
         .web_resource_manifest = if (pack_zip_path != null) "pack.zip\n" else "",
         .web_app_module = b.path("web/crosscraft.js"),
@@ -429,7 +429,7 @@ pub fn build(b: *std.Build) void {
     const web_step = b.step("web", "Build the browser-playable WASM site in zig-out/web");
     web_step.dependOn(&web_install.step);
 
-    const serve_web_cmd = Aether.packaging.addServeWebStep(
+    const serve_web_cmd = Aether.packaging.add_serve_web_step(
         ae_dep.builder,
         b,
         "crosscraft-serve-web",

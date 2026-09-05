@@ -39,7 +39,7 @@ export fn aether_wasm_init(width: u32, height: u32) bool {
         .width = width,
         .height = height,
         .title = aether_options.title,
-        .app_name = ae.AppOptions.resolveAppName(aether_options),
+        .app_name = ae.AppOptions.resolve_app_name(aether_options),
         .vsync = true,
         .resizable = true,
     }, &state) catch {
@@ -49,14 +49,14 @@ export fn aether_wasm_init(width: u32, height: u32) bool {
         env_map_initialized = false;
         return false;
     };
-    engine.beginRun();
+    engine.begin_run();
     initialized = true;
     return true;
 }
 
 export fn aether_wasm_frame() bool {
     if (!initialized) return false;
-    return engine.stepFrame() catch false;
+    return engine.step_frame() catch false;
 }
 
 export fn aether_wasm_deinit() void {

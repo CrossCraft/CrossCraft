@@ -3,7 +3,7 @@ const assert = std.debug.assert;
 const ae = @import("aether");
 const caps = @import("capabilities").ClientType(ae);
 const Math = ae.Math;
-const Aabb = @field(Math, "AABB");
+const Aabb = Math.Aabb;
 const Rendering = ae.Rendering;
 
 const Camera = @This();
@@ -47,17 +47,17 @@ pub fn apply(self: *Camera) void {
     const screen_h = Rendering.gfx.surface.get_height();
     const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
 
-    const proj = Math.Mat4.perspectiveFovRh(self.fov, aspect, near_plane, far_plane);
+    const proj = Math.Mat4.perspective_fov_rh(self.fov, aspect, near_plane, far_plane);
     Rendering.gfx.api.set_proj_matrix(&proj);
 
     const view = Math.Mat4.translation(-self.x, -self.y, -self.z)
-        .mul(Math.Mat4.rotationY(-self.yaw))
-        .mul(Math.Mat4.rotationX(self.pitch))
+        .mul(Math.Mat4.rotation_y(-self.yaw))
+        .mul(Math.Mat4.rotation_x(self.pitch))
         .mul(self.tilt);
     Rendering.gfx.api.set_view_matrix(&view);
 
     // Row-vector convention: V * P.
-    self.frustum = Math.Frustum.fromViewProjection(view.mul(proj));
+    self.frustum = Math.Frustum.from_view_projection(view.mul(proj));
 }
 
 /// Conservative AABB frustum test for a 16x16x16 section.
@@ -69,7 +69,7 @@ pub fn section_visible(self: *const Camera, cx: u32, sy: u32, cz: u32) bool {
         .min = Math.Vec3.new(wx, wy, wz),
         .max = Math.Vec3.new(wx + 16.0, wy + 16.0, wz + 16.0),
     };
-    return self.frustum.containsAABB(aabb);
+    return self.frustum.contains_aabb(aabb);
 }
 
 pub fn distance_sq(self: *const Camera, wx: f32, wy: f32, wz: f32) f32 {

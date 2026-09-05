@@ -216,16 +216,16 @@ pub fn draw(self: *BlockHand, terrain: *const Rendering.Texture, camera: *const 
 
     const sca = Math.Mat4.scaling(scale, scale, scale);
     const center = Math.Mat4.translation(-half, -half, -half);
-    const rot_x = Math.Mat4.rotationX(anim.pitch);
-    const rot_y = Math.Mat4.rotationY(Yaw + anim.yaw);
+    const rot_x = Math.Mat4.rotation_x(anim.pitch);
+    const rot_y = Math.Mat4.rotation_y(Yaw + anim.yaw);
     const trans = Math.Mat4.translation(
         BaseX + anim.dx - camera.bob_hor,
         BaseY + anim.dy + y_lift - camera.bob_ver,
         BaseZ + anim.dz - camera.bob_hor,
     );
 
-    const view_rx_inv = Math.Mat4.rotationX(-camera.pitch);
-    const view_ry_inv = Math.Mat4.rotationY(camera.yaw);
+    const view_rx_inv = Math.Mat4.rotation_x(-camera.pitch);
+    const view_ry_inv = Math.Mat4.rotation_y(camera.yaw);
     const view_t_inv = Math.Mat4.translation(camera.x, camera.y, camera.z);
 
     const model = sca
@@ -245,7 +245,7 @@ fn set_projection(fov: f32) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
-    const proj = Math.Mat4.perspectiveFovRh(fov, aspect, hand_near_plane, hand_far_plane);
+    const proj = Math.Mat4.perspective_fov_rh(fov, aspect, hand_near_plane, hand_far_plane);
     Rendering.gfx.api.set_proj_matrix(&proj);
 }
 

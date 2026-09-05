@@ -29,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
             .user = user_budget,
         },
         .title = aether_options.title,
-        .app_name = ae.AppOptions.resolveAppName(aether_options),
+        .app_name = ae.AppOptions.resolve_app_name(aether_options),
         .vsync = false,
         .resizable = false,
     }, &state);

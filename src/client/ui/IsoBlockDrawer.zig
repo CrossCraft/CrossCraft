@@ -55,7 +55,7 @@ pub fn init(
     terrain: *const Rendering.Texture,
     atlas: TextureAtlas,
 ) !IsoBlockDrawer {
-    const iso = Math.Mat4.rotationY(RotYRad).mul(Math.Mat4.rotationX(RotXRad));
+    const iso = Math.Mat4.rotation_y(RotYRad).mul(Math.Mat4.rotation_x(RotXRad));
     var self: IsoBlockDrawer = .{
         .terrain = terrain,
         .atlas = atlas,
