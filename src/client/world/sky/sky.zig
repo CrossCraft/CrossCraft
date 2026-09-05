@@ -87,7 +87,11 @@ pub fn draw_plane(self: *Sky, camera: *const Camera, submerged: ?collision.Liqui
         camera.y + SkyYOffset,
         camera.z - HalfSize,
     ));
+    // The camera-relative background can sit below the clouds. It must not
+    // occlude them or terrain as the camera changes height.
+    Rendering.gfx.api.set_depth_write(false);
     self.plane_mesh.draw(&m);
+    Rendering.gfx.api.set_depth_write(true);
 }
 
 pub fn draw_clouds(self: *Sky, _: *const Camera, submerged: ?collision.Liquid) void {
