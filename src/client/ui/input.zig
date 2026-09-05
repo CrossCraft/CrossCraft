@@ -1,5 +1,4 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
 const caps = @import("capabilities").ClientType(ae);
 const Rendering = ae.Rendering;
@@ -15,13 +14,7 @@ pub const InputProfile = enum {
     pad_only,
 };
 
-const RepeatDelay: f32 = 0.4;
-const RepeatRate: f32 = 0.08;
-
-pub const Repeat = struct {
-    direction: NavDir = .none,
-    timer: f32 = 0,
-};
+pub const Repeat = ae.Ui.InputAdapter;
 
 pub const UiInput = struct {
     input_system: ?*input.InputSystem = null,
@@ -31,6 +24,7 @@ pub const UiInput = struct {
     cursor_moved: bool = false,
     click_edge: bool = false,
     click_held: bool = false,
+    click_released: bool = false,
     nav: NavDir = .none,
     confirm_edge: bool = false,
     cancel_edge: bool = false,
@@ -41,15 +35,15 @@ pub const UiInput = struct {
     wheel_dy: i8 = 0,
     /// Draw-only UI replays must not process text events twice.
     text_events: bool = false,
-};
-
-const Prev = struct {
-    click: input.ButtonState = .released,
-    confirm: input.ButtonState = .released,
-    cancel: input.ButtonState = .released,
-    pause: input.ButtonState = .released,
-    title_exit: input.ButtonState = .released,
-    inventory: input.ButtonState = .released,
+    pub fn frame(self: UiInput) ae.Ui.InputAdapter.Frame {
+        return .{ .input_system = self.input_system, .pointer = if (self.cursor_available) .{ .x = self.cursor_x, .y = self.cursor_y } else null, .pointer_moved = self.cursor_moved, .pointer_pressed = self.click_edge, .pointer_down = self.click_held, .pointer_released = self.click_released, .direction = switch (self.nav) {
+            .none => null,
+            .up => .up,
+            .down => .down,
+            .left => .left,
+            .right => .right,
+        }, .confirm = self.confirm_edge, .cancel = self.cancel_edge, .wheel = self.wheel_dy };
+    }
 };
 
 const Actions = struct {
@@ -66,15 +60,11 @@ const Actions = struct {
 };
 
 const Runtime = struct {
-    prev: Prev = .{},
     /// Suppress held bindings when the menu becomes active.
     was_active: bool = false,
     set: ?input.ActionSetHandle = null,
     actions: ?Actions = null,
     profile: InputProfile = .pointer_and_pad,
-    prev_cursor_x: i16 = std.math.minInt(i16),
-    prev_cursor_y: i16 = std.math.minInt(i16),
-    wheel_acc: f32 = 0,
 };
 var runtime: Runtime = .{};
 
@@ -87,9 +77,6 @@ pub fn default_profile() InputProfile {
 
 pub fn set_profile(profile: InputProfile) void {
     runtime.profile = profile;
-    runtime.prev_cursor_x = std.math.minInt(i16);
-    runtime.prev_cursor_y = std.math.minInt(i16);
-    runtime.wheel_acc = 0;
 }
 
 pub fn profile_uses_pointer() bool {
@@ -207,150 +194,20 @@ fn refresh_active_context(sys: *input.InputSystem, previous: input.ActionSetHand
 
 /// `repeat` is owned by the active screen and persists across frames.
 pub fn build_frame(sys: *input.InputSystem, dt: f32, repeat: *Repeat) UiInput {
-    assert(dt >= 0);
     Buttons.note_input_mode(sys.last_input_mode());
-
-    const cursor = read_cursor(sys);
-    const moved = cursor.x != runtime.prev_cursor_x or cursor.y != runtime.prev_cursor_y;
-    runtime.prev_cursor_x = cursor.x;
-    runtime.prev_cursor_y = cursor.y;
-
     const actions = runtime.actions.?;
-    const click = sys.button(actions.click).current;
-    const confirm = sys.button(actions.confirm).current;
-    const cancel = sys.button(actions.cancel).current;
-    const pause = sys.button(actions.pause).current;
-    const title_exit = sys.button(actions.title_exit).current;
-    const inventory = sys.button(actions.inventory).current;
-
-    const active_now = is_menu_set_active(sys);
-
-    const fresh_activation = active_now and !runtime.was_active;
-    runtime.was_active = active_now;
-
-    const click_edge = !fresh_activation and rising_edge(runtime.prev.click, click);
-    const confirm_edge = !fresh_activation and rising_edge(runtime.prev.confirm, confirm);
-    const cancel_edge = !fresh_activation and rising_edge(runtime.prev.cancel, cancel);
-    const pause_edge = !fresh_activation and rising_edge(runtime.prev.pause, pause);
-    const title_exit_edge = !fresh_activation and rising_edge(runtime.prev.title_exit, title_exit);
-    const inventory_edge = !fresh_activation and rising_edge(runtime.prev.inventory, inventory);
-
-    runtime.prev.click = click;
-    runtime.prev.confirm = confirm;
-    runtime.prev.cancel = cancel;
-    runtime.prev.pause = pause;
-    runtime.prev.title_exit = title_exit;
-    runtime.prev.inventory = inventory;
-
-    const held = [4]bool{
-        sys.button(actions.up).down(),
-        sys.button(actions.down).down(),
-        sys.button(actions.left).down(),
-        sys.button(actions.right).down(),
-    };
-    const nav = resolve_nav(held, dt, repeat);
-
-    return .{
-        .input_system = sys,
-        .cursor_x = cursor.x,
-        .cursor_y = cursor.y,
-        .cursor_available = profile_uses_pointer(),
-        .cursor_moved = moved,
-        .click_edge = click_edge,
-        .click_held = !fresh_activation and click == .pressed,
-        .nav = nav,
-        .confirm_edge = confirm_edge,
-        .cancel_edge = cancel_edge,
-        .pause_edge = pause_edge,
-        .title_exit_edge = title_exit_edge,
-        .inventory_edge = inventory_edge,
-        .wheel_dy = if (profile_uses_pointer() and !fresh_activation) read_wheel_dy(sys) else 0,
-        .text_events = true,
-    };
-}
-
-/// Preserve fractional trackpad deltas between frames.
-fn read_wheel_dy(sys: *input.InputSystem) i8 {
-    for (sys.frame_events()) |ev| {
-        switch (ev.kind) {
-            .mouse_wheel => |w| runtime.wheel_acc += w.delta.y,
-            else => {},
-        }
-    }
-    if (runtime.wheel_acc == 0) return 0;
-    const whole: i32 = @intFromFloat(if (runtime.wheel_acc > 0) @floor(runtime.wheel_acc) else @ceil(runtime.wheel_acc));
-    if (whole == 0) return 0;
-    const emitted = std.math.clamp(whole, -127, 127);
-    runtime.wheel_acc -= @floatFromInt(emitted);
-    return @intCast(emitted);
-}
-
-fn rising_edge(prev: input.ButtonState, cur: input.ButtonState) bool {
-    return prev == .released and cur == .pressed;
-}
-
-fn is_menu_set_active(sys: *input.InputSystem) bool {
-    const top = sys.stack_top() orelse return false;
-    const set = runtime.set orelse return false;
-    return top.actions == set;
-}
-
-const Cursor = struct { x: i16, y: i16 };
-
-fn read_cursor(sys: *input.InputSystem) Cursor {
-    if (!profile_uses_pointer()) return .{ .x = -1, .y = -1 };
-
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const scale = Scaling.compute(screen_w, screen_h);
-
-    const p = sys.frame_pointer().position;
-    const lx: i32 = @intFromFloat(p.x / @as(f32, @floatFromInt(scale)));
-    const ly: i32 = @intFromFloat(p.y / @as(f32, @floatFromInt(scale)));
-    return .{
-        .x = @intCast(std.math.clamp(lx, std.math.minInt(i16), std.math.maxInt(i16))),
-        .y = @intCast(std.math.clamp(ly, std.math.minInt(i16), std.math.maxInt(i16))),
-    };
-}
-
-fn resolve_nav(held: [4]bool, dt: f32, repeat: *Repeat) NavDir {
-    const dirs = [_]NavDir{ .up, .down, .left, .right };
-    const active = for (held, dirs) |is_held, direction| {
-        if (is_held) break direction;
-    } else {
-        repeat.* = .{};
-        return .none;
-    };
-
-    if (active != repeat.direction) {
-        repeat.* = .{ .direction = active };
-        return active;
-    }
-    repeat.timer += dt;
-    if (repeat.timer < RepeatDelay) return .none;
-    repeat.timer -= RepeatRate;
-    return active;
-}
-
-test "navigation repeats while held and resets on release" {
-    var repeat: Repeat = .{};
-    const down = [4]bool{ false, true, false, false };
-    const released = [4]bool{ false, false, false, false };
-
-    try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0, &repeat));
-    try std.testing.expectEqual(NavDir.none, resolve_nav(down, RepeatDelay - 0.01, &repeat));
-    try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0.02, &repeat));
-    try std.testing.expectEqual(NavDir.none, resolve_nav(down, RepeatRate - 0.02, &repeat));
-    try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0.02, &repeat));
-
-    try std.testing.expectEqual(NavDir.none, resolve_nav(released, 0, &repeat));
-    try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0, &repeat));
-}
-
-test "navigation resolves opposing directions once per frame" {
-    var repeat: Repeat = .{};
-    try std.testing.expectEqual(NavDir.up, resolve_nav(.{ true, true, true, true }, 0, &repeat));
-    try std.testing.expectEqual(NavDir.down, resolve_nav(.{ false, true, true, true }, 0, &repeat));
-    try std.testing.expectEqual(NavDir.none, resolve_nav(.{ false, true, true, true }, RepeatDelay - 0.01, &repeat));
-    try std.testing.expectEqual(NavDir.up, resolve_nav(.{ true, true, true, true }, 0, &repeat));
+    const active = if (sys.stack_top()) |top| top.actions == runtime.set.? else false;
+    const fresh = active and !runtime.was_active;
+    runtime.was_active = active;
+    if (fresh) repeat.open();
+    repeat.options.repeat_interval = 0.08;
+    const surface = Rendering.surface_size();
+    const frame = repeat.poll(sys, .{ .pointer = actions.click, .confirm = actions.confirm, .cancel = actions.cancel, .up = actions.up, .down = actions.down, .left = actions.left, .right = actions.right }, dt, @floatFromInt(Scaling.compute(surface.width, surface.height)));
+    const pointer: ae.Ui.Point = frame.pointer orelse .{ .x = -1, .y = -1 };
+    return .{ .input_system = sys, .cursor_x = pointer.x, .cursor_y = pointer.y, .cursor_available = profile_uses_pointer() and frame.pointer != null, .cursor_moved = frame.pointer_moved, .click_edge = frame.pointer_pressed, .click_held = frame.pointer_down, .click_released = frame.pointer_released, .nav = if (frame.direction) |direction| switch (direction) {
+        .up => .up,
+        .down => .down,
+        .left => .left,
+        .right => .right,
+    } else .none, .confirm_edge = frame.confirm, .cancel_edge = frame.cancel, .pause_edge = !fresh and sys.button(actions.pause).pressed(), .title_exit_edge = !fresh and sys.button(actions.title_exit).pressed(), .inventory_edge = !fresh and sys.button(actions.inventory).pressed(), .wheel_dy = if (profile_uses_pointer() and !fresh) @intCast(std.math.clamp(frame.wheel, -127, 127)) else 0, .text_events = true };
 }

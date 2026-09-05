@@ -28,6 +28,7 @@ pub fn transition_here(engine: *Engine) void {
 
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
+prepared_ui: ?UiDrawList.Prepared = null,
 ui_state: UiState,
 ui_repeat: ui_input.Repeat,
 dirt: *const Rendering.Texture,
@@ -37,13 +38,14 @@ inited: bool,
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
+    self.prepared_ui = null;
 
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
     try ResourcePack.apply_tex_set(&.{ .dirt, .font, .gui, .glyphs });
 
     self.batcher = try SpriteBatcher.init(render_alloc);
-    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
+    self.font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
     self.ui_repeat = .{};
     self.ui_state = .{};
 
@@ -65,6 +67,9 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
     _ = engine.input.pop_context() catch {};
+    if (self.prepared_ui) |*prepared| prepared.deinit();
+    self.prepared_ui = null;
+    self.ui_state.deinit();
     self.font_batcher.deinit();
     self.batcher.deinit();
     self.inited = false;
@@ -97,7 +102,7 @@ fn prepare_batches(self: *@This()) !void {
     var ui = self.begin_ui(&list, &none);
     _ = DisconnectScreen.run(&ui, Session.disconnect_reason());
     ui.end();
-    list.flush_into(&self.batcher, &self.font_batcher, null);
+    try list.prepare_into(&self.prepared_ui, &self.font_batcher, null);
 
     try self.batcher.update();
     try self.font_batcher.update();
@@ -107,6 +112,8 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
     var self = Util.ctx_to_self(@This(), ctx);
     self.batcher.draw();
     self.font_batcher.draw();
+    Rendering.gfx.api.clear_depth();
+    if (self.prepared_ui) |*prepared| prepared.draw();
 }
 
 fn begin_ui(self: *@This(), list: *UiDrawList, in: *const ui_input.UiInput) Ui {

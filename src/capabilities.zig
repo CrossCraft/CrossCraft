@@ -5,15 +5,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const execution = struct {
-    pub const background_workers = builtin.os.tag != .wasi;
-    pub const worker_inherits_cwd = builtin.os.tag != .psp;
-};
-
-pub const filesystem = struct {
-    pub const rename_replaces_destination = builtin.os.tag != .psp;
-};
-
 pub const math = struct {
     // Avoid compiler_rt floor/ceil calls on MIPS for finite worldgen values.
     pub const integer_float_rounding = builtin.cpu.arch == .mipsel or builtin.cpu.arch == .mips;
@@ -21,6 +12,11 @@ pub const math = struct {
 
 pub const process = struct {
     pub const console_control_handler = builtin.os.tag == .windows;
+};
+
+/// Evaluated for the build host when imported by the resource pack tool.
+pub const resource_pack = struct {
+    pub const windows_paths = builtin.os.tag == .windows;
 };
 
 const MB: u32 = 1024 * 1024;
@@ -161,8 +157,6 @@ fn render_remainder(
 /// std-only consumers and builds for other targets do not need console SDKs.
 pub fn ClientType(comptime ae: type) type {
     return struct {
-        const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
-
         pub const defaults = struct {
             pub const render_distance: u8 = if (ae.platform == .psp) 4 else 8;
             pub const fancy_leaves = ae.platform != .psp;
@@ -176,6 +170,7 @@ pub fn ClientType(comptime ae: type) type {
         };
 
         pub const render = struct {
+            pub const headless = ae.gfx == .headless;
             pub const rain_splashes_per_second: f32 = if (ae.platform == .psp) 150.0 else 500.0;
             pub const selection_protrusion: i32 = if (ae.platform == .psp) 240 else 80;
             pub const near_plane: f32 = if (ae.platform == .psp) 0.3275 else 0.1;
@@ -255,13 +250,9 @@ pub fn ClientType(comptime ae: type) type {
         pub const saves = struct {
             pub const download = ae.platform == .wasm;
             pub const legacy_migration = ae.platform != .wasm;
-            const host = if (download) struct {
-                extern "aether_host" fn aether_crosscraft_download_file(path_ptr: [*]const u8, path_len: usize) bool;
-            } else struct {};
-
             pub fn download_file(path: []const u8) bool {
-                if (comptime download) return host.aether_crosscraft_download_file(path.ptr, path.len);
-                return false;
+                ae.FileExport.download(path, .{ .filename = std.fs.path.basename(path) }) catch return false;
+                return true;
             }
         };
 
@@ -282,12 +273,11 @@ pub fn ClientType(comptime ae: type) type {
             };
 
             pub fn detect_profile() MemoryProfile {
-                return switch (ae.platform) {
-                    .psp => switch (sdk.model.current()) {
-                        .phat => psp_phat_profile,
-                        .slim => psp_slim_profile,
-                    },
-                    .nintendo_3ds => if (ae.N3ds.is_new()) new_3ds_profile else old_3ds_profile,
+                return switch (ae.System.info().hardware) {
+                    .psp_phat => psp_phat_profile,
+                    .psp_slim => psp_slim_profile,
+                    .old_3ds => old_3ds_profile,
+                    .new_3ds => new_3ds_profile,
                     else => initial_profile,
                 };
             }
@@ -296,36 +286,40 @@ pub fn ClientType(comptime ae: type) type {
         pub const networking = struct {
             pub const multiplayer = ae.platform != .wasm;
 
+            var session: ?ae.Network.Session = null;
+            var connect_priority: ?ae.Util.PriorityScope = null;
+
             pub fn prepare() bool {
-                return if (ae.platform == .psp) ae.Psp.show_net_dialog() else true;
+                if (session != null) return true;
+                session = ae.Network.Session.prepare() catch |err| {
+                    std.log.scoped(.game).warn("Network preparation failed: {}", .{err});
+                    return false;
+                };
+                return true;
             }
 
             pub fn release() void {
-                if (ae.platform == .psp) {
-                    sdk.extra.net.disconnect();
-                    sdk.extra.net.deinit();
-                }
+                if (session) |*active| active.release();
+                session = null;
             }
 
             pub fn configure_stream(stream: std.Io.net.Stream) void {
-                if (ae.platform == .psp) {
-                    sdk.extra.net.disableNagle(@intCast(stream.socket.handle)) catch |err|
-                        std.log.scoped(.game).warn("TCP_NODELAY failed: {}", .{err});
-                }
+                // Retain CrossCraft's PSP low-latency transport policy.
+                if (ae.platform != .psp) return;
+                if (session) |*active| active.configure_stream(stream, .{ .no_delay = true }) catch |err|
+                    std.log.scoped(.game).warn("TCP_NODELAY failed: {}", .{err});
             }
 
-            /// Boost the main thread during connection setup, then restore its
-            /// gameplay priority when the caller leaves the setup scope.
             pub fn begin_connect_setup() !void {
-                if (ae.platform == .psp) {
-                    try sdk.kernel.change_thread_priority(sdk.kernel.get_thread_id(), sdk.kernel.get_thread_current_priority() - 10);
-                }
+                if (ae.platform == .psp) connect_priority = try ae.Util.PriorityScope.enter_relative(-10);
             }
 
             pub fn end_connect_setup() void {
-                if (ae.platform == .psp) {
-                    sdk.kernel.change_thread_priority(sdk.kernel.get_thread_id(), 64) catch {};
-                }
+                if (connect_priority) |*scope| scope.restore() catch |err| {
+                    std.log.scoped(.game).err("Restore connection priority failed: {}", .{err});
+                    return;
+                };
+                connect_priority = null;
             }
         };
     };
@@ -395,6 +389,16 @@ fn TestEngineType(comptime target_platform: TestPlatform, comptime headless: boo
     return struct {
         pub const platform = target_platform;
         pub const gfx: enum { headless, rendered } = if (headless) .headless else .rendered;
+        pub const System = struct {
+            pub fn info() struct { hardware: HardwareClass } {
+                return .{ .hardware = switch (target_platform) {
+                    .psp => .psp_phat,
+                    .nintendo_3ds => if (N3ds.new_hardware) .new_3ds else .old_3ds,
+                    .nintendo_switch => .nintendo_switch,
+                    else => .desktop,
+                } };
+            }
+        };
         pub const N3ds = struct {
             pub var new_hardware = false;
             pub fn is_new() bool {

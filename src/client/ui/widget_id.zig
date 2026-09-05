@@ -1,11 +1,8 @@
-//! Screen-local opaque widget identifiers.
-
-pub const WidgetId = enum(u16) { _ };
-
-pub fn from(comptime W: type, w: W) WidgetId {
-    return @enumFromInt(@intFromEnum(w));
+//! Screen-local IDs use Aether's stable widget identifier type.
+pub const WidgetId = @import("aether").Ui.Context.WidgetId;
+pub fn from(comptime W: type, value: W) WidgetId {
+    return @intFromEnum(value);
 }
-
-pub fn raw(value_u16: u16) WidgetId {
-    return @enumFromInt(value_u16);
+pub fn raw(value: u16) WidgetId {
+    return value;
 }

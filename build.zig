@@ -16,6 +16,7 @@ pub fn build(b: *std.Build) void {
         ".",
         "src/unit.zig",
         "src/client/web_main.zig",
+        "src/engine_services.zig",
     };
 
     const run_lint = b.addRunArtifact(lint_dep.artifact("lint"));
@@ -90,21 +91,36 @@ pub fn build(b: *std.Build) void {
 
     const console_client_dir = policy.client_dir;
 
+    const ae_dep = b.dependency("engine", .{
+        .target = target,
+        .optimize = optimize,
+        .@"nintendo-switch" = overrides.nintendo_switch orelse false,
+        .@"mesh-indexing" = overrides.mesh_indexing,
+    });
+
     // CI can skip packing when the LFS-backed resources are unavailable.
     const pack_zip_path: ?std.Build.LazyPath = if (skip_pack) null else blk: {
         const resources = b.dependency("resources", .{});
 
         const pack_tool = b.addExecutable(.{
-            .name = "pack_zip",
+            .name = "crosscraft-pack-zip",
             .root_module = b.createModule(.{
                 .root_source_file = b.path("tools/pack_zip.zig"),
                 .target = b.graph.host,
+                .optimize = .ReleaseSafe,
+                .imports = &.{.{ .name = "capabilities", .module = capabilities }},
             }),
         });
-
-        var pack_cmd = b.addRunArtifact(pack_tool);
-        pack_cmd.addDirectoryArg(resources.path("default"));
-        break :blk pack_cmd.addOutputFileArg("pack.zip");
+        // Snapshot the inputs so edits, additions and removals invalidate the
+        // pack. A directory argument alone only caches the directory's path.
+        const snapshot = b.addWriteFiles();
+        const directory = snapshot.addCopyDirectory(resources.path("default"), "assets", .{});
+        const pack_cmd = b.addRunArtifact(pack_tool);
+        pack_cmd.addDirectoryArg(directory);
+        const output = pack_cmd.addOutputFileArg("pack.zip");
+        // Stored WAVs let the game's audio voices stream without DEFLATE windows.
+        pack_cmd.addArg("--store-extension=.wav");
+        break :blk output;
     };
     const archival_save_path = b.path("saves/origins.cw");
 
@@ -116,13 +132,6 @@ pub fn build(b: *std.Build) void {
         const path = if (console_client_dir) |dir| b.fmt("bin/{s}/pack.zip", .{dir}) else "bin/pack.zip";
         break :blk &b.addInstallFile(pack_zip, path).step;
     } else null;
-
-    const ae_dep = b.dependency("engine", .{
-        .target = target,
-        .optimize = optimize,
-        .@"nintendo-switch" = overrides.nintendo_switch orelse false,
-        .@"mesh-indexing" = overrides.mesh_indexing,
-    });
 
     const client_name = "CrossCraft-Classic";
 
@@ -140,8 +149,8 @@ pub fn build(b: *std.Build) void {
     const client_root = Aether.modules.user_root_module(client_exe);
     client_root.addImport("core", core);
     client_root.addImport("capabilities", capabilities);
-    if (client_root.import_table.get("pspsdk")) |sdk| capabilities.addImport("pspsdk", sdk);
     client_root.addImport("protocol", protocol);
+    add_engine_services(b, client_root, core);
 
     if (should_embed) {
         client_root.addAnonymousImport("default_pack", .{
@@ -193,6 +202,7 @@ pub fn build(b: *std.Build) void {
         const server_root = Aether.modules.user_root_module(server_exe);
         server_root.addImport("core", core);
         server_root.addImport("capabilities", capabilities);
+        add_engine_services(b, server_root, core);
 
         const build_server_step = b.step("server", "Build the server");
         build_server_step.dependOn(lint_step);
@@ -294,6 +304,17 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(lint_step);
 
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &.{};
+    const pack_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/pack_zip.zig"),
+            .target = b.graph.host,
+            .imports = &.{.{ .name = "capabilities", .module = capabilities }},
+        }),
+        .filters = test_filters,
+    });
+    const run_pack_tests = b.addRunArtifact(pack_tests);
+    test_step.dependOn(&run_pack_tests.step);
+    b.step("test-pack", "Verify CrossCraft resource pack creation").dependOn(&run_pack_tests.step);
     const capability_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/capabilities.zig"),
@@ -317,6 +338,7 @@ pub fn build(b: *std.Build) void {
             root.addImport("protocol", protocol);
             root.addImport("capabilities", capabilities);
             root.addImport("core", core);
+            root.addImport("engine_services", client_root.import_table.get("engine_services").?);
             break :unit_tests_root root;
         },
         .filters = test_filters,
@@ -329,7 +351,18 @@ pub fn build(b: *std.Build) void {
     }
     const run_unit_tests = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_unit_tests.step);
-    b.step("test-hosts", "Run client and server host tests").dependOn(&run_unit_tests.step);
+    const service_tests = b.addTest(.{
+        .root_module = client_root.import_table.get("engine_services").?,
+        .filters = test_filters,
+        .use_llvm = unit_tests.use_llvm,
+        .use_lld = unit_tests.use_lld,
+    });
+    const run_service_tests = b.addRunArtifact(service_tests);
+    test_step.dependOn(&run_service_tests.step);
+    const hosts_step = b.step("test-hosts", "Run client and server host tests");
+    hosts_step.dependOn(&run_unit_tests.step);
+    hosts_step.dependOn(&run_service_tests.step);
+    b.step("test-services", "Verify injected Aether job and storage adapters").dependOn(&run_service_tests.step);
 
     const core_tests = b.addTest(.{
         .root_module = core_tests_root: {
@@ -411,6 +444,7 @@ pub fn build(b: *std.Build) void {
     web_root.addImport("core", core);
     web_root.addImport("capabilities", capabilities);
     web_root.addImport("protocol", protocol);
+    add_engine_services(b, web_root, core);
 
     const web_build_options = b.addOptions();
     web_build_options.addOption(bool, "embed_pack", false);
@@ -423,7 +457,6 @@ pub fn build(b: *std.Build) void {
     const web_install = Aether.packaging.add_web_bundle(ae_dep.builder, b, web_exe, .{
         .web_resource_files = web_resource_files,
         .web_resource_manifest = if (pack_zip_path != null) "pack.zip\n" else "",
-        .web_app_module = b.path("web/crosscraft.js"),
     });
 
     const web_step = b.step("web", "Build the browser-playable WASM site in zig-out/web");
@@ -440,4 +473,16 @@ pub fn build(b: *std.Build) void {
 
     const serve_web_step = b.step("serve-web", "Serve zig-out/web with WASM MIME and COOP/COEP headers");
     serve_web_step.dependOn(&serve_web_cmd.step);
+}
+
+fn add_engine_services(b: *std.Build, root: *std.Build.Module, core: *std.Build.Module) void {
+    root.addImport("engine_services", b.createModule(.{
+        .root_source_file = b.path("src/engine_services.zig"),
+        .target = root.resolved_target.?,
+        .optimize = root.optimize.?,
+        .imports = &.{
+            .{ .name = "aether", .module = root.import_table.get("aether").? },
+            .{ .name = "core", .module = core },
+        },
+    }));
 }

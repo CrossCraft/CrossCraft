@@ -7,7 +7,7 @@ const Rendering = ae.Rendering;
 const core = @import("core");
 const World = core.World;
 
-const Vertex = @import("aether").Rendering.Vertex;
+const effect_positions = @import("../graphics/effect_positions.zig");
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const face_mod = @import("chunk/face.zig");
@@ -22,10 +22,7 @@ const GravityLeaves: f32 = 10.0;
 const HalfSize: f32 = 0.06;
 const SubtileDiv: i16 = 4;
 
-// Encode positions relative to the mesh origin at 128 vertex units per block,
-// then restore world units with a 256x model scale and origin translation.
-const PosScale: f32 = 128.0;
-const ModelScale: f32 = 256.0;
+const PosScale = effect_positions.encoding.units_per_world_unit;
 
 const Particle = struct {
     px: f32,
@@ -51,33 +48,33 @@ fn gravity_for(block_id: Block) f32 {
 
 const ParticleSystem = @This();
 
-mesh_data: Rendering.MeshDataType(Vertex),
-mesh: Rendering.MeshType(Vertex),
-mesh_origin: Math.Vec3,
+billboards: Rendering.BillboardBatcher,
 atlas: TextureAtlas,
 particles: [MaxParticles]Particle,
 count: u16,
 rng: std.Random.DefaultPrng,
-allocator: std.mem.Allocator,
 
 pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !ParticleSystem {
-    var self: ParticleSystem = .{
-        .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
-        .mesh = try Rendering.MeshType(Vertex).init(&.{}),
-        .mesh_origin = Math.Vec3.zero(),
+    var billboards = try Rendering.BillboardBatcher.init(allocator, .{
+        .capacity = MaxParticles,
+        .units_per_world_unit = PosScale,
+        .normalization = effect_positions.encoding.normalization,
+    });
+    errdefer billboards.deinit();
+
+    // Preserve eager GPU allocation: updates remain infallible after init.
+    billboards.gpu_mesh = try Rendering.BillboardBatcher.Mesh.init(&.{});
+    return .{
+        .billboards = billboards,
         .atlas = atlas,
         .particles = undefined,
         .count = 0,
         .rng = std.Random.DefaultPrng.init(0xC0FFEE),
-        .allocator = allocator,
     };
-    try self.mesh_data.ensure_quad_capacity(allocator, MaxParticles);
-    return self;
 }
 
 pub fn deinit(self: *ParticleSystem) void {
-    self.mesh.deinit();
-    self.mesh_data.deinit(self.allocator);
+    self.billboards.deinit();
     self.* = undefined;
 }
 
@@ -136,7 +133,7 @@ pub fn spawn_break(self: *ParticleSystem, block_id: Block, bx: u16, by: u16, bz:
 pub fn update(self: *ParticleSystem, dt: f32, camera: *const Camera) void {
     self.update_particles(dt);
     self.rebuild_mesh(camera);
-    if (self.mesh_data.vertices.items.len != 0) self.mesh.update(&self.mesh_data);
+    if (self.billboards.count != 0) self.billboards.upload() catch unreachable;
 }
 
 fn update_particles(self: *ParticleSystem, dt: f32) void {
@@ -238,79 +235,38 @@ fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
 }
 
 pub fn draw(self: *ParticleSystem) void {
-    if (self.mesh_data.vertices.items.len == 0) return;
-    const m = Math.Mat4.scaling(ModelScale, ModelScale, ModelScale)
-        .mul(Math.Mat4.translation(self.mesh_origin.x, self.mesh_origin.y, self.mesh_origin.z));
-    self.mesh.draw(&m);
+    self.billboards.draw();
 }
 
 fn rebuild_mesh(self: *ParticleSystem, camera: *const Camera) void {
-    self.mesh_data.clear_retaining_capacity();
-    self.mesh_origin = Math.Vec3.new(@floor(camera.x), @floor(camera.y), @floor(camera.z));
-    if (self.count == 0) return;
-
-    // Yaw-only right vector prevents roll; pitched up vector faces the camera.
-    const cy = @cos(camera.yaw);
-    const sy = @sin(camera.yaw);
-    const cp = @cos(camera.pitch);
-    const sp = @sin(camera.pitch);
-    const rx = cy * HalfSize;
-    const rz = -sy * HalfSize;
-    const upx = -sy * sp * HalfSize;
-    const upy = cp * HalfSize;
-    const upz = -cy * sp * HalfSize;
-
-    var i: u16 = 0;
-    while (i < self.count) : (i += 1) {
-        emit_particle(&self.mesh_data, &self.particles[i], self.mesh_origin, rx, rz, upx, upy, upz);
-    }
+    const origin = Math.Vec3.new(@floor(camera.x), @floor(camera.y), @floor(camera.z));
+    self.billboards.begin(origin, camera.billboard_basis()) catch unreachable;
+    for (self.particles[0..self.count]) |*particle| self.emit_particle(particle);
 }
 
-fn emit_particle(
-    mesh: *Rendering.MeshDataType(Vertex),
-    p: *const Particle,
-    origin: Math.Vec3,
-    rx: f32,
-    rz: f32,
-    upx: f32,
-    upy: f32,
-    upz: f32,
-) void {
-    const px = p.px - origin.x;
-    const py = p.py - origin.y;
-    const pz = p.pz - origin.z;
-    // Cull distant geometry without ending the particle's simulation.
-    if (!encodable(px) or !encodable(py) or !encodable(pz)) return;
+fn emit_particle(self: *ParticleSystem, particle: *const Particle) void {
+    const position = Math.Vec3.new(particle.px, particle.py, particle.pz);
+    const local = position.sub(self.billboards.origin);
+    // Keep the existing conservative range cull without ending simulation.
+    if (!encodable(local.x) or !encodable(local.y) or !encodable(local.z)) return;
 
     const base: u32 = 0xFF999999;
-    const color: u32 = if (point_sunlit(p.px, p.py, p.pz)) base else face_mod.apply_shadow(base);
-
-    const v0 = make_vertex(px - rx - upx, py - upy, pz - rz - upz, p.u0, p.v1, color);
-    const v1 = make_vertex(px + rx - upx, py - upy, pz + rz - upz, p.u1, p.v1, color);
-    const v2 = make_vertex(px + rx + upx, py + upy, pz + rz + upz, p.u1, p.v0, color);
-    const v3 = make_vertex(px - rx + upx, py + upy, pz - rz + upz, p.u0, p.v0, color);
-
-    mesh.add_quad_assume_capacity(v0, v1, v2, v3);
-}
-
-fn make_vertex(wx: f32, wy: f32, wz: f32, u: i16, v: i16, color: u32) Vertex {
-    return .{
-        .pos = .{ encode(wx), encode(wy), encode(wz) },
-        .uv = .{ u, v },
+    const color = if (point_sunlit(particle.px, particle.py, particle.pz)) base else face_mod.apply_shadow(base);
+    self.billboards.add(.{
+        .position = position,
+        .size = .{ HalfSize * 2, HalfSize * 2 },
+        .uv = .{ .min = .{ particle.u0, particle.v0 }, .max = .{ particle.u1, particle.v1 } },
         .color = color,
+    }) catch |err| switch (err) {
+        error.PositionOutOfRange => return,
+        else => unreachable,
     };
 }
 
 fn encodable(local: f32) bool {
     const margin = 2.0 * HalfSize * PosScale;
-    const scaled = @round(local * PosScale);
+    const scaled: f32 = @floatFromInt(effect_positions.encoding.encode_component(local) catch return false);
     return scaled >= -32768.0 + margin and scaled <= 32767.0 - margin;
-}
-
-fn encode(local: f32) i16 {
-    assert(std.math.isFinite(local));
-    assert(@round(local * PosScale) >= -32768.0 and @round(local * PosScale) <= 32767.0);
-    return @intFromFloat(@round(local * PosScale));
 }
 
 test "particles survive and render across 512 block worlds" {
@@ -320,18 +276,17 @@ test "particles survive and render across 512 block worlds" {
 
     // Exercise CPU simulation and mesh generation without a graphics context.
     var particles: ParticleSystem = .{
-        .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
-        .mesh = undefined,
-        .mesh_origin = Math.Vec3.zero(),
-        .atlas = TextureAtlas.init(16, 16),
+        .billboards = try Rendering.BillboardBatcher.init(allocator, .{
+            .capacity = MaxParticles,
+            .units_per_world_unit = PosScale,
+            .normalization = effect_positions.encoding.normalization,
+        }),
+        .atlas = TextureAtlas.init_grid(16, 16),
         .particles = undefined,
         .count = 0,
         .rng = std.Random.DefaultPrng.init(0xC0FFEE),
-        .allocator = allocator,
     };
-    defer particles.mesh_data.deinit(allocator);
-
-    try particles.mesh_data.ensure_quad_capacity(allocator, MaxParticles);
+    defer particles.billboards.deinit();
 
     const positions = [_][2]u16{ .{ 0, 0 }, .{ 255, 255 }, .{ 256, 32 }, .{ 32, 256 }, .{ 256, 256 }, .{ 511, 511 } };
     const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
@@ -349,15 +304,15 @@ test "particles survive and render across 512 block worlds" {
         for ([_]f32{ 0.0, 1.75, -2.5 }) |camera_offset| {
             var camera = Camera.init(x + camera_offset, 65.5, z - camera_offset);
             particles.rebuild_mesh(&camera);
-            try std.testing.expectEqual(PerBreak * verts_per_quad, particles.mesh_data.vertices.items.len);
+            try std.testing.expectEqual(PerBreak * verts_per_quad, particles.billboards.data.vertices.items.len);
             for (particles.particles[0..particles.count], 0..) |p, i| {
-                const vertices = particles.mesh_data.vertices.items[i * verts_per_quad ..][0..3];
+                const vertices = particles.billboards.data.vertices.items[i * verts_per_quad ..][0..3];
                 const expected = [_][3]f32{
                     .{ p.px - HalfSize, p.py - HalfSize, p.pz },
                     .{ p.px + HalfSize, p.py - HalfSize, p.pz },
                     .{ p.px + HalfSize, p.py + HalfSize, p.pz },
                 };
-                const origin = particles.mesh_origin;
+                const origin = particles.billboards.origin;
                 for (vertices, expected) |vertex, corner| {
                     for (vertex.pos, corner, [3]f32{ origin.x, origin.y, origin.z }) |encoded, world, offset| {
                         const decoded = @as(f32, @floatFromInt(encoded)) / PosScale + offset;
@@ -370,15 +325,15 @@ test "particles survive and render across 512 block worlds" {
 
         var camera = Camera.init(x + 512.0, 65.5, z);
         particles.rebuild_mesh(&camera);
-        try std.testing.expectEqual(0, particles.mesh_data.vertices.items.len);
+        try std.testing.expectEqual(0, particles.billboards.data.vertices.items.len);
         try std.testing.expectEqual(PerBreak, particles.count);
         camera.x = x;
         particles.rebuild_mesh(&camera);
-        try std.testing.expectEqual(PerBreak * verts_per_quad, particles.mesh_data.vertices.items.len);
+        try std.testing.expectEqual(PerBreak * verts_per_quad, particles.billboards.data.vertices.items.len);
 
         particles.update_particles(LifetimeMax);
         particles.rebuild_mesh(&camera);
         try std.testing.expectEqual(0, particles.count);
-        try std.testing.expectEqual(0, particles.mesh_data.vertices.items.len);
+        try std.testing.expectEqual(0, particles.billboards.data.vertices.items.len);
     }
 }

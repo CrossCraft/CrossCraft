@@ -1,48 +1,49 @@
-// One process-wide worker thread runs gzip jobs out of a lock-free LIFO
-// queue. The host spawns `worker_main`; jobs run serially because the shared
-// compressor is not reentrant.
-
+//! Game-owned reusable gzip context and save/transfer requests. Hosts inject
+//! Aether's serial executor; std-only tools execute submitted requests inline.
 const std = @import("std");
 const assert = std.debug.assert;
-const caps = @import("capabilities");
 const flate = std.compress.flate;
 
 pub const Job = struct {
-    next: ?*Job = null,
     state: std.atomic.Value(State) = .init(.pending),
     err: ?anyerror = null,
     run: *const fn (*Job) anyerror!void,
-
     const State = enum(u32) { pending, done };
 
     pub fn is_done(self: *const Job) bool {
         return self.state.load(.acquire) == .done;
     }
-
-    /// Claim a completed reusable job for another submission.
     pub fn try_begin(self: *Job) bool {
         return self.state.cmpxchgStrong(.done, .pending, .acq_rel, .acquire) == null;
     }
-
     pub fn wait(self: *Job, io: std.Io) void {
-        while (self.state.load(.acquire) == .pending) {
-            io.futexWaitUncancelable(State, &self.state.raw, .pending);
-        }
-    }
+        // The request stays borrowed until completion. Preserve cancellation
+        // for the caller's next cancelable operation after that storage is safe.
+        const previous_protection = io.swapCancelProtection(.blocked);
+        defer _ = io.swapCancelProtection(previous_protection);
 
-    pub fn mark_done(self: *Job, io: std.Io) void {
+        while (!self.is_done()) std.Io.sleep(io, .fromMilliseconds(1), .real) catch unreachable;
+    }
+    pub fn mark_done(self: *Job) void {
         assert(!self.is_done());
+        // No access after this store: the requester may immediately free it.
         self.state.store(.done, .release);
-        io.futexWake(State, &self.state.raw, std.math.maxInt(u32));
     }
 };
 
+pub const Scheduler = struct {
+    init: *const fn (std.mem.Allocator, std.Io) anyerror!*anyopaque,
+    deinit: *const fn (*anyopaque) void,
+    start: *const fn (*anyopaque, [:0]const u8) anyerror!void,
+    submit: *const fn (*anyopaque, *Job) anyerror!void,
+    cancel: *const fn (*anyopaque, *Job) bool,
+};
+/// Install before initialization; do not replace while requests are alive.
+pub var scheduler: ?Scheduler = null;
+var scheduler_context: ?*anyopaque = null;
 var backing_allocator: std.mem.Allocator = undefined;
 var compress_buf: *[flate.max_window_len]u8 = undefined;
 pub var compressor: *flate.Compress = undefined;
-var queue_head: std.atomic.Value(?*Job) = .init(null);
-var worker_exit: std.atomic.Value(bool) = .init(false);
-var stored_io: std.Io = undefined;
 
 // Resolve the compress writer vtable at comptime so the runtime reset
 // path doesn't have to call into private flate internals.
@@ -60,13 +61,13 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io) !void {
     errdefer alloc.destroy(compress_buf);
     compressor = try alloc.create(flate.Compress);
     compressor.* = undefined;
-    queue_head = .init(null);
-    worker_exit = .init(false);
-    stored_io = io;
+    errdefer alloc.destroy(compressor);
+    scheduler_context = if (scheduler) |host| try host.init(alloc, io) else null;
 }
 
 pub fn deinit() void {
-    assert(queue_head.load(.acquire) == null);
+    if (scheduler_context) |context| scheduler.?.deinit(context);
+    scheduler_context = null;
     backing_allocator.destroy(compressor);
     backing_allocator.destroy(compress_buf);
 }
@@ -112,143 +113,93 @@ pub fn reset(output: *std.Io.Writer) !void {
     compressor.opts = .fastest;
 }
 
-/// Push a pending job onto the queue. Caller must keep it alive until done.
+/// Start delayed background execution after state initialization succeeds.
+pub fn start(name: [:0]const u8) !void {
+    if (scheduler_context) |context| try scheduler.?.start(context, name);
+}
+
+/// Admission failure completes the request with an error, so save/transfer
+/// owners can always wait before releasing their borrowed data.
 pub fn submit(job: *Job) void {
     assert(!job.is_done());
-    while (true) {
-        const head = queue_head.load(.monotonic);
-        assert(head != job); // Re-submission must not create a queue cycle.
-        job.next = head;
-        if (queue_head.cmpxchgWeak(head, job, .release, .monotonic) == null) return;
-    }
-}
-
-/// Cancel during init failure, before any worker can be running.
-pub fn cancel_pending_before_worker(job: *Job) bool {
-    var node = queue_head.swap(null, .acquire);
-    var restore_head: ?*Job = null;
-    var canceled = false;
-
-    while (node) |current| {
-        const next = current.next;
-        if (current == job) {
-            current.next = null;
-            current.mark_done(stored_io);
-            canceled = true;
-        } else {
-            current.next = restore_head;
-            restore_head = current;
-        }
-        node = next;
-    }
-
-    queue_head.store(restore_head, .release);
-    return canceled;
-}
-
-pub fn signal_exit() void {
-    worker_exit.store(true, .release);
-}
-
-fn drain_once() bool {
-    const head = queue_head.swap(null, .acquire) orelse return false;
-    var node: ?*Job = head;
-    while (node) |j| {
-        const next = j.next;
-        assert(next != j);
-        assert(!j.is_done());
-        j.run(j) catch |e| {
-            j.err = e;
+    if (scheduler_context) |context| {
+        scheduler.?.submit(context, job) catch |err| {
+            std.log.scoped(.world).err("compression submission failed: {}", .{err});
+            job.err = err;
+            job.mark_done();
         };
-        j.mark_done(stored_io);
-        node = next;
+    } else {
+        job.run(job) catch |err| {
+            job.err = err;
+        };
+        job.mark_done();
     }
-    return true;
 }
 
-test "reusable job admits one submission at a time" {
-    const noop = struct {
-        fn run(_: *Job) anyerror!void {}
-    }.run;
-    var job: Job = .{ .state = .init(.done), .run = noop };
-
-    try std.testing.expect(job.is_done());
-    try std.testing.expect(job.try_begin());
-    try std.testing.expect(!job.try_begin());
-    try std.testing.expect(!job.is_done());
-
-    job.mark_done(std.testing.io);
-    try std.testing.expect(job.is_done());
-    try std.testing.expect(job.try_begin());
-    job.mark_done(std.testing.io);
-    job.wait(std.testing.io);
+pub fn cancel_pending_before_worker(job: *Job) bool {
+    if (scheduler_context) |context| return scheduler.?.cancel(context, job);
+    return false;
 }
 
-test "queued jobs publish errors and queued cancellation completes" {
-    const ProbeJob = struct {
-        base: Job,
-        runs: *u32,
-        fail: bool,
-
-        fn init(runs: *u32, fail: bool) @This() {
-            return .{
-                .base = .{ .state = .init(.done), .run = execute },
-                .runs = runs,
-                .fail = fail,
-            };
-        }
-
-        fn execute(base: *Job) anyerror!void {
-            const self: *@This() = @fieldParentPtr("base", base);
-            self.runs.* += 1;
-            if (self.fail) return error.ForcedFailure;
+test "reusable compression requests preserve failure and single-flight state" {
+    const Fail = struct {
+        fn run(_: *Job) !void {
+            return error.ForcedFailure;
         }
     };
-
-    try std.testing.expect(queue_head.load(.acquire) == null);
-    defer queue_head.store(null, .release);
-
-    stored_io = std.testing.io;
-
-    var runs: u32 = 0;
-    var successful = ProbeJob.init(&runs, false);
-    var failing = ProbeJob.init(&runs, true);
-    try std.testing.expect(successful.base.try_begin());
-    try std.testing.expect(failing.base.try_begin());
-    submit(&successful.base);
-    submit(&failing.base);
-
-    try std.testing.expect(drain_once());
-    try std.testing.expectEqual(@as(u32, 2), runs);
-    try std.testing.expect(successful.base.is_done());
-    try std.testing.expect(failing.base.is_done());
-    try std.testing.expect(successful.base.err == null);
-    try std.testing.expectEqual(error.ForcedFailure, failing.base.err.?);
-    try std.testing.expect(!drain_once());
-
-    var canceled = ProbeJob.init(&runs, false);
-    try std.testing.expect(canceled.base.try_begin());
-    submit(&canceled.base);
-    try std.testing.expect(cancel_pending_before_worker(&canceled.base));
-    try std.testing.expect(canceled.base.is_done());
-    try std.testing.expectEqual(@as(u32, 2), runs);
-    try std.testing.expect(!drain_once());
+    var request: Job = .{ .state = .init(.done), .run = Fail.run };
+    try std.testing.expect(request.try_begin());
+    try std.testing.expect(!request.try_begin());
+    submit(&request);
+    request.wait(std.testing.io);
+    try std.testing.expect(request.is_done());
+    try std.testing.expectEqual(error.ForcedFailure, request.err.?);
 }
 
-/// Needs a large stack and lower priority than the main thread: PSP does not
-/// preempt equal-priority threads during long compression runs.
-pub fn worker_main() void {
-    // Raw PSP threads do not inherit the per-thread filesystem cwd.
-    if (comptime !caps.execution.worker_inherits_cwd) {
-        var cwd_buf: [1024]u8 = undefined;
-        if (std.process.currentPath(stored_io, &cwd_buf)) |n| {
-            std.process.setCurrentPath(stored_io, cwd_buf[0..n]) catch {};
-        } else |_| {}
-    }
+test "compression wait preserves cancellation and restores caller protection" {
+    const Probe = struct {
+        job: *Job,
+        protection: std.Io.CancelProtection,
+        cancel_pending: bool = true,
+        sleeps: usize = 0,
 
-    while (!worker_exit.load(.acquire)) {
-        if (!drain_once()) {
-            std.Io.sleep(stored_io, .fromMilliseconds(10), .real) catch {};
+        fn swap_protection(context: ?*anyopaque, next: std.Io.CancelProtection) std.Io.CancelProtection {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            const previous = self.protection;
+            self.protection = next;
+            return previous;
         }
+
+        fn check_cancel(context: ?*anyopaque) std.Io.Cancelable!void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            if (self.protection == .unblocked and self.cancel_pending) {
+                self.cancel_pending = false;
+                return error.Canceled;
+            }
+        }
+
+        fn sleep(context: ?*anyopaque, _: std.Io.Timeout) std.Io.Cancelable!void {
+            try check_cancel(context);
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.sleeps += 1;
+            self.job.mark_done();
+        }
+
+        fn run(_: *Job) !void {}
+    };
+    for ([_]std.Io.CancelProtection{ .unblocked, .blocked }) |initial| {
+        var job: Job = .{ .run = Probe.run };
+        var probe: Probe = .{ .job = &job, .protection = initial };
+        var vtable = std.testing.io.vtable.*;
+        vtable.swapCancelProtection = Probe.swap_protection;
+        vtable.sleep = Probe.sleep;
+        vtable.checkCancel = Probe.check_cancel;
+        const io: std.Io = .{ .userdata = &probe, .vtable = &vtable };
+        job.wait(io);
+        try std.testing.expect(job.is_done());
+        try std.testing.expectEqual(@as(usize, 1), probe.sleeps);
+        try std.testing.expectEqual(initial, probe.protection);
+        try std.testing.expect(probe.cancel_pending);
+        if (initial == .unblocked) try std.testing.expectError(error.Canceled, io.checkCancel());
     }
 }

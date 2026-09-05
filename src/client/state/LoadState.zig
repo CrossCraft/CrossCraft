@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Core = ae.Core;
 const Util = ae.Util;
@@ -21,7 +22,6 @@ const proto = core.protocol;
 const flate = std.compress.flate;
 
 const caps = @import("capabilities").ClientType(ae);
-const execution = @import("capabilities").execution;
 
 const log = std.log.scoped(.game);
 
@@ -35,60 +35,74 @@ var session_error: ?anyerror = null;
 var mp_server_name: [64]u8 = @splat(' ');
 var mp_server_motd: [64]u8 = @splat(' ');
 
-// Do not capture std.Io in a PSP Util.Thread closure. The PSP thread
-// trampoline has historically lost this value when it is passed through the
-// argument tuple, leaving the copied vtable pointer null in the worker. Keep
-// it in module storage and publish it before spawning the one load task.
-var task_io: std.Io = undefined;
-
 var loading_set: ?ae.Core.input.ActionSetHandle = null;
 
-fn start_server_task(
-    alloc: std.mem.Allocator,
+// Embedded in the static load state: both the job and its inputs stay at a
+// stable address until deinit joins the executor, even when server_ready is
+// observed before Aether has published the job's own completion.
+const LoadTask = struct {
+    allocator: std.mem.Allocator,
     scratch: std.mem.Allocator,
+    io: std.Io,
     seed: u64,
     data_dir: std.Io.Dir,
     save_location: []const u8,
-) ?Util.Thread {
-    if (comptime !execution.background_workers) {
-        run_server_task(alloc, scratch, seed, data_dir, save_location);
-        return null;
+    executor: ?*ae.Jobs.Executor = null,
+    job: ae.Jobs.Job = .{ .context = undefined, .run = undefined },
+
+    fn start(self: *LoadTask, callback: *const fn (*anyopaque) anyerror!void, options: ae.Jobs.Options) !void {
+        assert(self.executor == null);
+        self.job = .{ .context = self, .run = callback };
+        self.executor = try ae.Jobs.Executor.init(self.allocator, self.io, options);
+        errdefer self.join();
+
+        try self.executor.?.submit(&self.job);
     }
 
-    return Util.Thread.spawn(.{
+    fn join(self: *LoadTask) void {
+        if (self.executor) |executor| executor.deinit();
+        self.executor = null;
+    }
+
+    fn run_server(context: *anyopaque) !void {
+        const self: *LoadTask = @ptrCast(@alignCast(context));
+        run_server_task(self.allocator, self.scratch, self.io, self.seed, self.data_dir, self.save_location);
+    }
+
+    fn run_connect(context: *anyopaque) !void {
+        const self: *LoadTask = @ptrCast(@alignCast(context));
+        connect_task(self.allocator, self.io, self.seed, self.data_dir);
+    }
+};
+
+fn start_server_task(task: *LoadTask) void {
+    // Auto runs synchronously on browser targets without background workers.
+    task.start(LoadTask.run_server, .{ .capacity = 1, .thread = .{
         .name = "load_server",
         .stack_size = 1024 * 1024,
         .priority = .normal,
-        .allocator = alloc,
-    }, run_server_task, .{ alloc, scratch, seed, data_dir, save_location }) catch |err| {
-        log.err("server task thread unavailable: {}", .{err});
+    } }) catch |err| {
+        log.err("server task unavailable: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
-        return null;
     };
 }
 
-fn start_connect_task(
-    alloc: std.mem.Allocator,
-    seed: u64,
-    data_dir: std.Io.Dir,
-) ?Util.Thread {
+fn start_connect_task(task: *LoadTask) void {
     if (comptime !caps.networking.multiplayer) {
         session_error = error.UnsupportedPlatform;
         server_ready.store(true, .release);
-        return null;
+        return;
     }
 
-    return Util.Thread.spawn(.{
+    task.start(LoadTask.run_connect, .{ .capacity = 1, .thread = .{
         .name = "mp_connect",
         .stack_size = 512 * 1024,
         .priority = .normal,
-        .allocator = alloc,
-    }, connect_task, .{ alloc, seed, data_dir }) catch |err| {
-        log.err("connect task thread unavailable: {}", .{err});
+    } }) catch |err| {
+        log.err("connect task unavailable: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
-        return null;
     };
 }
 
@@ -103,6 +117,7 @@ fn ensure_loading_set(engine: *Engine) !ae.Core.input.ActionSetHandle {
 fn run_server_task(
     alloc: std.mem.Allocator,
     scratch: std.mem.Allocator,
+    io: std.Io,
     seed: u64,
     data_dir: std.Io.Dir,
     save_location: []const u8,
@@ -122,7 +137,7 @@ fn run_server_task(
             },
         },
     };
-    Server.init(alloc, scratch, task_io, data_dir, config) catch |err| {
+    Server.init(alloc, scratch, io, data_dir, config) catch |err| {
         log.err("server init failed: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
@@ -131,11 +146,11 @@ fn run_server_task(
     server_ready.store(true, .release);
 }
 
-fn connect_task(alloc: std.mem.Allocator, seed: u64, data_dir: std.Io.Dir) void {
-    connect_inner(alloc, seed, task_io, data_dir) catch |err| {
+fn connect_task(alloc: std.mem.Allocator, io: std.Io, seed: u64, data_dir: std.Io.Dir) void {
+    connect_inner(alloc, seed, io, data_dir) catch |err| {
         log.err("multiplayer connect failed: {}", .{err});
         session_error = err;
-        cleanup_failed_multiplayer_connect(task_io);
+        cleanup_failed_multiplayer_connect(io);
     };
     server_ready.store(true, .release);
 }
@@ -147,11 +162,6 @@ fn cleanup_failed_multiplayer_connect(io: std.Io) void {
         s.close(io);
         Session.mp_stream = null;
     }
-
-    // On PSP, MenuState's net dialog initialises sceNet before LoadState runs.
-    // Normal disconnects unwind it in GameState.deinit; early load-screen
-    // failures never reach GameState, so release it here.
-    caps.networking.release();
 }
 
 fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) !void {
@@ -297,7 +307,7 @@ fn capture_disconnect_reason(packet: []const u8) void {
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 time: f32,
-server_task: ?Util.Thread,
+server_task: LoadTask,
 server_notified: bool,
 render_alloc: std.mem.Allocator,
 inited: bool,
@@ -331,12 +341,11 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try ResourcePack.apply_tex_set(&.{ .dirt, .font });
 
     self.batcher = try SpriteBatcher.init(render_alloc);
-    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
+    self.font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
     self.time = 0;
     self.server_notified = false;
 
-    task_io = engine.io;
-    const io = task_io;
+    const io = engine.io;
     const random_seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
     const singleplayer_seed = Session.singleplayer_seed_override orelse random_seed;
     server_ready.store(false, .monotonic);
@@ -347,16 +356,18 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         std.heap.wasm_allocator
     else
         engine.allocator(.user);
-    self.server_task = switch (Session.mode) {
-        .singleplayer => start_server_task(
-            engine.allocator(.user),
-            server_scratch,
-            singleplayer_seed,
-            data_dir,
-            Session.singleplayer_save(),
-        ),
-        .multiplayer => start_connect_task(engine.allocator(.user), random_seed, data_dir),
+    self.server_task = .{
+        .allocator = engine.allocator(.user),
+        .scratch = server_scratch,
+        .io = io,
+        .seed = if (Session.mode == .singleplayer) singleplayer_seed else random_seed,
+        .data_dir = data_dir,
+        .save_location = Session.singleplayer_save(),
     };
+    switch (Session.mode) {
+        .singleplayer => start_server_task(&self.server_task),
+        .multiplayer => start_connect_task(&self.server_task),
+    }
 
     self.inited = true;
     engine.report();
@@ -365,8 +376,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
-    if (self.server_task) |thread| thread.join();
-    self.server_task = null;
+    self.server_task.join();
+    if (Session.mode == .multiplayer and session_error != null) caps.networking.release();
     self.font_batcher.deinit();
     self.batcher.deinit();
 
@@ -524,4 +535,81 @@ pub fn state(self: *@This()) State {
         .update = update,
         .draw = draw,
     } };
+}
+
+test "load job runs inline and releases allocations on admission failure" {
+    const Probe = struct {
+        fn run(context: *anyopaque) !void {
+            const task: *LoadTask = @ptrCast(@alignCast(context));
+            task.seed += 1;
+        }
+
+        fn check(allocator: std.mem.Allocator) !void {
+            var task: LoadTask = .{
+                .allocator = allocator,
+                .scratch = allocator,
+                .io = std.testing.io,
+                .seed = 7,
+                .data_dir = .cwd(),
+                .save_location = "",
+            };
+            defer task.join();
+
+            try task.start(run, .{ .capacity = 1, .mode = .inline_execution });
+            try task.job.result();
+            try std.testing.expectEqual(@as(u64, 8), task.seed);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.check, .{});
+}
+
+test "load job joins after session readiness before releasing task context" {
+    if (!ae.System.info().background_workers) return error.SkipZigTest;
+    const Probe = struct {
+        task: LoadTask,
+        gate: std.Io.Mutex = .init,
+
+        fn run(context: *anyopaque) !void {
+            const task: *LoadTask = @ptrCast(@alignCast(context));
+            const self: *@This() = @fieldParentPtr("task", task);
+            session_error = error.ForcedFailure;
+            server_ready.store(true, .release);
+            // The state can see readiness while Aether still borrows the job.
+            self.gate.lockUncancelable(task.io);
+            defer self.gate.unlock(task.io);
+
+            task.seed = 42;
+        }
+    };
+    var probe: Probe = .{ .task = .{
+        .allocator = std.testing.allocator,
+        .scratch = std.testing.allocator,
+        .io = std.testing.io,
+        .seed = 7,
+        .data_dir = .cwd(),
+        .save_location = "",
+    } };
+    server_ready.store(false, .monotonic);
+    session_error = null;
+    defer {
+        server_ready.store(false, .monotonic);
+        session_error = null;
+    }
+
+    probe.gate.lockUncancelable(std.testing.io);
+    var gate_locked = true;
+    defer {
+        if (gate_locked) probe.gate.unlock(std.testing.io);
+        probe.task.join();
+    }
+
+    try probe.task.start(Probe.run, .{ .capacity = 1, .mode = .threaded });
+    while (!server_ready.load(.acquire)) try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .real);
+    try std.testing.expectEqual(error.ForcedFailure, session_error.?);
+    try std.testing.expect(!probe.task.job.is_done());
+    probe.gate.unlock(std.testing.io);
+    gate_locked = false;
+    probe.task.join();
+    try probe.task.job.result();
+    try std.testing.expectEqual(@as(u64, 42), probe.task.seed);
 }

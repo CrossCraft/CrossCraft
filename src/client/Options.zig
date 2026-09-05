@@ -4,7 +4,6 @@ const std = @import("std");
 const caps = @import("capabilities").ClientType(ae);
 const ae = @import("aether");
 const Io = std.Io;
-const File = std.Io.File;
 const cfg = @import("config.zig");
 const input = ae.Core.input;
 
@@ -71,7 +70,8 @@ pub const Options = struct {
     /// Profiles with no near-LOD radius cannot render fancy leaves.
     fancy_leaves: bool = caps.defaults.fancy_leaves,
 
-    sensitivity: f32 = 3.0,
+    // Midpoint of the logarithmic 0.1-10.0 slider: 50%.
+    sensitivity: f32 = 1.0,
 
     ambient_occlusion: bool = false,
 
@@ -219,25 +219,7 @@ pub fn pc_key_assignable(key: input.Key) bool {
 }
 
 pub fn pc_key_label(key: input.Key) []const u8 {
-    return switch (key) {
-        .Space => "Space",
-        .LeftShift => "Left Shift",
-        .RightShift => "Right Shift",
-        .LeftControl => "Left Ctrl",
-        .RightControl => "Right Ctrl",
-        .LeftAlt => "Left Alt",
-        .RightAlt => "Right Alt",
-        .LeftSuper => "Left Super",
-        .RightSuper => "Right Super",
-        .KpEnter => "Keypad Enter",
-        .KpDecimal => "Keypad Decimal",
-        .KpDivide => "Keypad Divide",
-        .KpMultiply => "Keypad Multiply",
-        .KpSubtract => "Keypad Minus",
-        .KpAdd => "Keypad Plus",
-        .KpEqual => "Keypad Equal",
-        else => @tagName(key),
-    };
+    return input.display.key_name(key, .readable);
 }
 
 pub fn pc_key_prompt_label(key: input.Key) []const u8 {
@@ -369,27 +351,13 @@ const SaveJsonOptions = struct {
 
 /// Invalid or missing files leave defaults intact.
 pub fn load(io: Io, dir: std.Io.Dir) void {
-    const file = dir.openFile(io, options_file, .{}) catch return;
-    defer file.close(io);
-
-    var json_buf: [max_json_size]u8 = undefined;
-    var reader_scratch: [512]u8 = undefined;
-    var file_reader = File.Reader.init(file, io, &reader_scratch);
-    const n = file_reader.interface.readSliceShort(&json_buf) catch |err| {
-        log.warn("read options.json failed: {}", .{err});
-        return;
-    };
-    if (n == 0) return;
-
-    var arena_buf: [4096]u8 = undefined;
+    var arena_buf: [16 * 1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&arena_buf);
-    const parsed = std.json.parseFromSlice(
-        LoadJsonOptions,
-        fba.allocator(),
-        json_buf[0..n],
-        .{ .ignore_unknown_fields = true },
-    ) catch |err| {
-        log.warn("parse options.json failed: {} -- using defaults", .{err});
+    const parsed = ae.Storage.load_json(LoadJsonOptions, fba.allocator(), io, dir, options_file, max_json_size) catch |err| {
+        switch (err) {
+            error.FileNotFound => {},
+            else => log.warn("load options.json failed: {} -- using defaults", .{err}),
+        }
         return;
     };
     defer parsed.deinit();
@@ -411,10 +379,13 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
     else
         json_float_f32(j.fov orelse .{ .value = 70.0 }, 10.0, 170.0);
     current.fancy_leaves = j.fancy_leaves and fancy_leaves_supported();
-    current.sensitivity = if (integer_json)
-        sensitivity_from_percent(json_percent(j.sensitivity orelse JsonNumber.from_int(sensitivity_percent(3.0))))
+    current.sensitivity = if (j.sensitivity) |sensitivity|
+        if (integer_json)
+            sensitivity_from_percent(json_percent(sensitivity))
+        else
+            json_float_f32(sensitivity, SensMin, 20.0)
     else
-        json_float_f32(j.sensitivity orelse .{ .value = 3.0 }, SensMin, 20.0);
+        (Options{}).sensitivity;
     current.ambient_occlusion = j.ambient_occlusion;
     current.bouncy_chunks = j.bouncy_chunks;
     current.vsync = j.vsync;
@@ -446,7 +417,7 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
     current.new_3ds_use_old_controls = j.new_3ds_use_old_controls;
 }
 
-/// PSP lacks atomic replacement; torn writes fall back to defaults on load.
+/// Serialize before replacement; Aether owns platform promotion and rollback.
 pub fn save(io: Io, dir: std.Io.Dir) void {
     const j = SaveJsonOptions{
         .active_texturepack = current.active_texturepack(),
@@ -473,22 +444,11 @@ pub fn save(io: Io, dir: std.Io.Dir) void {
     };
 
     var json_buf: [max_json_size]u8 = undefined;
-    var out = std.Io.Writer.fixed(&json_buf);
-    std.json.Stringify.value(j, .{ .whitespace = .indent_2 }, &out) catch |err| {
-        log.err("serialize options failed: {}", .{err});
+    const result = ae.Storage.save_json(io, dir, options_file, j, &json_buf, .{}) catch |err| {
+        log.err("save options.json failed: {}", .{err});
         return;
     };
-    const slice = out.buffered();
-
-    const file = dir.createFile(io, options_file, .{}) catch |err| {
-        log.err("create options.json failed: {}", .{err});
-        return;
-    };
-    defer file.close(io);
-
-    file.writeStreamingAll(io, slice) catch |err| {
-        log.err("write options.json failed: {}", .{err});
-    };
+    if (result.previous_retained) log.warn("options.json updated; previous backup needs cleanup", .{});
 }
 
 fn json_float_f32(n: JsonNumber, min: f32, max: f32) f32 {
@@ -640,4 +600,67 @@ test "current options json writes menu numbers as integers" {
     try std.testing.expect(std.mem.indexOf(u8, written, "\"fov\":71") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "\"new_3ds_use_old_controls\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, ".") == null);
+}
+
+test "options storage migration roundtrips preferences and rejects oversized files" {
+    const previous = current;
+    defer current = previous;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    current = .{ .fov = 70.5, .sound_volume = 0.75, .key_forward = .Up };
+    save(std.testing.io, tmp.dir);
+    current = .{};
+    load(std.testing.io, tmp.dir);
+    try std.testing.expectEqual(@as(f32, 71), current.fov);
+    try std.testing.expectEqual(@as(f32, 0.75), current.sound_volume);
+    try std.testing.expectEqual(input.Key.Up, current.key_forward);
+
+    var oversized: [max_json_size + 1]u8 = @splat(' ');
+    const changed = "{\"version\":2,\"fov\":120}";
+    @memcpy(oversized[0..changed.len], changed);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = options_file, .data = &oversized });
+    load(std.testing.io, tmp.dir);
+    try std.testing.expectEqual(@as(f32, 71), current.fov);
+    try std.testing.expectEqual(input.Key.Up, current.key_forward);
+}
+
+test "options sensitivity defaults to 50 percent and preserves saved choices" {
+    const previous = current;
+    defer current = previous;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    current = .{};
+    load(std.testing.io, tmp.dir);
+    try std.testing.expectEqual(@as(u32, 50), sensitivity_percent(current.sensitivity));
+
+    const cases = .{
+        .{ "{}", @as(u32, 50) },
+        .{ "{\"version\":1}", @as(u32, 50) },
+        .{ "{\"version\":2}", @as(u32, 50) },
+        .{ "{\"sensitivity\":3}", @as(u32, 74) },
+        .{ "{\"version\":2,\"sensitivity\":74}", @as(u32, 74) },
+        .{ "{\"version\":2,\"sensitivity\":50}", @as(u32, 50) },
+    };
+    inline for (cases) |case| {
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = options_file, .data = case[0] });
+        current.sensitivity = SensMax;
+        load(std.testing.io, tmp.dir);
+        try std.testing.expectEqual(case[1], sensitivity_percent(current.sensitivity));
+
+        save(std.testing.io, tmp.dir);
+        current.sensitivity = SensMin;
+        load(std.testing.io, tmp.dir);
+        try std.testing.expectEqual(case[1], sensitivity_percent(current.sensitivity));
+    }
+}
+
+test "options sensitivity percentages roundtrip without drift" {
+    for (0..101) |percent| {
+        const expected: u32 = @intCast(percent);
+        try std.testing.expectEqual(expected, sensitivity_percent(sensitivity_from_percent(expected)));
+    }
 }

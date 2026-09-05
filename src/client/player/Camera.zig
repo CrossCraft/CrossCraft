@@ -1,5 +1,4 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
 const caps = @import("capabilities").ClientType(ae);
 const Math = ae.Math;
@@ -15,7 +14,7 @@ x: f32,
 y: f32,
 z: f32,
 yaw: f32, // radians, 0 = looking -Z
-pitch: f32, // radians, positive = looking up
+pitch: f32, // radians, applied as a positive X rotation in the view matrix
 fov: f32, // vertical FOV in radians
 frustum: Math.Frustum,
 
@@ -39,25 +38,42 @@ pub fn init(x: f32, y: f32, z: f32) Camera {
     };
 }
 
+/// Adapts game-owned position, bob and tilt to Aether's explicit conventions.
+/// The pointer is borrowed only while the returned camera is used locally.
+fn engine_camera(self: *const Camera, position: *const Math.Vec3) Rendering.Camera {
+    return .{
+        .target = position,
+        .fov = self.fov,
+        .yaw = self.yaw,
+        .pitch = self.pitch,
+        .angle_unit = .radians,
+        .yaw_direction = .left,
+        .pitch_direction = .down,
+        .near_plane = near_plane,
+        .far_plane = far_plane,
+        .view_adjustment = self.tilt,
+    };
+}
+
+pub fn matrices(self: *const Camera, aspect: f32) Rendering.Camera.Error!Rendering.Camera.Matrices {
+    const position = Math.Vec3.new(self.x, self.y, self.z);
+    const camera = self.engine_camera(&position);
+    return camera.matrices(aspect);
+}
+
+/// Particles retain the existing yaw/pitch facing and omit view bob/tilt.
+pub fn billboard_basis(self: *const Camera) Rendering.BillboardBatcher.Basis {
+    const origin = Math.Vec3.zero();
+    var camera = self.engine_camera(&origin);
+    camera.view_adjustment = null;
+    return Rendering.BillboardBatcher.Basis.from_view(camera.get_view_matrix()) catch unreachable;
+}
+
 pub fn apply(self: *Camera) void {
-    assert(self.fov > 0.0 and self.fov < std.math.pi);
-    assert(std.math.isFinite(self.x) and std.math.isFinite(self.y) and std.math.isFinite(self.z));
-    assert(std.math.isFinite(self.yaw) and std.math.isFinite(self.pitch));
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
-
-    const proj = Math.Mat4.perspective_fov_rh(self.fov, aspect, near_plane, far_plane);
-    Rendering.gfx.api.set_proj_matrix(&proj);
-
-    const view = Math.Mat4.translation(-self.x, -self.y, -self.z)
-        .mul(Math.Mat4.rotation_y(-self.yaw))
-        .mul(Math.Mat4.rotation_x(self.pitch))
-        .mul(self.tilt);
-    Rendering.gfx.api.set_view_matrix(&view);
-
-    // Row-vector convention: V * P.
-    self.frustum = Math.Frustum.from_view_projection(view.mul(proj));
+    const result = self.matrices(Rendering.aspect_ratio()) catch unreachable;
+    Rendering.gfx.api.set_proj_matrix(&result.projection);
+    Rendering.gfx.api.set_view_matrix(&result.view);
+    self.frustum = result.frustum;
 }
 
 /// Conservative AABB frustum test for a 16x16x16 section.
@@ -77,4 +93,26 @@ pub fn distance_sq(self: *const Camera, wx: f32, wy: f32, wz: f32) f32 {
     const dy = wy - self.y;
     const dz = wz - self.z;
     return dx * dx + dy * dy + dz * dz;
+}
+
+test "Aether camera preserves Classic view projection and frustum conventions" {
+    var camera = Camera.init(302.5, 65.75, 401.25);
+    camera.yaw = 1.25;
+    camera.pitch = -0.35;
+    camera.tilt = Math.Mat4.rotation_z(0.12).mul(Math.Mat4.translation(0.03, -0.02, 0));
+    const result = try camera.matrices(16.0 / 9.0);
+    const expected_view = Math.Mat4.translation(-camera.x, -camera.y, -camera.z)
+        .mul(Math.Mat4.rotation_y(-camera.yaw))
+        .mul(Math.Mat4.rotation_x(camera.pitch))
+        .mul(camera.tilt);
+    const expected_projection = Math.Mat4.perspective_fov_rh(camera.fov, 16.0 / 9.0, near_plane, far_plane);
+    try std.testing.expectEqual(expected_view, result.view);
+    try std.testing.expectEqual(expected_projection, result.projection);
+    try std.testing.expectEqual(Math.Frustum.from_view_projection(expected_view.mul(expected_projection)), result.frustum);
+
+    const basis = camera.billboard_basis();
+    const expected_right = Math.Vec3.new(@cos(camera.yaw), 0, -@sin(camera.yaw));
+    const expected_up = Math.Vec3.new(-@sin(camera.yaw) * @sin(camera.pitch), @cos(camera.pitch), -@cos(camera.yaw) * @sin(camera.pitch));
+    try std.testing.expectApproxEqAbs(@as(f32, 0), basis.right.sub(expected_right).length(), 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), basis.up.sub(expected_up).length(), 0.000001);
 }

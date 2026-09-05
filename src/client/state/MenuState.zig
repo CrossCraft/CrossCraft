@@ -34,7 +34,6 @@ const Server = core.Server;
 const World = core.World;
 const wd = core.world_dims;
 const CompressWorker = core.CompressWorker;
-const CompressorThread = @import("CompressorThread.zig");
 
 const build_options = @import("build_options");
 
@@ -56,6 +55,7 @@ pub const ScreenId = enum { main, direct_connect, texture_packs, select_world, c
 
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
+prepared_ui: ?UiDrawList.Prepared = null,
 splash_mesh: FontBatcher.TextMesh,
 time: f32,
 active_screen: ScreenId,
@@ -100,8 +100,10 @@ render_alloc: std.mem.Allocator,
 inited: bool,
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
+    @import("engine_services").install();
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
+    self.prepared_ui = null;
     @import("../config.zig").apply_init_budgets(engine);
 
     const render_alloc = engine.allocator(.render);
@@ -148,7 +150,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     self.batcher = SpriteBatcher.init(render_alloc) catch |err|
         return menu_init_error("sprite_batcher", err);
-    self.font_batcher = FontBatcher.init(render_alloc, ResourcePack.get_tex(.font)) catch |err|
+    self.font_batcher = @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font)) catch |err|
         return menu_init_error("font_batcher", err);
     self.splash_mesh = self.font_batcher.build_mesh("Classic!", Colors.splash_front, Colors.splash_back, 0, 1) catch |err|
         return menu_init_error("splash_mesh", err);
@@ -321,16 +323,12 @@ fn write_converted_legacy_save(
         log.warn("legacy save migration: failed to init compressor: {}", .{err});
         return false;
     };
-    var thread = CompressorThread.spawn("legacy_save_convert", alloc) catch |err| {
+    CompressWorker.start("legacy_save_convert") catch |err| {
         CompressWorker.deinit();
         log.warn("legacy save migration: failed to start compressor: {}", .{err});
         return false;
     };
-    defer {
-        CompressWorker.signal_exit();
-        thread.join();
-        CompressWorker.deinit();
-    }
+    defer CompressWorker.deinit();
 
     var saver = World.WorldSaver.init(io, saves_dir, dest_name, World.default_format);
     defer saver.deinit();
@@ -385,6 +383,15 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     if (!self.inited) return;
     ControlsScreen.cancel_capture(&engine.input, controls_ctx(self));
     self.splash_mesh.deinit(self.render_alloc);
+    if (self.prepared_ui) |*prepared| prepared.deinit();
+    self.prepared_ui = null;
+    self.main_ui_state.deinit();
+    self.dc_ui_state.deinit();
+    self.options_ui_state.deinit();
+    self.controls_ui_state.deinit();
+    self.tp_ui_state.deinit();
+    self.sw_ui_state.deinit();
+    self.cw_ui_state.deinit();
     self.font_batcher.deinit();
     self.batcher.deinit();
     _ = engine.input.pop_context() catch {};
@@ -479,7 +486,7 @@ fn prepare_batches(self: *@This(), _: *Engine) !void {
             ui.end();
         },
     }
-    list.flush_into(&self.batcher, &self.font_batcher, null);
+    try list.prepare_into(&self.prepared_ui, &self.font_batcher, null);
 
     try self.batcher.update();
     try self.font_batcher.update();
@@ -782,6 +789,8 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     _ = engine;
     self.batcher.draw();
     self.font_batcher.draw();
+    Rendering.gfx.api.clear_depth();
+    if (self.prepared_ui) |*prepared| prepared.draw();
 
     if (self.active_screen == .main) {
         const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;

@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const caps = @import("capabilities");
+const Host = @import("../host.zig");
 
 const WorldData = @import("WorldData.zig");
 const fmt_mod = @import("SaveFormat.zig");
@@ -16,9 +16,6 @@ const log = std.log.scoped(.world);
 const BlockSize = 32768;
 const DumpFileNameMax = 256;
 const DumpWorldNameMax = 64;
-const TempSuffix = ".saving.tmp";
-const PreviousSuffix = ".previous.tmp";
-const TempNameMax = DumpFileNameMax + PreviousSuffix.len;
 
 const WorldSaver = @This();
 
@@ -106,7 +103,6 @@ const SaveOverride = struct {
 fn dispatch_save(self: *WorldSaver, data: *WorldData, format: SaveFormat, override: ?SaveOverride) error{SaveInFlight}!void {
     if (!self.cw_job.try_begin()) return error.SaveInFlight;
 
-    self.cw_job.next = null;
     self.cw_job.err = null;
     self.data_for_worker = data;
     self.format_for_worker = format;
@@ -118,12 +114,6 @@ fn dispatch_save(self: *WorldSaver, data: *WorldData, format: SaveFormat, overri
         self.save_override_world_name_len = @intCast(value.world_name.len);
     }
 
-    if (comptime !caps.execution.background_workers) {
-        defer self.cw_job.mark_done(self.io);
-
-        save_worker(self);
-        return;
-    }
     compress_worker.submit(&self.cw_job);
 }
 
@@ -156,17 +146,6 @@ fn save_worker(self: *WorldSaver) void {
         self.save_override_file_name[0..self.save_override_file_name_len]
     else
         self.save_file_name;
-    var temp_name_buf: [TempNameMax]u8 = undefined;
-    const temp_name = std.fmt.bufPrint(&temp_name_buf, "{s}{s}", .{ save_file_name, TempSuffix }) catch {
-        log.err("Save file name is too long: '{s}'", .{save_file_name});
-        return;
-    };
-    var previous_name_buf: [TempNameMax]u8 = undefined;
-    const previous_name = std.fmt.bufPrint(&previous_name_buf, "{s}{s}", .{ save_file_name, PreviousSuffix }) catch {
-        log.err("Save file name is too long: '{s}'", .{save_file_name});
-        return;
-    };
-
     const start = std.Io.Clock.Timestamp.now(self.io, .boot);
     const data = self.data_for_worker;
     const real_ns: i64 = @truncate(std.Io.Clock.Timestamp.now(self.io, .real).raw.nanoseconds);
@@ -197,17 +176,17 @@ fn save_worker(self: *WorldSaver) void {
             .last_modified = last_modified_ms,
         };
     };
-    const total_bytes = write_and_promote(
-        self.io,
-        self.save_dir,
-        save_file_name,
-        temp_name,
-        previous_name,
-        SaveBody{ .format = self.format_for_worker, .context = ctx },
-    ) catch |err| {
+    const body: SaveBody = .{ .format = self.format_for_worker, .context = ctx };
+    const replacement = Host.write_replace(self.io, self.save_dir, save_file_name, .{
+        .context = &body,
+        .write_fn = SaveBody.write,
+    }) catch |err| {
+        self.cw_job.err = err;
         log.err("Failed to save world to '{s}': {}", .{ save_file_name, err });
         return;
     };
+    if (replacement.previous_retained) log.warn("Saved '{s}', but previous backup needs cleanup", .{save_file_name});
+    const total_bytes = replacement.bytes;
     const end = std.Io.Clock.Timestamp.now(self.io, .boot);
 
     const elapsed_ns: i64 = @truncate(end.raw.nanoseconds - start.raw.nanoseconds);
@@ -223,72 +202,11 @@ const SaveBody = struct {
     format: SaveFormat,
     context: SaveContext,
 
-    fn write(self: SaveBody, writer: *std.Io.Writer) !void {
+    fn write(context: *const anyopaque, writer: *std.Io.Writer) !void {
+        const self: *const SaveBody = @ptrCast(@alignCast(context));
         try self.format.save_world(self.context, writer);
     }
 };
-
-fn write_and_promote(
-    io: std.Io,
-    dir: std.Io.Dir,
-    target: []const u8,
-    temp_name: []const u8,
-    previous_name: []const u8,
-    body: anytype,
-) !u64 {
-    assert(!std.mem.eql(u8, target, temp_name));
-    assert(!std.mem.eql(u8, target, previous_name));
-    assert(!std.mem.eql(u8, temp_name, previous_name));
-    dir.deleteFile(io, temp_name) catch {};
-    errdefer dir.deleteFile(io, temp_name) catch {};
-
-    const total_bytes = blk: {
-        const file = try dir.createFile(io, temp_name, .{});
-        defer file.close(io);
-
-        var write_buf: [BlockSize]u8 = undefined;
-        var writer = file.writer(io, &write_buf);
-        try body.write(&writer.interface);
-        try writer.interface.flush();
-        break :blk (try file.stat(io)).size;
-    };
-
-    try promote_temp(io, dir, temp_name, target, previous_name);
-    return total_bytes;
-}
-
-fn promote_temp(
-    io: std.Io,
-    dir: std.Io.Dir,
-    temp_name: []const u8,
-    target: []const u8,
-    previous_name: []const u8,
-) !void {
-    if (comptime caps.filesystem.rename_replaces_destination) {
-        return dir.rename(temp_name, dir, target, io);
-    }
-
-    // PSP cannot replace an existing destination. Keep the old save available
-    // for rollback while moving the completed temporary file into place.
-    if (!file_exists(io, dir, target)) return dir.rename(temp_name, dir, target, io);
-    dir.deleteFile(io, previous_name) catch {};
-    try dir.rename(target, dir, previous_name, io);
-    dir.rename(temp_name, dir, target, io) catch |err| {
-        dir.rename(previous_name, dir, target, io) catch |restore_err| {
-            log.err("Failed to restore previous save '{s}': {}", .{ previous_name, restore_err });
-        };
-        return err;
-    };
-    dir.deleteFile(io, previous_name) catch |err| {
-        log.warn("Failed to remove previous save '{s}': {}", .{ previous_name, err });
-    };
-}
-
-fn file_exists(io: std.Io, dir: std.Io.Dir, name: []const u8) bool {
-    const file = dir.openFile(io, name, .{}) catch return false;
-    file.close(io);
-    return true;
-}
 
 /// Load a valid save, returning false when the caller should generate a world.
 pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator) bool {
@@ -339,61 +257,4 @@ pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator)
         });
     }
     return true;
-}
-
-test "save promotion preserves the previous file on write failure" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const Body = struct {
-        bytes: []const u8,
-        fail: bool = false,
-
-        fn write(self: @This(), writer: *std.Io.Writer) !void {
-            try writer.writeAll(self.bytes);
-            if (self.fail) return error.ForcedFailure;
-        }
-    };
-
-    {
-        const file = try tmp.dir.createFile(io, "world.dat", .{});
-        defer file.close(io);
-
-        try file.writeStreamingAll(io, "old");
-    }
-
-    _ = try write_and_promote(
-        io,
-        tmp.dir,
-        "world.dat",
-        "world.dat.saving.tmp",
-        "world.dat.previous.tmp",
-        Body{ .bytes = "new" },
-    );
-
-    var read_buf: [16]u8 = undefined;
-    {
-        const file = try tmp.dir.openFile(io, "world.dat", .{});
-        defer file.close(io);
-
-        const len = try file.readPositionalAll(io, &read_buf, 0);
-        try std.testing.expectEqualStrings("new", read_buf[0..len]);
-    }
-
-    try std.testing.expectError(error.ForcedFailure, write_and_promote(
-        io,
-        tmp.dir,
-        "world.dat",
-        "world.dat.saving.tmp",
-        "world.dat.previous.tmp",
-        Body{ .bytes = "partial", .fail = true },
-    ));
-    try std.testing.expect(!file_exists(io, tmp.dir, "world.dat.saving.tmp"));
-
-    const file = try tmp.dir.openFile(io, "world.dat", .{});
-    defer file.close(io);
-
-    const len = try file.readPositionalAll(io, &read_buf, 0);
-    try std.testing.expectEqualStrings("new", read_buf[0..len]);
 }

@@ -423,3 +423,50 @@ test "vertical faces preserve their U orientation" {
         }
     }
 }
+
+test "chunk faces wind outward for cubes slabs and both AO diagonals" {
+    const allocator = std.testing.allocator;
+    const atlas = TextureAtlas.init_grid(16, 16);
+    const tile: blocks.Tile = .{ .col = 0, .row = 0 };
+    var mesh = try BatchMesh.init(allocator);
+    defer mesh.deinit(allocator);
+
+    try mesh.ensure_quad_capacity(allocator, 1);
+
+    for (std.enums.values(Face)) |face| {
+        const axis: usize = switch (face) {
+            .x_pos, .x_neg => 0,
+            .y_pos, .y_neg => 1,
+            .z_pos, .z_neg => 2,
+        };
+        const sign: i64 = switch (face) {
+            .x_pos, .y_pos, .z_pos => 1,
+            .x_neg, .y_neg, .z_neg => -1,
+        };
+        const modes = enum { cube, slab, ao_02, ao_13 };
+        for (std.enums.values(modes)) |mode| {
+            mesh.clear_retaining_capacity();
+            switch (mode) {
+                .cube => emit_face(&mesh, face, 2, 3, 4, tile, &atlas, false),
+                .slab => emit_slab_face(&mesh, face, 2, 3, 4, tile, &atlas, false),
+                .ao_02 => emit_face_colors(&mesh, face, 2, 3, 4, tile, &atlas, .{ 0xFFFFFFFF, 0xFF808080, 0xFFFFFFFF, 0xFF808080 }),
+                .ao_13 => emit_face_colors(&mesh, face, 2, 3, 4, tile, &atlas, .{ 0xFF808080, 0xFFFFFFFF, 0xFF808080, 0xFFFFFFFF }),
+            }
+
+            // Inspect the triangles actually submitted, including mesh indices.
+            for (0..2) |triangle| {
+                var pos: [3][3]i64 = undefined;
+                for (&pos, 0..) |*p, corner| {
+                    const element = triangle * 3 + corner;
+                    const index = if (Rendering.mesh.indexing_enabled) mesh.indices.items[element] else element;
+                    for (mesh.vertices.items[index].pos, 0..) |v, component| p[component] = v;
+                }
+                const u = (axis + 1) % 3;
+                const v = (axis + 2) % 3;
+                const normal = (pos[1][u] - pos[0][u]) * (pos[2][v] - pos[0][v]) -
+                    (pos[1][v] - pos[0][v]) * (pos[2][u] - pos[0][u]);
+                try std.testing.expect(normal * sign > 0);
+            }
+        }
+    }
+}

@@ -762,7 +762,7 @@ test "section counts match emission at world boundaries with fluids slabs leaves
     try World.data.init_in_place(allocator, dims, 0);
     defer World.data.deinit();
 
-    const atlas = TextureAtlas.init(16, 16);
+    const atlas = TextureAtlas.init_grid(16, 16);
     var opaque_mesh = try BatchMesh.init(allocator);
     defer opaque_mesh.deinit(allocator);
 

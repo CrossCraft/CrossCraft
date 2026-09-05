@@ -1,151 +1,64 @@
-const std = @import("std");
-const assert = std.debug.assert;
-
-const ColorPrefix: u8 = '&';
-
-pub fn wrap(
-    comptime MaxLines: usize,
-    comptime MaxLineBytes: usize,
-    fonts: anytype,
-    text: []const u8,
-    max_w: i16,
-    out: *[MaxLines][MaxLineBytes]u8,
-    lens: *[MaxLines]u8,
-) u8 {
-    assert(MaxLines > 0);
-    assert(MaxLines <= std.math.maxInt(u8));
-    assert(MaxLineBytes > 0);
-    assert(MaxLineBytes <= std.math.maxInt(u8));
-
-    if (text.len == 0 or max_w <= 0) return 0;
-
-    var count: u8 = 0;
-    var remaining = std.mem.trimStart(u8, text, " ");
+//! Classic chat color continuation over Aether's generic bounded wrapper.
+const ae = @import("aether");
+const TextFormat = @import("TextFormat.zig");
+pub fn wrap(comptime max_lines: usize, comptime max_line_bytes: usize, font: anytype, text: []const u8, width: i16, output: *[max_lines][max_line_bytes]u8, lengths: *[max_lines]u8) u8 {
+    if (width <= 0) return 0;
+    var storage: [max_lines * max_line_bytes]u8 = undefined;
+    var lines: [max_lines][]const u8 = undefined;
+    const result = ae.Ui.TextWrap.wrap(font, text, .{ .max_width = width, .control_length = TextFormat.control_length }, &storage, &lines) catch return 0;
+    var count: usize = 0;
     var active_color: ?u8 = null;
-
-    while (remaining.len > 0 and count < MaxLines) {
-        const fit = fonts.fit_width(remaining, max_w, 0, 1);
-        const fit_end = @min(remaining.len, @max(fit, first_visible_end(remaining)));
-        var end = fit_end;
-        var next = fit_end;
-        if (fit_end < remaining.len) {
-            if (std.mem.lastIndexOfScalar(u8, remaining[0..fit_end], ' ')) |space| {
-                if (space > 0) {
-                    end = space;
-                    next = space + 1;
-                }
-            }
+    for (lines[0..result.line_count]) |line| {
+        const prefix: usize = if (count > 0 and active_color != null) 2 else 0;
+        if (prefix + line.len > max_line_bytes) break;
+        if (prefix != 0) {
+            output[count][0] = '&';
+            output[count][1] = active_color.?;
         }
-
-        const line = std.mem.trimEnd(u8, remaining[0..end], " ");
-        if (line.len > 0) {
-            var prefix_len: usize = 0;
-            if (count > 0) {
-                if (active_color) |color| {
-                    assert(MaxLineBytes >= 2);
-                    out[count][prefix_len] = ColorPrefix;
-                    out[count][prefix_len + 1] = color;
-                    prefix_len = 2;
-                }
-            }
-            assert(prefix_len + line.len <= MaxLineBytes);
-            @memcpy(out[count][prefix_len..][0..line.len], line);
-            lens[count] = @intCast(prefix_len + line.len);
-            active_color = scan_color(active_color, line);
-            count += 1;
-        }
-        remaining = std.mem.trimStart(u8, remaining[next..], " ");
-    }
-
-    return count;
-}
-
-fn first_visible_end(text: []const u8) usize {
-    var i: usize = 0;
-    while (i < text.len) {
-        if (is_color_code(text, i)) {
-            i += 2;
-            continue;
-        }
-        return i + 1;
-    }
-    return text.len;
-}
-
-fn scan_color(initial: ?u8, text: []const u8) ?u8 {
-    var active = initial;
-    var i: usize = 0;
-    while (i + 1 < text.len) {
-        if (is_color_code(text, i)) {
-            active = text[i + 1];
-            i += 2;
-            continue;
-        }
-        i += 1;
-    }
-    return active;
-}
-
-fn is_color_code(text: []const u8, at: usize) bool {
-    if (at + 1 >= text.len or text[at] != ColorPrefix) return false;
-    const c = text[at + 1];
-    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
-}
-
-const TestFont = struct {
-    pub fn fit_width(_: *const TestFont, text: []const u8, max_w: i16, _: i8, _: u8) usize {
-        if (max_w <= 0 or text.len == 0) return 0;
-        var width: i16 = 0;
+        @memcpy(output[count][prefix..][0..line.len], line);
+        lengths[count] = @intCast(prefix + line.len);
+        count += 1;
         var i: usize = 0;
-        var last_fit: usize = 0;
-        while (i < text.len) {
-            if (is_color_code(text, i)) {
-                i += 2;
-                last_fit = i;
-                continue;
-            }
-            if (width + 1 > max_w) break;
-            width += 1;
-            i += 1;
-            last_fit = i;
+        while (i < line.len) {
+            const control = TextFormat.control_length(line[i..]);
+            if (control != 0) {
+                active_color = line[i + 1];
+                i += control;
+            } else i += 1;
         }
-        return last_fit;
     }
-};
+    return @intCast(count);
+}
 
-fn expect_wrap(text: []const u8, max_w: i16, expected: []const []const u8) !void {
-    var out: [8][32]u8 = undefined;
-    var lens: [8]u8 = undefined;
-    const font = TestFont{};
-    const count = wrap(8, 32, &font, text, max_w, &out, &lens);
-    try std.testing.expectEqual(@as(u8, @intCast(expected.len)), count);
-    for (expected, 0..) |line, i| {
-        try std.testing.expectEqualStrings(line, out[i][0..lens[i]]);
+test "Aether chat wrapping preserves colors in fixed line buffers" {
+    const std = @import("std");
+    var fonts: ae.Ui.FontBatcher = undefined;
+    fonts.glyph_widths = @splat(1);
+    fonts.style_parser = TextFormat.parse;
+    var output: [4][32]u8 = undefined;
+    var lengths: [4]u8 = undefined;
+    const count = wrap(4, 32, &fonts, "&cabc def", 5, &output, &lengths);
+    try std.testing.expectEqual(2, count);
+    try std.testing.expectEqualStrings("&cabc", output[0][0..lengths[0]]);
+    try std.testing.expectEqualStrings("&cdef", output[1][0..lengths[1]]);
+}
+
+test "Classic chat wrapping carries trailing controls through empty lines" {
+    const std = @import("std");
+    var fonts: ae.Ui.FontBatcher = undefined;
+    fonts.glyph_widths = @splat(1);
+    fonts.style_parser = TextFormat.parse;
+    var output: [8][32]u8 = undefined;
+    var lengths: [8]u8 = undefined;
+    const count = wrap(8, 32, &fonts, "&cabc def&b\n\n&fX\n", 5, &output, &lengths);
+    try std.testing.expectEqual(5, count);
+    for ([_][]const u8{ "&cabc", "&cdef&b", "&b", "&b&fX", "&f" }, 0..) |expected, i| {
+        try std.testing.expectEqualStrings(expected, output[i][0..lengths[i]]);
     }
-}
-
-test "text wrapping handles whitespace and long words" {
-    try expect_wrap("", 5, &.{});
-    try expect_wrap("   ", 5, &.{});
-    try expect_wrap("hello", 0, &.{});
-    try expect_wrap("hello", 5, &.{"hello"});
-    try expect_wrap("hello world", 5, &.{ "hello", "world" });
-    try expect_wrap("abcdefgh", 3, &.{ "abc", "def", "gh" });
-    try expect_wrap("  hello   world  ", 5, &.{ "hello", "world" });
-}
-
-test "text wrapping preserves color codes across lines" {
-    try expect_wrap("a&cb", 1, &.{ "a&c", "&cb" });
-    try expect_wrap("&chello world", 5, &.{ "&chello", "&cworld" });
-    try expect_wrap("&c", 1, &.{"&c"});
-    try expect_wrap("&c&aab", 1, &.{ "&c&aa", "&ab" });
-    try expect_wrap("a&", 1, &.{ "a", "&" });
-}
-
-test "text wrapping stops when the output is full" {
-    var out: [2][1]u8 = undefined;
-    var lens: [2]u8 = undefined;
-    const font: TestFont = .{};
-    try std.testing.expectEqual(2, wrap(2, 1, &font, "abc", 1, &out, &lens));
-    try std.testing.expectEqualDeep([2][1]u8{ .{'a'}, .{'b'} }, out);
+    const controls_only = wrap(8, 32, &fonts, "&c&b", 1, &output, &lengths);
+    try std.testing.expectEqual(1, controls_only);
+    try std.testing.expectEqualStrings("&c&b", output[0][0..lengths[0]]);
+    var small: [4][3]u8 = undefined;
+    var small_lengths: [4]u8 = undefined;
+    try std.testing.expectEqual(0, wrap(4, 3, &fonts, "&cAB", 3, &small, &small_lengths));
 }

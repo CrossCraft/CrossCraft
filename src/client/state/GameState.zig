@@ -11,7 +11,6 @@ const core = @import("core");
 const Server = core.Server;
 const World = core.World;
 const CompressWorker = core.CompressWorker;
-const CompressorThread = @import("CompressorThread.zig");
 const proto = core.protocol;
 const collision = @import("../player/collision.zig");
 const FakeConn = @import("../connection/FakeConn.zig").FakeConn;
@@ -55,7 +54,6 @@ const ae_input = ae.Core.input;
 const log = std.log.scoped(.game);
 
 const caps = @import("capabilities").ClientType(ae);
-const execution = @import("capabilities").execution;
 
 const selection_depth_nudge: f32 = 1.0 / 320.0;
 const MpReadStackSize = 512 * 1024;
@@ -66,12 +64,15 @@ fake_conn: FakeConn,
 conn: ClientConn,
 // Owns the multiplayer TCP read side and clears mp_connected on exit.
 mp_read_thread: ?Util.Thread,
-compressor_thread: ?Util.Thread,
+compressor_started: bool,
 world: WorldRenderer,
 player: Player,
 ui_batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 iso_blocks: IsoBlockDrawer,
+hud_prepared: ?UiDrawList.Prepared = null,
+inventory_prepared: ?UiDrawList.Prepared = null,
+pause_prepared: ?UiDrawList.Prepared = null,
 inventory_open: bool,
 inventory_slot: u8,
 inventory_ui_state: UiState,
@@ -108,8 +109,11 @@ inited: bool,
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
+    self.hud_prepared = null;
+    self.inventory_prepared = null;
+    self.pause_prepared = null;
     self.mp_read_thread = null;
-    self.compressor_thread = null;
+    self.compressor_started = false;
     const gameplay_set = try bindings.init(&engine.input);
     try engine.input.push_context(&.{
         .name = "gameplay",
@@ -212,7 +216,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     self.ui_batcher = try SpriteBatcher.init(render_alloc);
 
-    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
+    self.font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
 
     self.iso_blocks = try IsoBlockDrawer.init(
         render_alloc,
@@ -245,7 +249,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     // Separate batchers guarantee the pause overlay flushes after gameplay UI.
     self.pause_batcher = try SpriteBatcher.init(render_alloc);
-    self.pause_font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
+    self.pause_font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
     self.paused = false;
     self.pause_screen = .main;
     self.pause_ui_repeat = .{};
@@ -273,7 +277,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
             try CompressWorker.init(engine.allocator(.user), engine.io);
             errdefer CompressWorker.deinit();
-            self.compressor_thread = try CompressorThread.spawn("world_compress", engine.allocator(.user));
+            try CompressWorker.start("world_compress");
+            self.compressor_started = true;
         },
     }
 
@@ -321,6 +326,17 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.held.deinit();
     self.steve.deinit();
     self.selection.deinit();
+    if (self.hud_prepared) |*prepared| prepared.deinit();
+    if (self.inventory_prepared) |*prepared| prepared.deinit();
+    if (self.pause_prepared) |*prepared| prepared.deinit();
+    self.hud_prepared = null;
+    self.inventory_prepared = null;
+    self.pause_prepared = null;
+    self.inventory_ui_state.deinit();
+    self.pause_ui_state.deinit();
+    self.pause_options_ui_state.deinit();
+    self.pause_controls_ui_state.deinit();
+    self.pause_dump_ui_state.deinit();
     self.iso_blocks.deinit();
     self.pause_font_batcher.deinit();
     self.pause_batcher.deinit();
@@ -338,11 +354,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
         },
         .multiplayer => World.deinit(),
     }
-    if (self.compressor_thread) |*t| {
-        CompressWorker.signal_exit();
-        t.join();
-        self.compressor_thread = null;
-    }
     CompressWorker.deinit();
     self.inited = false;
 }
@@ -358,13 +369,14 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     send_player_position(&self.player);
 }
 
-fn ensure_sp_compressor_started(self: *@This(), engine: *Engine) !void {
-    if (comptime !execution.background_workers) return;
+fn ensure_sp_compressor_started(self: *@This(), _: *Engine) !void {
+    if (!ae.System.info().background_workers) return;
 
-    if (self.compressor_thread != null) return;
+    if (self.compressor_started) return;
     // Drain save jobs queued by Server.init only after the state transition
     // and initial memory report have completed.
-    self.compressor_thread = try CompressorThread.spawn("world_compress", engine.allocator(.user));
+    try CompressWorker.start("world_compress");
+    self.compressor_started = true;
 }
 
 fn send_player_position(player: *Player) void {
@@ -869,6 +881,14 @@ fn player_in_shadow(player: *const Player) bool {
 }
 
 fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
+    if (!self.inventory_open) {
+        if (self.inventory_prepared) |*prepared| prepared.deinit();
+        self.inventory_prepared = null;
+    }
+    if (!self.paused) {
+        if (self.pause_prepared) |*prepared| prepared.deinit();
+        self.pause_prepared = null;
+    }
     self.ui_batcher.clear();
     self.font_batcher.clear();
     self.iso_blocks.begin();
@@ -902,7 +922,7 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
         var inv_ui = begin_game_ui(self, &inv_list, &self.inventory_ui_state, &none, InventoryUi.LayerBase);
         _ = InventoryUi.run(&inv_ui, self.inventory_blocks[0..], &self.inventory_slot);
         inv_ui.end();
-        inv_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
+        try inv_list.prepare_into(&self.inventory_prepared, &self.font_batcher, &self.iso_blocks);
     }
 
     const show_playerlist = Session.mode == .multiplayer and !self.inventory_open and
@@ -942,7 +962,7 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
         self.draw_hud_prompts(&hud_list);
     }
 
-    hud_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
+    try hud_list.prepare_into(&self.hud_prepared, &self.font_batcher, &self.iso_blocks);
     try self.ui_batcher.update();
     self.iso_blocks.update();
     try self.font_batcher.update();
@@ -959,21 +979,21 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
             var ui = begin_pause_ui(self, &list, &self.pause_ui_state, &none, PauseMenu.LayerBase);
             _ = PauseMenu.run(&ui, Session.mode == .singleplayer);
             ui.end();
-            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            try list.prepare_into(&self.pause_prepared, &self.pause_font_batcher, null);
         },
         .options => {
             var list: UiDrawList = .{};
             var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, &none, OptionsScreen.LayerBase);
             _ = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
             ui.end();
-            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            try list.prepare_into(&self.pause_prepared, &self.pause_font_batcher, null);
         },
         .controls => {
             var list: UiDrawList = .{};
             var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, &none, OptionsScreen.LayerBase);
             _ = ControlsScreen.run(&ui, &Options.current, pause_controls_ctx(self));
             ui.end();
-            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            try list.prepare_into(&self.pause_prepared, &self.pause_font_batcher, null);
         },
         .dump_world => {
             var path_buf: [World.DumpName.PathMax]u8 = undefined;
@@ -991,7 +1011,7 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
             };
             _ = DumpWorldScreen.run(&ui, &dump_ctx);
             ui.end();
-            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            try list.prepare_into(&self.pause_prepared, &self.pause_font_batcher, null);
         },
     }
     try self.pause_batcher.update();
@@ -1010,6 +1030,9 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         DisconnectState.transition_here(engine);
         return;
     }
+    // UI draw lists leave culling and depth writes disabled across frames.
+    // Establish the world pass state before applying its camera and fog.
+    Rendering.set_state(&.{ .blend = .solid, .depth_write = true, .cull = true });
     self.player.camera.apply();
     self.world.draw_world_pass(&self.player.camera);
 
@@ -1067,6 +1090,9 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
 
     Rendering.gfx.api.clear_depth();
     self.font_batcher.draw();
+    Rendering.gfx.api.clear_depth();
+    if (self.inventory_prepared) |*prepared| prepared.draw();
+    if (self.hud_prepared) |*prepared| prepared.draw();
 
     if (self.paused) {
         Rendering.gfx.api.clear_depth();
@@ -1074,6 +1100,8 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
 
         Rendering.gfx.api.clear_depth();
         self.pause_font_batcher.draw();
+        Rendering.gfx.api.clear_depth();
+        if (self.pause_prepared) |*prepared| prepared.draw();
     }
 }
 

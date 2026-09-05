@@ -14,6 +14,7 @@ const Color = Colors.Color;
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Options = @import("../Options.zig");
+const effect_positions = @import("../graphics/effect_positions.zig");
 
 const Extent: i32 = 4;
 const ExtentU: u32 = @intCast(Extent);
@@ -45,9 +46,8 @@ const ParticleAtlasTiles: u32 = 16;
 const DropTileCol: u32 = 0;
 const DropTileRow: u32 = 1;
 
-// Shared with ParticleSystem; meshes remain camera-local to fit i16.
-const PosScale: f32 = 128.0;
-const ModelScale: f32 = 256.0;
+const PosScale = effect_positions.encoding.units_per_world_unit;
+const ModelScale = effect_positions.encoding.model_scale();
 
 const QuadsPerSection: u32 = 2;
 const ColumnsDiam: u32 = 2 * ExtentU + 1;
@@ -73,9 +73,7 @@ const Rain = @This();
 
 streak_data: Rendering.MeshDataType(Vertex),
 streak_mesh: Rendering.MeshType(Vertex),
-splash_data: Rendering.MeshDataType(Vertex),
-splash_mesh: Rendering.MeshType(Vertex),
-splash_origin: Math.Vec3,
+splash_billboards: Rendering.BillboardBatcher,
 particle_atlas: TextureAtlas,
 scroll_v: i32,
 streak_mesh_dirty: bool,
@@ -88,13 +86,26 @@ rng: std.Random.DefaultPrng,
 allocator: std.mem.Allocator,
 
 pub fn init(allocator: std.mem.Allocator) !Rain {
-    var self: Rain = .{
-        .streak_data = try Rendering.MeshDataType(Vertex).init(allocator),
-        .streak_mesh = try Rendering.MeshType(Vertex).init(&.{}),
-        .splash_data = try Rendering.MeshDataType(Vertex).init(allocator),
-        .splash_mesh = try Rendering.MeshType(Vertex).init(&.{}),
-        .splash_origin = Math.Vec3.zero(),
-        .particle_atlas = TextureAtlas.init(ParticleAtlasTiles, ParticleAtlasTiles),
+    var streak_data = try Rendering.MeshDataType(Vertex).init(allocator);
+    errdefer streak_data.deinit(allocator);
+
+    try streak_data.ensure_quad_capacity(allocator, streak_max_quads());
+    var streak_mesh = try Rendering.MeshType(Vertex).init(&.{});
+    errdefer streak_mesh.deinit();
+
+    var splash_billboards = try Rendering.BillboardBatcher.init(allocator, .{
+        .capacity = SplashMaxQuads,
+        .units_per_world_unit = PosScale,
+        .normalization = effect_positions.encoding.normalization,
+    });
+    errdefer splash_billboards.deinit();
+
+    splash_billboards.gpu_mesh = try Rendering.BillboardBatcher.Mesh.init(&.{});
+    return .{
+        .streak_data = streak_data,
+        .streak_mesh = streak_mesh,
+        .splash_billboards = splash_billboards,
+        .particle_atlas = TextureAtlas.init_grid(ParticleAtlasTiles, ParticleAtlasTiles),
         .scroll_v = 0,
         .streak_mesh_dirty = true,
         .streak_cam_tile_x = 0,
@@ -105,16 +116,12 @@ pub fn init(allocator: std.mem.Allocator) !Rain {
         .rng = std.Random.DefaultPrng.init(0xDA1ADA1ADA1ADA1A),
         .allocator = allocator,
     };
-    try self.streak_data.ensure_quad_capacity(allocator, streak_max_quads());
-    try self.splash_data.ensure_quad_capacity(allocator, SplashMaxQuads);
-    return self;
 }
 
 pub fn deinit(self: *Rain) void {
     self.streak_mesh.deinit();
     self.streak_data.deinit(self.allocator);
-    self.splash_mesh.deinit();
-    self.splash_data.deinit(self.allocator);
+    self.splash_billboards.deinit();
     self.* = undefined;
 }
 
@@ -144,7 +151,7 @@ pub fn update(self: *Rain, dt: f32, camera: *const Camera) void {
 
     self.rebuild_streak_mesh(camera);
     self.rebuild_splash_mesh(camera);
-    if (self.splash_data.vertices.items.len != 0) self.splash_mesh.update(&self.splash_data);
+    if (self.splash_billboards.count != 0) self.splash_billboards.upload() catch unreachable;
 }
 
 fn update_splashes(self: *Rain, dt: f32) void {
@@ -231,7 +238,7 @@ pub fn draw_streaks(self: *Rain, camera: *const Camera) void {
 /// Caller must bind particles.png.
 pub fn draw_splashes(self: *Rain) void {
     if (!Options.current.rain) return;
-    if (self.splash_data.vertices.items.len == 0) return;
+    if (self.splash_billboards.count == 0) return;
 
     Rendering.gfx.api.set_alpha_blend(true);
     Rendering.gfx.api.set_depth_write(true);
@@ -239,9 +246,7 @@ pub fn draw_splashes(self: *Rain) void {
     defer Rendering.gfx.api.set_culling(true);
 
     Rendering.gfx.api.set_uv_offset(0.0, 0.0);
-    const m = Math.Mat4.scaling(ModelScale, ModelScale, ModelScale)
-        .mul(Math.Mat4.translation(self.splash_origin.x, self.splash_origin.y, self.splash_origin.z));
-    self.splash_mesh.draw(&m);
+    self.splash_billboards.draw();
 }
 
 fn rebuild_streak_mesh(self: *Rain, camera: *const Camera) void {
@@ -263,30 +268,17 @@ fn rebuild_streak_mesh(self: *Rain, camera: *const Camera) void {
 }
 
 fn rebuild_splash_mesh(self: *Rain, camera: *const Camera) void {
-    self.splash_data.clear_retaining_capacity();
-    self.splash_origin = Math.Vec3.new(@floor(camera.x), @floor(camera.y), @floor(camera.z));
-    if (self.splash_count == 0) return;
-
-    const cy = @cos(camera.yaw);
-    const sy = @sin(camera.yaw);
-    const cp = @cos(camera.pitch);
-    const sp = @sin(camera.pitch);
-    const rx = cy * SplashHalfSize;
-    const rz = -sy * SplashHalfSize;
-    const upx = -sy * sp * SplashHalfSize;
-    const upy = cp * SplashHalfSize;
-    const upz = -cy * sp * SplashHalfSize;
+    const origin = Math.Vec3.new(@floor(camera.x), @floor(camera.y), @floor(camera.z));
+    self.splash_billboards.begin(origin, camera.billboard_basis()) catch unreachable;
 
     const tu0 = self.particle_atlas.tile_u(DropTileCol);
     const tv0 = self.particle_atlas.tile_v(DropTileRow);
-    const tu1 = tu0 + self.particle_atlas.tile_width();
-    const tv1 = tv0 + self.particle_atlas.tile_height();
+    const uv: Rendering.BillboardBatcher.UvRegion = .{
+        .min = .{ tu0, tv0 },
+        .max = .{ tu0 + self.particle_atlas.tile_width(), tv0 + self.particle_atlas.tile_height() },
+    };
     const color: u32 = @bitCast(Color.rgba(180, 180, 220, 255));
-
-    var i: u16 = 0;
-    while (i < self.splash_count) : (i += 1) {
-        emit_splash(&self.splash_data, &self.splashes[i], self.splash_origin, rx, rz, upx, upy, upz, tu0, tv0, tu1, tv1, color);
-    }
+    for (self.splashes[0..self.splash_count]) |*splash| self.emit_splash(splash, uv, color);
 }
 
 fn build_streaks(mesh: *Rendering.MeshDataType(Vertex), cam_tile_x: i32, cam_tile_z: i32) void {
@@ -440,38 +432,27 @@ fn emit_quad(
     mesh.add_quad_assume_capacity(vertices[0], vertices[1], vertices[2], vertices[3]);
 }
 
-fn emit_splash(
-    mesh: *Rendering.MeshDataType(Vertex),
-    p: *const Splash,
-    origin: Math.Vec3,
-    rx: f32,
-    rz: f32,
-    upx: f32,
-    upy: f32,
-    upz: f32,
-    tu0: i16,
-    tv0: i16,
-    tu1: i16,
-    tv1: i16,
-    color: u32,
-) void {
-    const px = p.px - origin.x;
-    const py = p.py - origin.y;
-    const pz = p.pz - origin.z;
+fn emit_splash(self: *Rain, splash: *const Splash, uv: Rendering.BillboardBatcher.UvRegion, color: u32) void {
+    const position = Math.Vec3.new(splash.px, splash.py, splash.pz);
+    const local = position.sub(self.splash_billboards.origin);
     const limit = 32767.0 / PosScale - 2.0 * SplashHalfSize;
-    if (@abs(px) > limit or @abs(py) > limit or @abs(pz) > limit) return;
+    if (@abs(local.x) > limit or @abs(local.y) > limit or @abs(local.z) > limit) return;
 
-    const bl: Vertex = .{ .pos = .{ encode(px - rx - upx), encode(py - upy), encode(pz - rz - upz) }, .uv = .{ tu0, tv1 }, .color = color };
-    const br: Vertex = .{ .pos = .{ encode(px + rx - upx), encode(py - upy), encode(pz + rz - upz) }, .uv = .{ tu1, tv1 }, .color = color };
-    const tr: Vertex = .{ .pos = .{ encode(px + rx + upx), encode(py + upy), encode(pz + rz + upz) }, .uv = .{ tu1, tv0 }, .color = color };
-    const tl: Vertex = .{ .pos = .{ encode(px - rx + upx), encode(py + upy), encode(pz - rz + upz) }, .uv = .{ tu0, tv0 }, .color = color };
-    mesh.add_quad_assume_capacity(bl, br, tr, tl);
+    self.splash_billboards.add(.{
+        .position = position,
+        .size = .{ SplashHalfSize * 2, SplashHalfSize * 2 },
+        .uv = uv,
+        .color = color,
+    }) catch |err| switch (err) {
+        error.PositionOutOfRange => return,
+        else => unreachable,
+    };
 }
 
 fn encode(world: f32) i16 {
-    const scaled = @round(world * PosScale);
-    const clamped = @max(-32768.0, @min(32767.0, scaled));
-    return @intFromFloat(clamped);
+    // Rain streaks retain their historical saturation at the compact limits;
+    // their vertical sections and scrolling UV wrap remain game geometry.
+    return effect_positions.encoding.encode_component(std.math.clamp(world, -32768.0 / PosScale, 32767.0 / PosScale)) catch unreachable;
 }
 
 fn light_map_at(x: i32, z: i32) i32 {
@@ -531,11 +512,14 @@ test "rain splash particles retain their shape across 512 block worlds" {
 
     // Initialize only the state used by CPU splash simulation and meshing.
     var rain: Rain = undefined;
-    rain.splash_data = try Rendering.MeshDataType(Vertex).init(allocator);
-    defer rain.splash_data.deinit(allocator);
+    rain.splash_billboards = try Rendering.BillboardBatcher.init(allocator, .{
+        .capacity = 1,
+        .units_per_world_unit = PosScale,
+        .normalization = effect_positions.encoding.normalization,
+    });
+    defer rain.splash_billboards.deinit();
 
-    try rain.splash_data.ensure_quad_capacity(allocator, 1);
-    rain.particle_atlas = TextureAtlas.init(ParticleAtlasTiles, ParticleAtlasTiles);
+    rain.particle_atlas = TextureAtlas.init_grid(ParticleAtlasTiles, ParticleAtlasTiles);
 
     const positions = [_][2]f32{ .{ 0, 0 }, .{ 255, 255 }, .{ 256, 32 }, .{ 32, 256 }, .{ 256, 256 }, .{ 511, 511 } };
     const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
@@ -549,14 +533,14 @@ test "rain splash particles retain their shape across 512 block worlds" {
         for ([_]f32{ 0.0, 1.75, -2.5 }) |camera_offset| {
             const camera = Camera.init(x + camera_offset, 65.5, z - camera_offset);
             rain.rebuild_splash_mesh(&camera);
-            try std.testing.expectEqual(verts_per_quad, rain.splash_data.vertices.items.len);
+            try std.testing.expectEqual(verts_per_quad, rain.splash_billboards.data.vertices.items.len);
             const expected = [_][3]f32{
                 .{ p.px - SplashHalfSize, p.py - SplashHalfSize, p.pz },
                 .{ p.px + SplashHalfSize, p.py - SplashHalfSize, p.pz },
                 .{ p.px + SplashHalfSize, p.py + SplashHalfSize, p.pz },
             };
-            const origin = rain.splash_origin;
-            for (rain.splash_data.vertices.items[0..3], expected) |vertex, corner| {
+            const origin = rain.splash_billboards.origin;
+            for (rain.splash_billboards.data.vertices.items[0..3], expected) |vertex, corner| {
                 for (vertex.pos, corner, [3]f32{ origin.x, origin.y, origin.z }) |encoded, world, offset| {
                     const decoded = @as(f32, @floatFromInt(encoded)) / PosScale + offset;
                     try std.testing.expectApproxEqAbs(world, decoded, 0.5 / PosScale);
@@ -566,10 +550,10 @@ test "rain splash particles retain their shape across 512 block worlds" {
 
         var camera = Camera.init(x + 512.0, 65.5, z);
         rain.rebuild_splash_mesh(&camera);
-        try std.testing.expectEqual(0, rain.splash_data.vertices.items.len);
+        try std.testing.expectEqual(0, rain.splash_billboards.data.vertices.items.len);
         try std.testing.expectEqual(1, rain.splash_count);
         camera.x = x;
         rain.rebuild_splash_mesh(&camera);
-        try std.testing.expectEqual(verts_per_quad, rain.splash_data.vertices.items.len);
+        try std.testing.expectEqual(verts_per_quad, rain.splash_billboards.data.vertices.items.len);
     }
 }

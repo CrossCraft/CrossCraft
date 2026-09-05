@@ -1,5 +1,5 @@
-/// Streams audio from the active pack, with two shared DEFLATE slots for
-/// compatibility with compressed audio entries.
+/// Game sound policy over Aether-owned streaming WAV voices. The active pack
+/// remains borrowed until every voice is stopped during deinit.
 const std = @import("std");
 const assert = std.debug.assert;
 const ae = @import("aether");
@@ -9,11 +9,7 @@ const Math = ae.Math;
 const blocks = @import("core").blocks;
 const Block = blocks.Block;
 const Options = @import("Options.zig");
-const Zip = @import("util/Zip.zig");
-
-const flate = std.compress.flate;
-const Io = std.Io;
-const File = Io.File;
+const Zip = ae.Util.Zip;
 
 const log = std.log.scoped(.audio);
 
@@ -24,12 +20,14 @@ const max_variants = 4;
 const music_count: u8 = 7;
 
 const SoundEntry = struct {
-    data_offset: u64 = 0,
-    header_skip: u64 = 0,
-    pcm_size: u64 = 0,
-    format: Audio.PcmFormat = .{ .sample_rate = 44100, .channels = 1, .bit_depth = 16 },
-    deflated: bool = false,
+    path_bytes: [128]u8 = undefined,
+    path_len: usize = 0,
     valid: bool = false,
+    compressed: bool = false,
+
+    fn path(self: *const SoundEntry) []const u8 {
+        return self.path_bytes[0..self.path_len];
+    }
 };
 
 var dig_entries: [material_count][max_variants]SoundEntry = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
@@ -42,34 +40,13 @@ const max_voices: u32 = caps.audio.max_voices;
 const music_slot: u32 = max_voices - 1;
 
 const Voice = struct {
-    read_buf: [8192]u8 = undefined,
-    file_reader: File.Reader = undefined,
-    limited: Io.Reader.Limited = undefined,
     handle: Audio.SoundHandle = .none,
-    stream: Audio.StreamingSoundHandle = .none,
     active: bool = false,
-    deflate: ?*DeflateSlot = null,
+    compressed: bool = false,
 };
 
-var voices: [max_voices]Voice = .{Voice{}} ** max_voices;
-
-const DeflateSlot = struct {
-    flate_buf: [flate.max_window_len]u8 = undefined,
-    decompressor: flate.Decompress = undefined,
-    in_use: bool = false,
-};
-
-var deflate_slots: [2]DeflateSlot = .{DeflateSlot{}} ** 2;
-
-fn find_free_deflate_slot() ?*DeflateSlot {
-    for (&deflate_slots) |*s| {
-        if (!s.in_use) return s;
-    }
-    return null;
-}
-
-var stored_file: File = undefined;
-var stored_io: Io = undefined;
+var voices: [max_voices]Voice = @splat(.{});
+var active_pack: *Zip = undefined;
 var initialised: bool = false;
 
 const MusicState = enum { idle, playing, delay };
@@ -115,26 +92,15 @@ const music_paths: [music_count][]const u8 = .{
     "assets/minecraft/music/hal4.wav",
 };
 
-/// Opens a second handle to the pack archive so music / sfx can stream
-/// PCM data without seek contention with texture reads.
-pub fn init(pack: *Zip, dir: Io.Dir, path: []const u8) void {
-    stored_io = pack.io;
-    stored_file = dir.openFile(stored_io, path, .{}) catch |err| {
-        log.warn("cannot open '{s}' for audio: {}", .{ path, err });
-        return;
-    };
-
+/// Archive slots have independent reader state; Aether owns and releases each
+/// active WAV source. ResourcePack must call deinit before closing this archive.
+pub fn init(pack: *Zip) void {
+    assert(!initialised);
+    active_pack = pack;
     scan_entries(pack, "dig", &dig_entries, &dig_counts, &dig_max);
     scan_entries(pack, "step", &step_entries, &step_counts, &step_max);
     scan_music(pack);
-
-    for (&voices) |*v| {
-        v.active = false;
-        v.handle = .none;
-        v.stream = .none;
-        v.deflate = null;
-    }
-    for (&deflate_slots) |*s| s.in_use = false;
+    voices = @splat(.{});
 
     music_state = .delay;
     music_delay_timer = 5.0 + rand_f32() * 15.0;
@@ -150,17 +116,14 @@ pub fn deinit() void {
     for (&voices) |*v| {
         if (v.active) release_voice(v);
     }
-    stored_file.close(stored_io);
     initialised = false;
 
-    stored_file = undefined;
-    stored_io = undefined;
+    active_pack = undefined;
 
     music_state = .idle;
     music_index = 0;
     music_delay_timer = 0;
     voices = undefined;
-    deflate_slots = undefined;
 
     dig_entries = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
     dig_counts = .{0} ** material_count;
@@ -184,7 +147,7 @@ fn scan_entries(
             const path = std.fmt.bufPrint(&buf, "assets/minecraft/sounds/{s}/{s}{d}.wav", .{
                 kind, mat_names[mi], vi + 1,
             }) catch continue;
-            entries[mi][vi] = resolve_wav(pack, path) catch |err| {
+            entries[mi][loaded] = resolve_wav(pack, path) catch |err| {
                 log.warn("skip {s}: {}", .{ path, err });
                 continue;
             };
@@ -203,79 +166,17 @@ fn scan_music(pack: *Zip) void {
     }
 }
 
-/// Resolve both stored and deflated WAV entries to their PCM payload.
+/// Validate the WAV once during pack scanning; playback reopens its independent
+/// owned source. Store only the game resource path, not archive byte offsets.
 fn resolve_wav(pack: *Zip, path: []const u8) !SoundEntry {
-    var stream = try pack.open(path);
-    defer pack.close_stream(&stream);
+    const input = try pack.open(path);
+    defer pack.close_stream(&input);
 
-    const wav = try parse_wav_stream(stream.reader);
-
-    return .{
-        .data_offset = stream.data_offset,
-        .header_skip = wav.header_skip,
-        .pcm_size = wav.pcm_size,
-        .format = wav.format,
-        .deflated = stream.compression_method == .deflate,
-        .valid = true,
-    };
-}
-
-const WavInfo = struct {
-    header_skip: u64,
-    pcm_size: u64,
-    format: Audio.PcmFormat,
-};
-
-fn parse_wav_stream(reader: *Io.Reader) !WavInfo {
-    var header: [12]u8 = undefined;
-    try reader.readSliceAll(&header);
-    if (!std.mem.eql(u8, header[0..4], "RIFF")) return error.InvalidWav;
-    if (!std.mem.eql(u8, header[8..12], "WAVE")) return error.InvalidWav;
-
-    var consumed: u64 = header.len;
-    var format: ?Audio.PcmFormat = null;
-
-    while (true) {
-        var chunk_header: [8]u8 = undefined;
-        try reader.readSliceAll(&chunk_header);
-        consumed += chunk_header.len;
-        const chunk_id = chunk_header[0..4];
-        const chunk_size = std.mem.readInt(u32, chunk_header[4..8], .little);
-
-        if (std.mem.eql(u8, chunk_id, "fmt ")) {
-            if (chunk_size < 16) return error.InvalidWav;
-            var fmt: [16]u8 = undefined;
-            try reader.readSliceAll(&fmt);
-            if (std.mem.readInt(u16, fmt[0..2], .little) != 1) return error.UnsupportedFormat;
-            format = .{
-                .sample_rate = std.mem.readInt(u32, fmt[4..8], .little),
-                .channels = std.mem.readInt(u16, fmt[2..4], .little),
-                .bit_depth = std.mem.readInt(u16, fmt[14..16], .little),
-            };
-            consumed += fmt.len;
-            const rest = chunk_size - fmt.len;
-            if (rest > 0) {
-                try reader.discardAll64(rest);
-                consumed += rest;
-            }
-        } else if (std.mem.eql(u8, chunk_id, "data")) {
-            const fmt = format orelse return error.InvalidWav;
-            if (chunk_size % fmt.frame_size() != 0) return error.InvalidWav;
-            return .{
-                .header_skip = consumed,
-                .pcm_size = chunk_size,
-                .format = fmt,
-            };
-        } else {
-            try reader.discardAll64(chunk_size);
-            consumed += chunk_size;
-        }
-
-        if (chunk_size & 1 != 0) {
-            try reader.discardAll64(1);
-            consumed += 1;
-        }
-    }
+    _ = try Audio.wav.parse_stream(input.reader);
+    if (path.len > 128) return error.SoundPathTooLong;
+    var entry: SoundEntry = .{ .path_len = path.len, .valid = true, .compressed = input.compression_method == .deflate };
+    @memcpy(entry.path_bytes[0..path.len], path);
+    return entry;
 }
 
 pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32) void {
@@ -298,11 +199,7 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
         if (Options.current.sound_volume == 0.0) {
             release_voice(v);
         } else if (!Audio.is_playing(v.handle)) {
-            Audio.destroy_stream(v.stream);
-            v.handle = .none;
-            v.stream = .none;
-            release_deflate(v);
-            v.active = false;
+            release_voice(v);
         }
     }
 
@@ -313,11 +210,7 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
                 music_state = .delay;
                 music_delay_timer = 1.0;
             } else if (!Audio.is_playing(voices[music_slot].handle)) {
-                Audio.destroy_stream(voices[music_slot].stream);
-                voices[music_slot].handle = .none;
-                voices[music_slot].stream = .none;
-                release_deflate(&voices[music_slot]);
-                voices[music_slot].active = false;
+                release_voice(&voices[music_slot]);
                 music_state = .delay;
                 music_delay_timer = min_music_delay +
                     rand_f32() * (max_music_delay - min_music_delay);
@@ -414,20 +307,11 @@ fn find_free_sfx() ?*Voice {
 }
 
 fn release_voice(v: *Voice) void {
+    // Owned streams close on stop or completion; a completed handle is harmless.
     Audio.stop(v.handle);
-    Audio.destroy_stream(v.stream);
     v.handle = .none;
-    v.stream = .none;
-    release_deflate(v);
     v.active = false;
-}
-
-fn release_deflate(v: *Voice) void {
-    if (v.deflate) |ds| {
-        assert(ds.in_use);
-        ds.in_use = false;
-        v.deflate = null;
-    }
+    v.compressed = false;
 }
 
 fn start_voice(
@@ -438,47 +322,121 @@ fn start_voice(
 ) !void {
     assert(initialised);
     assert(!v.active);
-    assert(v.deflate == null);
-    v.file_reader = File.Reader.init(stored_file, stored_io, &v.read_buf);
-    v.deflate = null;
-    errdefer release_deflate(v);
-
-    if (entry.deflated) {
-        const ds = find_free_deflate_slot() orelse return error.OutOfDeflateSlots;
-        try v.file_reader.seekTo(entry.data_offset);
-        ds.decompressor = flate.Decompress.init(
-            &v.file_reader.interface,
-            .raw,
-            &ds.flate_buf,
-        );
-        try ds.decompressor.reader.discardAll64(entry.header_skip);
-        ds.in_use = true;
-        v.deflate = ds;
-        v.limited = Io.Reader.Limited.init(
-            &ds.decompressor.reader,
-            Io.Limit.limited64(entry.pcm_size),
-            &.{},
-        );
-    } else {
-        try v.file_reader.seekTo(entry.data_offset + entry.header_skip);
-        v.limited = Io.Reader.Limited.init(
-            &v.file_reader.interface,
-            Io.Limit.limited64(entry.pcm_size),
-            &.{},
-        );
+    if (entry.compressed) {
+        var compressed_voices: usize = 0;
+        for (voices) |voice| if (voice.active and voice.compressed) {
+            compressed_voices += 1;
+        };
+        // Retain the game's two compressed-voice budget and leave the archive's
+        // third decompression window available to texture/animation loaders.
+        if (compressed_voices >= 2) return error.OutOfDeflateSlots;
     }
+    const stream = try Audio.create_wav_stream(active_pack.allocator, active_pack.source(), entry.path());
+    errdefer Audio.destroy_stream(stream);
 
-    v.stream = try Audio.create_stream(&.{
-        .reader = &v.limited.interface,
-        .format = entry.format,
-        .byte_length = entry.pcm_size,
-    });
-    errdefer {
-        Audio.destroy_stream(v.stream);
-        v.stream = .none;
-    }
-
-    v.handle = try Audio.play_stream(v.stream, &opts);
+    v.handle = try Audio.play_stream(stream, &opts);
     if (pos) |p| Audio.set_position(v.handle, p);
     v.active = true;
+    v.compressed = entry.compressed;
+}
+
+const test_archive_bytes = @embedFile("util/testdata/audio.zip");
+
+fn test_archive(allocator: std.mem.Allocator, dir: std.Io.Dir, options: Zip.Options) !*Zip {
+    try dir.writeFile(std.testing.io, .{ .sub_path = "audio.zip", .data = test_archive_bytes });
+    return Zip.init_options(allocator, std.testing.io, dir, "audio.zip", options);
+}
+
+test "sound scan migration compacts valid variants when an intermediate WAV is invalid" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const archive = try test_archive(t.allocator, tmp.dir, .{});
+    defer archive.deinit();
+
+    var entries: [material_count][max_variants]SoundEntry = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
+    var counts: [material_count]u8 = @splat(0);
+    const limits: [material_count]u8 = .{ 3, 0, 0, 0, 0, 0, 0 };
+    scan_entries(archive, "dig", &entries, &counts, &limits);
+    try t.expectEqual(@as(u8, 2), counts[0]);
+    try t.expectEqualStrings("assets/minecraft/sounds/dig/stone1.wav", entries[0][0].path());
+    try t.expectEqualStrings("assets/minecraft/sounds/dig/stone3.wav", entries[0][1].path());
+}
+
+fn check_owned_playback(allocator: std.mem.Allocator) !void {
+    const Backend = struct {
+        var active: bool = false;
+        pub fn deinit() void {
+            active = false;
+        }
+        pub fn update() void {}
+        pub fn max_voices() u32 {
+            return 1;
+        }
+        pub fn play_slot(_: u8, _: Audio.SlotSource) ae.PlatformApi.audio.PlaySlotError!void {
+            active = true;
+        }
+        pub fn stop_slot(_: u8) void {
+            active = false;
+        }
+        pub fn set_slot_gain_pan(_: u8, _: f32, _: f32) void {}
+        pub fn is_slot_active(_: u8) bool {
+            return active;
+        }
+    };
+    const Mix = Audio.mixer_mod.MixerType(Backend);
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const archive = try test_archive(allocator, tmp.dir, .{ .max_streams = 2, .max_deflate_streams = 1 });
+    defer archive.deinit();
+    defer Mix.deinit();
+
+    const stored_path = "assets/minecraft/sounds/dig/stone1.wav";
+    const deflated_path = "assets/minecraft/sounds/dig/stone3.wav";
+    const stored = try Mix.create_wav_stream(allocator, archive.source(), stored_path);
+    const deflated = try Mix.create_wav_stream(allocator, archive.source(), deflated_path);
+    try t.expectError(error.StreamsExhausted, archive.open(stored_path));
+    const voice = try Mix.play_stream(stored, &.{});
+    Mix.update();
+    Mix.stop(voice);
+    var available = try archive.source().open(stored_path);
+    available.close();
+    try t.expectError(error.InvalidStreamingSound, Mix.play_stream(stored, &.{}));
+    Mix.destroy_stream(deflated);
+    var available_deflate = try archive.source().open(deflated_path);
+    available_deflate.close();
+}
+
+test "owned audio migration releases stored and deflated readers on stop and destruction" {
+    try check_owned_playback(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, check_owned_playback, .{});
+}
+
+test "owned audio migration fits the game budget with all voices and a texture reader" {
+    // Desktop's runtime game budget is 512KiB; other game targets reserve at
+    // least 1MiB. Leave room for the real pack's larger filename/index tables.
+    var memory: [512 * 1024]u8 = undefined;
+    var budget = std.heap.FixedBufferAllocator.init(&memory);
+    const allocator = budget.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const archive = try test_archive(allocator, tmp.dir, .{ .max_streams = max_voices + 1, .max_deflate_streams = 3 });
+    defer archive.deinit();
+
+    const Mix = Audio.mixer_mod.MixerType(struct {
+        pub fn deinit() void {}
+    });
+    defer Mix.deinit();
+
+    for (0..max_voices) |_| {
+        _ = try Mix.create_wav_stream(allocator, archive.source(), "assets/minecraft/sounds/dig/stone1.wav");
+    }
+    var texture_reader = try archive.source().open("assets/minecraft/sounds/dig/stone3.wav");
+    defer texture_reader.close();
+
+    try std.testing.expect(budget.end_index + 16 * 1024 < memory.len);
 }

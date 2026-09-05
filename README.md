@@ -52,6 +52,17 @@ Classic Server v1.1 is a feature-complete Minecraft Classic 0.30 server with bas
 
 Requirement: Zig (matching `build.zig.zon`'s `minimum_zig_version`)
 
+This working tree uses the new shared Aether APIs. Until the engine dependency
+pin includes them, build against the sibling checkout:
+
+```sh
+zig build game --fork=/home/n/Desktop/Aether
+zig build server --fork=/home/n/Desktop/Aether
+zig build test --fork=/home/n/Desktop/Aether
+```
+
+See [the migration notes](MIGRATION.md) for API ownership and focused checks.
+
 ```
 # General
 zig build game       # desktop client
@@ -79,9 +90,13 @@ Read `STYLE.MD` first. Run `zig fmt` before submitting. Run `zig build test` bef
 - `src/client` provides the playable game, rendering, input, and UI.
 - `src/server` provides the PC-only standalone server and administration.
 
-[`src/capabilities.zig`](src/capabilities.zig) is the single place for target identity checks. Callers ask for behavior or limits, such as `execution.background_workers`, `filesystem.rename_replaces_destination`, or `controls.single_stick`. Add new target decisions there instead of checking `builtin`, `ae.platform`, or the graphics backend at the call site.
+[`src/capabilities.zig`](src/capabilities.zig) is the single place for game target policy, such as `controls.single_stick`, memory profiles, and packaging choices. Aether supplies hardware facts, worker support, and native services. Add new game target decisions there instead of checking `builtin`, `ae.platform`, or the graphics backend at the call site.
 
 Core and host tools import the std-only `capabilities` module. Client code uses `@import("capabilities").ClientType(ae)` for engine-dependent policy and system hooks. `client/config.zig` selects the runtime memory profile before allocation and applies its budgets; PSP model detection and Old/New 3DS control support remain runtime decisions. Build packaging uses `build_policy` with the requested target rather than the build runner's target.
+
+Client and server hosts install `engine_services`, which connects Core's small
+job/storage interfaces to Aether. Shared Core and worldgen modules do not import
+Aether or console SDKs.
 
 Run `zig build test-capabilities` to verify target capability policy. These tests also run under `zig build test`.
 

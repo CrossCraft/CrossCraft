@@ -71,7 +71,6 @@ connection_pool: []ConnectionSlot,
 connections_mutex: std.Io.Mutex,
 tasks: std.Io.Group,
 listener: std.Io.net.Server,
-compressor_thread: Util.Thread,
 server_config: ServerConfig,
 heartbeat_salt: [16]u8,
 heartbeat_users: std.atomic.Value(u32),
@@ -88,6 +87,7 @@ pub fn state(self: *ServerState) State {
 }
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
+    @import("engine_services").install();
     var self = Util.ctx_to_self(ServerState, ctx);
     self.inited = false;
 
@@ -109,19 +109,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     );
     try Server.init(alloc, alloc, engine.io, engine.dirs.data, config);
 
-    self.compressor_thread = Util.Thread.spawn(.{
-        .name = "world_compress",
-        .stack_size = 512 * 1024,
-        .priority = .lowest,
-        .allocator = alloc,
-    }, CompressWorker.worker_main, .{}) catch |err| {
+    CompressWorker.start("world_compress") catch |err| {
         Server.deinit_after_init_error();
         return err;
     };
     errdefer {
         Server.deinit();
-        CompressWorker.signal_exit();
-        self.compressor_thread.join();
         CompressWorker.deinit();
     }
 
@@ -586,8 +579,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     // The compressor must finish the final world save before it shuts down.
     Server.deinit();
 
-    CompressWorker.signal_exit();
-    self.compressor_thread.join();
     CompressWorker.deinit();
 
     engine.allocator(.user).free(self.connection_pool);

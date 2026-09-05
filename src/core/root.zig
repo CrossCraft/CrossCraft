@@ -7,4 +7,5 @@ pub const Server = @import("server.zig");
 pub const Client = @import("client.zig");
 pub const World = @import("world.zig");
 pub const CompressWorker = @import("compress_worker.zig");
+pub const Host = @import("host.zig");
 pub const OutboundQueue = @import("outbound_queue.zig");

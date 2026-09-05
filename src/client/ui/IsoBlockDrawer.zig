@@ -33,8 +33,7 @@ pub const IsoLayer: u8 = 250;
 const IsoZ: i16 = 32766 - @as(i16, IsoLayer);
 
 const QuadsPerBlock: usize = 3;
-const MaxBlocks: usize = 9 + 45;
-const QuadCapacity: usize = MaxBlocks * QuadsPerBlock;
+const QuadCapacity: usize = QuadsPerBlock;
 
 pub const Payload = struct {
     block: Block,
@@ -49,6 +48,9 @@ mesh_data: Rendering.MeshDataType(Vertex),
 mesh: Rendering.MeshType(Vertex),
 iso_xform: Math.Mat4,
 allocator: std.mem.Allocator,
+prepared: std.ArrayList(struct { sequence: u16, drawer: *IsoBlockDrawer }) = .empty,
+prepared_count: usize = 0,
+signature: ?u64 = null,
 
 pub fn init(
     allocator: std.mem.Allocator,
@@ -69,6 +71,11 @@ pub fn init(
 }
 
 pub fn deinit(self: *IsoBlockDrawer) void {
+    for (self.prepared.items) |item| {
+        item.drawer.deinit();
+        self.allocator.destroy(item.drawer);
+    }
+    self.prepared.deinit(self.allocator);
     self.mesh.deinit();
     self.mesh_data.deinit(self.allocator);
     self.* = undefined;
@@ -106,7 +113,10 @@ pub fn add_payload(self: *IsoBlockDrawer, payload: Payload) void {
 
 pub fn update(self: *IsoBlockDrawer) void {
     if (self.mesh_data.vertices.items.len == 0) return;
+    const signature = std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(self.mesh_data.vertices.items));
+    if (self.signature != null and self.signature.? == signature) return;
     self.mesh.update(&self.mesh_data);
+    self.signature = signature;
 }
 
 pub fn draw(self: *IsoBlockDrawer) void {
@@ -114,7 +124,7 @@ pub fn draw(self: *IsoBlockDrawer) void {
 
     Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
     Rendering.gfx.api.set_view_matrix(&Math.Mat4.identity());
-    Rendering.set_state(&.{ .texture = self.terrain.handle });
+    Rendering.set_state(&.{ .texture = self.terrain.handle, .depth_write = false });
 
     const ident = Math.Mat4.identity();
     self.mesh.draw(&ident);
@@ -265,4 +275,44 @@ fn emit_quad(self: *IsoBlockDrawer, verts: *const [4]Vertex) void {
     } else {
         self.mesh_data.add_quad_assume_capacity(verts[0], verts[3], verts[2], verts[1]);
     }
+}
+
+/// Each command owns prepared geometry so mixed UI commands remain ordered.
+pub fn renderer(self: *IsoBlockDrawer) Ui.CustomRenderable.Renderer {
+    return .{ .ctx = self, .reset = reset_commands, .prepare = prepare_commands, .draw = draw_commands };
+}
+fn reset_commands(context: *anyopaque) void {
+    const self: *IsoBlockDrawer = @ptrCast(@alignCast(context));
+    self.prepared_count = 0;
+}
+fn prepare_commands(context: *anyopaque, commands: []const Ui.CustomRenderable.Command) !void {
+    const self: *IsoBlockDrawer = @ptrCast(@alignCast(context));
+    for (commands) |command| {
+        if (self.prepared_count == self.prepared.items.len) {
+            const drawer = try self.allocator.create(IsoBlockDrawer);
+            errdefer self.allocator.destroy(drawer);
+            drawer.* = try init(self.allocator, self.terrain, self.atlas);
+            errdefer drawer.deinit();
+            try self.prepared.append(self.allocator, .{ .sequence = command.sequence, .drawer = drawer });
+        }
+        const item = &self.prepared.items[self.prepared_count];
+        item.sequence = command.sequence;
+        const drawer = item.drawer;
+        drawer.terrain = self.terrain;
+        drawer.atlas = self.atlas;
+        drawer.begin();
+        var payload = command.read(Payload);
+        payload.cx += @floatFromInt(command.bounds.x0);
+        payload.cy += @floatFromInt(command.bounds.y0);
+        drawer.add_payload(payload);
+        drawer.update();
+        self.prepared_count += 1;
+    }
+}
+fn draw_commands(context: *anyopaque, commands: []const Ui.CustomRenderable.Command) void {
+    const self: *IsoBlockDrawer = @ptrCast(@alignCast(context));
+    for (commands) |command| for (self.prepared.items[0..self.prepared_count]) |item| if (item.sequence == command.sequence) {
+        item.drawer.draw();
+        break;
+    };
 }
