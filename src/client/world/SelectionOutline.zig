@@ -11,17 +11,17 @@ const Vertex = @import("aether").Rendering.Vertex;
 // Twelve overlapping prisms form a backend-independent block outline.
 // Geometry uses the chunk mesh SNORM16 scale (one block = 2048 units).
 // Per-axis thickness compensation keeps partial blocks visually consistent.
-const LO: i16 = 0;
-const HI: i16 = 2048;
+const Lo: i16 = 0;
+const Hi: i16 = 2048;
 
 // Dividing by each AABB axis size cancels the model matrix's later scaling.
 // Protrusion controls silhouette inflation independently of line thickness.
-const THICK_NUMERATOR: i32 = 384;
-const PROTRUSION_NUMERATOR: i32 = caps.render.selection_protrusion;
+const ThickNumerator: i32 = 384;
+const ProtrusionNumerator: i32 = caps.render.selection_protrusion;
 
-const COLOR: u32 = 0xAA202020;
-const QUAD_COUNT: usize = 72;
-const VERTEX_COUNT: usize = QUAD_COUNT * 6;
+const Color: u32 = 0xAA202020;
+const QuadCount: usize = 72;
+const VertexCount: usize = QuadCount * 6;
 
 const SelectionOutline = @This();
 
@@ -40,7 +40,7 @@ pub fn init(allocator: std.mem.Allocator) !SelectionOutline {
         .mesh = try Rendering.MeshType(Vertex).init(&.{}),
         .allocator = allocator,
     };
-    try self.mesh_data.ensure_quad_capacity(allocator, QUAD_COUNT);
+    try self.mesh_data.ensure_quad_capacity(allocator, QuadCount);
     return self;
 }
 
@@ -57,7 +57,7 @@ pub fn update(self: *SelectionOutline, bounds: SubvoxelBounds) !void {
     self.last_bounds = bounds;
     self.mesh_data.clear_retaining_capacity();
     build_edges(&self.mesh_data, compute_thick(bounds));
-    const expected_verts: usize = if (Rendering.mesh.indexing_enabled) QUAD_COUNT * 4 else VERTEX_COUNT;
+    const expected_verts: usize = if (Rendering.mesh.indexing_enabled) QuadCount * 4 else VertexCount;
     assert(self.mesh_data.vertices.items.len == expected_verts);
     self.mesh.update(&self.mesh_data);
 }
@@ -81,21 +81,21 @@ fn compute_thick(bounds: SubvoxelBounds) Thickness {
     const sz = @max(axis_size(bounds, .z), 1);
     return .{
         .thick = .{
-            .x = @intCast(@divTrunc(THICK_NUMERATOR, sx)),
-            .y = @intCast(@divTrunc(THICK_NUMERATOR, sy)),
-            .z = @intCast(@divTrunc(THICK_NUMERATOR, sz)),
+            .x = @intCast(@divTrunc(ThickNumerator, sx)),
+            .y = @intCast(@divTrunc(ThickNumerator, sy)),
+            .z = @intCast(@divTrunc(ThickNumerator, sz)),
         },
         .protrusion = .{
-            .x = @intCast(@divTrunc(PROTRUSION_NUMERATOR, sx)),
-            .y = @intCast(@divTrunc(PROTRUSION_NUMERATOR, sy)),
-            .z = @intCast(@divTrunc(PROTRUSION_NUMERATOR, sz)),
+            .x = @intCast(@divTrunc(ProtrusionNumerator, sx)),
+            .y = @intCast(@divTrunc(ProtrusionNumerator, sy)),
+            .z = @intCast(@divTrunc(ProtrusionNumerator, sz)),
         },
     };
 }
 
 const EdgeSpec = struct { axis: Axis, u_hi: bool, v_hi: bool };
 
-const EDGES = [_]EdgeSpec{
+const Edges = [_]EdgeSpec{
     .{ .axis = .x, .u_hi = false, .v_hi = false },
     .{ .axis = .x, .u_hi = false, .v_hi = true },
     .{ .axis = .x, .u_hi = true, .v_hi = false },
@@ -129,19 +129,19 @@ fn axis_thick(t: PerAxis, axis: Axis) i16 {
 fn outward_range(at_hi: bool, total: i16, protrusion: i16) struct { i16, i16 } {
     const inside = total - protrusion;
     return if (at_hi)
-        .{ HI - inside, HI + protrusion }
+        .{ Hi - inside, Hi + protrusion }
     else
-        .{ LO - protrusion, LO + inside };
+        .{ Lo - protrusion, Lo + inside };
 }
 
 fn build_edges(mesh: *Rendering.MeshDataType(Vertex), t: Thickness) void {
-    for (EDGES) |e| {
+    for (Edges) |e| {
         const u_axis, const v_axis = perp_axes(e.axis);
         const u_lo, const u_hi = outward_range(e.u_hi, axis_thick(t.thick, u_axis), axis_thick(t.protrusion, u_axis));
         const v_lo, const v_hi = outward_range(e.v_hi, axis_thick(t.thick, v_axis), axis_thick(t.protrusion, v_axis));
         const t_edge_prot = axis_thick(t.protrusion, e.axis);
-        const edge_lo: i16 = LO - t_edge_prot;
-        const edge_hi: i16 = HI + t_edge_prot;
+        const edge_lo: i16 = Lo - t_edge_prot;
+        const edge_hi: i16 = Hi + t_edge_prot;
 
         var c0: [3]i16 = undefined;
         var c1: [3]i16 = undefined;
@@ -198,7 +198,7 @@ fn emit_box(mesh: *Rendering.MeshDataType(Vertex), c0: [3]i16, c1: [3]i16) void 
 }
 
 fn v(x: i16, y: i16, z: i16) Vertex {
-    return .{ .pos = .{ x, y, z }, .uv = .{ 0, 0 }, .color = COLOR };
+    return .{ .pos = .{ x, y, z }, .uv = .{ 0, 0 }, .color = Color };
 }
 
 fn append_quad(mesh: *Rendering.MeshDataType(Vertex), q: [4]Vertex) void {

@@ -13,12 +13,12 @@ const compress_worker = @import("../compress_worker.zig");
 
 const log = std.log.scoped(.world);
 
-const BLOCK_SIZE = 32768;
-const DUMP_FILE_NAME_MAX = 256;
-const DUMP_WORLD_NAME_MAX = 64;
-const TEMP_SUFFIX = ".saving.tmp";
-const PREVIOUS_SUFFIX = ".previous.tmp";
-const TEMP_NAME_MAX = DUMP_FILE_NAME_MAX + PREVIOUS_SUFFIX.len;
+const BlockSize = 32768;
+const DumpFileNameMax = 256;
+const DumpWorldNameMax = 64;
+const TempSuffix = ".saving.tmp";
+const PreviousSuffix = ".previous.tmp";
+const TempNameMax = DumpFileNameMax + PreviousSuffix.len;
 
 const WorldSaver = @This();
 
@@ -33,9 +33,9 @@ format_for_worker: SaveFormat,
 owned_locally: bool,
 /// Pinned storage for an explicit multiplayer world dump.
 save_override_active: bool,
-save_override_file_name: [DUMP_FILE_NAME_MAX]u8,
+save_override_file_name: [DumpFileNameMax]u8,
 save_override_file_name_len: u16,
-save_override_world_name: [DUMP_WORLD_NAME_MAX]u8,
+save_override_world_name: [DumpWorldNameMax]u8,
 save_override_world_name_len: u8,
 
 /// Requests a rewrite when the loaded and configured formats differ.
@@ -156,13 +156,13 @@ fn save_worker(self: *WorldSaver) void {
         self.save_override_file_name[0..self.save_override_file_name_len]
     else
         self.save_file_name;
-    var temp_name_buf: [TEMP_NAME_MAX]u8 = undefined;
-    const temp_name = std.fmt.bufPrint(&temp_name_buf, "{s}{s}", .{ save_file_name, TEMP_SUFFIX }) catch {
+    var temp_name_buf: [TempNameMax]u8 = undefined;
+    const temp_name = std.fmt.bufPrint(&temp_name_buf, "{s}{s}", .{ save_file_name, TempSuffix }) catch {
         log.err("Save file name is too long: '{s}'", .{save_file_name});
         return;
     };
-    var previous_name_buf: [TEMP_NAME_MAX]u8 = undefined;
-    const previous_name = std.fmt.bufPrint(&previous_name_buf, "{s}{s}", .{ save_file_name, PREVIOUS_SUFFIX }) catch {
+    var previous_name_buf: [TempNameMax]u8 = undefined;
+    const previous_name = std.fmt.bufPrint(&previous_name_buf, "{s}{s}", .{ save_file_name, PreviousSuffix }) catch {
         log.err("Save file name is too long: '{s}'", .{save_file_name});
         return;
     };
@@ -171,7 +171,7 @@ fn save_worker(self: *WorldSaver) void {
     const data = self.data_for_worker;
     const real_ns: i64 = @truncate(std.Io.Clock.Timestamp.now(self.io, .real).raw.nanoseconds);
     const last_modified_ms = @divTrunc(real_ns, std.time.ns_per_ms);
-    var world_name_buf: [DUMP_WORLD_NAME_MAX]u8 = undefined;
+    var world_name_buf: [DumpWorldNameMax]u8 = undefined;
     const ctx: SaveContext = blk: {
         data.lock_shared(self.io);
         defer data.unlock_shared(self.io);
@@ -246,7 +246,7 @@ fn write_and_promote(
         const file = try dir.createFile(io, temp_name, .{});
         defer file.close(io);
 
-        var write_buf: [BLOCK_SIZE]u8 = undefined;
+        var write_buf: [BlockSize]u8 = undefined;
         var writer = file.writer(io, &write_buf);
         try body.write(&writer.interface);
         try writer.interface.flush();
@@ -297,7 +297,7 @@ pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator)
     };
     defer file.close(self.io);
 
-    const read_buf = scratch.alloc(u8, BLOCK_SIZE) catch |err| {
+    const read_buf = scratch.alloc(u8, BlockSize) catch |err| {
         log.err("Failed to allocate save read buffer: {}", .{err});
         return false;
     };
@@ -305,7 +305,7 @@ pub fn try_load(self: *WorldSaver, data: *WorldData, scratch: std.mem.Allocator)
 
     var reader = file.reader(self.io, read_buf);
 
-    const prefix = reader.interface.peek(BLOCK_SIZE) catch reader.interface.buffered();
+    const prefix = reader.interface.peek(BlockSize) catch reader.interface.buffered();
     const sniff = SaveFormat.detect(prefix) orelse self.format;
     const load_format: SaveFormat = blk: {
         if (std.meta.activeTag(sniff) == .classic_cw and !SaveFormat.verify_classic_cw(prefix, scratch)) {

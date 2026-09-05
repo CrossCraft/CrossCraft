@@ -49,27 +49,27 @@ pub const BlockChangeSink = struct {
 };
 
 /// Bound packet bursts and simulation work on every target.
-pub const MAX_BLOCK_CHANGES_PER_TICK: u32 = 2048;
-pub const MAX_DUE_UPDATES_PER_TICK: u32 = 2048;
+pub const MaxBlockChangesPerTick: u32 = 2048;
+pub const MaxDueUpdatesPerTick: u32 = 2048;
 
-// 1024 buckets (one per tick modulo WHEEL_SIZE). Each bucket is a circular
+// 1024 buckets (one per tick modulo WheelSize). Each bucket is a circular
 // singly-linked list threaded through a pool of fixed-size nodes; its table
 // entry stores the tail index. Circular lists let a due bucket be appended to
 // the carry-over queue in O(1) when a tick hits its work budget.
-pub const WHEEL_SIZE: u32 = 1024;
-pub const WHEEL_MASK: u32 = WHEEL_SIZE - 1;
-pub const POOL_CAPACITY: u32 = 8192;
+pub const WheelSize: u32 = 1024;
+pub const WheelMask: u32 = WheelSize - 1;
+pub const PoolCapacity: u32 = 8192;
 
-pub const SENTINEL: u32 = std.math.maxInt(u32);
+pub const Sentinel: u32 = std.math.maxInt(u32);
 
 pub const WheelNode = packed struct(u64) {
     loc: Location,
-    next: u32, // pool index; free nodes use SENTINEL-terminated chains
+    next: u32, // pool index; free nodes use Sentinel-terminated chains
 };
 
 const WorldSimulation = @This();
 
-wheel_buckets: [WHEEL_SIZE]u32,
+wheel_buckets: [WheelSize]u32,
 /// Tail of due work deferred from a prior tick. Uses the same circular-list
 /// representation as wheel_buckets, so no second node pool is needed.
 ready_tail: u32,
@@ -86,28 +86,28 @@ tick_count: u64,
 
 pub fn init(allocator: std.mem.Allocator, seed: u64) !WorldSimulation {
     var self: WorldSimulation = undefined;
-    self.node_pool = try allocator.alloc(WheelNode, POOL_CAPACITY);
+    self.node_pool = try allocator.alloc(WheelNode, PoolCapacity);
     errdefer allocator.free(self.node_pool);
-    for (0..POOL_CAPACITY) |i| {
+    for (0..PoolCapacity) |i| {
         self.node_pool[i] = .{
             .loc = .{ .x = 0, .z = 0, .y = 0 },
-            .next = if (i + 1 < POOL_CAPACITY) @intCast(i + 1) else SENTINEL,
+            .next = if (i + 1 < PoolCapacity) @intCast(i + 1) else Sentinel,
         };
     }
     self.free_head = 0;
     self.pool_used = 0;
     self.pool_used_peak = 0;
-    @memset(&self.wheel_buckets, SENTINEL);
-    self.ready_tail = SENTINEL;
+    @memset(&self.wheel_buckets, Sentinel);
+    self.ready_tail = Sentinel;
     self.enqueued = .empty;
-    try self.enqueued.ensureTotalCapacityPrecise(allocator, POOL_CAPACITY);
+    try self.enqueued.ensureTotalCapacityPrecise(allocator, PoolCapacity);
     self.rng = .init(seed);
     self.tick_count = 0;
     return self;
 }
 
 pub fn deinit(self: *WorldSimulation, allocator: std.mem.Allocator) void {
-    log.info("world update wheel peak: {d}/{d}", .{ self.pool_used_peak, POOL_CAPACITY });
+    log.info("world update wheel peak: {d}/{d}", .{ self.pool_used_peak, PoolCapacity });
     allocator.free(self.node_pool);
     self.enqueued.deinit(allocator);
     self.* = undefined;
@@ -119,19 +119,19 @@ pub fn deinit(self: *WorldSimulation, allocator: std.mem.Allocator) void {
 pub fn tick(self: *WorldSimulation, data: *WorldData, sink: BlockChangeSink) u32 {
     assert(self.pool_used <= self.node_pool.len);
     assert(self.enqueued.items.len <= self.pool_used);
-    assert((self.free_head == SENTINEL) == (self.pool_used == self.node_pool.len));
+    assert((self.free_head == Sentinel) == (self.pool_used == self.node_pool.len));
     var emitted: u32 = 0;
     var processed: u32 = 0;
-    const slot = @as(u32, @intCast(self.tick_count & WHEEL_MASK));
+    const slot = @as(u32, @intCast(self.tick_count & WheelMask));
     const due_tail = self.wheel_buckets[slot];
-    self.wheel_buckets[slot] = SENTINEL;
+    self.wheel_buckets[slot] = Sentinel;
     self.circular_append(&self.ready_tail, due_tail);
 
-    while (self.ready_tail != SENTINEL and processed < MAX_DUE_UPDATES_PER_TICK) {
+    while (self.ready_tail != Sentinel and processed < MaxDueUpdatesPerTick) {
         const node_idx = self.node_pool[self.ready_tail].next;
         const node = self.node_pool[node_idx];
         const change_bound = block_update_change_bound(data, node.loc);
-        if (change_bound > MAX_BLOCK_CHANGES_PER_TICK - emitted) break;
+        if (change_bound > MaxBlockChangesPerTick - emitted) break;
 
         _ = self.circular_pop_head(&self.ready_tail);
         self.release_node(node_idx);
@@ -143,7 +143,7 @@ pub fn tick(self: *WorldSimulation, data: *WorldData, sink: BlockChangeSink) u32
     }
 
     self.tick_count +%= 1;
-    assert(emitted <= MAX_BLOCK_CHANGES_PER_TICK);
+    assert(emitted <= MaxBlockChangesPerTick);
     assert(self.enqueued.items.len <= self.pool_used);
     data.tick_count = self.tick_count;
     return emitted;
@@ -200,9 +200,9 @@ fn process_block_update(
 /// preserves the old wheel's newest-first order within a deadline bucket.
 fn circular_push_head(self: *WorldSimulation, tail: *u32, node_idx: u32) void {
     assert(node_idx < self.node_pool.len);
-    assert(tail.* == SENTINEL or tail.* < self.node_pool.len);
+    assert(tail.* == Sentinel or tail.* < self.node_pool.len);
     assert(tail.* != node_idx);
-    if (tail.* == SENTINEL) {
+    if (tail.* == Sentinel) {
         self.node_pool[node_idx].next = node_idx;
         tail.* = node_idx;
         return;
@@ -215,11 +215,11 @@ fn circular_push_head(self: *WorldSimulation, tail: *u32, node_idx: u32) void {
 /// Append src after dst in FIFO order. Both values are tails of circular
 /// lists; no node allocation or traversal is required.
 fn circular_append(self: *WorldSimulation, dst_tail: *u32, src_tail: u32) void {
-    assert(src_tail == SENTINEL or src_tail < self.node_pool.len);
-    assert(dst_tail.* == SENTINEL or dst_tail.* < self.node_pool.len);
-    assert(src_tail == SENTINEL or src_tail != dst_tail.*);
-    if (src_tail == SENTINEL) return;
-    if (dst_tail.* == SENTINEL) {
+    assert(src_tail == Sentinel or src_tail < self.node_pool.len);
+    assert(dst_tail.* == Sentinel or dst_tail.* < self.node_pool.len);
+    assert(src_tail == Sentinel or src_tail != dst_tail.*);
+    if (src_tail == Sentinel) return;
+    if (dst_tail.* == Sentinel) {
         dst_tail.* = src_tail;
         return;
     }
@@ -234,12 +234,12 @@ fn circular_append(self: *WorldSimulation, dst_tail: *u32, src_tail: u32) void {
 }
 
 fn circular_pop_head(self: *WorldSimulation, tail: *u32) u32 {
-    assert(tail.* != SENTINEL);
+    assert(tail.* != Sentinel);
     const tail_idx = tail.*;
     const head_idx = self.node_pool[tail_idx].next;
     assert(head_idx < self.node_pool.len);
     if (head_idx == tail_idx) {
-        tail.* = SENTINEL;
+        tail.* = Sentinel;
     } else {
         self.node_pool[tail_idx].next = self.node_pool[head_idx].next;
     }
@@ -256,15 +256,15 @@ fn release_node(self: *WorldSimulation, node_idx: u32) void {
 }
 
 fn wheel_insert(self: *WorldSimulation, loc: Location, delay: u32) void {
-    assert(delay < WHEEL_SIZE);
-    assert(self.free_head != SENTINEL);
+    assert(delay < WheelSize);
+    assert(self.free_head != Sentinel);
     assert(self.pool_used < self.node_pool.len);
     const node_idx = self.free_head;
     self.free_head = self.node_pool[node_idx].next;
     self.pool_used += 1;
     if (self.pool_used > self.pool_used_peak) self.pool_used_peak = self.pool_used;
 
-    const slot = @as(u32, @intCast((self.tick_count +% delay) & WHEEL_MASK));
+    const slot = @as(u32, @intCast((self.tick_count +% delay) & WheelMask));
     self.node_pool[node_idx].loc = loc;
     self.circular_push_head(&self.wheel_buckets[slot], node_idx);
 }
@@ -289,7 +289,7 @@ fn try_enqueue(self: *WorldSimulation, data: *const WorldData, x: u16, y: u16, z
     if (!block.ticks()) return;
     const idx = data.get_index(x, y, z);
     if (std.mem.indexOfScalar(u32, self.enqueued.items, idx) != null) return;
-    if (self.free_head == SENTINEL or self.enqueued.items.len >= POOL_CAPACITY) {
+    if (self.free_head == Sentinel or self.enqueued.items.len >= PoolCapacity) {
         log.warn("world update dropped: wheel full (pool_used={d})", .{self.pool_used});
         return;
     }
@@ -319,7 +319,7 @@ fn block_update_change_bound(data: *const WorldData, loc: Location) u32 {
         .sand, .gravel => if (y > 0 and (data.get_block(x, y - 1, z).is_air() or data.get_block(x, y - 1, z).is_fluid())) 2 else 0,
         .dirt => if (data.is_sunlit(x, y, z)) 1 else 0,
         .grass => if (!data.is_sunlit(x, y, z)) 1 else 0,
-        .sapling => if (data.is_sunlit(x, y, z)) MAX_TREE_CHANGES else 1,
+        .sapling => if (data.is_sunlit(x, y, z)) MaxTreeChanges else 1,
         .flower_1, .flower_2 => if (!data.is_sunlit(x, y, z)) 1 else 0,
         .mushroom_1, .mushroom_2 => if (data.is_sunlit(x, y, z)) 1 else 0,
         .flowing_water, .still_water => water_change_bound(data, x, y, z, block),
@@ -329,10 +329,10 @@ fn block_update_change_bound(data: *const WorldData, loc: Location) u32 {
 }
 
 /// Six trunk blocks plus at most 61 leaves under the current tree shape.
-const MAX_TREE_CHANGES: u32 = 67;
+const MaxTreeChanges: u32 = 67;
 
 comptime {
-    if (MAX_TREE_CHANGES > MAX_BLOCK_CHANGES_PER_TICK)
+    if (MaxTreeChanges > MaxBlockChangesPerTick)
         @compileError("the per-tick change budget must fit one complete tree update");
 }
 
@@ -474,17 +474,17 @@ fn spread_horizontal(
         self.queue_block_change(data, sink, emitted, x, y, z + 1, flow);
 }
 
-const SPONGE_RADIUS: i32 = 2;
+const SpongeRadius: i32 = 2;
 
 /// Called when a sponge is placed: absorb all water in a 5x5x5 cube and
 /// stream every removal through the caller-provided sink.
 pub fn sponge_absorb(self: *WorldSimulation, data: *WorldData, sink: BlockChangeSink, cx: u16, cy: u16, cz: u16) void {
-    var dx: i32 = -SPONGE_RADIUS;
-    while (dx <= SPONGE_RADIUS) : (dx += 1) {
-        var dy: i32 = -SPONGE_RADIUS;
-        while (dy <= SPONGE_RADIUS) : (dy += 1) {
-            var dz: i32 = -SPONGE_RADIUS;
-            while (dz <= SPONGE_RADIUS) : (dz += 1) {
+    var dx: i32 = -SpongeRadius;
+    while (dx <= SpongeRadius) : (dx += 1) {
+        var dy: i32 = -SpongeRadius;
+        while (dy <= SpongeRadius) : (dy += 1) {
+            var dz: i32 = -SpongeRadius;
+            while (dz <= SpongeRadius) : (dz += 1) {
                 const nx = @as(i32, cx) + dx;
                 const ny = @as(i32, cy) + dy;
                 const nz = @as(i32, cz) + dz;
@@ -504,12 +504,12 @@ pub fn sponge_absorb(self: *WorldSimulation, data: *WorldData, sink: BlockChange
 }
 
 pub fn sponge_release(self: *WorldSimulation, data: *const WorldData, cx: u16, cy: u16, cz: u16) void {
-    var dx: i32 = -SPONGE_RADIUS;
-    while (dx <= SPONGE_RADIUS) : (dx += 1) {
-        var dy: i32 = -SPONGE_RADIUS;
-        while (dy <= SPONGE_RADIUS) : (dy += 1) {
-            var dz: i32 = -SPONGE_RADIUS;
-            while (dz <= SPONGE_RADIUS) : (dz += 1) {
+    var dx: i32 = -SpongeRadius;
+    while (dx <= SpongeRadius) : (dx += 1) {
+        var dy: i32 = -SpongeRadius;
+        while (dy <= SpongeRadius) : (dy += 1) {
+            var dz: i32 = -SpongeRadius;
+            while (dz <= SpongeRadius) : (dz += 1) {
                 const nx = @as(i32, cx) + dx;
                 const ny = @as(i32, cy) + dy;
                 const nz = @as(i32, cz) + dz;
@@ -521,12 +521,12 @@ pub fn sponge_release(self: *WorldSimulation, data: *const WorldData, cx: u16, c
 }
 
 fn is_near_sponge(data: *const WorldData, x: u16, y: u16, z: u16) bool {
-    var dx: i32 = -SPONGE_RADIUS;
-    while (dx <= SPONGE_RADIUS) : (dx += 1) {
-        var dy: i32 = -SPONGE_RADIUS;
-        while (dy <= SPONGE_RADIUS) : (dy += 1) {
-            var dz: i32 = -SPONGE_RADIUS;
-            while (dz <= SPONGE_RADIUS) : (dz += 1) {
+    var dx: i32 = -SpongeRadius;
+    while (dx <= SpongeRadius) : (dx += 1) {
+        var dy: i32 = -SpongeRadius;
+        while (dy <= SpongeRadius) : (dy += 1) {
+            var dz: i32 = -SpongeRadius;
+            while (dz <= SpongeRadius) : (dz += 1) {
                 const nx = @as(i32, x) + dx;
                 const ny = @as(i32, y) + dy;
                 const nz = @as(i32, z) + dz;
@@ -548,7 +548,7 @@ fn queue_block_change(
     z: u16,
     block: Block,
 ) void {
-    assert(emitted.* < MAX_BLOCK_CHANGES_PER_TICK);
+    assert(emitted.* < MaxBlockChangesPerTick);
     self.set_block(data, x, y, z, block);
     sink.emit(.{ .x = x, .y = y, .z = z, .block = block });
     emitted.* += 1;
@@ -641,7 +641,7 @@ test "tick defers an overflow-sized fluid batch without buffering or dropping" {
 
     var recorder = TestChangeRecorder{};
     const sink: BlockChangeSink = .{ .ctx = &recorder, .emit_fn = TestChangeRecorder.emit };
-    const source_count = MAX_BLOCK_CHANGES_PER_TICK + 1;
+    const source_count = MaxBlockChangesPerTick + 1;
 
     var i: u32 = 0;
     while (i < source_count) : (i += 1) {
@@ -657,16 +657,16 @@ test "tick defers an overflow-sized fluid batch without buffering or dropping" {
         try std.testing.expectEqual(@as(u32, 0), sim.tick(&data, sink));
     }
 
-    try std.testing.expectEqual(MAX_BLOCK_CHANGES_PER_TICK, sim.tick(&data, sink));
-    try std.testing.expectEqual(MAX_BLOCK_CHANGES_PER_TICK, recorder.count);
-    try std.testing.expect(sim.ready_tail != SENTINEL);
+    try std.testing.expectEqual(MaxBlockChangesPerTick, sim.tick(&data, sink));
+    try std.testing.expectEqual(MaxBlockChangesPerTick, recorder.count);
+    try std.testing.expect(sim.ready_tail != Sentinel);
 
     // The one carry-over source executes next tick. The recorder sees a
     // committed block, proving the sink is post-mutation rather than a stale
     // buffered record.
     try std.testing.expectEqual(@as(u32, 1), sim.tick(&data, sink));
     try std.testing.expectEqual(source_count, recorder.count);
-    try std.testing.expectEqual(SENTINEL, sim.ready_tail);
+    try std.testing.expectEqual(Sentinel, sim.ready_tail);
     const first = recorder.first orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(first.block, data.get_block(first.x, first.y, first.z));
 }
@@ -695,7 +695,7 @@ test "tick defers a multi-change update rather than partially committing it" {
     sim.enqueued.appendAssumeCapacity(tree_idx);
     sim.wheel_insert(.{ .x = @intCast(tree_x), .z = @intCast(tree_z), .y = @intCast(tree_y) }, 4);
 
-    const water_count = MAX_BLOCK_CHANGES_PER_TICK - MAX_TREE_CHANGES + 1;
+    const water_count = MaxBlockChangesPerTick - MaxTreeChanges + 1;
     var i: u32 = 0;
     while (i < water_count) : (i += 1) {
         const x: u16 = @intCast(i % data.dims.length);
@@ -710,10 +710,10 @@ test "tick defers a multi-change update rather than partially committing it" {
 
     try std.testing.expectEqual(water_count, sim.tick(&data, sink));
     try std.testing.expectEqual(blocks.Block.sapling, data.get_block(tree_x, tree_y, tree_z));
-    try std.testing.expect(sim.ready_tail != SENTINEL);
+    try std.testing.expect(sim.ready_tail != Sentinel);
 
     const tree_changes = sim.tick(&data, sink);
     try std.testing.expect(tree_changes > 0);
-    try std.testing.expect(tree_changes <= MAX_TREE_CHANGES);
+    try std.testing.expect(tree_changes <= MaxTreeChanges);
     try std.testing.expectEqual(blocks.Block.log, data.get_block(tree_x, tree_y, tree_z));
 }

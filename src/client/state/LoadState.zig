@@ -6,8 +6,8 @@ const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
-const SpriteBatcher = ae.UI.SpriteBatcher;
-const FontBatcher = ae.UI.FontBatcher;
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const Colors = @import("../graphics/Color.zig");
 const ResourcePack = @import("../ResourcePack.zig");
 const Screen = @import("../ui/Screen.zig");

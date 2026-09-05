@@ -1,9 +1,9 @@
 const ae = @import("aether");
 
 const Rendering = ae.Rendering;
-const SpriteBatcher = ae.UI.SpriteBatcher;
-const Scaling = ae.UI.Scaling;
-const layout = ae.UI.layout;
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const Scaling = ae.Ui.Scaling;
+const layout = ae.Ui.layout;
 
 const Colors = @import("../graphics/Color.zig");
 

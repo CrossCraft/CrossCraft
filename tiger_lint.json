@@ -54,6 +54,7 @@
     "deinit_undefined": true,
     "dead_files": true,
     "file_size": true,
-    "assertion_density": true
+    "assertion_density": true,
+    "shouty_case": true
   }
 }

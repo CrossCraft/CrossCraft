@@ -23,28 +23,28 @@ const face_mod = @import("../world/chunk/face.zig");
 const Face = face_mod.Face;
 
 // emit_face stores a unit cube in [0, 2048] SNORM16 units.
-const WORLD_UNIT_SCALE: f32 = 16.0;
-const HELD_SCALE: f32 = 0.4;
+const WorldUnitScale: f32 = 16.0;
+const HeldScale: f32 = 0.4;
 
 // Camera-relative pose in view space.
-const YAW: f32 = std.math.pi / 4.0;
-const BASE_X: f32 = 0.56;
-const BASE_Y: f32 = -0.52;
-const BASE_Z: f32 = -0.72;
-const HELD_Y_LIFT: f32 = 0.1;
+const Yaw: f32 = std.math.pi / 4.0;
+const BaseX: f32 = 0.56;
+const BaseY: f32 = -0.52;
+const BaseZ: f32 = -0.72;
+const HeldYLift: f32 = 0.1;
 
-const PLACE_PERIOD: f32 = 0.25;
-const DIG_PERIOD: f32 = 0.35;
-const SWING_AMPLITUDE_Y: f32 = -0.3;
-const DIG_AMP_X: f32 = -0.4;
-const DIG_AMP_Y: f32 = 0.2;
-const DIG_AMP_Z: f32 = -0.2;
-const DIG_YAW_RAD: f32 = 80.0 * std.math.pi / 180.0;
-const DIG_PITCH_RAD: f32 = -20.0 * std.math.pi / 180.0;
+const PlacePeriod: f32 = 0.25;
+const DigPeriod: f32 = 0.35;
+const SwingAmplitudeY: f32 = -0.3;
+const DigAmpX: f32 = -0.4;
+const DigAmpY: f32 = 0.2;
+const DigAmpZ: f32 = -0.2;
+const DigYawRad: f32 = 80.0 * std.math.pi / 180.0;
+const DigPitchRad: f32 = -20.0 * std.math.pi / 180.0;
 
-const QUAD_CAPACITY: usize = 6;
-const VERT_CAPACITY: usize = QUAD_CAPACITY * 6;
-const SENTINEL: Block = @enumFromInt(0xFF);
+const QuadCapacity: usize = 6;
+const VertCapacity: usize = QuadCapacity * 6;
+const Sentinel: Block = @enumFromInt(0xFF);
 
 const SwingKind = enum { idle, place, dig };
 
@@ -70,8 +70,8 @@ pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !BlockHand {
         .atlas = atlas,
         .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
         .mesh = try Rendering.MeshType(Vertex).init(&.{}),
-        .cached_block = SENTINEL,
-        .pending_block = SENTINEL,
+        .cached_block = Sentinel,
+        .pending_block = Sentinel,
         .cached_shadowed = false,
         .swing_kind = .idle,
         .swing_time = 0,
@@ -79,7 +79,7 @@ pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !BlockHand {
         .prev_swing_y = 0,
         .allocator = allocator,
     };
-    try self.mesh_data.ensure_quad_capacity(allocator, QUAD_CAPACITY);
+    try self.mesh_data.ensure_quad_capacity(allocator, QuadCapacity);
     return self;
 }
 
@@ -91,14 +91,14 @@ pub fn deinit(self: *BlockHand) void {
 
 pub fn trigger_dig(self: *BlockHand) void {
     self.swing_kind = .dig;
-    self.swing_period = DIG_PERIOD;
+    self.swing_period = DigPeriod;
     self.swing_time = 0;
     self.prev_swing_y = 0;
 }
 
 pub fn trigger_place(self: *BlockHand) void {
     self.swing_kind = .place;
-    self.swing_period = PLACE_PERIOD;
+    self.swing_period = PlacePeriod;
     self.swing_time = 0;
     self.prev_swing_y = 0;
 }
@@ -106,7 +106,7 @@ pub fn trigger_place(self: *BlockHand) void {
 pub fn update(self: *BlockHand, dt: f32, current_block: Block, shadowed: bool) void {
     assert(dt >= 0);
 
-    if (self.cached_block == SENTINEL) {
+    if (self.cached_block == Sentinel) {
         self.rebuild(current_block, shadowed);
         self.cached_block = current_block;
         self.pending_block = current_block;
@@ -124,14 +124,14 @@ pub fn update(self: *BlockHand, dt: f32, current_block: Block, shadowed: bool) v
         self.pending_block = current_block;
         if (self.swing_kind == .idle) {
             self.swing_kind = .place;
-            self.swing_period = PLACE_PERIOD;
+            self.swing_period = PlacePeriod;
             self.swing_time = 0;
             self.prev_swing_y = 0;
         } else {
             self.swing_kind = .place;
-            self.swing_period = PLACE_PERIOD;
-            self.swing_time = PLACE_PERIOD * 0.5;
-            self.prev_swing_y = SWING_AMPLITUDE_Y;
+            self.swing_period = PlacePeriod;
+            self.swing_time = PlacePeriod * 0.5;
+            self.prev_swing_y = SwingAmplitudeY;
         }
     }
 
@@ -153,7 +153,7 @@ pub fn update(self: *BlockHand, dt: f32, current_block: Block, shadowed: bool) v
     // Swap blocks as the place swing starts rising from its trough.
     if (self.swing_kind == .place) {
         const t = self.swing_time / self.swing_period;
-        const swing_y = SWING_AMPLITUDE_Y * @sin(t * std.math.pi);
+        const swing_y = SwingAmplitudeY * @sin(t * std.math.pi);
         if (swing_y > self.prev_swing_y and self.cached_block != self.pending_block) {
             self.rebuild(self.pending_block, shadowed);
             self.cached_block = self.pending_block;
@@ -193,7 +193,7 @@ fn rebuild(self: *BlockHand, block: Block, shadowed: bool) void {
         v.color = uniform;
     }
 
-    assert(self.mesh_data.vertices.items.len <= VERT_CAPACITY);
+    assert(self.mesh_data.vertices.items.len <= VertCapacity);
     self.mesh.update(&self.mesh_data);
 }
 
@@ -209,19 +209,19 @@ pub fn draw(self: *BlockHand, terrain: *const Rendering.Texture, camera: *const 
 
     const anim = self.compute_anim();
     const held_p = self.cached_block.mesh_props();
-    const y_lift: f32 = if (held_p.slab or held_p.cross) HELD_Y_LIFT else 0;
+    const y_lift: f32 = if (held_p.slab or held_p.cross) HeldYLift else 0;
 
-    const scale = WORLD_UNIT_SCALE * HELD_SCALE;
-    const half: f32 = HELD_SCALE * 0.5;
+    const scale = WorldUnitScale * HeldScale;
+    const half: f32 = HeldScale * 0.5;
 
     const sca = Math.Mat4.scaling(scale, scale, scale);
     const center = Math.Mat4.translation(-half, -half, -half);
     const rot_x = Math.Mat4.rotationX(anim.pitch);
-    const rot_y = Math.Mat4.rotationY(YAW + anim.yaw);
+    const rot_y = Math.Mat4.rotationY(Yaw + anim.yaw);
     const trans = Math.Mat4.translation(
-        BASE_X + anim.dx - camera.bob_hor,
-        BASE_Y + anim.dy + y_lift - camera.bob_ver,
-        BASE_Z + anim.dz - camera.bob_hor,
+        BaseX + anim.dx - camera.bob_hor,
+        BaseY + anim.dy + y_lift - camera.bob_ver,
+        BaseZ + anim.dz - camera.bob_hor,
     );
 
     const view_rx_inv = Math.Mat4.rotationX(-camera.pitch);
@@ -265,7 +265,7 @@ fn compute_anim(self: *const BlockHand) Anim {
     if (self.swing_kind == .place) {
         return .{
             .dx = 0,
-            .dy = SWING_AMPLITUDE_Y * @sin(t * std.math.pi),
+            .dy = SwingAmplitudeY * @sin(t * std.math.pi),
             .dz = 0,
             .yaw = 0,
             .pitch = 0,
@@ -274,10 +274,10 @@ fn compute_anim(self: *const BlockHand) Anim {
 
     const s = @sqrt(t) * std.math.pi;
     return .{
-        .dx = DIG_AMP_X * @sin(s),
-        .dy = DIG_AMP_Y * @sin(2.0 * s),
-        .dz = DIG_AMP_Z * @sin(t * std.math.pi),
-        .yaw = DIG_YAW_RAD * @sin(s),
-        .pitch = DIG_PITCH_RAD * @sin(t * t * std.math.pi),
+        .dx = DigAmpX * @sin(s),
+        .dy = DigAmpY * @sin(2.0 * s),
+        .dz = DigAmpZ * @sin(t * std.math.pi),
+        .yaw = DigYawRad * @sin(s),
+        .pitch = DigPitchRad * @sin(t * t * std.math.pi),
     };
 }

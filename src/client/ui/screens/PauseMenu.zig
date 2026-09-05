@@ -15,8 +15,8 @@ pub const Widget = enum(u16) {
 
 pub const Action = enum { none, back, options, save, dump_world, quit };
 
-pub const DIM_LAYER: u8 = 1;
-pub const LAYER_BASE: u8 = 2;
+pub const DimLayer: u8 = 1;
+pub const LayerBase: u8 = 2;
 
 pub fn wid(w: Widget) widget_id.WidgetId {
     return widget_id.from(Widget, w);

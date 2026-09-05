@@ -6,10 +6,10 @@ const ae = @import("aether");
 const caps = @import("capabilities").ClientType(ae);
 const Rendering = ae.Rendering;
 
-const SpriteBatcher = ae.UI.SpriteBatcher;
-const FontBatcher = ae.UI.FontBatcher;
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const IsoBlockDrawer = @import("IsoBlockDrawer.zig");
-const layout = ae.UI.layout;
+const layout = ae.Ui.layout;
 
 pub const Colors = @import("../graphics/Color.zig");
 const Color = Colors.Color;
@@ -43,49 +43,49 @@ pub const DrawCmd = union(enum) {
     clip_pop: void,
 };
 
-pub const MAX_CMDS: u16 = caps.ui.max_draw_commands;
+pub const MaxCmds: u16 = caps.ui.max_draw_commands;
 
-cmds: [MAX_CMDS]DrawCmd = undefined,
+cmds: [MaxCmds]DrawCmd = undefined,
 count: u16 = 0,
 
 pub fn add_sprite(self: *UiDrawList, cmd: *const SpriteCmd) void {
-    assert(self.count < MAX_CMDS);
+    assert(self.count < MaxCmds);
     self.cmds[self.count] = .{ .sprite = cmd.* };
     self.count += 1;
 }
 
 pub fn add_sprite_elided(self: *UiDrawList, cmd: *const ElidedSpriteCmd) void {
-    assert(self.count < MAX_CMDS);
+    assert(self.count < MaxCmds);
     self.cmds[self.count] = .{ .elided_sprite = cmd.* };
     self.count += 1;
 }
 
 pub fn add_rect(self: *UiDrawList, cmd: *const RectCmd) void {
-    assert(self.count < MAX_CMDS);
+    assert(self.count < MaxCmds);
     self.cmds[self.count] = .{ .rect = cmd.* };
     self.count += 1;
 }
 
 pub fn add_text(self: *UiDrawList, cmd: *const TextCmd) void {
-    assert(self.count < MAX_CMDS);
+    assert(self.count < MaxCmds);
     self.cmds[self.count] = .{ .text = cmd.* };
     self.count += 1;
 }
 
 pub fn add_iso_block(self: *UiDrawList, cmd: *const IsoBlockCmd) void {
-    assert(self.count < MAX_CMDS);
+    assert(self.count < MaxCmds);
     self.cmds[self.count] = .{ .iso_block = cmd.* };
     self.count += 1;
 }
 
 pub fn push_clip(self: *UiDrawList, rect: layout.LogicalRect) void {
-    assert(self.count < MAX_CMDS);
+    assert(self.count < MaxCmds);
     self.cmds[self.count] = .{ .clip_push = rect };
     self.count += 1;
 }
 
 pub fn pop_clip(self: *UiDrawList) void {
-    assert(self.count < MAX_CMDS);
+    assert(self.count < MaxCmds);
     self.cmds[self.count] = .{ .clip_pop = {} };
     self.count += 1;
 }
@@ -136,14 +136,14 @@ pub fn flush_into(
     fonts: *FontBatcher,
     iso: ?*IsoBlockDrawer,
 ) void {
-    var stack: [MAX_CLIP_DEPTH]layout.LogicalRect = undefined;
+    var stack: [MaxClipDepth]layout.LogicalRect = undefined;
     var depth: u8 = 0;
 
     var i: u16 = 0;
     while (i < self.count) : (i += 1) {
         switch (self.cmds[i]) {
             .clip_push => |r| {
-                assert(depth < MAX_CLIP_DEPTH);
+                assert(depth < MaxClipDepth);
                 stack[depth] = if (depth == 0) r else intersect(stack[depth - 1], r);
                 depth += 1;
             },
@@ -178,7 +178,7 @@ pub fn flush_into(
     assert(depth == 0);
 }
 
-const MAX_CLIP_DEPTH: u8 = 4;
+const MaxClipDepth: u8 = 4;
 
 fn active_clip(stack: []const layout.LogicalRect, depth: u8) ?layout.LogicalRect {
     if (depth == 0) return null;

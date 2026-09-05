@@ -11,7 +11,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const ae = @import("aether");
-const UI = ae.UI;
+const Ui = ae.Ui;
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
@@ -20,21 +20,21 @@ const Block = @import("core").blocks.Block;
 const Vertex = @import("aether").Rendering.Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Face = @import("../world/chunk/face.zig").Face;
-const Scaling = UI.Scaling;
+const Scaling = Ui.Scaling;
 
 const IsoBlockDrawer = @This();
 
-const ROT_Y_RAD: f32 = std.math.pi * 0.25;
-const ROT_X_RAD: f32 = -std.math.pi / 6.0;
-const PROJ_HALF: f32 = 0.7071068;
+const RotYRad: f32 = std.math.pi * 0.25;
+const RotXRad: f32 = -std.math.pi / 6.0;
+const ProjHalf: f32 = 0.7071068;
 
 // Keep the HUD pass away from the PSP's +Z clip edge.
-pub const ISO_LAYER: u8 = 250;
-const ISO_Z: i16 = 32766 - @as(i16, ISO_LAYER);
+pub const IsoLayer: u8 = 250;
+const IsoZ: i16 = 32766 - @as(i16, IsoLayer);
 
-const QUADS_PER_BLOCK: usize = 3;
-const MAX_BLOCKS: usize = 9 + 45;
-const QUAD_CAPACITY: usize = MAX_BLOCKS * QUADS_PER_BLOCK;
+const QuadsPerBlock: usize = 3;
+const MaxBlocks: usize = 9 + 45;
+const QuadCapacity: usize = MaxBlocks * QuadsPerBlock;
 
 pub const Payload = struct {
     block: Block,
@@ -55,7 +55,7 @@ pub fn init(
     terrain: *const Rendering.Texture,
     atlas: TextureAtlas,
 ) !IsoBlockDrawer {
-    const iso = Math.Mat4.rotationY(ROT_Y_RAD).mul(Math.Mat4.rotationX(ROT_X_RAD));
+    const iso = Math.Mat4.rotationY(RotYRad).mul(Math.Mat4.rotationX(RotXRad));
     var self: IsoBlockDrawer = .{
         .terrain = terrain,
         .atlas = atlas,
@@ -64,7 +64,7 @@ pub fn init(
         .iso_xform = iso,
         .allocator = allocator,
     };
-    try self.mesh_data.ensure_quad_capacity(allocator, QUAD_CAPACITY);
+    try self.mesh_data.ensure_quad_capacity(allocator, QuadCapacity);
     return self;
 }
 
@@ -95,7 +95,7 @@ pub fn add_payload(self: *IsoBlockDrawer, payload: Payload) void {
 
     const is_slab = p.slab;
 
-    const h: f32 = half_extent_px / PROJ_HALF;
+    const h: f32 = half_extent_px / ProjHalf;
     const y_top: f32 = if (is_slab) 0.0 else h;
     const y_bot: f32 = -h;
 
@@ -210,7 +210,7 @@ fn emit_iso_face(
         const xy = self.project_xy(corners[i][0], corners[i][1], corners[i][2], cx, cy);
         const ndc = ndc_xy(xy[0], xy[1]);
         verts[i] = .{
-            .pos = .{ ndc[0], ndc[1], ISO_Z },
+            .pos = .{ ndc[0], ndc[1], IsoZ },
             .uv = uvs[i],
             .color = color,
         };
@@ -245,10 +245,10 @@ fn add_flat(self: *IsoBlockDrawer, block: Block, cx: f32, cy: f32, scale: f32) v
 
     const white: u32 = 0xFFFFFFFF;
     const verts: [4]Vertex = .{
-        .{ .pos = .{ tl[0], tl[1], ISO_Z }, .uv = .{ tu0, tv0 }, .color = white },
-        .{ .pos = .{ tr[0], tr[1], ISO_Z }, .uv = .{ tu1, tv0 }, .color = white },
-        .{ .pos = .{ br[0], br[1], ISO_Z }, .uv = .{ tu1, tv1 }, .color = white },
-        .{ .pos = .{ bl[0], bl[1], ISO_Z }, .uv = .{ tu0, tv1 }, .color = white },
+        .{ .pos = .{ tl[0], tl[1], IsoZ }, .uv = .{ tu0, tv0 }, .color = white },
+        .{ .pos = .{ tr[0], tr[1], IsoZ }, .uv = .{ tu1, tv0 }, .color = white },
+        .{ .pos = .{ br[0], br[1], IsoZ }, .uv = .{ tu1, tv1 }, .color = white },
+        .{ .pos = .{ bl[0], bl[1], IsoZ }, .uv = .{ tu0, tv1 }, .color = white },
     };
     self.emit_quad(&verts);
 }

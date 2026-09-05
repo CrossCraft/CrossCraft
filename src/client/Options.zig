@@ -15,8 +15,8 @@ const json_format_version: u8 = 2;
 const max_pack_path: usize = 256;
 const max_json_size: usize = 4096;
 
-pub const SENS_MIN: f32 = 0.1;
-pub const SENS_MAX: f32 = 10.0;
+pub const SensMin: f32 = 0.1;
+pub const SensMax: f32 = 10.0;
 
 pub var current: Options = .{};
 
@@ -257,16 +257,16 @@ pub fn pc_key_prompt_label(key: input.Key) []const u8 {
 }
 
 pub fn sensitivity_percent(v: f32) u32 {
-    const cl = std.math.clamp(v, SENS_MIN, SENS_MAX);
-    const lmin = std.math.log10(SENS_MIN);
-    const lmax = std.math.log10(SENS_MAX);
+    const cl = std.math.clamp(v, SensMin, SensMax);
+    const lmin = std.math.log10(SensMin);
+    const lmax = std.math.log10(SensMax);
     return @intFromFloat(@round((std.math.log10(cl) - lmin) / (lmax - lmin) * 100));
 }
 
 pub fn sensitivity_from_percent(percent: u32) f32 {
     const pct = @as(f32, @floatFromInt(@min(percent, 100))) / 100.0;
-    const lmin = std.math.log10(SENS_MIN);
-    const lmax = std.math.log10(SENS_MAX);
+    const lmin = std.math.log10(SensMin);
+    const lmax = std.math.log10(SensMax);
     return std.math.pow(f32, 10.0, lmin + (lmax - lmin) * pct);
 }
 
@@ -414,7 +414,7 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
     current.sensitivity = if (integer_json)
         sensitivity_from_percent(json_percent(j.sensitivity orelse JsonNumber.from_int(sensitivity_percent(3.0))))
     else
-        json_float_f32(j.sensitivity orelse .{ .value = 3.0 }, SENS_MIN, 20.0);
+        json_float_f32(j.sensitivity orelse .{ .value = 3.0 }, SensMin, 20.0);
     current.ambient_occlusion = j.ambient_occlusion;
     current.bouncy_chunks = j.bouncy_chunks;
     current.vsync = j.vsync;
@@ -583,7 +583,7 @@ test "versioned options json accepts legacy floats and new integer values" {
     try std.testing.expectEqual(@as(f32, 1.0), json_float_f32(legacy.value.sound_volume.?, 0.0, 1.0));
     try std.testing.expectEqual(@as(f32, 0.5), json_float_f32(legacy.value.music_volume.?, 0.0, 1.0));
     try std.testing.expectEqual(@as(f32, 70.5), json_float_f32(legacy.value.fov.?, 10.0, 170.0));
-    try std.testing.expectEqual(@as(f32, 3.0), json_float_f32(legacy.value.sensitivity.?, SENS_MIN, 20.0));
+    try std.testing.expectEqual(@as(f32, 3.0), json_float_f32(legacy.value.sensitivity.?, SensMin, 20.0));
     try std.testing.expect(!legacy.value.new_3ds_use_old_controls);
 
     const integer_json =

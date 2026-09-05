@@ -23,7 +23,7 @@ pub fn read_tag(reader: *std.Io.Reader) ReadError!Tag {
     return @enumFromInt(value);
 }
 
-pub const NBT = struct {
+pub const Nbt = struct {
     name: []const u8,
     value: Value,
 
@@ -37,11 +37,11 @@ pub const NBT = struct {
         double: f64,
         byte_array: []const u8,
         string: []const u8,
-        list: []const NBT,
-        compound: []const NBT,
+        list: []const Nbt,
+        compound: []const Nbt,
     };
 
-    pub fn write(self: NBT, writer: *std.Io.Writer) WriteError!void {
+    pub fn write(self: Nbt, writer: *std.Io.Writer) WriteError!void {
         try write_header(writer, std.meta.activeTag(self.value), self.name);
         try write_payload(self.value, writer);
     }
@@ -85,14 +85,14 @@ pub fn write_header(writer: *std.Io.Writer, tag: Tag, name: []const u8) WriteErr
 }
 
 test "writes nested NBT in network byte order" {
-    const children = [_]NBT{
+    const children = [_]Nbt{
         .{ .name = "b", .value = .{ .byte = -1 } },
         .{ .name = "s", .value = .{ .short = 0x1234 } },
         .{ .name = "answer", .value = .{ .int = 42 } },
         .{ .name = "l", .value = .{ .long = 0x0102030405060708 } },
         .{ .name = "name", .value = .{ .string = "world" } },
     };
-    const root: NBT = .{ .name = "root", .value = .{ .compound = &children } };
+    const root: Nbt = .{ .name = "root", .value = .{ .compound = &children } };
 
     var buf: [96]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
@@ -116,7 +116,7 @@ test "writes a named byte array" {
     const payload = [_]u8{ 0xaa, 0xbb, 0xcc };
     var buf: [32]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
-    const array: NBT = .{ .name = "BlockArray", .value = .{ .byte_array = &payload } };
+    const array: Nbt = .{ .name = "BlockArray", .value = .{ .byte_array = &payload } };
     try array.write(&writer);
 
     const expected = [_]u8{

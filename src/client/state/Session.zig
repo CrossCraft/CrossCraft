@@ -6,20 +6,20 @@ const wd = core.world_dims;
 
 pub const Mode = enum { singleplayer, multiplayer };
 
-pub const USERNAME_MAX: u8 = 16;
-pub const SERVER_MAX: u8 = 64;
-pub const DEFAULT_PORT: u16 = 25565;
-pub const SAVE_PATH_MAX: usize = 256;
+pub const UsernameMax: u8 = 16;
+pub const ServerMax: u8 = 64;
+pub const DefaultPort: u16 = 25565;
+pub const SavePathMax: usize = 256;
 
 pub var mode: Mode = .singleplayer;
 
-pub var username_buf: [USERNAME_MAX]u8 = undefined;
+pub var username_buf: [UsernameMax]u8 = undefined;
 pub var username_len: u8 = 0;
 
-pub var server_buf: [SERVER_MAX]u8 = undefined;
+pub var server_buf: [ServerMax]u8 = undefined;
 pub var server_len: u8 = 0;
 
-pub var singleplayer_save_buf: [SAVE_PATH_MAX]u8 = undefined;
+pub var singleplayer_save_buf: [SavePathMax]u8 = undefined;
 pub var singleplayer_save_len: u16 = 0;
 pub var singleplayer_seed_override: ?u64 = null;
 pub var singleplayer_size: ?wd.WorldSize = null;
@@ -58,7 +58,7 @@ pub fn disconnect_reason() []const u8 {
 }
 
 pub fn set_username(name: []const u8) void {
-    const len: u8 = @intCast(@min(name.len, USERNAME_MAX));
+    const len: u8 = @intCast(@min(name.len, UsernameMax));
     @memcpy(username_buf[0..len], name[0..len]);
     username_len = len;
 }
@@ -68,7 +68,7 @@ pub fn username() []const u8 {
 }
 
 pub fn set_server(addr: []const u8) void {
-    const len: u8 = @intCast(@min(addr.len, SERVER_MAX));
+    const len: u8 = @intCast(@min(addr.len, ServerMax));
     @memcpy(server_buf[0..len], addr[0..len]);
     server_len = len;
 }
@@ -78,7 +78,7 @@ pub fn server() []const u8 {
 }
 
 pub fn set_singleplayer_save(path: []const u8) void {
-    const len: u16 = @intCast(@min(path.len, SAVE_PATH_MAX));
+    const len: u16 = @intCast(@min(path.len, SavePathMax));
     @memcpy(singleplayer_save_buf[0..len], path[0..len]);
     singleplayer_save_len = len;
 }
@@ -106,13 +106,13 @@ pub fn parse_server_endpoint() !ServerEndpoint {
     // parseLiteral reports port zero when none was supplied.
     if (std.Io.net.IpAddress.parseLiteral(input)) |parsed| {
         var addr = parsed;
-        if (addr.getPort() == 0) addr.setPort(DEFAULT_PORT);
+        if (addr.getPort() == 0) addr.setPort(DefaultPort);
         return .{ .ip = addr };
     } else |_| {}
 
     // IPv6 was handled above, so the last colon unambiguously separates a port.
     var name = input;
-    var port: u16 = DEFAULT_PORT;
+    var port: u16 = DefaultPort;
     if (std.mem.lastIndexOfScalar(u8, input, ':')) |i| {
         if (std.fmt.parseInt(u16, input[i + 1 ..], 10)) |p| {
             name = input[0..i];
@@ -145,7 +145,7 @@ test "parse_server_endpoint handles literals and hostnames" {
 
     set_server("127.0.0.1");
     switch (try parse_server_endpoint()) {
-        .ip => |addr| try std.testing.expectEqual(DEFAULT_PORT, addr.getPort()),
+        .ip => |addr| try std.testing.expectEqual(DefaultPort, addr.getPort()),
         .host => return error.ExpectedIpAddress,
     }
 

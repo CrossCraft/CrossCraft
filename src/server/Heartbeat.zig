@@ -27,7 +27,7 @@ pub fn send(
     while (true) {
         const result = client.fetch(.{
             .location = .{ .url = url },
-            .method = .GET,
+            .method = @field(std.http.Method, "GET"),
             .redirect_behavior = .not_allowed,
             .redirect_buffer = &redirect_buf,
             .keep_alive = false,

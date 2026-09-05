@@ -8,7 +8,7 @@ pub const Widget = enum(u16) {
     _,
 };
 
-pub const LAYER_BASE: u8 = 247;
+pub const LayerBase: u8 = 247;
 pub const Action = enum { none, select, back };
 
 pub fn wid(w: Widget) widget_id.WidgetId {

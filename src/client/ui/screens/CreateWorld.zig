@@ -5,9 +5,9 @@ const std = @import("std");
 
 const wd = core.world_dims;
 
-pub const NAME_MAX: u8 = @import("core").World.CreateName.NAME_MAX;
-pub const SEED_MAX: u8 = NAME_MAX;
-const OPTION_W: i16 = 150;
+pub const NameMax: u8 = @import("core").World.CreateName.NameMax;
+pub const SeedMax: u8 = NameMax;
+const OptionW: i16 = 150;
 
 pub const Widget = enum(u16) {
     name = 1,
@@ -22,9 +22,9 @@ pub const Widget = enum(u16) {
 };
 
 pub const Ctx = struct {
-    name: *[NAME_MAX]u8,
+    name: *[NameMax]u8,
     name_len: *u8,
-    seed: *[SEED_MAX]u8,
+    seed: *[SeedMax]u8,
     seed_len: *u8,
     size: *wd.WorldSize,
     height: *wd.WorldHeight,
@@ -49,30 +49,30 @@ pub fn run(ui: *Ui, ctx: *Ctx) Action {
     ui.label("Create world");
     ui.spacer(0, 2);
     ui.label("Name");
-    var name_buf: Ui.TextBuf = .{ .bytes = ctx.name, .len = ctx.name_len, .max = NAME_MAX };
+    var name_buf: Ui.TextBuf = .{ .bytes = ctx.name, .len = ctx.name_len, .max = NameMax };
     const name_event = ui.text_field(wid(.name), &name_buf, .{ .placeholder = "world", .session_id = "create_world.name" });
 
     ui.label("Seed");
-    var seed_buf: Ui.TextBuf = .{ .bytes = ctx.seed, .len = ctx.seed_len, .max = SEED_MAX };
+    var seed_buf: Ui.TextBuf = .{ .bytes = ctx.seed, .len = ctx.seed_len, .max = SeedMax };
     const seed_event = ui.text_field(wid(.seed), &seed_buf, .{ .placeholder = "", .session_id = "create_world.seed" });
 
     ui.spacer(0, 2);
     {
         var row = ui.stack(.{ .axis = .horizontal, .anchor = .middle_center, .cross_align = .center, .gap = 4 });
-        _ = ui.button(wid(.gamemode), "Gamemode: Classic", .{ .width = OPTION_W, .enabled = false });
-        _ = ui.button(wid(.world_type), "World Type: Normal", .{ .width = OPTION_W, .enabled = false });
+        _ = ui.button(wid(.gamemode), "Gamemode: Classic", .{ .width = OptionW, .enabled = false });
+        _ = ui.button(wid(.world_type), "World Type: Normal", .{ .width = OptionW, .enabled = false });
         row.end();
     }
     {
         var row = ui.stack(.{ .axis = .horizontal, .anchor = .middle_center, .cross_align = .center, .gap = 4 });
         var size_buf: [32]u8 = undefined;
         const size_label = std.fmt.bufPrint(&size_buf, "World Size: {s}", .{ctx.size.label()}) catch "World Size";
-        if (ui.button(wid(.world_size), size_label, .{ .width = OPTION_W })) {
+        if (ui.button(wid(.world_size), size_label, .{ .width = OptionW })) {
             ctx.size.* = cycle(wd.WorldSize, ctx.size.*);
         }
         var height_buf: [32]u8 = undefined;
         const height_label = std.fmt.bufPrint(&height_buf, "World Height: {s}", .{ctx.height.label()}) catch "World Height";
-        if (ui.button(wid(.world_height), height_label, .{ .width = OPTION_W })) {
+        if (ui.button(wid(.world_height), height_label, .{ .width = OptionW })) {
             ctx.height.* = cycle(wd.WorldHeight, ctx.height.*);
         }
         row.end();

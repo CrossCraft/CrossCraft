@@ -1,21 +1,21 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const COLOR_PREFIX: u8 = '&';
+const ColorPrefix: u8 = '&';
 
 pub fn wrap(
-    comptime MAX_LINES: usize,
-    comptime MAX_LINE_BYTES: usize,
+    comptime MaxLines: usize,
+    comptime MaxLineBytes: usize,
     fonts: anytype,
     text: []const u8,
     max_w: i16,
-    out: *[MAX_LINES][MAX_LINE_BYTES]u8,
-    lens: *[MAX_LINES]u8,
+    out: *[MaxLines][MaxLineBytes]u8,
+    lens: *[MaxLines]u8,
 ) u8 {
-    assert(MAX_LINES > 0);
-    assert(MAX_LINES <= std.math.maxInt(u8));
-    assert(MAX_LINE_BYTES > 0);
-    assert(MAX_LINE_BYTES <= std.math.maxInt(u8));
+    assert(MaxLines > 0);
+    assert(MaxLines <= std.math.maxInt(u8));
+    assert(MaxLineBytes > 0);
+    assert(MaxLineBytes <= std.math.maxInt(u8));
 
     if (text.len == 0 or max_w <= 0) return 0;
 
@@ -23,7 +23,7 @@ pub fn wrap(
     var remaining = std.mem.trimStart(u8, text, " ");
     var active_color: ?u8 = null;
 
-    while (remaining.len > 0 and count < MAX_LINES) {
+    while (remaining.len > 0 and count < MaxLines) {
         const fit = fonts.fit_width(remaining, max_w, 0, 1);
         const fit_end = @min(remaining.len, @max(fit, first_visible_end(remaining)));
         var end = fit_end;
@@ -42,13 +42,13 @@ pub fn wrap(
             var prefix_len: usize = 0;
             if (count > 0) {
                 if (active_color) |color| {
-                    assert(MAX_LINE_BYTES >= 2);
-                    out[count][prefix_len] = COLOR_PREFIX;
+                    assert(MaxLineBytes >= 2);
+                    out[count][prefix_len] = ColorPrefix;
                     out[count][prefix_len + 1] = color;
                     prefix_len = 2;
                 }
             }
-            assert(prefix_len + line.len <= MAX_LINE_BYTES);
+            assert(prefix_len + line.len <= MaxLineBytes);
             @memcpy(out[count][prefix_len..][0..line.len], line);
             lens[count] = @intCast(prefix_len + line.len);
             active_color = scan_color(active_color, line);
@@ -87,7 +87,7 @@ fn scan_color(initial: ?u8, text: []const u8) ?u8 {
 }
 
 fn is_color_code(text: []const u8, at: usize) bool {
-    if (at + 1 >= text.len or text[at] != COLOR_PREFIX) return false;
+    if (at + 1 >= text.len or text[at] != ColorPrefix) return false;
     const c = text[at + 1];
     return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
 }

@@ -2,7 +2,7 @@
 
 const ae = @import("aether");
 const widget_id = @import("widget_id.zig");
-const layout = ae.UI.layout;
+const layout = ae.Ui.layout;
 
 pub const WidgetId = widget_id.WidgetId;
 
@@ -35,8 +35,8 @@ pub const ScrollEntry = struct {
     y: i16,
 };
 
-pub const MAX_FOCUSABLES: u8 = 64;
-pub const MAX_SCROLLS: u8 = 4;
+pub const MaxFocusables: u8 = 64;
+pub const MaxScrolls: u8 = 4;
 
 const UiState = @This();
 
@@ -48,12 +48,12 @@ active_text: ?WidgetId = null,
 text_session_started: bool = false,
 focus_source: FocusSource = .mouse,
 
-focusables: [MAX_FOCUSABLES]Focusable = undefined,
+focusables: [MaxFocusables]Focusable = undefined,
 focusable_count: u8 = 0,
-scroll_views: [MAX_SCROLLS]ScrollView = undefined,
+scroll_views: [MaxScrolls]ScrollView = undefined,
 scroll_view_count: u8 = 0,
 
-scroll_entries: [MAX_SCROLLS]ScrollEntry = undefined,
+scroll_entries: [MaxScrolls]ScrollEntry = undefined,
 scroll_count: u8 = 0,
 
 /// `seed_focus` highlights the first focusable after the first frame.
@@ -75,7 +75,7 @@ pub fn set_scroll_y(self: *UiState, id: WidgetId, y: i16) void {
             return;
         }
     }
-    if (self.scroll_count >= MAX_SCROLLS) return;
+    if (self.scroll_count >= MaxScrolls) return;
     self.scroll_entries[self.scroll_count] = .{ .id = id, .y = y };
     self.scroll_count += 1;
 }

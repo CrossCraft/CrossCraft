@@ -4,11 +4,11 @@ const Policy = enum { create, dump };
 
 fn SaveNameType(comptime policy: Policy) type {
     return struct {
-        pub const NAME_MAX: u8 = switch (policy) {
+        pub const NameMax: u8 = switch (policy) {
             .create => 20,
             .dump => 64,
         };
-        pub const PATH_MAX: usize = "saves/".len + NAME_MAX + ".cw".len;
+        pub const PathMax: usize = "saves/".len + NameMax + ".cw".len;
 
         pub const Result = struct {
             path: []const u8,
@@ -24,7 +24,7 @@ fn SaveNameType(comptime policy: Policy) type {
             const trimmed = std.mem.trim(u8, input, " ");
             if (trimmed.len == 0) return error.EmptyName;
 
-            const limit = @min(@as(usize, NAME_MAX), out.len);
+            const limit = @min(@as(usize, NameMax), out.len);
             var len: usize = 0;
             var saw_valid = false;
             for (trimmed) |ch| {
@@ -59,8 +59,8 @@ pub const Create = SaveNameType(.create);
 pub const Dump = SaveNameType(.dump);
 
 test "create save-name policy" {
-    var path_buf: [Create.PATH_MAX]u8 = undefined;
-    var name_buf: [Create.NAME_MAX]u8 = undefined;
+    var path_buf: [Create.PathMax]u8 = undefined;
+    var name_buf: [Create.NameMax]u8 = undefined;
 
     const result = try Create.build_path("  New World  ", &path_buf, &name_buf);
     try std.testing.expectEqualStrings("New_World", result.name);
@@ -72,15 +72,15 @@ test "create save-name policy" {
     try std.testing.expectError(error.InvalidCharacter, Create.build_path("../world", &path_buf, &name_buf));
     try std.testing.expectError(error.InvalidCharacter, Create.build_path("world:name", &path_buf, &name_buf));
 
-    const long_input = [_]u8{'a'} ** (Create.NAME_MAX + 32);
+    const long_input = [_]u8{'a'} ** (Create.NameMax + 32);
     const truncated = try Create.build_path(&long_input, &path_buf, &name_buf);
-    try std.testing.expectEqual(@as(usize, Create.NAME_MAX), truncated.name.len);
-    try std.testing.expectEqual(@as(usize, Create.PATH_MAX), truncated.path.len);
+    try std.testing.expectEqual(@as(usize, Create.NameMax), truncated.name.len);
+    try std.testing.expectEqual(@as(usize, Create.PathMax), truncated.path.len);
 }
 
 test "dump save-name policy" {
-    var path_buf: [Dump.PATH_MAX]u8 = undefined;
-    var name_buf: [Dump.NAME_MAX]u8 = undefined;
+    var path_buf: [Dump.PathMax]u8 = undefined;
+    var name_buf: [Dump.NameMax]u8 = undefined;
 
     const result = try Dump.build_path("My World", &path_buf, &name_buf);
     try std.testing.expectEqualStrings("My World", result.name);
@@ -93,8 +93,8 @@ test "dump save-name policy" {
     try std.testing.expectEqualStrings("saves/___server_world.cw", safe.path);
     try std.testing.expect(std.mem.indexOfScalar(u8, safe.path["saves/".len..], '/') == null);
 
-    const long_input = [_]u8{'a'} ** (Dump.NAME_MAX + 32);
+    const long_input = [_]u8{'a'} ** (Dump.NameMax + 32);
     const truncated = try Dump.build_path(&long_input, &path_buf, &name_buf);
-    try std.testing.expectEqual(@as(usize, Dump.NAME_MAX), truncated.name.len);
-    try std.testing.expectEqual(@as(usize, Dump.PATH_MAX), truncated.path.len);
+    try std.testing.expectEqual(@as(usize, Dump.NameMax), truncated.name.len);
+    try std.testing.expectEqual(@as(usize, Dump.PathMax), truncated.path.len);
 }

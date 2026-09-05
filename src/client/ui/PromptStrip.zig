@@ -7,9 +7,9 @@ const caps = @import("capabilities").ClientType(ae);
 const Rendering = ae.Rendering;
 
 const Buttons = @import("Buttons.zig");
-const FontBatcher = ae.UI.FontBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const UiDrawList = @import("UiDrawList.zig");
-const layout = ae.UI.layout;
+const layout = ae.Ui.layout;
 const Options = @import("../Options.zig");
 const Colors = @import("../graphics/Color.zig");
 
@@ -32,12 +32,12 @@ pub fn enabled() bool {
 }
 
 /// Shared bottom-left position, adjusted for the PSP viewport.
-pub const DEFAULT_POS_X: i16 = 20;
-pub const DEFAULT_POS_Y: i16 = caps.ui.prompt_y;
+pub const DefaultPosX: i16 = 20;
+pub const DefaultPosY: i16 = caps.ui.prompt_y;
 
-const GLYPH_PAD: i16 = 4;
-const ENTRY_PAD: i16 = 12;
-const CHORD_PAD: i16 = 2;
+const GlyphPad: i16 = 4;
+const EntryPad: i16 = 12;
+const ChordPad: i16 = 2;
 
 /// For bottom anchors, `y_base` is measured inward from the reference edge.
 pub fn draw_into(
@@ -58,7 +58,7 @@ pub fn draw_into(
 
     var cursor_x: i16 = pos_x;
     for (prompts, 0..) |p, i| {
-        if (i > 0) cursor_x += ENTRY_PAD;
+        if (i > 0) cursor_x += EntryPad;
         draw_one_into(
             list,
             &p,
@@ -93,7 +93,7 @@ fn draw_one_into(
     var last_rect: Buttons.Rect = undefined;
     for (prompt.chord, 0..) |maybe_btn, idx| {
         const btn = maybe_btn orelse continue;
-        if (idx > 0) cursor_x.* += CHORD_PAD;
+        if (idx > 0) cursor_x.* += ChordPad;
         const rect = Buttons.lookup(btn, style);
         last_rect = rect;
         list.add_sprite(&.{
@@ -125,7 +125,7 @@ fn draw_one_into(
 
     const kbm_label_nudge: i16 = if (style == .kbm) 1 else 0;
     const label_y_center: i16 = y_base + @divTrunc(last_rect.render_h, 2) - 1 - kbm_label_nudge;
-    cursor_x.* += GLYPH_PAD;
+    cursor_x.* += GlyphPad;
     list.add_text(&.{
         .str = prompt.label,
         .pos_x = cursor_x.*,

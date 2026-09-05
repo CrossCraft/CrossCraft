@@ -9,7 +9,7 @@ const BatchMesh = Rendering.MeshDataType(Vertex);
 const face_mod = @import("face.zig");
 const Face = face_mod.Face;
 
-const SECTION_H: u32 = core.world_dims.chunk_size;
+const SectionH: u32 = core.world_dims.chunk_size;
 const Block = core.blocks.Block;
 
 fn face_sunlit(wx: u16, y: u32, wz: u16, face: Face) bool {
@@ -41,7 +41,7 @@ fn face_sunlit(wx: u16, y: u32, wz: u16, face: Face) bool {
 }
 
 /// Bits 1..16 set: the 16 inner columns of the 18-wide padded row.
-const SECTION_MASK: u32 = ((@as(u32, 1) << SECTION_H) - 1) << 1;
+const SectionMask: u32 = ((@as(u32, 1) << SectionH) - 1) << 1;
 
 const Row = struct {
     opq: u32,
@@ -57,9 +57,9 @@ const Row = struct {
 };
 
 /// One section plus a one-block neighbor border on every side.
-pub const BUF_Y: u32 = SECTION_H + 2;
-pub const BUF_Z: u32 = SECTION_H + 2;
-pub const SectionBuf = [BUF_Y][BUF_Z]Row;
+pub const BufY: u32 = SectionH + 2;
+pub const BufZ: u32 = SectionH + 2;
+pub const SectionBuf = [BufY][BufZ]Row;
 
 pub const SectionCounts = struct {
     opaque_verts: u32,
@@ -69,12 +69,12 @@ pub const SectionCounts = struct {
 
 fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     const dims = World.data.dims;
-    const AIR: Row = .{ .opq = 0, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
-    const BOUNDARY: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
+    const Air: Row = .{ .opq = 0, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
+    const Boundary: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
     const world_h: i32 = @intCast(dims.height);
-    if (y >= world_h) return AIR;
-    if (wz_raw < 0 or wz_raw >= @as(i32, @intCast(dims.depth))) return BOUNDARY;
-    if (y < 0) return BOUNDARY;
+    if (y >= world_h) return Air;
+    if (wz_raw < 0 or wz_raw >= @as(i32, @intCast(dims.depth))) return Boundary;
+    if (y < 0) return Boundary;
 
     var opq: u32 = 0;
     var vis: u32 = 0;
@@ -87,10 +87,10 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     const wz: u16 = @intCast(wz_raw);
 
     // Inner bits share one contiguous chunk row, avoiding 16 index lookups.
-    const chunk_row = World.data.get_chunk_row(@intCast(cx * SECTION_H), wy, wz);
+    const chunk_row = World.data.get_chunk_row(@intCast(cx * SectionH), wy, wz);
 
-    for (0..BUF_Z) |i| {
-        const wx_raw: i32 = @as(i32, @intCast(cx)) * SECTION_H + @as(i32, @intCast(i)) - 1;
+    for (0..BufZ) |i| {
+        const wx_raw: i32 = @as(i32, @intCast(cx)) * SectionH + @as(i32, @intCast(i)) - 1;
         if (wx_raw < 0 or wx_raw >= @as(i32, @intCast(dims.length))) {
             opq |= @as(u32, 1) << @intCast(i);
             continue;
@@ -114,15 +114,15 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
 /// as interior to provide the cheap opaque-leaf path.
 fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
     if (!near_lod) {
-        for (0..BUF_Y) |by| {
-            for (0..BUF_Z) |bz| {
+        for (0..BufY) |by| {
+            for (0..BufZ) |bz| {
                 buf[by][bz].solid_leaf = buf[by][bz].leaf;
             }
         }
         return;
     }
-    for (0..BUF_Y) |by| {
-        for (0..BUF_Z) |bz| {
+    for (0..BufY) |by| {
+        for (0..BufZ) |bz| {
             const cur = &buf[by][bz];
             if (cur.leaf == 0) {
                 cur.solid_leaf = 0;
@@ -131,7 +131,7 @@ fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
             const cov_cur = cur.opq | cur.leaf;
 
             var cov_zp: u32 = 0;
-            if (bz + 1 < BUF_Z) {
+            if (bz + 1 < BufZ) {
                 const n = &buf[by][bz + 1];
                 cov_zp = n.opq | n.leaf;
             }
@@ -141,7 +141,7 @@ fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
                 cov_zn = n.opq | n.leaf;
             }
             var cov_yp: u32 = 0;
-            if (by + 1 < BUF_Y) {
+            if (by + 1 < BufY) {
                 const n = &buf[by + 1][bz];
                 cov_yp = n.opq | n.leaf;
             }
@@ -163,13 +163,13 @@ fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
 /// them across passes costs more memory than the repeated bit operations.
 pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf) SectionCounts {
     const all_opaque = World.data.is_chunk_all_opaque(cx, sy, cz);
-    const base_y: i32 = @as(i32, @intCast(sy)) * SECTION_H - 1;
+    const base_y: i32 = @as(i32, @intCast(sy)) * SectionH - 1;
 
-    for (0..BUF_Y) |by| {
+    for (0..BufY) |by| {
         const wy: i32 = base_y + @as(i32, @intCast(by));
 
-        for (0..BUF_Z) |bz| {
-            const wz_raw: i32 = @as(i32, @intCast(cz)) * SECTION_H + @as(i32, @intCast(bz)) - 1;
+        for (0..BufZ) |bz| {
+            const wz_raw: i32 = @as(i32, @intCast(cz)) * SectionH + @as(i32, @intCast(bz)) - 1;
             buf[by][bz] = if (all_opaque and by >= 1 and by <= 16 and bz >= 1 and bz <= 16)
                 pack_row_opaque(cx, wy, wz_raw)
             else
@@ -186,8 +186,8 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     const dims = World.data.dims;
     assert(y >= 0 and y < dims.height);
     assert(wz_raw >= 0 and wz_raw < dims.depth);
-    var opq: u32 = SECTION_MASK;
-    var vis: u32 = SECTION_MASK;
+    var opq: u32 = SectionMask;
+    var vis: u32 = SectionMask;
     var flu: u32 = 0;
     var cross: u32 = 0;
     var leaf: u32 = 0;
@@ -196,14 +196,14 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     const wy: u16 = @intCast(y);
     const wz: u16 = @intCast(wz_raw);
 
-    const left_x: i32 = @as(i32, @intCast(cx)) * SECTION_H - 1;
+    const left_x: i32 = @as(i32, @intCast(cx)) * SectionH - 1;
     if (left_x < 0) {
         opq |= 1;
     } else {
         classify_block(World.get_block(@intCast(left_x), wy, wz), 0, &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
     }
 
-    const right_x: u32 = (cx + 1) * SECTION_H;
+    const right_x: u32 = (cx + 1) * SectionH;
     if (right_x >= dims.length) {
         opq |= @as(u32, 1) << 17;
     } else {
@@ -261,8 +261,8 @@ const FaceMasks = struct {
 };
 
 fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
-    assert(by > 0 and by < BUF_Y - 1);
-    assert(bz > 0 and bz < BUF_Z - 1);
+    assert(by > 0 and by < BufY - 1);
+    assert(bz > 0 and bz < BufZ - 1);
     const cur = buf[by][bz];
 
     // Cross-plants are not in vis, so they require a separate empty-row check.
@@ -286,12 +286,12 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
 
     // A fully opaque 18-bit row surrounded on Y/Z has no emitting masks.
     // Slabs, cross-plants, and fluids never contribute to eff_cur.
-    const ALL_18: u32 = (1 << 18) - 1;
-    if (eff_cur == ALL_18 and
-        (eff_zp & SECTION_MASK) == SECTION_MASK and
-        (eff_zn & SECTION_MASK) == SECTION_MASK and
-        (eff_yp & SECTION_MASK) == SECTION_MASK and
-        (eff_yn & SECTION_MASK) == SECTION_MASK)
+    const All18: u32 = (1 << 18) - 1;
+    if (eff_cur == All18 and
+        (eff_zp & SectionMask) == SectionMask and
+        (eff_zn & SectionMask) == SectionMask and
+        (eff_yp & SectionMask) == SectionMask and
+        (eff_yn & SectionMask) == SectionMask)
     {
         return std.mem.zeroes(FaceMasks);
     }
@@ -306,18 +306,18 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const g_yp = g & n_yp.glass;
     const g_yn = g & n_yn.glass;
 
-    const x_pos = (std_vis & ~(eff_cur >> 1) & ~g_xp) & SECTION_MASK;
-    const x_neg = (std_vis & ~(eff_cur << 1) & ~g_xn) & SECTION_MASK;
-    const z_pos = (std_vis & ~eff_zp & ~g_zp) & SECTION_MASK;
-    const z_neg = (std_vis & ~eff_zn & ~g_zn) & SECTION_MASK;
+    const x_pos = (std_vis & ~(eff_cur >> 1) & ~g_xp) & SectionMask;
+    const x_neg = (std_vis & ~(eff_cur << 1) & ~g_xn) & SectionMask;
+    const z_pos = (std_vis & ~eff_zp & ~g_zp) & SectionMask;
+    const z_neg = (std_vis & ~eff_zn & ~g_zn) & SectionMask;
     // The inset slab top cannot touch its upper neighbor and is always visible.
-    const y_pos = ((std_vis & ~eff_yp & ~g_yp) | slab) & SECTION_MASK;
-    const y_neg = (std_vis & ~eff_yn & ~g_yn) & SECTION_MASK;
+    const y_pos = ((std_vis & ~eff_yp & ~g_yp) | slab) & SectionMask;
+    const y_neg = (std_vis & ~eff_yn & ~g_yn) & SectionMask;
 
-    const flu_xp = (flu & ~(eff_cur >> 1) & ~(flu >> 1)) & SECTION_MASK;
-    const flu_xn = (flu & ~(eff_cur << 1) & ~(flu << 1)) & SECTION_MASK;
-    const flu_zp = (flu & ~eff_zp & ~n_zp.flu) & SECTION_MASK;
-    const flu_zn = (flu & ~eff_zn & ~n_zn.flu) & SECTION_MASK;
+    const flu_xp = (flu & ~(eff_cur >> 1) & ~(flu >> 1)) & SectionMask;
+    const flu_xn = (flu & ~(eff_cur << 1) & ~(flu << 1)) & SectionMask;
+    const flu_zp = (flu & ~eff_zp & ~n_zp.flu) & SectionMask;
+    const flu_zn = (flu & ~eff_zn & ~n_zn.flu) & SectionMask;
     // Inset fluid tops emit when exposed. Covered tops retain a one-block
     // border beside exposed fluid to hide the height seam.
     const n_yp_zp = &buf[by + 1][bz + 1];
@@ -330,25 +330,25 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const naked_border = naked_cur | (naked_cur << 1) | (naked_cur >> 1) |
         naked_zp | (naked_zp << 1) | (naked_zp >> 1) |
         naked_zn | (naked_zn << 1) | (naked_zn >> 1);
-    const flu_yp_bits = (flu & ~n_yp.flu & (~eff_yp | naked_border)) & SECTION_MASK;
-    const flu_yn = (flu & ~eff_yn & ~n_yn.flu) & SECTION_MASK;
+    const flu_yp_bits = (flu & ~n_yp.flu & (~eff_yp | naked_border)) & SectionMask;
+    const flu_yn = (flu & ~eff_yn & ~n_yn.flu) & SectionMask;
 
     // Only faces adjoining the transparent outer shell expose solid leaves.
-    const sl_xp = (sleaf & ~(eff_cur >> 1)) & SECTION_MASK;
-    const sl_xn = (sleaf & ~(eff_cur << 1)) & SECTION_MASK;
-    const sl_zp = (sleaf & ~eff_zp) & SECTION_MASK;
-    const sl_zn = (sleaf & ~eff_zn) & SECTION_MASK;
-    const sl_yp = (sleaf & ~eff_yp) & SECTION_MASK;
-    const sl_yn = (sleaf & ~eff_yn) & SECTION_MASK;
+    const sl_xp = (sleaf & ~(eff_cur >> 1)) & SectionMask;
+    const sl_xn = (sleaf & ~(eff_cur << 1)) & SectionMask;
+    const sl_zp = (sleaf & ~eff_zp) & SectionMask;
+    const sl_zn = (sleaf & ~eff_zn) & SectionMask;
+    const sl_yp = (sleaf & ~eff_yp) & SectionMask;
+    const sl_yn = (sleaf & ~eff_yn) & SectionMask;
 
     // Transparent boundaries receive a fluid-side overlay.
     const trans = std_vis & ~opq;
-    const tfl_xp = (trans & (flu >> 1)) & SECTION_MASK;
-    const tfl_xn = (trans & (flu << 1)) & SECTION_MASK;
-    const tfl_zp = (trans & n_zp.flu) & SECTION_MASK;
-    const tfl_zn = (trans & n_zn.flu) & SECTION_MASK;
-    const tfl_yp = (trans & n_yp.flu) & SECTION_MASK;
-    const tfl_yn = (trans & n_yn.flu) & SECTION_MASK;
+    const tfl_xp = (trans & (flu >> 1)) & SectionMask;
+    const tfl_xn = (trans & (flu << 1)) & SectionMask;
+    const tfl_zp = (trans & n_zp.flu) & SectionMask;
+    const tfl_zn = (trans & n_zn.flu) & SectionMask;
+    const tfl_yp = (trans & n_yp.flu) & SectionMask;
+    const tfl_yn = (trans & n_yn.flu) & SectionMask;
 
     const xp_all = x_pos | flu_xp;
     const xn_all = x_neg | flu_xn;
@@ -379,7 +379,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
         .sl_yn = sl_yn,
         .sl_zp = sl_zp,
         .sl_zn = sl_zn,
-        .cross = cur.cross & SECTION_MASK,
+        .cross = cur.cross & SectionMask,
         .tfl_xp = tfl_xp,
         .tfl_xn = tfl_xn,
         .tfl_yp = tfl_yp,
@@ -414,8 +414,8 @@ fn counts_from_masks(f: FaceMasks) SectionCounts {
 
 pub fn count_section(buf: *const SectionBuf) SectionCounts {
     var total: SectionCounts = .{ .opaque_verts = 0, .transparent_verts = 0, .fluid_verts = 0 };
-    for (1..BUF_Y - 1) |by| {
-        for (1..BUF_Z - 1) |bz| {
+    for (1..BufY - 1) |by| {
+        for (1..BufZ - 1) |bz| {
             const f = compute_face_masks(@intCast(by), @intCast(bz), buf);
             const row = counts_from_masks(f);
             total.opaque_verts += row.opaque_verts;
@@ -439,10 +439,10 @@ fn assert_has_room(mesh: *const BatchMesh, quad_count: u32) void {
 // AO samples two tangent neighbors and their diagonal. Interior leaves cast AO
 // because they participate in the effective-opaque mask.
 
-const AO_MUL: [4]u8 = .{ 128, 170, 212, 255 };
+const AoMul: [4]u8 = .{ 128, 170, 212, 255 };
 
 fn eff_bit(buf: *const SectionBuf, by: u32, bz: u32, bit: u32) u32 {
-    assert(bit < SECTION_H + 2);
+    assert(bit < SectionH + 2);
     const row = &buf[by][bz];
     const eff = row.opq | row.solid_leaf;
     return (eff >> @intCast(bit)) & 1;
@@ -455,7 +455,7 @@ fn ao_level(t1: u32, t2: u32, d: u32) u32 {
 }
 
 fn ao_modulate(color: u32, level: u32) u32 {
-    const m: u32 = AO_MUL[level];
+    const m: u32 = AoMul[level];
     const a = color & 0xFF000000;
     const r = (color >> 16) & 0xFF;
     const g = (color >> 8) & 0xFF;
@@ -466,9 +466,9 @@ fn ao_modulate(color: u32, level: u32) u32 {
 /// Compute the 4 per-corner colors for a cube face at buffer position
 /// (by, bz, bit). Vertex order matches `make_quad` for the given face.
 fn compute_ao_colors(buf: *const SectionBuf, by: u32, bz: u32, bit: u5, face: Face, shadowed: bool) [4]u32 {
-    assert(by > 0 and by < BUF_Y - 1);
-    assert(bz > 0 and bz < BUF_Z - 1);
-    assert(bit > 0 and bit <= SECTION_H);
+    assert(by > 0 and by < BufY - 1);
+    assert(bz > 0 and bz < BufZ - 1);
+    assert(bit > 0 and bit <= SectionH);
     const base_unshadowed = face_mod.face_color(face);
     const base: u32 = if (shadowed) face_mod.apply_shadow(base_unshadowed) else base_unshadowed;
     const b: u32 = bit;
@@ -542,21 +542,21 @@ fn emit_mask(
     face: Face,
     m: Meshes,
     atlas: *const TextureAtlas,
-    chunk_row: *const [SECTION_H]Block,
+    chunk_row: *const [SectionH]Block,
     buf: *const SectionBuf,
     by: u32,
     bz: u32,
     ao: bool,
 ) void {
-    const local_y: u32 = y % SECTION_H;
+    const local_y: u32 = y % SectionH;
     var bits = mask;
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
         bits &= bits - 1;
 
         const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * SECTION_H + lx);
-        const wz: u16 = @intCast(cz * SECTION_H + lz);
+        const wx: u16 = @intCast(cx * SectionH + lx);
+        const wz: u16 = @intCast(cz * SectionH + lz);
         const block = chunk_row[lx];
         const tile = block.face_tile(face);
 
@@ -603,13 +603,13 @@ fn emit_opaque_leaf_mask(
     face: Face,
     opaque_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
-    chunk_row: *const [SECTION_H]Block,
+    chunk_row: *const [SectionH]Block,
     buf: *const SectionBuf,
     by: u32,
     bz: u32,
     ao: bool,
 ) void {
-    const local_y: u32 = y % SECTION_H;
+    const local_y: u32 = y % SectionH;
     var bits = mask;
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
@@ -617,8 +617,8 @@ fn emit_opaque_leaf_mask(
         assert_has_room(opaque_mesh, 1);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * SECTION_H + lx);
-        const wz: u16 = @intCast(cz * SECTION_H + lz);
+        const wx: u16 = @intCast(cx * SectionH + lx);
+        const wz: u16 = @intCast(cz * SectionH + lz);
         const block = chunk_row[lx];
         const tile = block.face_tile(face);
         const shadowed = !face_sunlit(wx, y, wz, face);
@@ -639,9 +639,9 @@ fn emit_cross_mask(
     cz: u32,
     transparent_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
-    chunk_row: *const [SECTION_H]Block,
+    chunk_row: *const [SectionH]Block,
 ) void {
-    const local_y: u32 = y % SECTION_H;
+    const local_y: u32 = y % SectionH;
     var bits = mask;
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
@@ -649,8 +649,8 @@ fn emit_cross_mask(
         assert_has_room(transparent_mesh, 4);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * SECTION_H + lx);
-        const wz: u16 = @intCast(cz * SECTION_H + lz);
+        const wx: u16 = @intCast(cx * SectionH + lx);
+        const wz: u16 = @intCast(cz * SectionH + lz);
         const block = chunk_row[lx];
         const tile = block.face_tile(.y_pos);
         face_mod.emit_cross(transparent_mesh, lx, local_y, lz, tile, atlas, !World.is_sunlit(wx, @intCast(y), wz));
@@ -668,7 +668,7 @@ fn emit_fluid_overlay_mask(
     fluid_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
 ) void {
-    const local_y: u32 = y % SECTION_H;
+    const local_y: u32 = y % SectionH;
     const dx: i32 = switch (face) {
         .x_pos => 1,
         .x_neg => -1,
@@ -691,8 +691,8 @@ fn emit_fluid_overlay_mask(
         assert_has_room(fluid_mesh, 1);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * SECTION_H + lx);
-        const wz: u16 = @intCast(cz * SECTION_H + lz);
+        const wx: u16 = @intCast(cx * SectionH + lx);
+        const wz: u16 = @intCast(cz * SectionH + lz);
         const nx: u16 = @intCast(@as(i32, wx) + dx);
         const ny: u16 = @intCast(@as(i32, @intCast(y)) + dy);
         const nz: u16 = @intCast(@as(i32, wz) + dz);
@@ -714,8 +714,8 @@ pub fn emit_section(
     atlas: *const TextureAtlas,
     ao: bool,
 ) void {
-    const base_y: u32 = sy * SECTION_H;
-    for (0..SECTION_H) |ly| {
+    const base_y: u32 = sy * SectionH;
+    for (0..SectionH) |ly| {
         const by: u32 = @as(u32, @intCast(ly)) + 1;
         const world_y: u32 = base_y + @as(u32, @intCast(ly));
         for (0..16) |lz| {
@@ -728,7 +728,7 @@ pub fn emit_section(
                 f.tfl_xp | f.tfl_xn | f.tfl_yp | f.tfl_yn | f.tfl_zp | f.tfl_zn;
             if (any == 0) continue;
 
-            const chunk_row = World.data.get_chunk_row(@intCast(cx * SECTION_H), @intCast(world_y), @intCast(cz * SECTION_H + lz));
+            const chunk_row = World.data.get_chunk_row(@intCast(cx * SectionH), @intCast(world_y), @intCast(cz * SectionH + lz));
 
             if (f.x_pos != 0) emit_mask(f.x_pos, world_y, @intCast(lz), cx, cz, .x_pos, m, atlas, chunk_row, buf, by, bz, ao);
             if (f.x_neg != 0) emit_mask(f.x_neg, world_y, @intCast(lz), cx, cz, .x_neg, m, atlas, chunk_row, buf, by, bz, ao);
@@ -775,7 +775,7 @@ test "section counts match emission at world boundaries with fluids slabs leaves
     const sections = [_][3]u32{ .{ 0, 0, 0 }, .{ 1, 1, 1 }, .{ 7, 3, 7 } };
     for (sections) |section| {
         const cx, const sy, const cz = section;
-        const start = dims.block_index(cx * SECTION_H, sy * SECTION_H, cz * SECTION_H);
+        const start = dims.block_index(cx * SectionH, sy * SectionH, cz * SectionH);
         for ([_]bool{ false, true }) |solid| {
             @memset(World.data.blocks, .air);
             if (solid) {
@@ -786,14 +786,14 @@ test "section counts match emission at world boundaries with fluids slabs leaves
                     const x: u32 = @intCast(id % 16);
                     const y: u32 = @intCast(id / 16);
                     const z: u32 = @intCast((id * 5) % 16);
-                    World.data.blocks[dims.block_index(cx * SECTION_H + x, sy * SECTION_H + y, cz * SECTION_H + z)] = @enumFromInt(id);
+                    World.data.blocks[dims.block_index(cx * SectionH + x, sy * SectionH + y, cz * SectionH + z)] = @enumFromInt(id);
                 }
                 // A transparent/fluid boundary emits overlays; a leaf cluster
                 // exercises both interior and exterior leaf routing at each LOD.
-                World.data.blocks[dims.block_index(cx * SECTION_H + 7, sy * SECTION_H + 8, cz * SECTION_H + 8)] = .glass;
-                World.data.blocks[dims.block_index(cx * SECTION_H + 8, sy * SECTION_H + 8, cz * SECTION_H + 8)] = .still_water;
+                World.data.blocks[dims.block_index(cx * SectionH + 7, sy * SectionH + 8, cz * SectionH + 8)] = .glass;
+                World.data.blocks[dims.block_index(cx * SectionH + 8, sy * SectionH + 8, cz * SectionH + 8)] = .still_water;
                 for (10..13) |y| for (10..13) |z| for (10..13) |x| {
-                    World.data.blocks[dims.block_index(cx * SECTION_H + @as(u32, @intCast(x)), sy * SECTION_H + @as(u32, @intCast(y)), cz * SECTION_H + @as(u32, @intCast(z)))] = .leaves;
+                    World.data.blocks[dims.block_index(cx * SectionH + @as(u32, @intCast(x)), sy * SectionH + @as(u32, @intCast(y)), cz * SectionH + @as(u32, @intCast(z)))] = .leaves;
                 };
             }
             World.data.compute_chunk_counts();

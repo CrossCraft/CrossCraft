@@ -1,6 +1,6 @@
-const UI = @import("aether").UI;
+const Ui = @import("aether").Ui;
 
-pub const Color = UI.Color;
+pub const Color = Ui.Color;
 
 pub const none = Color.rgba(0, 0, 0, 0);
 pub const silver_fg = Color.rgba(170, 170, 170, 255);

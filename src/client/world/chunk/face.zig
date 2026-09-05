@@ -316,49 +316,49 @@ pub fn emit_fluid_overlay(
     var pz = encode_pos(z);
     var pz1 = encode_pos(z + 1);
 
-    const INSET: i16 = 8;
+    const Inset: i16 = 8;
     switch (face) {
         .x_pos => {
-            px1 = px1 +| INSET;
-            py = py -| INSET;
-            py1 = py1 +| INSET;
-            pz = pz -| INSET;
-            pz1 = pz1 +| INSET;
+            px1 = px1 +| Inset;
+            py = py -| Inset;
+            py1 = py1 +| Inset;
+            pz = pz -| Inset;
+            pz1 = pz1 +| Inset;
         },
         .x_neg => {
-            px = px -| INSET;
-            py = py -| INSET;
-            py1 = py1 +| INSET;
-            pz = pz -| INSET;
-            pz1 = pz1 +| INSET;
+            px = px -| Inset;
+            py = py -| Inset;
+            py1 = py1 +| Inset;
+            pz = pz -| Inset;
+            pz1 = pz1 +| Inset;
         },
         .y_pos => {
-            py1 = py1 +| INSET;
-            px = px -| INSET;
-            px1 = px1 +| INSET;
-            pz = pz -| INSET;
-            pz1 = pz1 +| INSET;
+            py1 = py1 +| Inset;
+            px = px -| Inset;
+            px1 = px1 +| Inset;
+            pz = pz -| Inset;
+            pz1 = pz1 +| Inset;
         },
         .y_neg => {
-            py = py -| INSET;
-            px = px -| INSET;
-            px1 = px1 +| INSET;
-            pz = pz -| INSET;
-            pz1 = pz1 +| INSET;
+            py = py -| Inset;
+            px = px -| Inset;
+            px1 = px1 +| Inset;
+            pz = pz -| Inset;
+            pz1 = pz1 +| Inset;
         },
         .z_pos => {
-            pz1 = pz1 +| INSET;
-            px = px -| INSET;
-            px1 = px1 +| INSET;
-            py = py -| INSET;
-            py1 = py1 +| INSET;
+            pz1 = pz1 +| Inset;
+            px = px -| Inset;
+            px1 = px1 +| Inset;
+            py = py -| Inset;
+            py1 = py1 +| Inset;
         },
         .z_neg => {
-            pz = pz -| INSET;
-            px = px -| INSET;
-            px1 = px1 +| INSET;
-            py = py -| INSET;
-            py1 = py1 +| INSET;
+            pz = pz -| Inset;
+            px = px -| Inset;
+            px1 = px1 +| Inset;
+            py = py -| Inset;
+            py1 = py1 +| Inset;
         },
     }
 

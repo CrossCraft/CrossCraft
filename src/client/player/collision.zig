@@ -4,10 +4,10 @@ const World = core.World;
 const physics = core.physics;
 const Block = core.blocks.Block;
 
-pub const HALF_W: f32 = 0.3;
-pub const HEIGHT: f32 = 1.8;
-pub const EYE_HEIGHT: f32 = 1.59375;
-pub const STEP_HEIGHT: f32 = 0.5;
+pub const HalfW: f32 = 0.3;
+pub const Height: f32 = 1.8;
+pub const EyeHeight: f32 = 1.59375;
+pub const StepHeight: f32 = 0.5;
 
 pub const Liquid = enum { water, lava };
 
@@ -35,10 +35,10 @@ pub fn liquid_feet(px: f32, py: f32, pz: f32) ?Liquid {
     return zone_liquid(px, pz, by, by);
 }
 
-/// Body/head zone: from floor(py + 1) up to floor(py + HEIGHT).
+/// Body/head zone: from floor(py + 1) up to floor(py + Height).
 pub fn liquid_body(px: f32, py: f32, pz: f32) ?Liquid {
     const fy0 = @floor(py + 1.0);
-    const fy1 = @floor(py + HEIGHT);
+    const fy1 = @floor(py + Height);
     if (!safe_for_i32(fy0) or !safe_for_i32(fy1)) return null;
     const by0: i32 = @intFromFloat(fy0);
     const by1: i32 = @intFromFloat(fy1);
@@ -46,10 +46,10 @@ pub fn liquid_body(px: f32, py: f32, pz: f32) ?Liquid {
 }
 
 fn zone_liquid(px: f32, pz: f32, by0: i32, by1: i32) ?Liquid {
-    const min_bx = world_coord(px - HALF_W);
-    const max_bx = world_coord(px + HALF_W);
-    const min_bz = world_coord(pz - HALF_W);
-    const max_bz = world_coord(pz + HALF_W);
+    const min_bx = world_coord(px - HalfW);
+    const max_bx = world_coord(px + HalfW);
+    const min_bz = world_coord(pz - HalfW);
+    const max_bz = world_coord(pz + HalfW);
     const dims = World.data.dims;
     const height: i32 = @intCast(dims.height);
     const length: i32 = @intCast(dims.length);
@@ -98,16 +98,16 @@ pub fn move_and_collide(
         &World.data,
         .{ px, py, pz },
         .{ dx, dy, dz },
-        HALF_W,
-        HEIGHT,
-        STEP_HEIGHT,
+        HalfW,
+        Height,
+        StepHeight,
         was_on_ground,
     );
 }
 
 /// For checks outside the physics tick; movement returns its own on_ground state.
 pub fn on_ground(px: f32, py: f32, pz: f32) bool {
-    return physics.is_on_ground(&World.data, .{ px, py, pz }, HALF_W, HEIGHT);
+    return physics.is_on_ground(&World.data, .{ px, py, pz }, HalfW, Height);
 }
 
 /// Allows airborne step-ups when leaving water; grounded movement handles its own.
@@ -118,7 +118,7 @@ pub fn try_step_up(
     dx: f32,
     dz: f32,
 ) ?struct { x: f32, y: f32, z: f32 } {
-    const p = physics.try_step_up(&World.data, .{ px, py, pz }, dx, dz, HALF_W, HEIGHT, STEP_HEIGHT) orelse return null;
+    const p = physics.try_step_up(&World.data, .{ px, py, pz }, dx, dz, HalfW, Height, StepHeight) orelse return null;
     return .{ .x = p[0], .y = p[1], .z = p[2] };
 }
 

@@ -12,34 +12,34 @@ const Vertex = @import("aether").Rendering.Vertex;
 const Colors = @import("../graphics/Color.zig");
 const Player = @import("../player/Player.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
-const FontBatcher = ae.UI.FontBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const ResourcePack = @import("../ResourcePack.zig");
 
 const SteveModel = @This();
 
 // SNORM16 scale: 1 block = 2048 units (matches face.zig:encode_pos).
 // Model matrix scales by 16.0 to recover world units.
-const WORLD_UNIT_SCALE: f32 = 16.0;
+const WorldUnitScale: f32 = 16.0;
 
-const RENDER_DIST: f32 = 32.0;
-const RENDER_DIST_SQ: f32 = RENDER_DIST * RENDER_DIST;
+const RenderDist: f32 = 32.0;
+const RenderDistSq: f32 = RenderDist * RenderDist;
 
-const INTERP_SPEED: f32 = 15.0;
+const InterpSpeed: f32 = 15.0;
 
-const IDLE_AMPLITUDE: f32 = 0.05;
-const IDLE_SPEED: f32 = 1.5 / 8.0;
+const IdleAmplitude: f32 = 0.05;
+const IdleSpeed: f32 = 1.5 / 8.0;
 
-const WALK_AMPLITUDE: f32 = 0.7;
-const WALK_SPEED: f32 = 2.0;
+const WalkAmplitude: f32 = 0.7;
+const WalkSpeed: f32 = 2.0;
 // Classic walk speed (~4.3 blocks/s). At this speed walk_blend = 1.0.
-const WALK_FULL_SPEED: f32 = 4.3;
-const WALK_BLEND_SPEED: f32 = 10.0;
+const WalkFullSpeed: f32 = 4.3;
+const WalkBlendSpeed: f32 = 10.0;
 
-const LIMB_QUADS: usize = 6;
-const LIMB_VERTS: usize = LIMB_QUADS * 6;
+const LimbQuads: usize = 6;
+const LimbVerts: usize = LimbQuads * 6;
 
-const TAG_HEIGHT: f32 = 0.3;
-const TAG_Y_OFFSET: f32 = 2.2;
+const TagHeight: f32 = 0.3;
+const TagYOffset: f32 = 2.2;
 const BatchMesh = Rendering.MeshType(Vertex);
 const BatchMeshData = Rendering.MeshDataType(Vertex);
 
@@ -102,7 +102,7 @@ pub fn init(allocator: std.mem.Allocator) !SteveModel {
         &self.right_leg, &self.left_leg,
     };
     for (data_meshes) |m| {
-        try m.ensure_quad_capacity(allocator, LIMB_QUADS);
+        try m.ensure_quad_capacity(allocator, LimbQuads);
     }
     // Coordinates are blocks/256. Torso coordinates are feet-relative; the
     // head and limbs are local to their neck, shoulder, or hip rotation pivot.
@@ -115,7 +115,7 @@ pub fn init(allocator: std.mem.Allocator) !SteveModel {
     const left_leg_uvs = comptime mirror_uvs(leg_uvs);
     emit_box(&self.left_leg_data, -32, -192, -32, 32, 0, 32, &left_leg_uvs);
     for (data_meshes, render_meshes) |data, mesh| {
-        const expected_verts: usize = if (Rendering.mesh.indexing_enabled) LIMB_QUADS * 4 else LIMB_VERTS;
+        const expected_verts: usize = if (Rendering.mesh.indexing_enabled) LimbQuads * 4 else LimbVerts;
         assert(data.vertices.items.len == expected_verts);
         mesh.update(data);
     }
@@ -147,8 +147,8 @@ pub fn deinit(self: *SteveModel) void {
 pub fn update(self: *SteveModel, dt: f32, player_list: *const PlayerList, fonts: *const FontBatcher) void {
     const tau = std.math.tau;
     const pi = std.math.pi;
-    const f = 1.0 - @exp(-INTERP_SPEED * dt);
-    const wf = 1.0 - @exp(-WALK_BLEND_SPEED * dt);
+    const f = 1.0 - @exp(-InterpSpeed * dt);
+    const wf = 1.0 - @exp(-WalkBlendSpeed * dt);
 
     self.anim_time += dt;
     if (self.anim_time > 1000.0) self.anim_time -= 1000.0;
@@ -200,7 +200,7 @@ pub fn update(self: *SteveModel, dt: f32, player_list: *const PlayerList, fonts:
         const move_dx = st.x - prev_x;
         const move_dz = st.z - prev_z;
         const speed = @sqrt(move_dx * move_dx + move_dz * move_dz) / @max(dt, 0.001);
-        const target_blend = @min(speed / WALK_FULL_SPEED, 1.5);
+        const target_blend = @min(speed / WalkFullSpeed, 1.5);
         st.walk_blend += (target_blend - st.walk_blend) * wf;
         st.yaw = lerp_angle(st.yaw, tyaw, f);
         st.pitch = lerp_angle(st.pitch, tpitch, f);
@@ -223,21 +223,21 @@ pub fn draw(self: *SteveModel, local: *const Player) void {
 
     Rendering.gfx.api.bind_texture(ResourcePack.get_tex(.char).handle);
 
-    const idle_swing = (@sin(self.anim_time * std.math.tau * IDLE_SPEED) * 0.5 + 0.5) * IDLE_AMPLITUDE;
+    const idle_swing = (@sin(self.anim_time * std.math.tau * IdleSpeed) * 0.5 + 0.5) * IdleAmplitude;
 
-    const walk_phase = @sin(self.anim_time * std.math.tau * WALK_SPEED * 0.67) * 1.5;
+    const walk_phase = @sin(self.anim_time * std.math.tau * WalkSpeed * 0.67) * 1.5;
 
     for (&self.states) |*st| {
         if (!st.active) continue;
 
-        const feet_y = st.y - collision.EYE_HEIGHT;
+        const feet_y = st.y - collision.EyeHeight;
 
         const dx = st.x - local_x;
         const dy = feet_y - local_y;
         const dz = st.z - local_z;
-        if (dx * dx + dy * dy + dz * dz > RENDER_DIST_SQ) continue;
+        if (dx * dx + dy * dy + dz * dz > RenderDistSq) continue;
 
-        const scale = Math.Mat4.scaling(WORLD_UNIT_SCALE, WORLD_UNIT_SCALE, WORLD_UNIT_SCALE);
+        const scale = Math.Mat4.scaling(WorldUnitScale, WorldUnitScale, WorldUnitScale);
         const rot_y = Math.Mat4.rotationY(st.yaw);
         const world_t = Math.Mat4.translation(st.x, feet_y, st.z);
 
@@ -249,7 +249,7 @@ pub fn draw(self: *SteveModel, local: *const Player) void {
         const head_model = scale.mul(rot_x).mul(neck_t).mul(rot_y).mul(world_t);
         self.head.draw(&head_model);
 
-        const walk_swing = walk_phase * WALK_AMPLITUDE * st.walk_blend;
+        const walk_swing = walk_phase * WalkAmplitude * st.walk_blend;
 
         const r_arm_walk = Math.Mat4.rotationX(walk_swing);
         const r_arm_idle = Math.Mat4.rotationZ(-idle_swing);
@@ -282,18 +282,18 @@ pub fn draw_nametags(self: *SteveModel, local: *const Player, fonts: *const Font
         if (!st.active) continue;
         const mesh = &(nt.* orelse continue);
 
-        const feet_y = st.y - collision.EYE_HEIGHT;
+        const feet_y = st.y - collision.EyeHeight;
         const dx = st.x - local.pos_x;
         const dy = feet_y - local.pos_y;
         const dz = st.z - local.pos_z;
-        if (dx * dx + dy * dy + dz * dz > RENDER_DIST_SQ) continue;
+        if (dx * dx + dy * dy + dz * dz > RenderDistSq) continue;
 
         // Cylindrical billboard: faces camera horizontally, stays upright.
-        const half_h = TAG_HEIGHT / 2.0;
+        const half_h = TagHeight / 2.0;
         const half_w = half_h * aspect;
         const sca = Math.Mat4.scaling(half_w, half_h, 0.001);
         const rot = Math.Mat4.rotationY(local.camera.yaw);
-        const trans = Math.Mat4.translation(st.x, feet_y + TAG_Y_OFFSET, st.z);
+        const trans = Math.Mat4.translation(st.x, feet_y + TagYOffset, st.z);
         const model = sca.mul(rot).mul(trans);
         mesh.draw(&model);
     }

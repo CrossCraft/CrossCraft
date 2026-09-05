@@ -9,7 +9,7 @@ const log = std.log.scoped(.client);
 const caps = @import("capabilities").ClientType(ae);
 const Profile = @import("capabilities").MemoryProfile;
 
-const MB: u32 = 1024 * 1024;
+const Mb: u32 = 1024 * 1024;
 
 var active_profile: Profile = caps.memory.initial_profile;
 
@@ -26,7 +26,7 @@ pub fn current() Profile {
 
 pub fn main_memory_bytes() usize {
     const profile = current();
-    return @as(usize, profile.total_memory_mb) * MB;
+    return @as(usize, profile.total_memory_mb) * Mb;
 }
 
 pub fn max_sections() u32 {
@@ -49,7 +49,7 @@ pub fn init_memory() Util.MemoryConfig {
     };
 }
 
-const gameplay_user_slack: u32 = 4 * MB;
+const gameplay_user_slack: u32 = 4 * Mb;
 
 pub fn gameplay_user_budget(dims: core.world_dims.WorldDims) u32 {
     if (!caps.memory.resize_user_pool_to_world) return 0;

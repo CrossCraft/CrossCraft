@@ -1,7 +1,7 @@
 const Ui = @import("../Ui.zig");
 const widget_id = @import("../widget_id.zig");
 
-pub const NAME_MAX: u8 = @import("core").World.DumpName.NAME_MAX;
+pub const NameMax: u8 = @import("core").World.DumpName.NameMax;
 
 pub const Widget = enum(u16) {
     name = 1,
@@ -11,15 +11,15 @@ pub const Widget = enum(u16) {
 };
 
 pub const Ctx = struct {
-    name: *[NAME_MAX]u8,
+    name: *[NameMax]u8,
     name_len: *u8,
     save_enabled: bool,
 };
 
 pub const Action = enum { none, save, back };
 
-pub const LAYER_BASE: u8 = 2;
-const TITLE_TOP_OFFSET: i16 = 52;
+pub const LayerBase: u8 = 2;
+const TitleTopOffset: i16 = 52;
 
 pub fn wid(w: Widget) widget_id.WidgetId {
     return widget_id.from(Widget, w);
@@ -30,7 +30,7 @@ pub fn run(ui: *Ui, ctx: *Ctx) Action {
         .axis = .vertical,
         .anchor = .top_center,
         .cross_align = .center,
-        .padding = .{ .top = TITLE_TOP_OFFSET },
+        .padding = .{ .top = TitleTopOffset },
     });
     ui.label("Dump World");
     title.end();
@@ -39,7 +39,7 @@ pub fn run(ui: *Ui, ctx: *Ctx) Action {
     var action: Action = .none;
 
     ui.label("World Name");
-    var name_buf: Ui.TextBuf = .{ .bytes = ctx.name, .len = ctx.name_len, .max = NAME_MAX };
+    var name_buf: Ui.TextBuf = .{ .bytes = ctx.name, .len = ctx.name_len, .max = NameMax };
     const text_event = ui.text_field(wid(.name), &name_buf, .{ .placeholder = "world", .session_id = "dump_world.name" });
     if (ui.button(wid(.save), "Save", .{ .enabled = ctx.save_enabled }) and action == .none) action = .save;
     if (ui.button(wid(.back), "Back", .{}) and action == .none) action = .back;

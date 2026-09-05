@@ -33,7 +33,7 @@ pub const Result = struct {
     back: bool = false,
 };
 
-pub const WIDGET_W: i16 = 180;
+pub const WidgetW: i16 = 180;
 const row_base: u16 = 100;
 
 pub fn wid(w: Widget) widget_id.WidgetId {
@@ -52,7 +52,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
     ui.label("Controls");
     if (!Options.controls_rebinding_supported()) {
         ui.label("Fixed on this platform");
-        if (ui.button(wid(.done), "Done", .{ .width = WIDGET_W })) {
+        if (ui.button(wid(.done), "Done", .{ .width = WidgetW })) {
             cancel_capture(sys, ctx);
             result.back = true;
         }
@@ -67,7 +67,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
 
     const new_3ds_fallback_available = Options.new_3ds_old_controls_supported();
     if (new_3ds_fallback_available) {
-        if (ui.button(wid(.old_3ds_controls), ui.fmt("O3DS Controls: {s}", .{bool_str(opt.new_3ds_use_old_controls)}), .{ .width = WIDGET_W })) {
+        if (ui.button(wid(.old_3ds_controls), ui.fmt("O3DS Controls: {s}", .{bool_str(opt.new_3ds_use_old_controls)}), .{ .width = WidgetW })) {
             opt.new_3ds_use_old_controls = !opt.new_3ds_use_old_controls;
             result.changed = true;
         }
@@ -83,7 +83,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
     }
 
     const show_reset = !new_3ds_fallback_available or Options.uses_old_3ds_controls();
-    if (show_reset and ui.button(wid(.reset), "Reset Defaults", .{ .width = WIDGET_W, .enabled = !suppress_actions })) {
+    if (show_reset and ui.button(wid(.reset), "Reset Defaults", .{ .width = WidgetW, .enabled = !suppress_actions })) {
         if (caps.controls.single_stick) {
             opt.reset_psp_controls();
         } else if (new_3ds_fallback_available) {
@@ -97,7 +97,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
         }
         result.changed = true;
     }
-    if (ui.button(wid(.done), "Done", .{ .width = WIDGET_W, .enabled = !suppress_actions })) {
+    if (ui.button(wid(.done), "Done", .{ .width = WidgetW, .enabled = !suppress_actions })) {
         cancel_capture(sys, ctx);
         result.back = true;
     }
@@ -139,7 +139,7 @@ fn pc_row(ui: *Ui, opt: *Options.Options, control: Options.PcControl, label: []c
         ui.fmt("{s}: Press key...", .{label})
     else
         ui.fmt("{s}: {s}", .{ label, Options.pc_key_label(opt.pc_key(control)) });
-    if (ui.button(row_wid(control), text, .{ .width = WIDGET_W, .enabled = enabled })) {
+    if (ui.button(row_wid(control), text, .{ .width = WidgetW, .enabled = enabled })) {
         begin_capture(ui.input.input_system, ctx, control);
     }
 }
@@ -187,14 +187,14 @@ fn poll_capture(sys: ?*input.InputSystem, opt: *Options.Options, ctx: Ctx, resul
 }
 
 fn run_psp(ui: *Ui, opt: *Options.Options, result: *Result) void {
-    if (ui.button(wid(.psp_analog), ui.fmt("Analog: {s}", .{psp_analog_label(opt.psp_analog_mode)}), .{ .width = WIDGET_W })) {
+    if (ui.button(wid(.psp_analog), ui.fmt("Analog: {s}", .{psp_analog_label(opt.psp_analog_mode)}), .{ .width = WidgetW })) {
         opt.psp_analog_mode = switch (opt.psp_analog_mode) {
             .move => .look,
             .look => .move,
         };
         result.changed = true;
     }
-    if (ui.button(wid(.psp_jump), ui.fmt("Jump: {s}", .{psp_jump_label(opt.psp_jump_mode)}), .{ .width = WIDGET_W })) {
+    if (ui.button(wid(.psp_jump), ui.fmt("Jump: {s}", .{psp_jump_label(opt.psp_jump_mode)}), .{ .width = WidgetW })) {
         opt.psp_jump_mode = switch (opt.psp_jump_mode) {
             .select => .up,
             .up => .select,

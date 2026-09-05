@@ -1,9 +1,9 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-pub const BLOCK_CAPACITY: usize = 256;
-pub const INVENTORY_SLOTS: u8 = 45;
-pub const INVENTORY_FILLED: u8 = 42;
+pub const BlockCapacity: usize = 256;
+pub const InventorySlots: u8 = 45;
+pub const InventoryFilled: u8 = 42;
 const classic_block_count = 50;
 
 pub const Face = enum(u3) {
@@ -128,7 +128,7 @@ const Definition = struct {
 
     fn valid(self: Definition) bool {
         const inventory_slot_valid = if (self.inventory_slot) |slot|
-            slot < INVENTORY_SLOTS
+            slot < InventorySlots
         else
             true;
         return self.bounds.valid() and self.face_tiles.valid() and inventory_slot_valid and
@@ -290,14 +290,14 @@ comptime {
 
 /// Compile-time structure-of-arrays lookup table for gameplay hot paths.
 const Registry = struct {
-    mesh_props: [BLOCK_CAPACITY]MeshProps = @splat(.{}),
-    sim_props: [BLOCK_CAPACITY]SimProps = @splat(.{}),
-    face_tiles: [BLOCK_CAPACITY]FaceTiles = @splat(.all(0, 0)),
-    material: [BLOCK_CAPACITY]Material = @splat(.grass),
-    fluid_kind: [BLOCK_CAPACITY]FluidKind = @splat(.none),
-    bounds: [BLOCK_CAPACITY]SubvoxelBounds = @splat(.full),
-    display_name: [BLOCK_CAPACITY][]const u8 = @splat(""),
-    inventory_order: [INVENTORY_SLOTS]Block = @splat(.air),
+    mesh_props: [BlockCapacity]MeshProps = @splat(.{}),
+    sim_props: [BlockCapacity]SimProps = @splat(.{}),
+    face_tiles: [BlockCapacity]FaceTiles = @splat(.all(0, 0)),
+    material: [BlockCapacity]Material = @splat(.grass),
+    fluid_kind: [BlockCapacity]FluidKind = @splat(.none),
+    bounds: [BlockCapacity]SubvoxelBounds = @splat(.full),
+    display_name: [BlockCapacity][]const u8 = @splat(""),
+    inventory_order: [InventorySlots]Block = @splat(.air),
 
     fn classic() Registry {
         var self: Registry = .{};
@@ -329,7 +329,7 @@ const Registry = struct {
 const global = Registry.classic();
 
 pub inline fn inventory_block(slot: u8) Block {
-    assert(slot < INVENTORY_SLOTS);
+    assert(slot < InventorySlots);
     return global.inventory_order[slot];
 }
 

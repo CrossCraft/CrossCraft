@@ -1,4 +1,4 @@
-const texture_region = @import("aether").UI.texture_region;
+const texture_region = @import("aether").Ui.texture_region;
 const Colors = @import("../graphics/Color.zig");
 const Color = Colors.Color;
 

@@ -7,14 +7,14 @@ const input_api = ae.Core.input;
 const log = std.log.scoped(.ui);
 
 const core = @import("core");
-const layout_mod = ae.UI.layout;
-const texture_region = ae.UI.texture_region;
+const layout_mod = ae.Ui.layout;
+const texture_region = ae.Ui.texture_region;
 const widget_style = @import("WidgetStyle.zig");
 const prompt_strip = @import("PromptStrip.zig");
 const prompts_mod = @import("Prompts.zig");
 const ui_input = @import("input.zig");
 const widget_id = @import("widget_id.zig");
-const FontBatcher = ae.UI.FontBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const UiDrawList = @import("UiDrawList.zig");
 const UiState = @import("UiState.zig");
 const Colors = @import("../graphics/Color.zig");
@@ -74,10 +74,10 @@ pub const Padding = struct {
 
 const Ui = @This();
 
-pub const MAX_DEPTH: u8 = 8;
-pub const MAX_ITEMS: u8 = 96;
-pub const MAX_FOCUSABLES: u8 = UiState.MAX_FOCUSABLES;
-pub const LABEL_ARENA: u16 = 1536;
+pub const MaxDepth: u8 = 8;
+pub const MaxItems: u8 = 96;
+pub const MaxFocusables: u8 = UiState.MaxFocusables;
+pub const LabelArena: u16 = 1536;
 
 draw: *UiDrawList,
 state: *UiState,
@@ -88,17 +88,17 @@ glyphs_tex: *const Rendering.Texture,
 layer_base: u8 = 0,
 screen: LogicalRect,
 
-scopes: [MAX_DEPTH]Scope = undefined,
+scopes: [MaxDepth]Scope = undefined,
 depth: u8 = 0,
-items: [MAX_ITEMS]Item = undefined,
+items: [MaxItems]Item = undefined,
 item_count: u8 = 0,
 
-focusables: [MAX_FOCUSABLES]UiState.Focusable = undefined,
+focusables: [MaxFocusables]UiState.Focusable = undefined,
 focus_count: u8 = 0,
-scroll_views: [UiState.MAX_SCROLLS]UiState.ScrollView = undefined,
+scroll_views: [UiState.MaxScrolls]UiState.ScrollView = undefined,
 scroll_view_count: u8 = 0,
 
-label_buf: [LABEL_ARENA]u8 = undefined,
+label_buf: [LabelArena]u8 = undefined,
 label_used: u16 = 0,
 
 claimed_confirm: bool = false,
@@ -133,7 +133,7 @@ const Scope = struct {
     focus_start: u8,
     scroll_start: u8,
     item_start: u8,
-    item_indices: [MAX_ITEMS]u8,
+    item_indices: [MaxItems]u8,
     item_count: u8,
     reserved_rect: ?LogicalRect,
     origin_override: ?Point,
@@ -548,8 +548,8 @@ pub fn prompts(self: *Ui, list: []const Prompt) void {
         self.fonts,
         list,
         .bottom_left,
-        prompt_strip.DEFAULT_POS_X,
-        prompt_strip.DEFAULT_POS_Y,
+        prompt_strip.DefaultPosX,
+        prompt_strip.DefaultPosY,
         self.layer_base + 2,
         self.layer_base + 3,
     );
@@ -621,7 +621,7 @@ const ScopeInit = struct {
 };
 
 fn push_scope(self: *Ui, a: ScopeInit) void {
-    assert(self.depth < MAX_DEPTH);
+    assert(self.depth < MaxDepth);
     self.scopes[self.depth] = .{
         .axis = a.axis,
         .anchor = a.anchor,
@@ -742,7 +742,7 @@ fn record_child(
     assert(focus_start <= focus_end and focus_end <= self.focus_count);
     assert(scroll_start <= scroll_end and scroll_end <= self.scroll_view_count);
     const s = &self.scopes[self.depth - 1];
-    assert(self.item_count < MAX_ITEMS);
+    assert(self.item_count < MaxItems);
     const item_idx = self.item_count;
     self.items[item_idx] = .{
         .draw_start = draw_start,
@@ -812,7 +812,7 @@ fn parent_rect(s: Scope) LogicalRect {
 }
 
 fn push_focusable(self: *Ui, f_in: UiState.Focusable) void {
-    assert(self.focus_count < MAX_FOCUSABLES);
+    assert(self.focus_count < MaxFocusables);
     assert(self.find_current_id(f_in.id) == null); // Widget IDs must be unique within a frame.
     var f = f_in;
     if (f.scroll_clip == null) f.scroll_clip = self.current_scroll_clip();
@@ -821,7 +821,7 @@ fn push_focusable(self: *Ui, f_in: UiState.Focusable) void {
 }
 
 fn push_scroll_view(self: *Ui, v: UiState.ScrollView) void {
-    if (self.scroll_view_count >= UiState.MAX_SCROLLS) return;
+    if (self.scroll_view_count >= UiState.MaxScrolls) return;
     self.scroll_views[self.scroll_view_count] = v;
     self.scroll_view_count += 1;
 }

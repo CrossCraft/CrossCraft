@@ -168,10 +168,10 @@ const ChunkSender = struct {
     fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         _ = splat;
         const cs: *ChunkSender = @alignCast(@fieldParentPtr("interface", w));
-        const CHUNK: usize = 1024;
-        assert(w.end <= CHUNK);
+        const Chunk: usize = 1024;
+        assert(w.end <= Chunk);
 
-        var chunk: [CHUNK]u8 = @splat(0);
+        var chunk: [Chunk]u8 = @splat(0);
         var filled: usize = 0;
 
         if (w.end > 0) {
@@ -180,7 +180,7 @@ const ChunkSender = struct {
         }
 
         for (data) |bytes| {
-            const space = CHUNK - filled;
+            const space = Chunk - filled;
             if (space == 0) break;
             const n = @min(bytes.len, space);
             @memcpy(chunk[filled..][0..n], bytes[0..n]);

@@ -69,7 +69,7 @@ pub fn place() Prompt {
         return .{ .chord = .{ .LButton, null }, .label = "Place" };
     }
     return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .RMB, null }, .label = "Place" },
+        .kbm => .{ .chord = .{ .Rmb, null }, .label = "Place" },
         .nintendo, .xbox, .playstation => .{ .chord = .{ .RTrigger, null }, .label = "Place" },
         .psp => .{ .chord = .{ .LButton, null }, .label = "Place" },
     };
@@ -80,7 +80,7 @@ pub fn break_() Prompt {
         return .{ .chord = .{ .RButton, null }, .label = "Break" };
     }
     return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .LMB, null }, .label = "Break" },
+        .kbm => .{ .chord = .{ .Lmb, null }, .label = "Break" },
         .nintendo, .xbox, .playstation => .{ .chord = .{ .LTrigger, null }, .label = "Break" },
         .psp => .{ .chord = .{ .RButton, null }, .label = "Break" },
     };

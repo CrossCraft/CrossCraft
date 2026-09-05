@@ -17,11 +17,11 @@ const nbt = @import("../../nbt/nbt.zig");
 
 const log = std.log.scoped(.world);
 
-const FORMAT_VERSION: i8 = 1;
-const CREATED_BY_SERVICE = "CrossCraft";
-const CREATED_BY_USERNAME = "Server";
-const MAP_GENERATOR_SOFTWARE = "CrossCraft";
-const MAP_GENERATOR_NAME = "Classic";
+const FormatVersion: i8 = 1;
+const CreatedByService = "CrossCraft";
+const CreatedByUsername = "Server";
+const MapGeneratorSoftware = "CrossCraft";
+const MapGeneratorName = "Classic";
 
 pub const ClassicCw = struct {
     pub fn save_world(
@@ -66,24 +66,24 @@ pub const ClassicCw = struct {
 fn write_classic_world_compound(ctx: SaveContext, out: *std.Io.Writer) !void {
     try nbt.write_header(out, .compound, "ClassicWorld");
 
-    const spawn_children = [_]nbt.NBT{
+    const spawn_children = [_]nbt.Nbt{
         named("X", .{ .short = @intCast(@as(i32, ctx.spawn[0]) >> 5) }),
         named("Y", .{ .short = @intCast(@as(i32, ctx.spawn[1]) >> 5) }),
         named("Z", .{ .short = @intCast(@as(i32, ctx.spawn[2]) >> 5) }),
         named("H", .{ .byte = 0 }),
         named("P", .{ .byte = 0 }),
     };
-    const created_by_children = [_]nbt.NBT{
-        named("Service", .{ .string = CREATED_BY_SERVICE }),
-        named("Username", .{ .string = CREATED_BY_USERNAME }),
+    const created_by_children = [_]nbt.Nbt{
+        named("Service", .{ .string = CreatedByService }),
+        named("Username", .{ .string = CreatedByUsername }),
     };
-    const map_gen_children = [_]nbt.NBT{
-        named("Software", .{ .string = MAP_GENERATOR_SOFTWARE }),
-        named("MapGeneratorName", .{ .string = MAP_GENERATOR_NAME }),
+    const map_gen_children = [_]nbt.Nbt{
+        named("Software", .{ .string = MapGeneratorSoftware }),
+        named("MapGeneratorName", .{ .string = MapGeneratorName }),
     };
 
-    const meta_children = [_]nbt.NBT{
-        named("FormatVersion", .{ .byte = FORMAT_VERSION }),
+    const meta_children = [_]nbt.Nbt{
+        named("FormatVersion", .{ .byte = FormatVersion }),
         named("Name", .{ .string = ctx.name }),
         named("UUID", .{ .byte_array = &ctx.uuid }),
         named("X", .{ .short = @intCast(ctx.dims.length) }),
@@ -107,7 +107,7 @@ fn write_classic_world_compound(ctx: SaveContext, out: *std.Io.Writer) !void {
     try out.writeByte(@intFromEnum(nbt.Tag.end));
 }
 
-fn named(name: []const u8, value: nbt.NBT.Value) nbt.NBT {
+fn named(name: []const u8, value: nbt.Nbt.Value) nbt.Nbt {
     return .{ .name = name, .value = value };
 }
 
@@ -304,7 +304,7 @@ test "loader accepts shuffled dimensions before BlockArray" {
 
 test "loader rejects malformed dimensions before writing blocks" {
     const Fixture = struct {
-        fn run(expected_error: anyerror, children: []const nbt.NBT, block_array_after: bool) !void {
+        fn run(expected_error: anyerror, children: []const nbt.Nbt, block_array_after: bool) !void {
             var buf: [256]u8 = undefined;
             var w = std.Io.Writer.fixed(&buf);
             try nbt.write_header(&w, .compound, "ClassicWorld");
@@ -335,7 +335,7 @@ test "sniff_dims reads X/Y/Z shorts past earlier tags" {
     var buf: [512]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
     try nbt.write_header(&w, .compound, "ClassicWorld");
-    try named("FormatVersion", .{ .byte = FORMAT_VERSION }).write(&w);
+    try named("FormatVersion", .{ .byte = FormatVersion }).write(&w);
     try named("Name", .{ .string = "test world" }).write(&w);
     try named("Spawn", .{ .compound = &.{} }).write(&w);
     try named("X", .{ .short = 512 }).write(&w);

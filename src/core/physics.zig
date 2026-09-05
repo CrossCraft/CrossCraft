@@ -13,15 +13,15 @@ const assert = std.debug.assert;
 const WorldData = @import("world/WorldData.zig");
 
 /// Gap left after clipping to keep repeated collision checks stable.
-pub const EPSILON: f32 = 0.001;
+pub const Epsilon: f32 = 0.001;
 
-const MATH_LARGE: f32 = 1.0e9;
+const MathLarge: f32 = 1.0e9;
 
-/// A 0.6 x 1.8 player swept at `MAX_TICK_VEL` spans at most 7 x 8 x 7 cells.
-const MAX_CANDIDATES = 7 * 8 * 7;
+/// A 0.6 x 1.8 player swept at `MaxTickVel` spans at most 7 x 8 x 7 cells.
+const MaxCandidates = 7 * 8 * 7;
 
 /// Limit the broadphase extent while allowing Classic terminal velocity.
-const MAX_TICK_VEL: f32 = 5.0;
+const MaxTickVel: f32 = 5.0;
 
 pub const MoveResult = struct {
     x: f32,
@@ -91,9 +91,9 @@ pub fn move_and_wall_slide(
     }
 
     const v_clamped = [3]f32{
-        std.math.clamp(vel[0], -MAX_TICK_VEL, MAX_TICK_VEL),
-        std.math.clamp(vel[1], -MAX_TICK_VEL, MAX_TICK_VEL),
-        std.math.clamp(vel[2], -MAX_TICK_VEL, MAX_TICK_VEL),
+        std.math.clamp(vel[0], -MaxTickVel, MaxTickVel),
+        std.math.clamp(vel[1], -MaxTickVel, MaxTickVel),
+        std.math.clamp(vel[2], -MaxTickVel, MaxTickVel),
     };
 
     var state: ResolveState = .{
@@ -108,7 +108,7 @@ pub fn move_and_wall_slide(
         .hit_z = false,
     };
 
-    var buf: [MAX_CANDIDATES]Candidate = undefined;
+    var buf: [MaxCandidates]Candidate = undefined;
     var count: usize = 0;
     broadphase(data, state.entity, state.vel, buf[0..], &count);
     insertion_sort(buf[0..count]);
@@ -169,8 +169,8 @@ pub fn is_on_ground(
 ) bool {
     if (pos[1] <= 0.0) return true;
     var box = entity_aabb(pos[0], pos[1], pos[2], half_w, height);
-    box.min_y -= EPSILON;
-    box.max_y -= EPSILON;
+    box.min_y -= Epsilon;
+    box.max_y -= Epsilon;
     return overlaps_any_solid(data, box);
 }
 
@@ -297,7 +297,7 @@ fn axis_time(e_min: f32, e_max: f32, b_min: f32, b_max: f32, v: f32) f32 {
     // Already overlapping on this axis -> time is 0 so face classification
     // falls on one of the still-moving axes.
     if (e_max >= b_min and e_min <= b_max) return 0.0;
-    if (v == 0.0) return MATH_LARGE;
+    if (v == 0.0) return MathLarge;
     const d = if (v > 0.0) b_min - e_max else e_min - b_max;
     return @abs(d / v);
 }
@@ -345,19 +345,19 @@ fn resolve_candidate(
 
 fn classify_face(final: Aabb, block: Aabb, ceiling_hit: bool) Face {
     if (!ceiling_hit) {
-        if (final.min_y + EPSILON >= block.max_y) return .y_max;
-        if (final.max_y - EPSILON <= block.min_y) return .y_min;
-        if (final.min_x + EPSILON >= block.max_x) return .x_max;
-        if (final.max_x - EPSILON <= block.min_x) return .x_min;
-        if (final.min_z + EPSILON >= block.max_z) return .z_max;
-        if (final.max_z - EPSILON <= block.min_z) return .z_min;
+        if (final.min_y + Epsilon >= block.max_y) return .y_max;
+        if (final.max_y - Epsilon <= block.min_y) return .y_min;
+        if (final.min_x + Epsilon >= block.max_x) return .x_max;
+        if (final.max_x - Epsilon <= block.min_x) return .x_min;
+        if (final.min_z + Epsilon >= block.max_z) return .z_max;
+        if (final.max_z - Epsilon <= block.min_z) return .z_min;
     } else {
-        if (final.min_x + EPSILON >= block.max_x) return .x_max;
-        if (final.max_x - EPSILON <= block.min_x) return .x_min;
-        if (final.min_z + EPSILON >= block.max_z) return .z_max;
-        if (final.max_z - EPSILON <= block.min_z) return .z_min;
-        if (final.min_y + EPSILON >= block.max_y) return .y_max;
-        if (final.max_y - EPSILON <= block.min_y) return .y_min;
+        if (final.min_x + Epsilon >= block.max_x) return .x_max;
+        if (final.max_x - Epsilon <= block.min_x) return .x_min;
+        if (final.min_z + Epsilon >= block.max_z) return .z_max;
+        if (final.max_z - Epsilon <= block.min_z) return .z_min;
+        if (final.min_y + Epsilon >= block.max_y) return .y_max;
+        if (final.max_y - Epsilon <= block.min_y) return .y_min;
     }
     return .none;
 }
@@ -387,10 +387,10 @@ fn clip_interval(min: *f32, max: *f32, velocity: *f32, barrier: f32, move_min: b
     assert(std.math.isFinite(barrier));
     const size = max.* - min.*;
     if (move_min) {
-        min.* = barrier + EPSILON;
+        min.* = barrier + Epsilon;
         max.* = min.* + size;
     } else {
-        max.* = barrier - EPSILON;
+        max.* = barrier - Epsilon;
         min.* = max.* - size;
     }
     velocity.* = 0;
@@ -409,15 +409,15 @@ fn try_step(
     if (y_dist <= 0.0 or y_dist > state.step_size + 0.01) return false;
 
     const height = state.entity.max_y - state.entity.min_y;
-    const new_y = block.max_y + EPSILON;
+    const new_y = block.max_y + Epsilon;
 
     const adj = Aabb{
-        .min_x = @min(final.min_x, block.min_x + EPSILON),
+        .min_x = @min(final.min_x, block.min_x + Epsilon),
         .min_y = new_y,
-        .min_z = @min(final.min_z, block.min_z + EPSILON),
-        .max_x = @max(final.max_x, block.max_x - EPSILON),
+        .min_z = @min(final.min_z, block.min_z + Epsilon),
+        .max_x = @max(final.max_x, block.max_x - Epsilon),
         .max_y = new_y + height,
-        .max_z = @max(final.max_z, block.max_z - EPSILON),
+        .max_z = @max(final.max_z, block.max_z - Epsilon),
     };
     if (overlaps_any_solid(data, adj)) return false;
 
@@ -432,9 +432,9 @@ fn overlaps_any_solid(data: *const WorldData, box: Aabb) bool {
     const bx_min: i32 = floor_i32(box.min_x);
     const by_min: i32 = floor_i32(box.min_y);
     const bz_min: i32 = floor_i32(box.min_z);
-    const bx_max: i32 = floor_i32(box.max_x - EPSILON);
-    const by_max: i32 = floor_i32(box.max_y - EPSILON);
-    const bz_max: i32 = floor_i32(box.max_z - EPSILON);
+    const bx_max: i32 = floor_i32(box.max_x - Epsilon);
+    const by_max: i32 = floor_i32(box.max_y - Epsilon);
+    const bz_max: i32 = floor_i32(box.max_z - Epsilon);
 
     var by: i32 = by_min;
     while (by <= by_max) : (by += 1) {
@@ -464,9 +464,9 @@ fn find_landing_y(
     const box = entity_aabb(px, start_y, pz, half_w, height);
 
     const bx_min: i32 = floor_i32(box.min_x);
-    const bx_max: i32 = floor_i32(box.max_x - EPSILON);
+    const bx_max: i32 = floor_i32(box.max_x - Epsilon);
     const bz_min: i32 = floor_i32(box.min_z);
-    const bz_max: i32 = floor_i32(box.max_z - EPSILON);
+    const bz_max: i32 = floor_i32(box.max_z - Epsilon);
     const by_min: i32 = floor_i32(target_y);
     const by_max: i32 = floor_i32(start_y);
 
@@ -494,8 +494,8 @@ fn intersects(a: Aabb, b: Aabb) bool {
 }
 
 fn overlaps_xz(a: Aabb, b: Aabb) bool {
-    return a.max_x > b.min_x + EPSILON and a.min_x + EPSILON < b.max_x and
-        a.max_z > b.min_z + EPSILON and a.min_z + EPSILON < b.max_z;
+    return a.max_x > b.min_x + Epsilon and a.min_x + Epsilon < b.max_x and
+        a.max_z > b.min_z + Epsilon and a.min_z + Epsilon < b.max_z;
 }
 
 /// Clamp invalid coordinates before converting them to cell indices.
@@ -513,26 +513,26 @@ test "movement clips against blocks, slabs, ceilings, and world edges" {
 
     data.blocks[data.get_index(10, 0, 10)] = .stone;
     const floor = move_and_wall_slide(&data, .{ 10.5, 1.4, 10.5 }, .{ 0, -0.6, 0 }, 0.3, 1.8, 0, false);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0 + EPSILON), floor.y, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0 + Epsilon), floor.y, 0.0001);
     try std.testing.expect(floor.on_ground);
 
     data.blocks[data.get_index(20, 0, 20)] = .slab;
     const slab = move_and_wall_slide(&data, .{ 20.5, 1.0, 20.5 }, .{ 0, -0.8, 0 }, 0.3, 1.8, 0, false);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5 + EPSILON), slab.y, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5 + Epsilon), slab.y, 0.0001);
     try std.testing.expect(slab.on_ground);
 
     data.blocks[data.get_index(12, 1, 10)] = .stone;
     const wall = move_and_wall_slide(&data, .{ 11.2, 1.0, 10.5 }, .{ 1, 0, 0 }, 0.3, 1.8, 0, false);
-    try std.testing.expectApproxEqAbs(@as(f32, 12.0 - EPSILON - 0.3), wall.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 12.0 - Epsilon - 0.3), wall.x, 0.0001);
     try std.testing.expect(wall.hit_x);
 
     data.blocks[data.get_index(30, 3, 30)] = .stone;
     const ceiling = move_and_wall_slide(&data, .{ 30.5, 1.0, 30.5 }, .{ 0, 0.5, 0 }, 0.3, 1.8, 0, false);
-    try std.testing.expectApproxEqAbs(@as(f32, 3.0 - EPSILON - 1.8), ceiling.y, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.0 - Epsilon - 1.8), ceiling.y, 0.0001);
     try std.testing.expect(ceiling.hit_y_above);
 
     const edge = move_and_wall_slide(&data, .{ 0.4, 2.0, 10.5 }, .{ -1, 0, 0 }, 0.3, 1.8, 0, false);
-    try std.testing.expectApproxEqAbs(@as(f32, EPSILON + 0.3), edge.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, Epsilon + 0.3), edge.x, 0.0001);
     try std.testing.expect(edge.hit_x);
 }
 
@@ -544,25 +544,25 @@ test "grounded movement steps onto a clear reachable slab" {
     data.blocks[data.get_index(11, 1, 10)] = .slab;
     const stepped = move_and_wall_slide(&data, .{ 10.2, 1.0, 10.5 }, .{ 1.0, 0, 0 }, 0.3, 1.8, 0.5, true);
     try std.testing.expectApproxEqAbs(@as(f32, 11.2), stepped.x, 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.5 + EPSILON), stepped.y, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.5 + Epsilon), stepped.y, 0.0001);
     try std.testing.expect(stepped.on_ground);
     try std.testing.expect(!stepped.hit_x);
 
     data.blocks[data.get_index(21, 1, 10)] = .slab;
     const airborne = move_and_wall_slide(&data, .{ 20.2, 1.0, 10.5 }, .{ 1.0, 0, 0 }, 0.3, 1.8, 0.5, false);
-    try std.testing.expectApproxEqAbs(@as(f32, 21.0 - EPSILON - 0.3), airborne.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 21.0 - Epsilon - 0.3), airborne.x, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), airborne.y, 0.0001);
     try std.testing.expect(airborne.hit_x);
 
     data.blocks[data.get_index(31, 1, 10)] = .stone;
     const too_high = move_and_wall_slide(&data, .{ 30.2, 1.0, 10.5 }, .{ 1.0, 0, 0 }, 0.3, 1.8, 0.5, true);
-    try std.testing.expectApproxEqAbs(@as(f32, 31.0 - EPSILON - 0.3), too_high.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 31.0 - Epsilon - 0.3), too_high.x, 0.0001);
     try std.testing.expect(too_high.hit_x);
 
     data.blocks[data.get_index(41, 1, 10)] = .slab;
     data.blocks[data.get_index(41, 3, 10)] = .stone;
     const blocked = move_and_wall_slide(&data, .{ 40.2, 1.0, 10.5 }, .{ 1.0, 0, 0 }, 0.3, 1.8, 0.5, true);
-    try std.testing.expectApproxEqAbs(@as(f32, 41.0 - EPSILON - 0.3), blocked.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 41.0 - Epsilon - 0.3), blocked.x, 0.0001);
     try std.testing.expect(blocked.hit_x);
 }
 
@@ -603,9 +603,9 @@ test "broadphase holds a maximum-speed dense sweep" {
         }
     }
 
-    var candidates: [MAX_CANDIDATES]Candidate = undefined;
+    var candidates: [MaxCandidates]Candidate = undefined;
     // Check all sweep directions at the largest supported entity size.
-    const speeds = [_]f32{ -MAX_TICK_VEL, MAX_TICK_VEL };
+    const speeds = [_]f32{ -MaxTickVel, MaxTickVel };
     for (speeds) |vx| for (speeds) |vy| for (speeds) |vz| {
         var count: usize = 0;
         broadphase(

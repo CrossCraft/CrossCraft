@@ -7,8 +7,8 @@ const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
-const SpriteBatcher = ae.UI.SpriteBatcher;
-const FontBatcher = ae.UI.FontBatcher;
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const UiDrawList = @import("../ui/UiDrawList.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
@@ -69,9 +69,9 @@ sw_ui_state: UiState,
 cw_ui_state: UiState,
 ui_repeat: ui_input.Repeat,
 
-dc_ip: [DirectConnect.IP_MAX]u8,
+dc_ip: [DirectConnect.IpMax]u8,
 dc_ip_len: u8,
-dc_name: [DirectConnect.NAME_MAX]u8,
+dc_name: [DirectConnect.NameMax]u8,
 dc_name_len: u8,
 
 options_rd_view: f32,
@@ -86,9 +86,9 @@ sw_entries: [SelectWorld.max_worlds]SelectWorld.Entry,
 sw_entry_count: u8,
 sw_delete_mode: bool,
 
-cw_name: [CreateWorld.NAME_MAX]u8,
+cw_name: [CreateWorld.NameMax]u8,
 cw_name_len: u8,
-cw_seed: [CreateWorld.SEED_MAX]u8,
+cw_seed: [CreateWorld.SeedMax]u8,
 cw_seed_len: u8,
 cw_size: wd.WorldSize,
 cw_height: wd.WorldHeight,
@@ -612,15 +612,15 @@ fn refresh_create_world_available(self: *@This(), engine: *Engine) void {
 }
 
 fn create_world_name_available(engine: *Engine, name: []const u8) bool {
-    var path_buf: [World.CreateName.PATH_MAX]u8 = undefined;
-    var name_buf: [World.CreateName.NAME_MAX]u8 = undefined;
+    var path_buf: [World.CreateName.PathMax]u8 = undefined;
+    var name_buf: [World.CreateName.NameMax]u8 = undefined;
     const result = World.CreateName.build_path(name, &path_buf, &name_buf) catch return false;
     return !file_exists(engine.io, engine.dirs.data, result.path);
 }
 
 fn create_world(self: *@This(), engine: *Engine) void {
-    var path_buf: [World.CreateName.PATH_MAX]u8 = undefined;
-    var name_buf: [World.CreateName.NAME_MAX]u8 = undefined;
+    var path_buf: [World.CreateName.PathMax]u8 = undefined;
+    var name_buf: [World.CreateName.NameMax]u8 = undefined;
     const result = World.CreateName.build_path(self.create_world_name_slice(), &path_buf, &name_buf) catch |err| {
         log.warn("invalid create-world name: {}", .{err});
         return;
@@ -732,7 +732,7 @@ fn seed_create_world_name(self: *@This(), engine: *Engine) void {
         return;
     }
 
-    var candidate_buf: [World.CreateName.NAME_MAX]u8 = undefined;
+    var candidate_buf: [World.CreateName.NameMax]u8 = undefined;
     var i: u16 = 1;
     while (i < 1000) : (i += 1) {
         const candidate = std.fmt.bufPrint(&candidate_buf, "world_{d}", .{i}) catch break;

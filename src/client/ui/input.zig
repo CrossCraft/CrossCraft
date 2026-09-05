@@ -6,7 +6,7 @@ const Rendering = ae.Rendering;
 const input = ae.Core.input;
 
 const Options = @import("../Options.zig");
-const Scaling = ae.UI.Scaling;
+const Scaling = ae.Ui.Scaling;
 const Buttons = @import("Buttons.zig");
 
 pub const NavDir = enum(u8) { none, up, down, left, right };
@@ -15,8 +15,8 @@ pub const InputProfile = enum {
     pad_only,
 };
 
-const REPEAT_DELAY: f32 = 0.4;
-const REPEAT_RATE: f32 = 0.08;
+const RepeatDelay: f32 = 0.4;
+const RepeatRate: f32 = 0.08;
 
 pub const Repeat = struct {
     direction: NavDir = .none,
@@ -327,8 +327,8 @@ fn resolve_nav(held: [4]bool, dt: f32, repeat: *Repeat) NavDir {
         return active;
     }
     repeat.timer += dt;
-    if (repeat.timer < REPEAT_DELAY) return .none;
-    repeat.timer -= REPEAT_RATE;
+    if (repeat.timer < RepeatDelay) return .none;
+    repeat.timer -= RepeatRate;
     return active;
 }
 
@@ -338,9 +338,9 @@ test "navigation repeats while held and resets on release" {
     const released = [4]bool{ false, false, false, false };
 
     try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0, &repeat));
-    try std.testing.expectEqual(NavDir.none, resolve_nav(down, REPEAT_DELAY - 0.01, &repeat));
+    try std.testing.expectEqual(NavDir.none, resolve_nav(down, RepeatDelay - 0.01, &repeat));
     try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0.02, &repeat));
-    try std.testing.expectEqual(NavDir.none, resolve_nav(down, REPEAT_RATE - 0.02, &repeat));
+    try std.testing.expectEqual(NavDir.none, resolve_nav(down, RepeatRate - 0.02, &repeat));
     try std.testing.expectEqual(NavDir.down, resolve_nav(down, 0.02, &repeat));
 
     try std.testing.expectEqual(NavDir.none, resolve_nav(released, 0, &repeat));
@@ -351,6 +351,6 @@ test "navigation resolves opposing directions once per frame" {
     var repeat: Repeat = .{};
     try std.testing.expectEqual(NavDir.up, resolve_nav(.{ true, true, true, true }, 0, &repeat));
     try std.testing.expectEqual(NavDir.down, resolve_nav(.{ false, true, true, true }, 0, &repeat));
-    try std.testing.expectEqual(NavDir.none, resolve_nav(.{ false, true, true, true }, REPEAT_DELAY - 0.01, &repeat));
+    try std.testing.expectEqual(NavDir.none, resolve_nav(.{ false, true, true, true }, RepeatDelay - 0.01, &repeat));
     try std.testing.expectEqual(NavDir.up, resolve_nav(.{ true, true, true, true }, 0, &repeat));
 }

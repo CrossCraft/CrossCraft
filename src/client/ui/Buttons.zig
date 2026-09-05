@@ -17,7 +17,7 @@ pub const Rect = struct {
 };
 
 /// Face buttons use physical positions: A=bottom, B=right, X=left, Y=top.
-/// Some values are only valid for one style (`Home`, `LMB`, and so on).
+/// Some values are only valid for one style (`Home`, `Lmb`, and so on).
 pub const Button = enum(u8) {
     A,
     B,
@@ -36,8 +36,8 @@ pub const Button = enum(u8) {
     Start,
     Select,
     Home,
-    LMB,
-    RMB,
+    Lmb,
+    Rmb,
     BlankKey,
     EnterKey,
     EscapeKey,
@@ -87,33 +87,33 @@ pub fn lookup(button: Button, style: Style) Rect {
     return lookup_controller(button, style);
 }
 
-const PC_TILE: i16 = 32;
-const PC_RENDER: i16 = 16;
+const PcTile: i16 = 32;
+const PcRender: i16 = 16;
 
 fn pc_row_pair_base(style: Style) i16 {
     return switch (style) {
         .xbox => 0,
-        .nintendo => 2 * PC_TILE,
-        .playstation => 4 * PC_TILE,
-        .kbm => 6 * PC_TILE,
+        .nintendo => 2 * PcTile,
+        .playstation => 4 * PcTile,
+        .kbm => 6 * PcTile,
         .psp => unreachable,
     };
 }
 
 fn pc_tile(col: i16, row_y: i16) Rect {
     return .{
-        .tex_x = col * PC_TILE,
+        .tex_x = col * PcTile,
         .tex_y = row_y,
-        .tex_w = PC_TILE,
-        .tex_h = PC_TILE,
-        .render_w = PC_RENDER,
-        .render_h = PC_RENDER,
+        .tex_w = PcTile,
+        .tex_h = PcTile,
+        .render_w = PcRender,
+        .render_h = PcRender,
     };
 }
 
 fn lookup_controller(button: Button, style: Style) Rect {
     const row0 = pc_row_pair_base(style);
-    const row1 = row0 + PC_TILE;
+    const row1 = row0 + PcTile;
     return switch (button) {
         .A => pc_tile(if (style == .nintendo) 1 else 0, row0),
         .B => pc_tile(if (style == .nintendo) 0 else 1, row0),
@@ -137,10 +137,10 @@ fn lookup_controller(button: Button, style: Style) Rect {
 }
 
 fn lookup_kbm(button: Button) Rect {
-    const row = 7 * PC_TILE;
+    const row = 7 * PcTile;
     return switch (button) {
-        .LMB => pc_tile(0, row),
-        .RMB => pc_tile(1, row),
+        .Lmb => pc_tile(0, row),
+        .Rmb => pc_tile(1, row),
         .BlankKey => pc_tile(2, row),
         .EnterKey => pc_tile(3, row),
         .EscapeKey => pc_tile(4, row),
@@ -148,20 +148,20 @@ fn lookup_kbm(button: Button) Rect {
     };
 }
 
-const PSP_FACE: i16 = 8;
-const PSP_WIDE_W: i16 = 16;
-const PSP_WIDE_H: i16 = 8;
+const PspFace: i16 = 8;
+const PspWideW: i16 = 16;
+const PspWideH: i16 = 8;
 
 fn psp_rect(x: i16, y: i16, w: i16, h: i16) Rect {
     return .{ .tex_x = x, .tex_y = y, .tex_w = w, .tex_h = h, .render_w = w, .render_h = h };
 }
 
 fn psp_face(col: i16) Rect {
-    return psp_rect(col * PSP_FACE, 0, PSP_FACE, PSP_FACE);
+    return psp_rect(col * PspFace, 0, PspFace, PspFace);
 }
 
 fn psp_wide(col: i16, row_y: i16) Rect {
-    return psp_rect(col * PSP_WIDE_W, row_y, PSP_WIDE_W, PSP_WIDE_H);
+    return psp_rect(col * PspWideW, row_y, PspWideW, PspWideH);
 }
 
 fn lookup_psp(button: Button) Rect {
@@ -174,11 +174,11 @@ fn lookup_psp(button: Button) Rect {
         .DpadDown => psp_face(5),
         .DpadLeft => psp_face(6),
         .DpadRight => psp_face(7),
-        .LButton => psp_wide(0, PSP_FACE),
-        .RButton => psp_wide(1, PSP_FACE),
-        .Start => psp_wide(2, PSP_FACE),
-        .Select => psp_wide(3, PSP_FACE),
-        .Home => psp_wide(0, PSP_FACE * 2),
+        .LButton => psp_wide(0, PspFace),
+        .RButton => psp_wide(1, PspFace),
+        .Start => psp_wide(2, PspFace),
+        .Select => psp_wide(3, PspFace),
+        .Home => psp_wide(0, PspFace * 2),
         else => unreachable,
     };
 }
@@ -187,12 +187,12 @@ test "glyph sheets map platform-specific controls" {
     const std = @import("std");
     const r = lookup(.A, .xbox);
     try std.testing.expect(r.render_w > 0 and r.render_h > 0);
-    try std.testing.expect(lookup(.A, .nintendo).tex_x == PC_TILE);
+    try std.testing.expect(lookup(.A, .nintendo).tex_x == PcTile);
     try std.testing.expect(lookup(.B, .nintendo).tex_x == 0);
-    try std.testing.expect(lookup(.X, .nintendo).tex_x == 3 * PC_TILE);
-    try std.testing.expect(lookup(.Y, .nintendo).tex_x == 2 * PC_TILE);
+    try std.testing.expect(lookup(.X, .nintendo).tex_x == 3 * PcTile);
+    try std.testing.expect(lookup(.Y, .nintendo).tex_x == 2 * PcTile);
     const p = lookup(.LButton, .psp);
-    try std.testing.expect(p.tex_w == PSP_WIDE_W);
+    try std.testing.expect(p.tex_w == PspWideW);
     const k = lookup(.EscapeKey, .kbm);
-    try std.testing.expect(k.render_w == PC_RENDER);
+    try std.testing.expect(k.render_w == PcRender);
 }

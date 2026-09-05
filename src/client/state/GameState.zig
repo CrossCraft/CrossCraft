@@ -28,8 +28,8 @@ const SelectionOutline = @import("../world/SelectionOutline.zig");
 const SteveModel = @import("../world/SteveModel.zig");
 const Player = @import("../player/Player.zig");
 const BlockHand = @import("../player/BlockHand.zig");
-const SpriteBatcher = ae.UI.SpriteBatcher;
-const FontBatcher = ae.UI.FontBatcher;
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
 const blocks = core.blocks;
 const PlayerList = @import("../ui/PlayerList.zig");
@@ -58,8 +58,8 @@ const caps = @import("capabilities").ClientType(ae);
 const execution = @import("capabilities").execution;
 
 const selection_depth_nudge: f32 = 1.0 / 320.0;
-const MP_READ_STACK_SIZE = 512 * 1024;
-const MP_FLY_WARNING = "&cUsing fly in multiplayer may get you banned! Know what you're doing! Triple tap to enable.";
+const MpReadStackSize = 512 * 1024;
+const MpFlyWarning = "&cUsing fly in multiplayer may get you banned! Know what you're doing! Triple tap to enable.";
 const PauseScreen = enum { main, options, controls, dump_world };
 
 fake_conn: FakeConn,
@@ -76,7 +76,7 @@ inventory_open: bool,
 inventory_slot: u8,
 inventory_ui_state: UiState,
 inventory_repeat: ui_input.Repeat,
-inventory_blocks: [core.blocks.INVENTORY_SLOTS]core.blocks.Block,
+inventory_blocks: [core.blocks.InventorySlots]core.blocks.Block,
 player_list: PlayerList,
 chat: Chat,
 social_mode: bool,
@@ -98,7 +98,7 @@ pause_dump_ui_state: UiState,
 pause_options_rd_view: f32,
 pause_controls_capture: ?Options.PcControl,
 pause_controls_status: ControlsScreen.Status,
-dump_world_name: [DumpWorldScreen.NAME_MAX]u8,
+dump_world_name: [DumpWorldScreen.NameMax]u8,
 dump_world_name_len: u8,
 pause_ui_repeat: ui_input.Repeat,
 pause_batcher: SpriteBatcher,
@@ -153,7 +153,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             self.mp_read_thread = try Util.Thread.spawn(
                 .{
                     .name = "mp_read",
-                    .stack_size = MP_READ_STACK_SIZE,
+                    .stack_size = MpReadStackSize,
                     .priority = .normal,
                     .allocator = engine.allocator(.user),
                 },
@@ -227,7 +227,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.inventory_ui_state = .{};
     self.inventory_repeat = .{};
     var inv_i: u8 = 0;
-    while (inv_i < blocks.INVENTORY_SLOTS) : (inv_i += 1) {
+    while (inv_i < blocks.InventorySlots) : (inv_i += 1) {
         self.inventory_blocks[inv_i] = blocks.inventory_block(inv_i);
     }
     if (Session.mode == .singleplayer) {
@@ -368,7 +368,7 @@ fn ensure_sp_compressor_started(self: *@This(), engine: *Engine) !void {
 }
 
 fn send_player_position(player: *Player) void {
-    const eye_y = player.pos_y + collision.EYE_HEIGHT;
+    const eye_y = player.pos_y + collision.EyeHeight;
     const x_fp: u16 = fp_coord(player.pos_x);
     const y_fp: u16 = fp_coord(eye_y);
     const z_fp: u16 = fp_coord(player.pos_z);
@@ -417,7 +417,7 @@ fn focus_lost_this_frame(sys: *ae_input.InputSystem) bool {
 
 fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !bool {
     var list: UiDrawList = .{};
-    var ui = begin_pause_ui(self, &list, &self.pause_ui_state, in, PauseMenu.LAYER_BASE);
+    var ui = begin_pause_ui(self, &list, &self.pause_ui_state, in, PauseMenu.LayerBase);
     const action = PauseMenu.run(&ui, Session.mode == .singleplayer);
     ui.end();
 
@@ -445,7 +445,7 @@ fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInpu
 
 fn update_pause_options(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
     var list: UiDrawList = .{};
-    var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, in, OptionsScreen.LAYER_BASE);
+    var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, in, OptionsScreen.LayerBase);
     const action = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
     ui.end();
     self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
@@ -462,7 +462,7 @@ fn update_pause_options(self: *@This(), engine: *Engine, in: *const ui_input.UiI
 
 fn update_pause_controls(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
     var list: UiDrawList = .{};
-    var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, in, OptionsScreen.LAYER_BASE);
+    var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, in, OptionsScreen.LayerBase);
     const result = ControlsScreen.run(&ui, &Options.current, pause_controls_ctx(self));
     ui.end();
     if (result.changed) apply_control_options(engine);
@@ -503,15 +503,15 @@ fn apply_control_options(engine: *Engine) void {
 }
 
 fn update_pause_dump_world(self: *@This(), in: *const ui_input.UiInput) !void {
-    var path_buf: [World.DumpName.PATH_MAX]u8 = undefined;
-    var name_buf: [World.DumpName.NAME_MAX]u8 = undefined;
+    var path_buf: [World.DumpName.PathMax]u8 = undefined;
+    var name_buf: [World.DumpName.NameMax]u8 = undefined;
     const can_save = blk: {
         _ = World.DumpName.build_path(self.dump_world_name_slice(), &path_buf, &name_buf) catch break :blk false;
         break :blk true;
     };
 
     var list: UiDrawList = .{};
-    var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, in, DumpWorldScreen.LAYER_BASE);
+    var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, in, DumpWorldScreen.LayerBase);
     var dump_ctx: DumpWorldScreen.Ctx = .{
         .name = &self.dump_world_name,
         .name_len = &self.dump_world_name_len,
@@ -558,8 +558,8 @@ fn seed_dump_world_name(self: *@This()) void {
 }
 
 fn try_dump_world(self: *@This()) bool {
-    var path_buf: [World.DumpName.PATH_MAX]u8 = undefined;
-    var name_buf: [World.DumpName.NAME_MAX]u8 = undefined;
+    var path_buf: [World.DumpName.PathMax]u8 = undefined;
+    var name_buf: [World.DumpName.NameMax]u8 = undefined;
     const result = World.DumpName.build_path(self.dump_world_name_slice(), &path_buf, &name_buf) catch |err| {
         log.warn("invalid world dump name: {}", .{err});
         return false;
@@ -616,7 +616,7 @@ fn close_pause(self: *@This(), engine: *Engine) void {
 fn open_inventory(self: *@This(), engine: *Engine) void {
     if (self.inventory_open) return;
     self.inventory_open = true;
-    self.inventory_slot = if (self.player.selected_slot < blocks.INVENTORY_FILLED)
+    self.inventory_slot = if (self.player.selected_slot < blocks.InventoryFilled)
         self.player.selected_slot
     else
         0;
@@ -643,13 +643,13 @@ fn close_inventory(self: *@This(), engine: *Engine) void {
 
 fn update_inventory_tree(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) void {
     var list: UiDrawList = .{};
-    var ui = begin_game_ui(self, &list, &self.inventory_ui_state, in, InventoryUi.LAYER_BASE);
+    var ui = begin_game_ui(self, &list, &self.inventory_ui_state, in, InventoryUi.LayerBase);
     const action = InventoryUi.run(&ui, self.inventory_blocks[0..], &self.inventory_slot);
     ui.end();
     switch (action) {
         .none => {},
         .select => {
-            assert(self.player.selected_slot < Player.HOTBAR_SLOTS);
+            assert(self.player.selected_slot < Player.HotbarSlots);
             self.player.hotbar[self.player.selected_slot] = blocks.inventory_block(self.inventory_slot);
             close_inventory(self, engine);
         },
@@ -843,7 +843,7 @@ fn handle_fly_tap(self: *@This()) void {
             }
 
             switch (event) {
-                .double => self.chat.receive(MP_FLY_WARNING),
+                .double => self.chat.receive(MpFlyWarning),
                 .triple => {
                     self.mp_fly_unlocked = true;
                     self.player.set_fly(true);
@@ -854,7 +854,7 @@ fn handle_fly_tap(self: *@This()) void {
 }
 
 fn player_in_shadow(player: *const Player) bool {
-    const eye_y = player.pos_y + collision.EYE_HEIGHT;
+    const eye_y = player.pos_y + collision.EyeHeight;
     const fx = @floor(player.pos_x);
     const fy = @floor(eye_y);
     const fz = @floor(player.pos_z);
@@ -899,7 +899,7 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
     if (self.inventory_open) {
         var inv_list: UiDrawList = .{};
         var none: ui_input.UiInput = .{};
-        var inv_ui = begin_game_ui(self, &inv_list, &self.inventory_ui_state, &none, InventoryUi.LAYER_BASE);
+        var inv_ui = begin_game_ui(self, &inv_list, &self.inventory_ui_state, &none, InventoryUi.LayerBase);
         _ = InventoryUi.run(&inv_ui, self.inventory_blocks[0..], &self.inventory_slot);
         inv_ui.end();
         inv_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
@@ -956,34 +956,34 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
     switch (self.pause_screen) {
         .main => {
             var list: UiDrawList = .{};
-            var ui = begin_pause_ui(self, &list, &self.pause_ui_state, &none, PauseMenu.LAYER_BASE);
+            var ui = begin_pause_ui(self, &list, &self.pause_ui_state, &none, PauseMenu.LayerBase);
             _ = PauseMenu.run(&ui, Session.mode == .singleplayer);
             ui.end();
             list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
         },
         .options => {
             var list: UiDrawList = .{};
-            var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, &none, OptionsScreen.LAYER_BASE);
+            var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, &none, OptionsScreen.LayerBase);
             _ = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
             ui.end();
             list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
         },
         .controls => {
             var list: UiDrawList = .{};
-            var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, &none, OptionsScreen.LAYER_BASE);
+            var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, &none, OptionsScreen.LayerBase);
             _ = ControlsScreen.run(&ui, &Options.current, pause_controls_ctx(self));
             ui.end();
             list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
         },
         .dump_world => {
-            var path_buf: [World.DumpName.PATH_MAX]u8 = undefined;
-            var name_buf: [World.DumpName.NAME_MAX]u8 = undefined;
+            var path_buf: [World.DumpName.PathMax]u8 = undefined;
+            var name_buf: [World.DumpName.NameMax]u8 = undefined;
             const can_save = blk: {
                 _ = World.DumpName.build_path(self.dump_world_name_slice(), &path_buf, &name_buf) catch break :blk false;
                 break :blk true;
             };
             var list: UiDrawList = .{};
-            var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, &none, DumpWorldScreen.LAYER_BASE);
+            var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, &none, DumpWorldScreen.LayerBase);
             var dump_ctx: DumpWorldScreen.Ctx = .{
                 .name = &self.dump_world_name,
                 .name_len = &self.dump_world_name_len,
@@ -1087,7 +1087,7 @@ fn draw_pause_dim(self: *@This()) void {
         .tex_offset = .{ .x = 0, .y = 0 },
         .tex_extent = .{ .x = 1, .y = 1 },
         .color = Color.rgba(0, 0, 0, 160),
-        .layer = PauseMenu.DIM_LAYER,
+        .layer = PauseMenu.DimLayer,
         .reference = .top_left,
         .origin = .top_left,
     });
@@ -1133,8 +1133,8 @@ fn draw_hud_prompts(self: *@This(), list: *UiDrawList) void {
         &self.font_batcher,
         buf[0..n],
         .bottom_left,
-        PromptStrip.DEFAULT_POS_X,
-        PromptStrip.DEFAULT_POS_Y,
+        PromptStrip.DefaultPosX,
+        PromptStrip.DefaultPosY,
         sprite_layer,
         text_layer,
     );

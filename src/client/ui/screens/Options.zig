@@ -23,9 +23,9 @@ pub const Widget = enum(u16) {
     _,
 };
 
-pub const DIM_LAYER: u8 = 1;
-pub const LAYER_BASE: u8 = 2;
-pub const WIDGET_W: i16 = 150;
+pub const DimLayer: u8 = 1;
+pub const LayerBase: u8 = 2;
+pub const WidgetW: i16 = 150;
 
 pub const Hooks = struct {
     on_fov_changed: ?*const fn () void = null,
@@ -52,14 +52,14 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
 
         _ = ui.slider(wid(.music), &opt.music_volume, .{
             .label = ui.fmt("Music: {d}%", .{pct_round(opt.music_volume)}),
-            .width = WIDGET_W,
+            .width = WidgetW,
             .min = 0,
             .max = 1,
             .nudge = 0.05,
         });
         _ = ui.slider(wid(.sound), &opt.sound_volume, .{
             .label = ui.fmt("Sound: {d}%", .{pct_round(opt.sound_volume)}),
-            .width = WIDGET_W,
+            .width = WidgetW,
             .min = 0,
             .max = 1,
             .nudge = 0.05,
@@ -71,7 +71,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
 
         if (ui.slider(wid(.fov), &opt.fov, .{
             .label = ui.fmt("FOV: {d}", .{@as(u32, @intFromFloat(@round(opt.fov)))}),
-            .width = WIDGET_W,
+            .width = WidgetW,
             .min = 30,
             .max = 110,
             .nudge = 0.0625,
@@ -81,9 +81,9 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
         }
         _ = ui.slider(wid(.sensitivity), &opt.sensitivity, .{
             .label = ui.fmt("Sensitivity: {d}%", .{Options.sensitivity_percent(opt.sensitivity)}),
-            .width = WIDGET_W,
-            .min = Options.SENS_MIN,
-            .max = Options.SENS_MAX,
+            .width = WidgetW,
+            .min = Options.SensMin,
+            .max = Options.SensMax,
             .nudge = 0.05,
             .scale = .log10,
         });
@@ -96,7 +96,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
         const rd_max: f32 = @floatFromInt(rd_max_u8);
         if (ui.slider(wid(.render_distance), rd_view, .{
             .label = ui.fmt("Render Distance: {d}", .{Options.capped_render_distance()}),
-            .width = WIDGET_W,
+            .width = WidgetW,
             .min = 1,
             .max = rd_max,
             .nudge = if (rd_max_u8 > 1) 1.0 / (rd_max - 1.0) else 0.05,
@@ -105,7 +105,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
             opt.render_distance = rounded;
             rd_view.* = @floatFromInt(rounded);
         }
-        if (ui.button(wid(.fog), ui.fmt("Fog: {s}", .{bool_str(opt.fog)}), .{ .width = WIDGET_W })) {
+        if (ui.button(wid(.fog), ui.fmt("Fog: {s}", .{bool_str(opt.fog)}), .{ .width = WidgetW })) {
             opt.fog = !opt.fog;
         }
     }
@@ -120,10 +120,10 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
         var row = ui.stack(.{ .axis = .horizontal, .gap = 4 });
         defer row.end();
 
-        if (ui.button(wid(.controller_tooltips), ui.fmt("Controllers: {s}", .{ct_label(opt.controller_tooltips)}), .{ .width = WIDGET_W })) {
+        if (ui.button(wid(.controller_tooltips), ui.fmt("Controllers: {s}", .{ct_label(opt.controller_tooltips)}), .{ .width = WidgetW })) {
             opt.controller_tooltips = ct_next(opt.controller_tooltips);
         }
-        if (ui.button(wid(.bouncy_chunks), ui.fmt("Bouncy Chunks: {s}", .{bool_str(opt.bouncy_chunks)}), .{ .width = WIDGET_W })) {
+        if (ui.button(wid(.bouncy_chunks), ui.fmt("Bouncy Chunks: {s}", .{bool_str(opt.bouncy_chunks)}), .{ .width = WidgetW })) {
             opt.bouncy_chunks = !opt.bouncy_chunks;
         }
     }
@@ -134,11 +134,11 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
         .{ .id = .rain, .label = "Rain", .field = .rain },
     );
 
-    if (ui.button(wid(.controls_placeholder), "Controls...", .{ .width = WIDGET_W, .enabled = Options.controls_rebinding_supported() }) and result == .none) {
+    if (ui.button(wid(.controls_placeholder), "Controls...", .{ .width = WidgetW, .enabled = Options.controls_rebinding_supported() }) and result == .none) {
         result = .controls;
     }
 
-    if (ui.button(wid(.done), "Done", .{ .width = WIDGET_W }) and result == .none) {
+    if (ui.button(wid(.done), "Done", .{ .width = WidgetW }) and result == .none) {
         ui.close_request();
         result = .close;
     }
@@ -167,7 +167,7 @@ fn cycle_row(ui: *Ui, opt: *Options.Options, a: Toggle, b: Toggle) void {
             .rain => &opt.rain,
             .fog => &opt.fog,
         };
-        if (ui.button(wid(t.id), ui.fmt("{s}: {s}", .{ t.label, bool_str(ptr.*) }), .{ .width = WIDGET_W, .enabled = t.enabled })) {
+        if (ui.button(wid(t.id), ui.fmt("{s}: {s}", .{ t.label, bool_str(ptr.*) }), .{ .width = WidgetW, .enabled = t.enabled })) {
             ptr.* = !ptr.*;
         }
     }

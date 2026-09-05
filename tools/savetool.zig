@@ -14,13 +14,13 @@ const CompressWorker = core.CompressWorker;
 
 /// Legacy `.ccc` saves always use Classic's 256x64x256 geometry.
 const legacy_dims = core.world_dims.default;
-const WORLD_VOLUME = legacy_dims.volume();
-const LEGACY_VERSION_BYTES: usize = @sizeOf(u32);
-const LEGACY_DIMENSIONS_BYTES: usize = 3 * @sizeOf(u32);
-const LEGACY_V1_BYTES: usize = WORLD_VOLUME + LEGACY_VERSION_BYTES;
-const LEGACY_V2_V3_BYTES: usize = WORLD_VOLUME + LEGACY_VERSION_BYTES + LEGACY_DIMENSIONS_BYTES;
-const LEGACY_MAX_BYTES: usize = LEGACY_V2_V3_BYTES;
-const DEFAULT_WORLD_NAME = "Converted World";
+const WorldVolume = legacy_dims.volume();
+const LegacyVersionBytes: usize = @sizeOf(u32);
+const LegacyDimensionsBytes: usize = 3 * @sizeOf(u32);
+const LegacyV1Bytes: usize = WorldVolume + LegacyVersionBytes;
+const LegacyV2V3Bytes: usize = WorldVolume + LegacyVersionBytes + LegacyDimensionsBytes;
+const LegacyMaxBytes: usize = LegacyV2V3Bytes;
+const DefaultWorldName = "Converted World";
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -76,7 +76,7 @@ fn load_legacy_ccc(
 
     var decompress = std.compress.flate.Decompress.init(&file_reader.interface, .gzip, window_buf);
 
-    const legacy_bytes = try allocator.alloc(u8, LEGACY_MAX_BYTES);
+    const legacy_bytes = try allocator.alloc(u8, LegacyMaxBytes);
     defer allocator.free(legacy_bytes);
 
     const decoded_len = try decompress.reader.readSliceShort(legacy_bytes);
@@ -86,18 +86,18 @@ fn load_legacy_ccc(
     }
 
     const block_bytes = switch (decoded_len) {
-        WORLD_VOLUME => legacy_bytes[0..WORLD_VOLUME],
-        LEGACY_V1_BYTES => blk: {
-            const version = std.mem.readInt(u32, legacy_bytes[0..LEGACY_VERSION_BYTES], .little);
+        WorldVolume => legacy_bytes[0..WorldVolume],
+        LegacyV1Bytes => blk: {
+            const version = std.mem.readInt(u32, legacy_bytes[0..LegacyVersionBytes], .little);
             if (version != 1) return error.UnsupportedLegacyVersion;
-            break :blk legacy_bytes[LEGACY_VERSION_BYTES..][0..WORLD_VOLUME];
+            break :blk legacy_bytes[LegacyVersionBytes..][0..WorldVolume];
         },
-        LEGACY_V2_V3_BYTES => blk: {
-            const version = std.mem.readInt(u32, legacy_bytes[0..LEGACY_VERSION_BYTES], .little);
+        LegacyV2V3Bytes => blk: {
+            const version = std.mem.readInt(u32, legacy_bytes[0..LegacyVersionBytes], .little);
             if (version != 2 and version != 3) return error.UnsupportedLegacyVersion;
-            try validate_legacy_dimensions(legacy_bytes[LEGACY_VERSION_BYTES..][0..LEGACY_DIMENSIONS_BYTES]);
+            try validate_legacy_dimensions(legacy_bytes[LegacyVersionBytes..][0..LegacyDimensionsBytes]);
 
-            const blocks = legacy_bytes[LEGACY_VERSION_BYTES + LEGACY_DIMENSIONS_BYTES ..][0..WORLD_VOLUME];
+            const blocks = legacy_bytes[LegacyVersionBytes + LegacyDimensionsBytes ..][0..WorldVolume];
             if (version == 3) {
                 var reader = std.Io.Reader.fixed(blocks);
                 try data.read_blocks_yzx(&reader);
@@ -112,7 +112,7 @@ fn load_legacy_ccc(
 }
 
 fn validate_legacy_dimensions(raw_dimensions: []const u8) !void {
-    assert(raw_dimensions.len == LEGACY_DIMENSIONS_BYTES);
+    assert(raw_dimensions.len == LegacyDimensionsBytes);
     const length = std.mem.readInt(u32, raw_dimensions[0..4], .little);
     const height = std.mem.readInt(u32, raw_dimensions[4..8], .little);
     const depth = std.mem.readInt(u32, raw_dimensions[8..12], .little);
@@ -122,7 +122,7 @@ fn validate_legacy_dimensions(raw_dimensions: []const u8) !void {
 }
 
 fn scatter_legacy_blocks(legacy_blocks: []const u8, data: *WorldData) void {
-    assert(legacy_blocks.len == WORLD_VOLUME);
+    assert(legacy_blocks.len == WorldVolume);
     for (0..data.dims.length) |x| {
         for (0..data.dims.height) |y| {
             for (0..data.dims.depth) |z| {
@@ -139,7 +139,7 @@ fn set_world_name(data: *WorldData, output_path: []const u8) void {
 
     const base = std.fs.path.basenameWindows(output_path);
     const stem = base[0 .. std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len];
-    const source_name = if (stem.len == 0) DEFAULT_WORLD_NAME else stem;
+    const source_name = if (stem.len == 0) DefaultWorldName else stem;
     const name_len = @min(source_name.len, data.name.len);
 
     @memcpy(data.name[0..name_len], source_name[0..name_len]);

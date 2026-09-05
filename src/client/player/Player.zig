@@ -24,8 +24,8 @@ const Camera = @import("Camera.zig");
 const bindings = @import("bindings.zig");
 const collision = @import("collision.zig");
 const UiDrawList = @import("../ui/UiDrawList.zig");
-const Scaling = ae.UI.Scaling;
-const layout = ae.UI.layout;
+const Scaling = ae.Ui.Scaling;
+const layout = ae.Ui.layout;
 const Colors = @import("../graphics/Color.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
@@ -73,11 +73,11 @@ pub const FlyTapEvent = enum {
     triple,
 };
 
-pub const REACH: f32 = 5.0;
+pub const Reach: f32 = 5.0;
 
-pub const HOTBAR_SLOTS: u8 = 9;
+pub const HotbarSlots: u8 = 9;
 
-const DEFAULT_HOTBAR: [HOTBAR_SLOTS]Block = .{
+const DefaultHotbar: [HotbarSlots]Block = .{
     .stone,
     .cobblestone,
     .brick,
@@ -89,21 +89,21 @@ const DEFAULT_HOTBAR: [HOTBAR_SLOTS]Block = .{
     .slab,
 };
 
-const HOTBAR_TEX_X: i16 = 0;
-const HOTBAR_TEX_Y: i16 = 0;
-const HOTBAR_W: i16 = 182;
-const HOTBAR_H: i16 = 22;
-const SELECTOR_TEX_X: i16 = 0;
-const SELECTOR_TEX_Y: i16 = 22;
-const SELECTOR_SIZE: i16 = 24;
-const HOTBAR_SLOT_STRIDE: i16 = 20;
+const HotbarTexX: i16 = 0;
+const HotbarTexY: i16 = 0;
+const HotbarW: i16 = 182;
+const HotbarH: i16 = 22;
+const SelectorTexX: i16 = 0;
+const SelectorTexY: i16 = 22;
+const SelectorSize: i16 = 24;
+const HotbarSlotStride: i16 = 20;
 // Keep HUD quads away from the PSP depth edge.
-const HOTBAR_BG_LAYER: u8 = 250;
-const SELECTOR_LAYER: u8 = 251;
+const HotbarBgLayer: u8 = 250;
+const SelectorLayer: u8 = 251;
 
-const HOTBAR_SCROLL_DEADBAND: f32 = 0.5;
+const HotbarScrollDeadband: f32 = 0.5;
 
-const LOOK_PIXEL_TO_RAD: f32 = 0.002;
+const LookPixelToRad: f32 = 0.002;
 
 const Player = @This();
 
@@ -115,57 +115,57 @@ const PendingBlock = struct {
     block: Block,
 };
 
-const TICK: f32 = 0.05;
-const MAX_FRAME_DT: f32 = 0.25;
-const NOCLIP_SPEED: f32 = 20.0;
-const FLY_SPEED: f32 = NOCLIP_SPEED;
+const Tick: f32 = 0.05;
+const MaxFrameDt: f32 = 0.25;
+const NoclipSpeed: f32 = 20.0;
+const FlySpeed: f32 = NoclipSpeed;
 
-const JUMP_VEL: f32 = 0.42;
-const GRAVITY: f32 = 0.08;
-const LIQUID_GRAVITY: f32 = 0.02;
-const LIQUID_SWIM_UP: f32 = 0.04;
+const JumpVel: f32 = 0.42;
+const Gravity: f32 = 0.08;
+const LiquidGravity: f32 = 0.02;
+const LiquidSwimUp: f32 = 0.04;
 
-const WATER_WALL_BOOST: f32 = 0.13;
-const WATER_BOB_BOOST: f32 = 0.10;
-const LAVA_WALL_BOOST: f32 = 0.30;
-const LAVA_BOB_BOOST: f32 = 0.20;
+const WaterWallBoost: f32 = 0.13;
+const WaterBobBoost: f32 = 0.10;
+const LavaWallBoost: f32 = 0.30;
+const LavaBobBoost: f32 = 0.20;
 
-const DRAG_X: f32 = 0.91;
-const DRAG_Y: f32 = 0.98;
-const DRAG_Z: f32 = 0.91;
+const DragX: f32 = 0.91;
+const DragY: f32 = 0.98;
+const DragZ: f32 = 0.91;
 
-const GROUND_FRICTION_X: f32 = 0.6;
-const GROUND_FRICTION_Z: f32 = 0.6;
+const GroundFrictionX: f32 = 0.6;
+const GroundFrictionZ: f32 = 0.6;
 
-const GROUND_ACCEL: f32 = 0.1;
-const AIR_ACCEL: f32 = 0.02;
-const LIQUID_ACCEL: f32 = 0.02;
+const GroundAccel: f32 = 0.1;
+const AirAccel: f32 = 0.02;
+const LiquidAccel: f32 = 0.02;
 
-const WATER_DRAG: f32 = 0.8;
-const LAVA_DRAG: f32 = 0.5;
+const WaterDrag: f32 = 0.8;
+const LavaDrag: f32 = 0.5;
 
-const REPEAT_DELAY: f32 = 0.20;
-const REPEAT_INTERVAL: f32 = 0.20;
+const RepeatDelay: f32 = 0.20;
+const RepeatInterval: f32 = 0.20;
 
-const FLY_TAP_WINDOW: f32 = 0.25;
+const FlyTapWindow: f32 = 0.25;
 
-const BOB_BASE_UNIT: f32 = 2.5 / 16.0;
-const BOB_HOR_SCALE: f32 = 0.3;
-const BOB_VER_SCALE: f32 = 0.6;
+const BobBaseUnit: f32 = 2.5 / 16.0;
+const BobHorScale: f32 = 0.3;
+const BobVerScale: f32 = 0.6;
 
-const BOB_TILT_DEG: f32 = 0.15;
-const BOB_TILT_X_GAIN: f32 = 3.0;
+const BobTiltDeg: f32 = 0.15;
+const BobTiltXGain: f32 = 3.0;
 
-const BOB_WALK_THRESHOLD: f32 = 0.05;
-const BOB_WALK_PHASE_RATE: f32 = 40.0;
+const BobWalkThreshold: f32 = 0.05;
+const BobWalkPhaseRate: f32 = 40.0;
 
-const BOB_SWING_RATE: f32 = 3.0;
-const BOB_STRENGTH_DECAY: f32 = 0.84;
-const BOB_STRENGTH_GAIN: f32 = 0.1;
-const BOB_STRENGTH_SUBSTEPS: u32 = 3;
+const BobSwingRate: f32 = 3.0;
+const BobStrengthDecay: f32 = 0.84;
+const BobStrengthGain: f32 = 0.1;
+const BobStrengthSubsteps: u32 = 3;
 
-const FALL_TILT_GAIN: f32 = 0.05;
-const FALL_TILT_GRAVITY_OFFSET: f32 = 0.08;
+const FallTiltGain: f32 = 0.05;
+const FallTiltGravityOffset: f32 = 0.08;
 
 camera: Camera,
 pos_x: f32,
@@ -195,7 +195,7 @@ stick_look_speed: f32,
 
 selected: ?RaycastHit,
 
-hotbar: [HOTBAR_SLOTS]Block,
+hotbar: [HotbarSlots]Block,
 selected_slot: u8,
 
 inventory_toggle_pending: bool,
@@ -244,7 +244,7 @@ bob_amount: f32,
 bob_amount_prev: f32,
 
 pub fn init(self: *Player, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
-    const feet_y = y - collision.EYE_HEIGHT;
+    const feet_y = y - collision.EyeHeight;
     self.* = .{
         .camera = Camera.init(x, y, z),
         .pos_x = x,
@@ -271,7 +271,7 @@ pub fn init(self: *Player, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void
         .mouse_captured = true,
         .stick_look_speed = 3.0,
         .selected = null,
-        .hotbar = DEFAULT_HOTBAR,
+        .hotbar = DefaultHotbar,
         .selected_slot = 0,
         .inventory_toggle_pending = false,
         .shoulder_l_held = false,
@@ -367,8 +367,8 @@ pub fn update(self: *Player, sys: *input.InputSystem, dt: f32) void {
     const place_any_held = self.place_held or (self.shoulder_l_held and !self.shoulder_r_held);
     if (break_any_held) {
         self.break_repeat_timer += dt;
-        if (self.break_repeat_timer >= REPEAT_DELAY) {
-            self.break_repeat_timer -= REPEAT_INTERVAL;
+        if (self.break_repeat_timer >= RepeatDelay) {
+            self.break_repeat_timer -= RepeatInterval;
             self.do_break();
         }
     } else {
@@ -376,8 +376,8 @@ pub fn update(self: *Player, sys: *input.InputSystem, dt: f32) void {
     }
     if (place_any_held) {
         self.place_repeat_timer += dt;
-        if (self.place_repeat_timer >= REPEAT_DELAY) {
-            self.place_repeat_timer -= REPEAT_INTERVAL;
+        if (self.place_repeat_timer >= RepeatDelay) {
+            self.place_repeat_timer -= RepeatInterval;
             self.do_place();
         }
     } else {
@@ -395,7 +395,7 @@ pub fn update(self: *Player, sys: *input.InputSystem, dt: f32) void {
     }
 
     self.sync_camera();
-    self.selected = self.raycast_block(REACH);
+    self.selected = self.raycast_block(Reach);
 }
 
 fn apply_look(self: *Player, dt: f32) void {
@@ -433,12 +433,12 @@ fn update_noclip(self: *Player, dt: f32) void {
     const strafe = self.move_dir[0];
     const forward = self.move_dir[1];
 
-    self.pos_x += (strafe * cos_yaw - forward * sin_yaw) * NOCLIP_SPEED * dt;
-    self.pos_z += (-strafe * sin_yaw - forward * cos_yaw) * NOCLIP_SPEED * dt;
+    self.pos_x += (strafe * cos_yaw - forward * sin_yaw) * NoclipSpeed * dt;
+    self.pos_z += (-strafe * sin_yaw - forward * cos_yaw) * NoclipSpeed * dt;
 
     var dy: f32 = 0;
-    if (self.jumping) dy += NOCLIP_SPEED * dt;
-    if (self.sneaking) dy -= NOCLIP_SPEED * dt;
+    if (self.jumping) dy += NoclipSpeed * dt;
+    if (self.sneaking) dy -= NoclipSpeed * dt;
     self.pos_y += dy;
 
     self.prev_x = self.pos_x;
@@ -447,18 +447,18 @@ fn update_noclip(self: *Player, dt: f32) void {
 }
 
 fn update_fly(self: *Player, dt: f32) void {
-    const clamped = @min(dt, MAX_FRAME_DT);
+    const clamped = @min(dt, MaxFrameDt);
     const sin_yaw = @sin(self.camera.yaw);
     const cos_yaw = @cos(self.camera.yaw);
     const strafe = self.move_dir[0];
     const forward = self.move_dir[1];
 
-    const dx = (strafe * cos_yaw - forward * sin_yaw) * FLY_SPEED * clamped;
-    const dz = (-strafe * sin_yaw - forward * cos_yaw) * FLY_SPEED * clamped;
+    const dx = (strafe * cos_yaw - forward * sin_yaw) * FlySpeed * clamped;
+    const dz = (-strafe * sin_yaw - forward * cos_yaw) * FlySpeed * clamped;
 
     var dy: f32 = 0;
-    if (self.jumping) dy += FLY_SPEED * clamped;
-    if (self.sneaking) dy -= FLY_SPEED * clamped;
+    if (self.jumping) dy += FlySpeed * clamped;
+    if (self.sneaking) dy -= FlySpeed * clamped;
 
     const result = collision.move_and_collide(
         self.pos_x,
@@ -487,11 +487,11 @@ fn update_fly(self: *Player, dt: f32) void {
 }
 
 fn run_ticks(self: *Player, dt: f32) void {
-    const clamped = @min(dt, MAX_FRAME_DT);
+    const clamped = @min(dt, MaxFrameDt);
     self.tick_remainder += clamped;
 
-    while (self.tick_remainder >= TICK) {
-        self.tick_remainder -= TICK;
+    while (self.tick_remainder >= Tick) {
+        self.tick_remainder -= Tick;
         self.physics_tick();
     }
 }
@@ -517,7 +517,7 @@ fn physics_tick(self: *Player) void {
 
     self.update_vertical_state(liq_feet, liq_body);
 
-    const accel: f32 = if (any_liquid != null) LIQUID_ACCEL else if (self.on_ground) GROUND_ACCEL else AIR_ACCEL;
+    const accel: f32 = if (any_liquid != null) LiquidAccel else if (self.on_ground) GroundAccel else AirAccel;
     var dist = @sqrt(head_x * head_x + head_z * head_z);
     if (dist < 1.0) dist = 1.0;
     self.vel_x += head_x * (accel / dist);
@@ -526,21 +526,21 @@ fn physics_tick(self: *Player) void {
     self.collide_and_move(any_liquid);
 
     if (any_liquid) |liq| {
-        const d: f32 = if (liq == .water) WATER_DRAG else LAVA_DRAG;
+        const d: f32 = if (liq == .water) WaterDrag else LavaDrag;
         self.vel_x *= d;
         self.vel_y *= d;
         self.vel_z *= d;
     } else {
-        self.vel_x *= DRAG_X;
-        self.vel_y *= DRAG_Y;
-        self.vel_z *= DRAG_Z;
+        self.vel_x *= DragX;
+        self.vel_y *= DragY;
+        self.vel_z *= DragZ;
     }
 
-    self.vel_y -= if (any_liquid != null) LIQUID_GRAVITY else GRAVITY;
+    self.vel_y -= if (any_liquid != null) LiquidGravity else Gravity;
 
     if (self.on_ground and any_liquid == null) {
-        self.vel_x *= GROUND_FRICTION_X;
-        self.vel_z *= GROUND_FRICTION_Z;
+        self.vel_x *= GroundFrictionX;
+        self.vel_z *= GroundFrictionZ;
     }
 
     self.advance_view_bob();
@@ -555,10 +555,10 @@ fn advance_view_bob(self: *Player) void {
     const dz = self.pos_z - self.prev_z;
     const dist = @sqrt(dx * dx + dz * dz);
 
-    if (dist > BOB_WALK_THRESHOLD) {
+    if (dist > BobWalkThreshold) {
         const phase_before = self.walk_phase;
-        self.walk_phase += dist * BOB_WALK_PHASE_RATE * TICK;
-        self.walk_swing += BOB_SWING_RATE * TICK;
+        self.walk_phase += dist * BobWalkPhaseRate * Tick;
+        self.walk_swing += BobSwingRate * Tick;
 
         if (self.on_ground) {
             const prev_idx = @as(u32, @intFromFloat(@floor(phase_before / std.math.pi)));
@@ -569,16 +569,16 @@ fn advance_view_bob(self: *Player) void {
             }
         }
     } else {
-        self.walk_swing -= BOB_SWING_RATE * TICK;
+        self.walk_swing -= BobSwingRate * Tick;
     }
     self.walk_swing = std.math.clamp(self.walk_swing, 0.0, 1.0);
 
     var i: u32 = 0;
-    while (i < BOB_STRENGTH_SUBSTEPS) : (i += 1) {
+    while (i < BobStrengthSubsteps) : (i += 1) {
         if (self.on_ground) {
-            self.bob_amount += BOB_STRENGTH_GAIN;
+            self.bob_amount += BobStrengthGain;
         } else {
-            self.bob_amount *= BOB_STRENGTH_DECAY;
+            self.bob_amount *= BobStrengthDecay;
         }
         self.bob_amount = std.math.clamp(self.bob_amount, 0.0, 1.0);
     }
@@ -599,17 +599,17 @@ fn compute_view_bob(self: *const Player, alpha: f32) ViewBob {
     const sinw = @sin(phase);
     const abs_sin = @abs(sinw);
 
-    const hor_raw = cosw * swing * BOB_BASE_UNIT;
-    const ver_raw = abs_sin * swing * BOB_BASE_UNIT;
-    const hor = hor_raw * BOB_HOR_SCALE * amount;
-    const ver = ver_raw * BOB_VER_SCALE * amount;
+    const hor_raw = cosw * swing * BobBaseUnit;
+    const ver_raw = abs_sin * swing * BobBaseUnit;
+    const hor = hor_raw * BobHorScale * amount;
+    const ver = ver_raw * BobVerScale * amount;
 
-    const tilt_rad = BOB_TILT_DEG * std.math.pi / 180.0;
+    const tilt_rad = BobTiltDeg * std.math.pi / 180.0;
     const roll_z = -cosw * swing * tilt_rad * amount;
-    const pitch_x = @abs(sinw * swing * tilt_rad) * BOB_TILT_X_GAIN * amount;
+    const pitch_x = @abs(sinw * swing * tilt_rad) * BobTiltXGain * amount;
 
     const vy = self.vel_y_prev + (self.vel_y - self.vel_y_prev) * alpha;
-    const fall = -(vy + FALL_TILT_GRAVITY_OFFSET) * FALL_TILT_GAIN;
+    const fall = -(vy + FallTiltGravityOffset) * FallTiltGain;
 
     const tilt = Math.Mat4.rotationZ(roll_z)
         .mul(Math.Mat4.rotationX(pitch_x))
@@ -627,7 +627,7 @@ fn update_vertical_state(
 
     if (any_liquid == null) {
         if (self.jumping and self.on_ground) {
-            self.vel_y = JUMP_VEL;
+            self.vel_y = JumpVel;
             self.on_ground = false;
         }
         return;
@@ -639,7 +639,7 @@ fn update_vertical_state(
         frac(self.pos_y) >= 0.4;
 
     if (!past_jump_point) {
-        self.vel_y += LIQUID_SWIM_UP;
+        self.vel_y += LiquidSwimUp;
         self.can_liquid_jump = true;
         return;
     }
@@ -649,9 +649,9 @@ fn update_vertical_state(
 
     const is_water = (liq_feet.? == .water);
     if (self.hit_horizontal) {
-        self.vel_y += if (is_water) WATER_WALL_BOOST else LAVA_WALL_BOOST;
+        self.vel_y += if (is_water) WaterWallBoost else LavaWallBoost;
     } else {
-        self.vel_y += if (is_water) WATER_BOB_BOOST else LAVA_BOB_BOOST;
+        self.vel_y += if (is_water) WaterBobBoost else LavaBobBoost;
     }
 }
 
@@ -710,10 +710,10 @@ fn collide_and_move(self: *Player, liquid: ?collision.Liquid) void {
             const block_top: f32 = @as(f32, @floatFromInt(pb.y)) + bh;
             const bx0: f32 = @floatFromInt(pb.x);
             const bz0: f32 = @floatFromInt(pb.z);
-            const xz_over = result.x + collision.HALF_W > bx0 and
-                result.x - collision.HALF_W < bx0 + 1.0 and
-                result.z + collision.HALF_W > bz0 and
-                result.z - collision.HALF_W < bz0 + 1.0;
+            const xz_over = result.x + collision.HalfW > bx0 and
+                result.x - collision.HalfW < bx0 + 1.0 and
+                result.z + collision.HalfW > bz0 and
+                result.z - collision.HalfW < bz0 + 1.0;
             if (xz_over and self.pos_y >= block_top and result.y < block_top) {
                 result.y = block_top;
                 result.on_ground = true;
@@ -736,16 +736,16 @@ fn collide_and_move(self: *Player, liquid: ?collision.Liquid) void {
 fn sync_camera(self: *Player) void {
     if (self.noclip or self.fly) {
         self.camera.x = self.pos_x;
-        self.camera.y = self.pos_y + collision.EYE_HEIGHT;
+        self.camera.y = self.pos_y + collision.EyeHeight;
         self.camera.z = self.pos_z;
         self.camera.tilt = Math.Mat4.identity();
         self.camera.bob_hor = 0;
         self.camera.bob_ver = 0;
         return;
     }
-    const alpha = self.tick_remainder / TICK;
+    const alpha = self.tick_remainder / Tick;
     self.camera.x = self.prev_x + (self.pos_x - self.prev_x) * alpha;
-    self.camera.y = (self.prev_y + (self.pos_y - self.prev_y) * alpha) + collision.EYE_HEIGHT;
+    self.camera.y = (self.prev_y + (self.pos_y - self.prev_y) * alpha) + collision.EyeHeight;
     self.camera.z = self.prev_z + (self.pos_z - self.prev_z) * alpha;
 
     const bob = self.compute_view_bob(alpha);
@@ -791,13 +791,13 @@ pub fn raycast_block(self: *const Player, range: f32) ?RaycastHit {
     const ady: i32 = @intCast(@abs(dir_y));
     const adz: i32 = @intCast(@abs(dir_z));
 
-    const frac_x = fp_ox - (bx <<| FRAC);
-    const frac_y = fp_oy - (by <<| FRAC);
-    const frac_z = fp_oz - (bz <<| FRAC);
+    const frac_x = fp_ox - (bx <<| Frac);
+    const frac_y = fp_oy - (by <<| Frac);
+    const frac_z = fp_oz - (bz <<| Frac);
 
-    var dist_x: i32 = if (step_x > 0) ONE - frac_x else if (step_x < 0) frac_x else std.math.maxInt(i32);
-    var dist_y: i32 = if (step_y > 0) ONE - frac_y else if (step_y < 0) frac_y else std.math.maxInt(i32);
-    var dist_z: i32 = if (step_z > 0) ONE - frac_z else if (step_z < 0) frac_z else std.math.maxInt(i32);
+    var dist_x: i32 = if (step_x > 0) One - frac_x else if (step_x < 0) frac_x else std.math.maxInt(i32);
+    var dist_y: i32 = if (step_y > 0) One - frac_y else if (step_y < 0) frac_y else std.math.maxInt(i32);
+    var dist_z: i32 = if (step_z > 0) One - frac_z else if (step_z < 0) frac_z else std.math.maxInt(i32);
 
     const range_fp: i32 = to_fp(range);
 
@@ -830,13 +830,13 @@ pub fn raycast_block(self: *const Player, range: f32) ?RaycastHit {
         // t_max_a <= t_max_b <-> dist_a * abs_b <= dist_b * abs_a (cross multiply).
         if (t_le(dist_x, adx, dist_y, ady) and t_le(dist_x, adx, dist_z, adz)) {
             bx += step_x;
-            dist_x += ONE;
+            dist_x += One;
         } else if (t_le(dist_y, ady, dist_z, adz)) {
             by += step_y;
-            dist_y += ONE;
+            dist_y += One;
         } else {
             bz += step_z;
-            dist_z += ONE;
+            dist_z += One;
         }
 
         if (!in_world(bx, by, bz)) continue;
@@ -878,11 +878,11 @@ pub fn raycast_block(self: *const Player, range: f32) ?RaycastHit {
     return null;
 }
 
-const FRAC: u5 = 8;
-const ONE: i32 = 1 << FRAC;
+const Frac: u5 = 8;
+const One: i32 = 1 << Frac;
 
 fn to_fp(f: f32) i32 {
-    return @intFromFloat(f * @as(f32, @floatFromInt(ONE)));
+    return @intFromFloat(f * @as(f32, @floatFromInt(One)));
 }
 
 fn t_le(dist_a: i32, abs_a: i32, dist_b: i32, abs_b: i32) bool {
@@ -892,9 +892,9 @@ fn t_le(dist_a: i32, abs_a: i32, dist_b: i32, abs_b: i32) bool {
 }
 
 fn t_exceeds_range(dx: i32, adx: i32, dy: i32, ady: i32, dz: i32, adz: i32, range_fp: i32) bool {
-    const xv = adx != 0 and @as(i64, dx) * ONE <= @as(i64, range_fp) * @as(i64, adx);
-    const yv = ady != 0 and @as(i64, dy) * ONE <= @as(i64, range_fp) * @as(i64, ady);
-    const zv = adz != 0 and @as(i64, dz) * ONE <= @as(i64, range_fp) * @as(i64, adz);
+    const xv = adx != 0 and @as(i64, dx) * One <= @as(i64, range_fp) * @as(i64, adx);
+    const yv = ady != 0 and @as(i64, dy) * One <= @as(i64, range_fp) * @as(i64, ady);
+    const zv = adz != 0 and @as(i64, dz) * One <= @as(i64, range_fp) * @as(i64, adz);
     return !xv and !yv and !zv;
 }
 
@@ -911,13 +911,13 @@ fn is_selectable(x: u16, y: u16, z: u16) bool {
 }
 
 fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: blocks.SubvoxelBounds) bool {
-    const STEP = ONE / 16;
-    return lx >= @as(i32, b.min_x) * STEP and
-        lx < @as(i32, b.max_x) * STEP and
-        ly >= @as(i32, b.min_y) * STEP and
-        ly < @as(i32, b.max_y) * STEP and
-        lz >= @as(i32, b.min_z) * STEP and
-        lz < @as(i32, b.max_z) * STEP;
+    const Step = One / 16;
+    return lx >= @as(i32, b.min_x) * Step and
+        lx < @as(i32, b.max_x) * Step and
+        ly >= @as(i32, b.min_y) * Step and
+        ly < @as(i32, b.max_y) * Step and
+        lz >= @as(i32, b.min_z) * Step and
+        lz < @as(i32, b.max_z) * Step;
 }
 
 fn ray_sub_aabb_fp(
@@ -933,22 +933,22 @@ fn ray_sub_aabb_fp(
     bounds: blocks.SubvoxelBounds,
     max_t_fp: i32,
 ) ?Face {
-    const STEP = ONE / 16;
-    const bx_fp = bx <<| FRAC;
-    const by_fp = by <<| FRAC;
-    const bz_fp = bz <<| FRAC;
+    const Step = One / 16;
+    const bx_fp = bx <<| Frac;
+    const by_fp = by <<| Frac;
+    const bz_fp = bz <<| Frac;
 
-    const x0 = bx_fp + @as(i32, bounds.min_x) * STEP;
-    const y0 = by_fp + @as(i32, bounds.min_y) * STEP;
-    const z0 = bz_fp + @as(i32, bounds.min_z) * STEP;
-    const x1 = bx_fp + @as(i32, bounds.max_x) * STEP;
-    const y1 = by_fp + @as(i32, bounds.max_y) * STEP;
-    const z1 = bz_fp + @as(i32, bounds.max_z) * STEP;
+    const x0 = bx_fp + @as(i32, bounds.min_x) * Step;
+    const y0 = by_fp + @as(i32, bounds.min_y) * Step;
+    const z0 = bz_fp + @as(i32, bounds.min_z) * Step;
+    const x1 = bx_fp + @as(i32, bounds.max_x) * Step;
+    const y1 = by_fp + @as(i32, bounds.max_y) * Step;
+    const z1 = bz_fp + @as(i32, bounds.max_z) * Step;
 
-    const MAX: i32 = std.math.maxInt(i32);
-    const MIN: i32 = std.math.minInt(i32);
-    var t_near: i32 = MIN;
-    var t_far: i32 = MAX;
+    const Max: i32 = std.math.maxInt(i32);
+    const Min: i32 = std.math.minInt(i32);
+    var t_near: i32 = Min;
+    var t_far: i32 = Max;
     var face: Face = .y_pos;
 
     if (dx != 0) {
@@ -1002,7 +1002,7 @@ fn ray_sub_aabb_fp(
 
 fn fp_div(num: i32, den: i32) i32 {
     if (den == 0) return if (num >= 0) std.math.maxInt(i32) else std.math.minInt(i32);
-    const wide = @divTrunc(@as(i64, num) <<| FRAC, @as(i64, den));
+    const wide = @divTrunc(@as(i64, num) <<| Frac, @as(i64, den));
     return @intCast(std.math.clamp(wide, std.math.minInt(i32), std.math.maxInt(i32)));
 }
 
@@ -1024,7 +1024,7 @@ pub fn draw_ui_into(
     hide_crosshair: bool,
     hud_y_shift: i16,
 ) void {
-    assert(self.selected_slot < HOTBAR_SLOTS);
+    assert(self.selected_slot < HotbarSlots);
 
     if (!hide_crosshair) {
         list.add_sprite(&.{
@@ -1043,25 +1043,25 @@ pub fn draw_ui_into(
     list.add_sprite(&.{
         .texture = gui,
         .pos_offset = .{ .x = 0, .y = -1 - hud_y_shift },
-        .pos_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
-        .tex_offset = .{ .x = HOTBAR_TEX_X, .y = HOTBAR_TEX_Y },
-        .tex_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
+        .pos_extent = .{ .x = HotbarW, .y = HotbarH },
+        .tex_offset = .{ .x = HotbarTexX, .y = HotbarTexY },
+        .tex_extent = .{ .x = HotbarW, .y = HotbarH },
         .color = Colors.white_fg,
-        .layer = HOTBAR_BG_LAYER,
+        .layer = HotbarBgLayer,
         .reference = .bottom_center,
         .origin = .bottom_center,
     });
 
     const slot_i: i16 = @intCast(self.selected_slot);
-    const sel_x: i16 = HOTBAR_SLOT_STRIDE * slot_i - 80;
+    const sel_x: i16 = HotbarSlotStride * slot_i - 80;
     list.add_sprite(&.{
         .texture = gui,
         .pos_offset = .{ .x = sel_x, .y = -hud_y_shift },
-        .pos_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
-        .tex_offset = .{ .x = SELECTOR_TEX_X, .y = SELECTOR_TEX_Y },
-        .tex_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
+        .pos_extent = .{ .x = SelectorSize, .y = SelectorSize },
+        .tex_offset = .{ .x = SelectorTexX, .y = SelectorTexY },
+        .tex_extent = .{ .x = SelectorSize, .y = SelectorSize },
         .color = Colors.white_fg,
-        .layer = SELECTOR_LAYER,
+        .layer = SelectorLayer,
         .reference = .bottom_center,
         .origin = .bottom_center,
     });
@@ -1069,7 +1069,7 @@ pub fn draw_ui_into(
     self.draw_hotbar_blocks(list, hud_y_shift);
 }
 
-const HOTBAR_BLOCK_HALF_EXTENT: f32 = 3.5;
+const HotbarBlockHalfExtent: f32 = 3.5;
 
 fn draw_hotbar_blocks(self: *const Player, list: *UiDrawList, hud_y_shift: i16) void {
     const screen_w = Rendering.gfx.surface.get_width();
@@ -1078,18 +1078,18 @@ fn draw_hotbar_blocks(self: *const Player, list: *UiDrawList, hud_y_shift: i16) 
     const max_lx: i32 = @intCast(layout.logical_width(screen_w, ui_scale));
     const max_ly: i32 = @intCast(layout.logical_height(screen_h, ui_scale));
 
-    const hotbar_top: f32 = @floatFromInt(max_ly - 1 - @as(i32, hud_y_shift) - @as(i32, HOTBAR_H));
+    const hotbar_top: f32 = @floatFromInt(max_ly - 1 - @as(i32, hud_y_shift) - @as(i32, HotbarH));
     const slot_cy: f32 = hotbar_top + 11.0;
     const center_x: f32 = @floatFromInt(@divTrunc(max_lx, 2));
 
     var i: u8 = 0;
-    while (i < HOTBAR_SLOTS) : (i += 1) {
-        const slot_offset_x: f32 = @floatFromInt(@as(i32, HOTBAR_SLOT_STRIDE) * @as(i32, i) - 80);
+    while (i < HotbarSlots) : (i += 1) {
+        const slot_offset_x: f32 = @floatFromInt(@as(i32, HotbarSlotStride) * @as(i32, i) - 80);
         list.add_iso_block(&.{
             .block = self.hotbar[i],
             .cx = center_x + slot_offset_x,
             .cy = slot_cy,
-            .half_extent_px = HOTBAR_BLOCK_HALF_EXTENT,
+            .half_extent_px = HotbarBlockHalfExtent,
         });
     }
 }
@@ -1104,7 +1104,7 @@ fn poll_inputs(self: *Player, sys: *input.InputSystem, dt: f32) void {
     self.move_dir = sys.vector2(actions.move).current;
 
     const look_raw = sys.vector2(actions.look).current;
-    const sens = Options.current.sensitivity * LOOK_PIXEL_TO_RAD;
+    const sens = Options.current.sensitivity * LookPixelToRad;
     self.look_delta = .{ look_raw[0] * sens, look_raw[1] * sens };
 
     self.look_rate = sys.vector2(actions.look_stick).current;
@@ -1272,13 +1272,13 @@ fn poll_inputs(self: *Player, sys: *input.InputSystem, dt: f32) void {
 
     const hl = sys.button(actions.hotbar_left).current;
     if (rising_edge(self.prev_inputs.hotbar_left, hl)) {
-        self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
+        self.selected_slot = if (self.selected_slot == 0) HotbarSlots - 1 else self.selected_slot - 1;
     }
     self.prev_inputs.hotbar_left = hl;
 
     const hr = sys.button(actions.hotbar_right).current;
     if (rising_edge(self.prev_inputs.hotbar_right, hr)) {
-        self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
+        self.selected_slot = if (self.selected_slot + 1 >= HotbarSlots) 0 else self.selected_slot + 1;
     }
     self.prev_inputs.hotbar_right = hr;
 
@@ -1291,17 +1291,17 @@ fn poll_inputs(self: *Player, sys: *input.InputSystem, dt: f32) void {
     }
 
     const scroll = sys.axis(actions.hotbar_scroll).current;
-    if (scroll > HOTBAR_SCROLL_DEADBAND) {
-        self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
-    } else if (scroll < -HOTBAR_SCROLL_DEADBAND) {
-        self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
+    if (scroll > HotbarScrollDeadband) {
+        self.selected_slot = if (self.selected_slot == 0) HotbarSlots - 1 else self.selected_slot - 1;
+    } else if (scroll < -HotbarScrollDeadband) {
+        self.selected_slot = if (self.selected_slot + 1 >= HotbarSlots) 0 else self.selected_slot + 1;
     }
 }
 
 fn age_jump_taps(self: *Player, dt: f32) void {
     if (self.jump_tap_count == 0) return;
     self.jump_tap_elapsed += dt;
-    if (self.jump_tap_elapsed > FLY_TAP_WINDOW) self.reset_jump_taps();
+    if (self.jump_tap_elapsed > FlyTapWindow) self.reset_jump_taps();
 }
 
 fn record_jump_tap(self: *Player) void {
@@ -1374,11 +1374,11 @@ fn do_pick_block(self: *Player) void {
     const block = World.data.get_block(hit.x, hit.y, hit.z);
     if (!block.in_inventory()) return;
 
-    assert(self.selected_slot < HOTBAR_SLOTS);
+    assert(self.selected_slot < HotbarSlots);
     if (self.hotbar[self.selected_slot] == block) return;
 
     var i: u8 = 0;
-    while (i < HOTBAR_SLOTS) : (i += 1) {
+    while (i < HotbarSlots) : (i += 1) {
         if (self.hotbar[i] == block) {
             self.selected_slot = i;
             return;
@@ -1392,7 +1392,7 @@ fn do_place(self: *Player) void {
     if (!self.mouse_captured) return;
     const hit = self.selected orelse return;
     if (!hit.has_place) return;
-    assert(self.selected_slot < HOTBAR_SLOTS);
+    assert(self.selected_slot < HotbarSlots);
     const block = self.hotbar[self.selected_slot];
     if (block.is_air()) return;
     const target = World.data.get_block(hit.place_x, hit.place_y, hit.place_z);
@@ -1406,12 +1406,12 @@ fn do_place(self: *Player) void {
     const bz0: f32 = @floatFromInt(hit.place_z);
     const bh: f32 = if (target == .slab and promotes_to_double_slab) 1.0 else block.collision_height();
     const overlaps = bh > 0 and
-        self.pos_x + collision.HALF_W > bx0 and
-        self.pos_x - collision.HALF_W < bx0 + 1.0 and
-        self.pos_y + collision.HEIGHT > by0 and
+        self.pos_x + collision.HalfW > bx0 and
+        self.pos_x - collision.HalfW < bx0 + 1.0 and
+        self.pos_y + collision.Height > by0 and
         self.pos_y < by0 + bh and
-        self.pos_z + collision.HALF_W > bz0 and
-        self.pos_z - collision.HALF_W < bz0 + 1.0;
+        self.pos_z + collision.HalfW > bz0 and
+        self.pos_z - collision.HalfW < bz0 + 1.0;
     if (overlaps) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();

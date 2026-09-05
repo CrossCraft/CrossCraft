@@ -3,6 +3,7 @@ const assert = std.debug.assert;
 const ae = @import("aether");
 const caps = @import("capabilities").ClientType(ae);
 const Math = ae.Math;
+const Aabb = @field(Math, "AABB");
 const Rendering = ae.Rendering;
 
 const Camera = @This();
@@ -64,7 +65,7 @@ pub fn section_visible(self: *const Camera, cx: u32, sy: u32, cz: u32) bool {
     const wx: f32 = @floatFromInt(cx * 16);
     const wy: f32 = @floatFromInt(sy * 16);
     const wz: f32 = @floatFromInt(cz * 16);
-    const aabb = Math.AABB{
+    const aabb = Aabb{
         .min = Math.Vec3.new(wx, wy, wz),
         .max = Math.Vec3.new(wx + 16.0, wy + 16.0, wz + 16.0),
     };

@@ -20,10 +20,10 @@ const outbound_queue = core.OutboundQueue;
 
 const log = std.log.scoped(.server);
 
-const SERVER_PORT: u16 = 25565;
-const HEARTBEAT_INTERVAL_MS: i64 = 45_000;
-const SALT_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-const LOGIN_FRAME_LEN: usize = 131;
+const ServerPort: u16 = 25565;
+const HeartbeatIntervalMs: i64 = 45_000;
+const SaltAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const LoginFrameLen: usize = 131;
 
 const ConnectionState = enum {
     free,
@@ -151,9 +151,9 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     errdefer global_engine = null;
     install_signal_handlers();
 
-    log.info("Starting server on port {d}", .{SERVER_PORT});
+    log.info("Starting server on port {d}", .{ServerPort});
 
-    const server_ip = try std.Io.net.IpAddress.parseIp4("0.0.0.0", SERVER_PORT);
+    const server_ip = try std.Io.net.IpAddress.parseIp4("0.0.0.0", ServerPort);
     self.listener = try server_ip.listen(engine.io, .{ .reuse_address = true });
     errdefer self.listener.deinit(engine.io);
     global_listener = &self.listener;
@@ -423,7 +423,7 @@ fn promote_ready_logins(self: *ServerState, engine: *Engine) void {
 }
 
 fn wait_for_login_frame(reader: *std.Io.Reader) std.Io.Reader.Error!void {
-    _ = try reader.peek(LOGIN_FRAME_LEN);
+    _ = try reader.peek(LoginFrameLen);
 }
 
 fn wait_for_login_timeout(io: std.Io, timeout_ms: u32) std.Io.Cancelable!void {
@@ -460,7 +460,7 @@ fn pending_login_loop(self: *ServerState, slot: *ConnectionSlot, engine: *Engine
                 return;
             };
 
-            const frame = slot.data.reader.interface.peek(LOGIN_FRAME_LEN) catch |err| {
+            const frame = slot.data.reader.interface.peek(LoginFrameLen) catch |err| {
                 log.info("Pending login frame disappeared: {}", .{err});
                 return;
             };
@@ -468,7 +468,7 @@ fn pending_login_loop(self: *ServerState, slot: *ConnectionSlot, engine: *Engine
                 log.info("Rejecting malformed login: {}", .{err});
                 return;
             };
-            slot.data.reader.interface.toss(LOGIN_FRAME_LEN);
+            slot.data.reader.interface.toss(LoginFrameLen);
 
             self.connections_mutex.lockUncancelable(engine.io);
             if (slot.state == .pending) {
@@ -512,13 +512,13 @@ fn client_login_loop(
 fn generate_salt(io: std.Io, out: *[16]u8) !void {
     var random_bytes: [32]u8 = undefined;
     var written: usize = 0;
-    const rejection_limit: u16 = (256 / SALT_ALPHABET.len) * SALT_ALPHABET.len;
+    const rejection_limit: u16 = (256 / SaltAlphabet.len) * SaltAlphabet.len;
 
     while (written < out.len) {
         try io.randomSecure(&random_bytes);
         for (random_bytes) |byte| {
             if (@as(u16, byte) >= rejection_limit) continue;
-            out[written] = SALT_ALPHABET[byte % SALT_ALPHABET.len];
+            out[written] = SaltAlphabet[byte % SaltAlphabet.len];
             written += 1;
             if (written == out.len) break;
         }
@@ -547,7 +547,7 @@ fn heartbeat_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
     while (true) {
         const request = Heartbeat.RequestData{
             .server_name = &Server.server_name,
-            .port = SERVER_PORT,
+            .port = ServerPort,
             .users = self.heartbeat_users.load(.acquire),
             .max_players = Server.MaxPlayers,
             .salt = &self.heartbeat_salt,
@@ -560,7 +560,7 @@ fn heartbeat_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
                 else => log.warn("Heartbeat endpoint {d} failed after retries: {}", .{ index + 1, err }),
             };
         }
-        try engine.io.sleep(.{ .nanoseconds = @as(i96, HEARTBEAT_INTERVAL_MS) * std.time.ns_per_ms }, .real);
+        try engine.io.sleep(.{ .nanoseconds = @as(i96, HeartbeatIntervalMs) * std.time.ns_per_ms }, .real);
     }
 }
 
@@ -699,28 +699,31 @@ fn console_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
 fn install_signal_handlers() void {
     if (comptime caps.process.console_control_handler) {
         const windows = std.os.windows;
+        const Dword = @field(windows, "DWORD");
+        const Bool = @field(windows, "BOOL");
         const ws2_shutdown = struct {
             extern "ws2_32" fn shutdown(s: *anyopaque, how: c_int) callconv(.winapi) c_int;
         }.shutdown;
         const SetConsoleCtrlHandler = struct {
             extern "kernel32" fn SetConsoleCtrlHandler(
-                HandlerRoutine: ?*const fn (windows.DWORD) callconv(.winapi) windows.BOOL,
-                Add: windows.BOOL,
-            ) callconv(.winapi) windows.BOOL;
+                HandlerRoutine: ?*const fn (Dword) callconv(.winapi) Bool,
+                Add: Bool,
+            ) callconv(.winapi) Bool;
         }.SetConsoleCtrlHandler;
         const handler = struct {
-            fn handler(_: std.os.windows.DWORD) callconv(.winapi) std.os.windows.BOOL {
+            fn handler(_: Dword) callconv(.winapi) Bool {
                 if (global_engine) |e| e.quit();
                 if (global_listener) |l| {
                     _ = ws2_shutdown(l.socket.handle, 2);
                 }
-                return std.os.windows.BOOL.TRUE;
+                return Bool.fromBool(true);
             }
         }.handler;
-        _ = SetConsoleCtrlHandler(handler, std.os.windows.BOOL.TRUE);
+        _ = SetConsoleCtrlHandler(handler, Bool.fromBool(true));
     } else {
+        const Signal = @field(std.posix, "SIG");
         const handler = struct {
-            fn handler(_: std.posix.SIG) callconv(.c) void {
+            fn handler(_: Signal) callconv(.c) void {
                 if (global_engine) |e| e.quit();
                 // Shutdown the listener socket to unblock accept().
                 if (global_listener) |l| {
@@ -734,8 +737,8 @@ fn install_signal_handlers() void {
             .mask = std.mem.zeroes(std.posix.sigset_t),
             .flags = 0,
         };
-        std.posix.sigaction(std.posix.SIG.INT, &act, null);
-        std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+        std.posix.sigaction(@field(Signal, "INT"), &act, null);
+        std.posix.sigaction(@field(Signal, "TERM"), &act, null);
     }
 }
 

@@ -13,19 +13,19 @@ const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const face_mod = @import("chunk/face.zig");
 const Block = core.blocks.Block;
 
-const MAX_PARTICLES: u16 = 512;
-const PER_BREAK: u16 = 48;
-const LIFETIME_MIN: f32 = 0.3;
-const LIFETIME_MAX: f32 = 1.0;
-const GRAVITY: f32 = 16.0;
-const GRAVITY_LEAVES: f32 = 10.0;
-const HALF_SIZE: f32 = 0.06;
-const SUBTILE_DIV: i16 = 4;
+const MaxParticles: u16 = 512;
+const PerBreak: u16 = 48;
+const LifetimeMin: f32 = 0.3;
+const LifetimeMax: f32 = 1.0;
+const Gravity: f32 = 16.0;
+const GravityLeaves: f32 = 10.0;
+const HalfSize: f32 = 0.06;
+const SubtileDiv: i16 = 4;
 
 // Bake moving world positions into SNORM16: 128 vertex units per block,
 // then restore world units with a 256x model scale.
-const POS_SCALE: f32 = 128.0;
-const MODEL_SCALE: f32 = 256.0;
+const PosScale: f32 = 128.0;
+const ModelScale: f32 = 256.0;
 
 const Particle = struct {
     px: f32,
@@ -44,8 +44,8 @@ const Particle = struct {
 
 fn gravity_for(block_id: Block) f32 {
     return switch (block_id) {
-        .leaves => GRAVITY_LEAVES,
-        else => GRAVITY,
+        .leaves => GravityLeaves,
+        else => Gravity,
     };
 }
 
@@ -54,7 +54,7 @@ const ParticleSystem = @This();
 mesh_data: Rendering.MeshDataType(Vertex),
 mesh: Rendering.MeshType(Vertex),
 atlas: TextureAtlas,
-particles: [MAX_PARTICLES]Particle,
+particles: [MaxParticles]Particle,
 count: u16,
 rng: std.Random.DefaultPrng,
 allocator: std.mem.Allocator,
@@ -69,7 +69,7 @@ pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !ParticleSystem {
         .rng = std.Random.DefaultPrng.init(0xC0FFEE),
         .allocator = allocator,
     };
-    try self.mesh_data.ensure_quad_capacity(allocator, MAX_PARTICLES);
+    try self.mesh_data.ensure_quad_capacity(allocator, MaxParticles);
     return self;
 }
 
@@ -90,8 +90,8 @@ pub fn spawn_break(self: *ParticleSystem, block_id: Block, bx: u16, by: u16, bz:
     const tv = self.atlas.tile_v(tile.row);
     const tw = self.atlas.tile_width();
     const th = self.atlas.tile_height();
-    const du: i16 = @divTrunc(tw, SUBTILE_DIV);
-    const dv: i16 = @divTrunc(th, SUBTILE_DIV);
+    const du: i16 = @divTrunc(tw, SubtileDiv);
+    const dv: i16 = @divTrunc(th, SubtileDiv);
 
     const cx: f32 = @as(f32, @floatFromInt(bx)) + 0.5;
     const cy: f32 = @as(f32, @floatFromInt(by)) + 0.5;
@@ -101,11 +101,11 @@ pub fn spawn_break(self: *ParticleSystem, block_id: Block, bx: u16, by: u16, bz:
     const gravity = gravity_for(block_id);
 
     var i: u16 = 0;
-    while (i < PER_BREAK) : (i += 1) {
-        if (self.count >= MAX_PARTICLES) break;
+    while (i < PerBreak) : (i += 1) {
+        if (self.count >= MaxParticles) break;
 
-        const sx: i16 = @intCast(rand.intRangeLessThan(u8, 0, @intCast(SUBTILE_DIV)));
-        const sy: i16 = @intCast(rand.intRangeLessThan(u8, 0, @intCast(SUBTILE_DIV)));
+        const sx: i16 = @intCast(rand.intRangeLessThan(u8, 0, @intCast(SubtileDiv)));
+        const sy: i16 = @intCast(rand.intRangeLessThan(u8, 0, @intCast(SubtileDiv)));
 
         const ox = (rand.float(f32) - 0.5) * 0.9;
         const oy = (rand.float(f32) - 0.5) * 0.9;
@@ -124,7 +124,7 @@ pub fn spawn_break(self: *ParticleSystem, block_id: Block, bx: u16, by: u16, bz:
             .v0 = tv + sy * dv,
             .u1 = tu + (sx + 1) * du,
             .v1 = tv + (sy + 1) * dv,
-            .life = LIFETIME_MIN + rand.float(f32) * (LIFETIME_MAX - LIFETIME_MIN),
+            .life = LifetimeMin + rand.float(f32) * (LifetimeMax - LifetimeMin),
             .gravity = gravity,
         };
         self.count += 1;
@@ -162,7 +162,7 @@ pub fn update(self: *ParticleSystem, dt: f32, camera: *const Camera) void {
 
 // Only block entry into new solid geometry: particles initially spawn before
 // the server's air update has round-tripped to the client.
-const COLLISION_RADIUS: f32 = HALF_SIZE;
+const CollisionRadius: f32 = HalfSize;
 
 fn step_axis_x(p: *Particle, dx: f32) void {
     const nx = p.px + dx;
@@ -196,12 +196,12 @@ fn step_axis_z(p: *Particle, dz: f32) void {
 }
 
 fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
-    const bx0: i32 = @intFromFloat(@floor(wx - COLLISION_RADIUS));
-    const bx1: i32 = @intFromFloat(@floor(wx + COLLISION_RADIUS));
-    const by0: i32 = @intFromFloat(@floor(wy - COLLISION_RADIUS));
-    const by1: i32 = @intFromFloat(@floor(wy + COLLISION_RADIUS));
-    const bz0: i32 = @intFromFloat(@floor(wz - COLLISION_RADIUS));
-    const bz1: i32 = @intFromFloat(@floor(wz + COLLISION_RADIUS));
+    const bx0: i32 = @intFromFloat(@floor(wx - CollisionRadius));
+    const bx1: i32 = @intFromFloat(@floor(wx + CollisionRadius));
+    const by0: i32 = @intFromFloat(@floor(wy - CollisionRadius));
+    const by1: i32 = @intFromFloat(@floor(wy + CollisionRadius));
+    const bz0: i32 = @intFromFloat(@floor(wz - CollisionRadius));
+    const bz1: i32 = @intFromFloat(@floor(wz + CollisionRadius));
 
     const dims = World.data.dims;
     const max_x: i32 = @intCast(dims.length);
@@ -238,7 +238,7 @@ fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
 
 pub fn draw(self: *ParticleSystem) void {
     if (self.count == 0) return;
-    const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
+    const m = Math.Mat4.scaling(ModelScale, ModelScale, ModelScale);
     self.mesh.draw(&m);
 }
 
@@ -251,11 +251,11 @@ fn rebuild_mesh(self: *ParticleSystem, camera: *const Camera) void {
     const sy = @sin(camera.yaw);
     const cp = @cos(camera.pitch);
     const sp = @sin(camera.pitch);
-    const rx = cy * HALF_SIZE;
-    const rz = -sy * HALF_SIZE;
-    const upx = -sy * sp * HALF_SIZE;
-    const upy = cp * HALF_SIZE;
-    const upz = -cy * sp * HALF_SIZE;
+    const rx = cy * HalfSize;
+    const rz = -sy * HalfSize;
+    const upx = -sy * sp * HalfSize;
+    const upy = cp * HalfSize;
+    const upz = -cy * sp * HalfSize;
 
     var i: u16 = 0;
     while (i < self.count) : (i += 1) {
@@ -293,13 +293,13 @@ fn make_vertex(wx: f32, wy: f32, wz: f32, u: i16, v: i16, color: u32) Vertex {
 }
 
 fn encodable(world: f32) bool {
-    const margin = 2.0 * HALF_SIZE * POS_SCALE;
-    const scaled = @round(world * POS_SCALE);
+    const margin = 2.0 * HalfSize * PosScale;
+    const scaled = @round(world * PosScale);
     return scaled >= -32768.0 + margin and scaled <= 32767.0 - margin;
 }
 
 fn encode(world: f32) i16 {
     assert(std.math.isFinite(world));
-    assert(@round(world * POS_SCALE) >= -32768.0 and @round(world * POS_SCALE) <= 32767.0);
-    return @intFromFloat(@round(world * POS_SCALE));
+    assert(@round(world * PosScale) >= -32768.0 and @round(world * PosScale) <= 32767.0);
+    return @intFromFloat(@round(world * PosScale));
 }

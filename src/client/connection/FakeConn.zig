@@ -1,19 +1,19 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const RING_SIZE: u32 = 4096;
-const RING_MASK: u32 = RING_SIZE - 1;
+const RingSize: u32 = 4096;
+const RingMask: u32 = RingSize - 1;
 
 comptime {
-    assert(std.math.isPowerOfTwo(RING_SIZE));
+    assert(std.math.isPowerOfTwo(RingSize));
 }
 
 pub const FakeConn = struct {
-    s2c: [RING_SIZE]u8 = undefined,
+    s2c: [RingSize]u8 = undefined,
     s2c_head: std.atomic.Value(u32) = .init(0),
     s2c_tail: std.atomic.Value(u32) = .init(0),
 
-    c2s: [RING_SIZE]u8 = undefined,
+    c2s: [RingSize]u8 = undefined,
     c2s_head: std.atomic.Value(u32) = .init(0),
     c2s_tail: std.atomic.Value(u32) = .init(0),
 
@@ -67,9 +67,9 @@ pub const FakeConn = struct {
     fn ring_write(buf: []u8, head: *const std.atomic.Value(u32), tail: *std.atomic.Value(u32), data: []const u8) u32 {
         const h = head.load(.acquire);
         const t = tail.load(.monotonic);
-        const space = RING_SIZE - (t -% h);
+        const space = RingSize - (t -% h);
         const n: u32 = @intCast(@min(data.len, @as(usize, space)));
-        for (0..n) |i| buf[(t +% @as(u32, @intCast(i))) & RING_MASK] = data[i];
+        for (0..n) |i| buf[(t +% @as(u32, @intCast(i))) & RingMask] = data[i];
         if (n > 0) tail.store(t +% n, .release);
         return n;
     }
@@ -79,7 +79,7 @@ pub const FakeConn = struct {
         const h = head.load(.monotonic);
         const available = t -% h;
         const n: u32 = @intCast(@min(dest.len, @as(usize, available)));
-        for (0..n) |i| dest[i] = buf[(h +% @as(u32, @intCast(i))) & RING_MASK];
+        for (0..n) |i| dest[i] = buf[(h +% @as(u32, @intCast(i))) & RingMask];
         if (n > 0) head.store(h +% n, .release);
         return n;
     }
@@ -120,7 +120,7 @@ pub const FakeConn = struct {
 
     // Ring must never fill: in singleplayer, producer and consumer are
     // synchronized (same thread or tick-drained), so 4 KiB is always enough.
-    // If this assert fires, RING_SIZE needs to grow.
+    // If this assert fires, RingSize needs to grow.
     fn s2c_drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         _ = splat;
         const self: *FakeConn = @alignCast(@fieldParentPtr("server_writer", w));

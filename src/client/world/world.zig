@@ -18,7 +18,7 @@ const Sky = @import("sky/sky.zig");
 const ParticleSystem = @import("ParticleSystem.zig");
 const Rain = @import("Rain.zig");
 
-const MAX_ACTIVE: u32 = @import("../config.zig").max_sections();
+const MaxActive: u32 = @import("../config.zig").max_sections();
 comptime {
     // Chunk coordinates must fit GridRef.
     assert(core.world_dims.max_length / core.world_dims.chunk_size <= std.math.maxInt(u8));
@@ -27,7 +27,7 @@ comptime {
 }
 
 /// Four simultaneous block changes and their six neighboring sections.
-const MAX_DIRTY_BUF: u32 = 32;
+const MaxDirtyBuf: u32 = 32;
 
 const WorldRenderer = @This();
 
@@ -46,7 +46,7 @@ built: []bool,
 in_queue: []bool,
 needed: []bool,
 /// Overflow falls back to a full queue rescan.
-dirty_buf: [MAX_DIRTY_BUF]GridRef,
+dirty_buf: [MaxDirtyBuf]GridRef,
 dirty_buf_len: u32,
 dirty_overflow: bool,
 /// Preserve dirty_buf order and move those sections ahead of background
@@ -60,13 +60,13 @@ applied_render_distance: u8,
 applied_fancy_leaves: bool,
 applied_ao: bool,
 
-build_queue: [MAX_ACTIVE]GridRef,
+build_queue: [MaxActive]GridRef,
 build_cursor: u32,
 build_end: u32,
 build_estimator: Util.Estimator,
 
 /// Shared across opaque and fluid passes so overlays can render between them.
-frame_visible: [MAX_ACTIVE]GridRef,
+frame_visible: [MaxActive]GridRef,
 frame_visible_count: u32,
 frame_clip_count: u32,
 
@@ -322,8 +322,8 @@ pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera) void {
 
     // Sections close to the player need hardware clip planes to prevent
     // vertices from overflowing the PSP 4096 virtual viewport.
-    const CLIP_SECTION_COUNT: u32 = 4;
-    self.frame_clip_count = @min(CLIP_SECTION_COUNT, self.frame_visible_count);
+    const ClipSectionCount: u32 = 4;
+    self.frame_clip_count = @min(ClipSectionCount, self.frame_visible_count);
     const clip_count = self.frame_clip_count;
 
     // Opaque sections render front-to-back.
@@ -499,7 +499,7 @@ fn queue_unbuilt_sections(self: *WorldRenderer, cam: *const Camera) void {
             for (0..self.grid_sy) |sy| {
                 const idx = self.section_index(cx, cz, sy);
                 if (!self.built[idx]) {
-                    assert(build_idx < MAX_ACTIVE);
+                    assert(build_idx < MaxActive);
                     self.build_queue[build_idx] = .{
                         .cx = @intCast(cx),
                         .cz = @intCast(cz),
@@ -530,7 +530,7 @@ fn flush_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
     for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
         if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)]) continue;
         if (self.in_queue[self.section_index(ref.cx, ref.cz, ref.sy)]) continue;
-        if (self.build_end >= MAX_ACTIVE) {
+        if (self.build_end >= MaxActive) {
             self.queue_unbuilt_sections(cam);
             return;
         }
@@ -547,7 +547,7 @@ fn flush_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
 
 /// Move dirty sections ahead of background work while preserving their order.
 fn flush_ordered_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
-    var front: [MAX_DIRTY_BUF]GridRef = undefined;
+    var front: [MaxDirtyBuf]GridRef = undefined;
     var front_len: u32 = 0;
 
     for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
@@ -558,11 +558,11 @@ fn flush_ordered_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
     }
     if (front_len == 0) return;
 
-    var reordered: [MAX_ACTIVE]GridRef = undefined;
+    var reordered: [MaxActive]GridRef = undefined;
     var count: u32 = 0;
 
     for (front[0..front_len]) |ref| {
-        if (count >= MAX_ACTIVE) {
+        if (count >= MaxActive) {
             self.queue_unbuilt_sections(cam);
             return;
         }
@@ -573,7 +573,7 @@ fn flush_ordered_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
 
     for (self.build_queue[self.build_cursor..self.build_end]) |ref| {
         if (contains_grid_ref(front[0..front_len], ref)) continue;
-        if (count >= MAX_ACTIVE) {
+        if (count >= MaxActive) {
             self.queue_unbuilt_sections(cam);
             return;
         }
@@ -663,7 +663,7 @@ fn record_dirty_ref(self: *WorldRenderer, ref: GridRef, preserve_order: bool) vo
             if (preserve_order) self.dirty_preserve_order = true;
             return;
         }
-        if (self.dirty_buf_len < MAX_DIRTY_BUF) {
+        if (self.dirty_buf_len < MaxDirtyBuf) {
             self.dirty_buf[self.dirty_buf_len] = ref;
             self.dirty_buf_len += 1;
             if (preserve_order) self.dirty_preserve_order = true;
