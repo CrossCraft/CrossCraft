@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Rendering = ae.Rendering;
 const input = ae.Core.input;
 
@@ -78,7 +79,7 @@ const Runtime = struct {
 var runtime: Runtime = .{};
 
 pub fn default_profile() InputProfile {
-    return if (ae.gfx == .headless or ae.platform == .psp or ae.platform == .nintendo_3ds)
+    return if (!caps.ui.pointer)
         .pad_only
     else
         .pointer_and_pad;
@@ -96,14 +97,11 @@ pub fn profile_uses_pointer() bool {
 }
 
 pub fn seed_focus_on_open() bool {
-    return !profile_uses_pointer() or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
+    return !profile_uses_pointer() or caps.ui.seed_controller_focus;
 }
 
 pub fn title_exit_enabled() bool {
-    return switch (ae.platform) {
-        .psp, .nintendo_3ds, .nintendo_switch => true,
-        else => false,
-    };
+    return caps.ui.title_exit_button;
 }
 
 pub fn ensure_registered(sys: *input.InputSystem) !void {
@@ -193,7 +191,7 @@ pub fn menu_set() input.ActionSetHandle {
 
 fn bind_inventory(sys: *input.InputSystem, action: input.ActionHandle) !void {
     try sys.bind_action(action, &.{ .source = .{ .key = Options.current.key_inventory } });
-    if (ae.platform != .psp and !Options.uses_old_3ds_controls()) {
+    if (!Options.uses_single_stick_controls()) {
         try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y } });
     }
 }

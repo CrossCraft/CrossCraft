@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
@@ -121,8 +122,8 @@ pub fn draw_fluid(self: *ChunkMesh) void {
 
 // Compensate for PSP SNORM dequantization gaps. Translucent geometry needs
 // less overlap to avoid double blending.
-const scale_opaque: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32753.0 else 16.0;
-const scale_trans: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32763.0 else 16.0;
+const scale_opaque: f32 = caps.render.opaque_chunk_scale;
+const scale_trans: f32 = caps.render.translucent_chunk_scale;
 
 fn model_matrix(self: *const ChunkMesh, s: f32) Math.Mat4 {
     const wx: f32 = @floatFromInt(self.cx * 16);

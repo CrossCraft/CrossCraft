@@ -2,153 +2,22 @@ const std = @import("std");
 const ae = @import("aether");
 const Util = ae.Util;
 const Engine = ae.Engine;
-const sdk = if (ae.platform == .psp) @import("pspsdk") else void;
 const core = @import("core");
 
 const log = std.log.scoped(.client);
 
-const Profile = @This();
+const caps = @import("capabilities").ClientType(ae);
+const Profile = @import("capabilities").MemoryProfile;
 
 const MB: u32 = 1024 * 1024;
-const KB: u32 = 1024;
-const NINTENDO_3DS_TOTAL_MEMORY_MB: u32 = 32;
-const SWITCH_TOTAL_MEMORY_MB: u32 = 224;
 
-pub const HardwareClass = enum {
-    desktop,
-    psp_phat,
-    psp_slim,
-    old_3ds,
-    new_3ds,
-    nintendo_switch,
-};
-
-hardware: HardwareClass,
-total_memory_mb: u32,
-chunk_radius: u32,
-lod_near_radius_blocks: u32,
-
-init_render: u32,
-init_audio: u32,
-init_game: u32,
-init_user: u32,
-
-rt_render: u32,
-rt_audio: u32,
-rt_game: u32,
-rt_user: u32,
-
-const desktop_profile: Profile = .{
-    .hardware = .desktop,
-    .total_memory_mb = 480,
-    .chunk_radius = 16,
-    .lod_near_radius_blocks = 96,
-    .init_render = 8 * MB,
-    .init_audio = 2 * MB,
-    .init_game = 2 * MB,
-    .init_user = 72 * MB,
-    .rt_render = 384 * MB,
-    .rt_audio = 512 * KB,
-    .rt_game = 512 * KB,
-    .rt_user = 4 * MB + 512 * KB,
-};
-
-const psp_phat_profile: Profile = .{
-    .hardware = .psp_phat,
-    .total_memory_mb = 18,
-    .chunk_radius = 4,
-    .lod_near_radius_blocks = 0, // Always opaque leaves
-    .init_render = 2 * MB,
-    .init_audio = 1 * MB,
-    .init_game = 1 * MB,
-    .init_user = 12 * MB,
-    .rt_render = 13 * MB + 512 * KB,
-    .rt_audio = 0,
-    .rt_game = 1 * MB,
-    .rt_user = 4 * MB + 512 * KB,
-};
-
-const psp_slim_profile: Profile = .{
-    .hardware = .psp_slim,
-    .total_memory_mb = 36,
-    .chunk_radius = 6,
-    .lod_near_radius_blocks = 28,
-    .init_render = 4 * MB,
-    .init_audio = 2 * MB,
-    .init_game = 2 * MB,
-    .init_user = 12 * MB,
-    .rt_render = 29 * MB + 768 * KB,
-    .rt_audio = 0 * KB,
-    .rt_game = 1 * MB,
-    .rt_user = 4 * MB + 512 * KB,
-};
-
-const old_3ds_profile: Profile = .{
-    .hardware = .old_3ds,
-    .total_memory_mb = NINTENDO_3DS_TOTAL_MEMORY_MB,
-    .chunk_radius = 4,
-    .lod_near_radius_blocks = 28,
-    .init_render = 4 * MB,
-    .init_audio = 2 * MB,
-    .init_game = 2 * MB,
-    .init_user = 12 * MB,
-    .rt_render = 26 * MB,
-    .rt_audio = 512 * KB,
-    .rt_game = 1 * MB,
-    .rt_user = 4 * MB + 512 * KB,
-};
-
-const new_3ds_profile: Profile = blk: {
-    var profile = old_3ds_profile;
-    profile.hardware = .new_3ds;
-    break :blk profile;
-};
-
-const nintendo_switch_profile: Profile = .{
-    .hardware = .nintendo_switch,
-    .total_memory_mb = SWITCH_TOTAL_MEMORY_MB,
-    .chunk_radius = 12,
-    .lod_near_radius_blocks = 40,
-    .init_audio = desktop_profile.init_audio,
-    .init_game = desktop_profile.init_game,
-    .init_user = desktop_profile.init_user,
-    .init_render = render_remainder(
-        SWITCH_TOTAL_MEMORY_MB,
-        desktop_profile.init_audio,
-        desktop_profile.init_game,
-        desktop_profile.init_user,
-    ),
-    .rt_audio = desktop_profile.rt_audio,
-    .rt_game = desktop_profile.rt_game,
-    .rt_user = desktop_profile.rt_user,
-    .rt_render = render_remainder(
-        SWITCH_TOTAL_MEMORY_MB,
-        desktop_profile.rt_audio,
-        desktop_profile.rt_game,
-        desktop_profile.rt_user,
-    ),
-};
-
-var active_profile: Profile = switch (ae.platform) {
-    .psp => psp_phat_profile,
-    .nintendo_3ds => old_3ds_profile,
-    .nintendo_switch => nintendo_switch_profile,
-    else => desktop_profile,
-};
+var active_profile: Profile = caps.memory.initial_profile;
 
 /// Select the runtime capability profile. Must run before any client memory
 /// allocation so PSP-1000 stays on the conservative pool layout while PSP
 /// 2000+ can use the larger profile in the same binary.
 pub fn init() void {
-    active_profile = switch (ae.platform) {
-        .psp => switch (sdk.model.current()) {
-            .phat => psp_phat_profile,
-            .slim => psp_slim_profile,
-        },
-        .nintendo_3ds => if (ae.N3ds.is_new()) new_3ds_profile else old_3ds_profile,
-        .nintendo_switch => nintendo_switch_profile,
-        else => desktop_profile,
-    };
+    active_profile = caps.memory.detect_profile();
 }
 
 pub fn current() Profile {
@@ -161,7 +30,7 @@ pub fn main_memory_bytes() usize {
 }
 
 pub fn max_sections() u32 {
-    const diameter = max_chunk_radius() * 2 + 1;
+    const diameter = caps.memory.max_chunk_radius * 2 + 1;
     // Sections per column in the tallest world the lattice allows
     // (world_dims.max_height / chunk_size = 8). Only loaded columns are ever
     // queued, so this bounds the build queue and visibility list.
@@ -183,10 +52,7 @@ pub fn init_memory() Util.MemoryConfig {
 const gameplay_user_slack: u32 = 4 * MB;
 
 pub fn gameplay_user_budget(dims: core.world_dims.WorldDims) u32 {
-    switch (ae.platform) {
-        .psp, .nintendo_3ds => return 0,
-        else => {},
-    }
+    if (!caps.memory.resize_user_pool_to_world) return 0;
     const world_bytes: u64 = dims.volume() +
         dims.length * dims.depth + // light_map
         4 * dims.chunk_count(); // chunk_counts + chunk_non_opaque (2 x u16)
@@ -215,24 +81,4 @@ fn set_budget_clamped(engine: *Engine, pool: Util.Pool, want: u32) void {
     const target = @max(want, engine.pool_used(pool));
     engine.set_budget(pool, target) catch |err|
         log.err("set_budget({s}, {d}) failed after clamp: {}", .{ @tagName(pool), target, err });
-}
-
-fn render_remainder(
-    comptime total_memory_mb: u32,
-    comptime audio: u32,
-    comptime game: u32,
-    comptime user: u32,
-) u32 {
-    const total = total_memory_mb * MB;
-    const reserved = audio + game + user;
-    if (reserved > total) @compileError("non-render memory pools exceed total memory");
-    return total - reserved;
-}
-
-fn max_chunk_radius() u32 {
-    return switch (ae.platform) {
-        .psp => psp_slim_profile.chunk_radius,
-        .nintendo_3ds => new_3ds_profile.chunk_radius,
-        else => desktop_profile.chunk_radius,
-    };
 }

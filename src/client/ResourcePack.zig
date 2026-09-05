@@ -4,6 +4,7 @@ const SoundManager = @import("SoundManager.zig");
 const std = @import("std");
 const assert = std.debug.assert;
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Rendering = ae.Rendering;
 const Image = ae.Util.Image;
 const Zip = @import("util/Zip.zig");
@@ -37,10 +38,7 @@ fn tex_path(id: Tex) []const u8 {
         .water_still => "crosscraft/textures/water_still",
         .lava_still => "crosscraft/textures/lava_still",
         .char => "minecraft/textures/char",
-        .glyphs => if (@import("aether").platform == .psp)
-            "crosscraft/textures/interface/controller_glyphs/psp"
-        else
-            "crosscraft/textures/interface/controller_glyphs/pc",
+        .glyphs => caps.resources.glyph_texture,
         .rain => "minecraft/textures/rain",
         .particles => "minecraft/textures/particles",
     };

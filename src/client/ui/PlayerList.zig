@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Rendering = ae.Rendering;
 
 const core = @import("core");
@@ -24,7 +25,7 @@ const PANEL_LAYER: u8 = 244;
 const TEXT_LAYER: u8 = 245;
 
 // Leave PSP font entries available for concurrent HUD text.
-const MAX_VISIBLE: u8 = if (ae.platform == .psp) 4 else 60;
+const MAX_VISIBLE: u8 = caps.ui.max_visible_players;
 
 const Entry = struct {
     active: bool,

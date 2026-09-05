@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Rendering = ae.Rendering;
 const Transform = Rendering.Transform;
 const SubvoxelBounds = @import("core").blocks.SubvoxelBounds;
@@ -16,7 +17,7 @@ const HI: i16 = 2048;
 // Dividing by each AABB axis size cancels the model matrix's later scaling.
 // Protrusion controls silhouette inflation independently of line thickness.
 const THICK_NUMERATOR: i32 = 384;
-const PROTRUSION_NUMERATOR: i32 = if (ae.platform == .psp) 240 else 80;
+const PROTRUSION_NUMERATOR: i32 = caps.render.selection_protrusion;
 
 const COLOR: u32 = 0xAA202020;
 const QUAD_COUNT: usize = 72;

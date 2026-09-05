@@ -3,6 +3,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Rendering = ae.Rendering;
 
 const Buttons = @import("Buttons.zig");
@@ -32,7 +33,7 @@ pub fn enabled() bool {
 
 /// Shared bottom-left position, adjusted for the PSP viewport.
 pub const DEFAULT_POS_X: i16 = 20;
-pub const DEFAULT_POS_Y: i16 = 23 - if (@import("aether").platform == .psp) 8 else 16;
+pub const DEFAULT_POS_Y: i16 = caps.ui.prompt_y;
 
 const GLYPH_PAD: i16 = 4;
 const ENTRY_PAD: i16 = 12;

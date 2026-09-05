@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Rendering = ae.Rendering;
 const input_api = ae.Core.input;
 const log = std.log.scoped(.ui);
@@ -1146,10 +1147,7 @@ fn set_active_text(self: *Ui, id: WidgetId, buf: *TextBuf, opts: TextOpts) void 
 }
 
 fn uses_modal_text_input() bool {
-    return switch (ae.platform) {
-        .psp, .nintendo_3ds, .nintendo_switch => true,
-        else => false,
-    };
+    return caps.ui.system_text_entry;
 }
 
 fn fire_modal_text_input(self: *Ui, id: WidgetId, buf: *TextBuf, opts: TextOpts) bool {

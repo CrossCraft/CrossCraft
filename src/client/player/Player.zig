@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const builtin = @import("builtin");
+const caps = @import("capabilities").ClientType(ae);
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
@@ -406,7 +406,7 @@ fn apply_look(self: *Player, dt: f32) void {
     self.look_delta = .{ 0, 0 };
 
     if (self.mouse_captured) {
-        const look_rate = if (comptime ae.platform == .nintendo_3ds)
+        const look_rate = if (comptime caps.controls.linear_look)
             self.look_rate
         else
             apply_stick_curve(self.look_rate);
@@ -1126,7 +1126,7 @@ fn poll_inputs(self: *Player, sys: *input.InputSystem, dt: f32) void {
 
     if (fresh_activation) {
         self.prev_inputs.inventory_toggle = sys.button(actions.inventory_toggle).current;
-        if (comptime builtin.mode == .Debug and ae.platform != .psp) {
+        if (comptime caps.controls.debug_noclip) {
             self.prev_inputs.noclip = sys.button(actions.noclip).current;
         }
         self.prev_inputs.jump = jump;
@@ -1136,7 +1136,7 @@ fn poll_inputs(self: *Player, sys: *input.InputSystem, dt: f32) void {
         self.prev_inputs.shoulder_r = sys.button(actions.shoulder_r).current;
         self.prev_inputs.shoulder_l = sys.button(actions.shoulder_l).current;
         self.prev_inputs.playerlist = sys.button(actions.playerlist).current;
-        if (ae.platform != .psp) {
+        if (caps.controls.view_toggle_shortcuts) {
             self.prev_inputs.hud_toggle = sys.button(actions.hud_toggle).current;
             self.prev_inputs.rain_toggle = sys.button(actions.rain_toggle).current;
         }
@@ -1160,7 +1160,7 @@ fn poll_inputs(self: *Player, sys: *input.InputSystem, dt: f32) void {
     }
     self.prev_inputs.inventory_toggle = inv;
 
-    if (comptime builtin.mode == .Debug and ae.platform != .psp) {
+    if (comptime caps.controls.debug_noclip) {
         const nc = sys.button(actions.noclip).current;
         if (rising_edge(self.prev_inputs.noclip, nc)) {
             self.noclip = !self.noclip;
@@ -1252,7 +1252,7 @@ fn poll_inputs(self: *Player, sys: *input.InputSystem, dt: f32) void {
     }
     self.prev_inputs.playerlist = pll;
 
-    if (ae.platform != .psp) {
+    if (caps.controls.view_toggle_shortcuts) {
         const hud = sys.button(actions.hud_toggle).current;
         if (rising_edge(self.prev_inputs.hud_toggle, hud)) self.hud_toggle_pending = true;
         self.prev_inputs.hud_toggle = hud;
@@ -1333,7 +1333,7 @@ fn is_gameplay_active(sys: *input.InputSystem) bool {
 }
 
 fn playerlist_controller_button() input.Button {
-    if (ae.platform == .psp or Options.uses_old_3ds_controls()) {
+    if (Options.uses_single_stick_controls()) {
         return switch (Options.current.psp_jump_mode) {
             .up => .Back,
             .select => .DpadUp,

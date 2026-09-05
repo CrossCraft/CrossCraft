@@ -2,6 +2,7 @@
 /// compatibility with compressed audio entries.
 const std = @import("std");
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Audio = ae.Audio;
 const Math = ae.Math;
 const blocks = @import("core").blocks;
@@ -36,7 +37,7 @@ var step_entries: [material_count][max_variants]SoundEntry = .{[_]SoundEntry{.{}
 var step_counts: [material_count]u8 = .{0} ** material_count;
 var music_entries: [music_count]SoundEntry = .{SoundEntry{}} ** music_count;
 
-const max_voices: u32 = if (ae.platform == .psp) 8 else 17;
+const max_voices: u32 = caps.audio.max_voices;
 const music_slot: u32 = max_voices - 1;
 
 const Voice = struct {

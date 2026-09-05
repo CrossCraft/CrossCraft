@@ -1,6 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
@@ -32,7 +33,7 @@ const U_SPAN: i32 = @intFromFloat(32767.0 * STREAK_WIDTH);
 const BASE_ALPHA: f32 = 255.0;
 
 const SPLASH_MAX: u16 = 192;
-const SPLASH_SPAWNS_PER_SEC: f32 = if (ae.platform == .psp) 150.0 else 500.0;
+const SPLASH_SPAWNS_PER_SEC: f32 = caps.render.rain_splashes_per_second;
 const SPLASH_GRAVITY: f32 = 12.0;
 const SPLASH_LIFE_MIN: f32 = 0.25;
 const SPLASH_LIFE_MAX: f32 = 0.55;

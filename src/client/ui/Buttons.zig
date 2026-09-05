@@ -3,6 +3,7 @@
 //! `psp.png` uses 8px face buttons and 16x8 wide buttons.
 
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Options = @import("../Options.zig");
 const input = ae.Core.input;
 
@@ -51,7 +52,7 @@ pub const Style = enum {
 };
 
 pub fn strip_height() i16 {
-    return if (ae.platform == .psp) 32 else 28;
+    return caps.ui.prompt_strip_height;
 }
 
 pub fn glyph_y_offset() i16 {
@@ -65,8 +66,8 @@ pub fn note_input_mode(mode: input.InputMode) void {
 }
 
 pub fn resolve_style() Style {
-    if (ae.platform == .psp) return .psp;
-    if ((ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) and Options.current.controller_tooltips != .off) return .nintendo;
+    if (caps.ui.compact_controller_glyphs) return .psp;
+    if (caps.ui.nintendo_controller_glyphs and Options.current.controller_tooltips != .off) return .nintendo;
     return switch (Options.current.controller_tooltips) {
         // Xbox stands in for gamepads whose vendor is unknown.
         .auto => switch (last_mode) {

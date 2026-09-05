@@ -1,12 +1,12 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const builtin = @import("builtin");
+const caps = @import("capabilities");
 
 const random_state = @import("random.zig");
 
 // Avoid compiler_rt floor/ceil calls on MIPS while preserving finite f32 results.
 pub inline fn floor_f32(x: f32) f32 {
-    if (builtin.cpu.arch == .mipsel or builtin.cpu.arch == .mips) {
+    if (caps.math.integer_float_rounding) {
         const truncated: f32 = @floatFromInt(@as(i32, @intFromFloat(x)));
         return if (x < truncated) truncated - 1.0 else truncated;
     }
@@ -14,7 +14,7 @@ pub inline fn floor_f32(x: f32) f32 {
 }
 
 pub inline fn ceil_f32(x: f32) f32 {
-    if (builtin.cpu.arch == .mipsel or builtin.cpu.arch == .mips) {
+    if (caps.math.integer_float_rounding) {
         const truncated: f32 = @floatFromInt(@as(i32, @intFromFloat(x)));
         return if (x > truncated) truncated + 1.0 else truncated;
     }

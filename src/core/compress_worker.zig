@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const builtin = @import("builtin");
+const caps = @import("capabilities");
 const flate = std.compress.flate;
 
 pub const Job = struct {
@@ -234,7 +234,7 @@ test "queued jobs publish errors and queued cancellation completes" {
 /// preempt equal-priority threads during long compression runs.
 pub fn worker_main() void {
     // Raw PSP threads do not inherit the per-thread filesystem cwd.
-    if (comptime builtin.os.tag == .psp) {
+    if (comptime !caps.execution.worker_inherits_cwd) {
         var cwd_buf: [1024]u8 = undefined;
         if (std.process.currentPath(stored_io, &cwd_buf)) |n| {
             std.process.setCurrentPath(stored_io, cwd_buf[0..n]) catch {};

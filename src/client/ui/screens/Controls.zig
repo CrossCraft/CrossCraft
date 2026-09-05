@@ -1,5 +1,6 @@
 const std = @import("std");
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const input = ae.Core.input;
 
 const Ui = @import("../Ui.zig");
@@ -73,7 +74,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
     }
 
     var suppress_actions = false;
-    if (ae.platform == .psp) {
+    if (caps.controls.single_stick) {
         run_psp(ui, opt, &result);
     } else if (Options.uses_old_3ds_controls()) {
         run_old_3ds(ui, opt, &result);
@@ -83,7 +84,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
 
     const show_reset = !new_3ds_fallback_available or Options.uses_old_3ds_controls();
     if (show_reset and ui.button(wid(.reset), "Reset Defaults", .{ .width = WIDGET_W, .enabled = !suppress_actions })) {
-        if (ae.platform == .psp) {
+        if (caps.controls.single_stick) {
             opt.reset_psp_controls();
         } else if (new_3ds_fallback_available) {
             opt.reset_new_3ds_controls();

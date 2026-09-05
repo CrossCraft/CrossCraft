@@ -3,6 +3,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Rendering = ae.Rendering;
 
 const SpriteBatcher = ae.UI.SpriteBatcher;
@@ -42,7 +43,7 @@ pub const DrawCmd = union(enum) {
     clip_pop: void,
 };
 
-pub const MAX_CMDS: u16 = if (ae.platform == .psp) 96 else 192;
+pub const MAX_CMDS: u16 = caps.ui.max_draw_commands;
 
 cmds: [MAX_CMDS]DrawCmd = undefined,
 count: u16 = 0,

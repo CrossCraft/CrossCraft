@@ -1,7 +1,7 @@
 //! Persisted user preferences.
 
 const std = @import("std");
-const builtin = @import("builtin");
+const caps = @import("capabilities").ClientType(ae);
 const ae = @import("aether");
 const Io = std.Io;
 const File = std.Io.File;
@@ -60,7 +60,7 @@ pub const Options = struct {
     active_texturepack_len: u8 = 0,
 
     /// Consumers must use `capped_render_distance` to honor the runtime profile.
-    render_distance: u8 = if (ae.platform == .psp) 4 else 8,
+    render_distance: u8 = caps.defaults.render_distance,
 
     sound_volume: f32 = 1.0,
 
@@ -69,7 +69,7 @@ pub const Options = struct {
     fov: f32 = 70.0,
 
     /// Profiles with no near-LOD radius cannot render fancy leaves.
-    fancy_leaves: bool = ae.platform != .psp,
+    fancy_leaves: bool = caps.defaults.fancy_leaves,
 
     sensitivity: f32 = 3.0,
 
@@ -78,7 +78,7 @@ pub const Options = struct {
     /// Animate only a section's first mesh build.
     bouncy_chunks: bool = false,
 
-    vsync: bool = ae.platform != .psp and ae.platform != .nintendo_3ds,
+    vsync: bool = caps.defaults.vsync,
 
     controller_tooltips: ControllerTooltips = .auto,
 
@@ -165,57 +165,23 @@ pub fn fancy_leaves_supported() bool {
 }
 
 pub fn fixed_controller_glyph_style() bool {
-    return ae.platform == .psp or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
+    return caps.ui.fixed_controller_glyphs;
 }
 
 pub fn uses_old_3ds_controls() bool {
-    return uses_old_3ds_controls_for(ae.platform, cfg.current().hardware, current.new_3ds_use_old_controls);
+    return caps.controls.uses_single_stick_fallback(cfg.current().hardware, current.new_3ds_use_old_controls);
+}
+
+pub fn uses_single_stick_controls() bool {
+    return caps.controls.single_stick or uses_old_3ds_controls();
 }
 
 pub fn controls_rebinding_supported() bool {
-    return controls_rebinding_supported_for(ae.platform, cfg.current().hardware);
-}
-
-fn controls_rebinding_supported_for(platform: ae.Platform, hardware: cfg.HardwareClass) bool {
-    return switch (platform) {
-        .nintendo_3ds => hardware == .old_3ds or hardware == .new_3ds,
-        .nintendo_switch => false,
-        else => true,
-    };
+    return caps.controls.supports_rebinding(cfg.current().hardware);
 }
 
 pub fn new_3ds_old_controls_supported() bool {
-    return new_3ds_old_controls_supported_for(ae.platform, cfg.current().hardware);
-}
-
-fn new_3ds_old_controls_supported_for(platform: ae.Platform, hardware: cfg.HardwareClass) bool {
-    return platform == .nintendo_3ds and hardware == .new_3ds;
-}
-
-fn uses_old_3ds_controls_for(platform: ae.Platform, hardware: cfg.HardwareClass, new_3ds_use_old_controls: bool) bool {
-    return platform == .nintendo_3ds and (hardware == .old_3ds or (hardware == .new_3ds and new_3ds_use_old_controls));
-}
-
-test "Old 3DS controls follow the runtime hardware class and N3DS fallback" {
-    try std.testing.expect(!uses_old_3ds_controls_for(.psp, .psp_phat, false));
-    try std.testing.expect(!uses_old_3ds_controls_for(.psp, .psp_phat, true));
-    try std.testing.expect(uses_old_3ds_controls_for(.nintendo_3ds, .old_3ds, false));
-    try std.testing.expect(uses_old_3ds_controls_for(.nintendo_3ds, .old_3ds, true));
-    try std.testing.expect(!uses_old_3ds_controls_for(.nintendo_3ds, .new_3ds, false));
-    try std.testing.expect(uses_old_3ds_controls_for(.nintendo_3ds, .new_3ds, true));
-    try std.testing.expect(!uses_old_3ds_controls_for(.nintendo_switch, .nintendo_switch, true));
-    try std.testing.expect(!uses_old_3ds_controls_for(.linux, .desktop, true));
-
-    try std.testing.expect(!new_3ds_old_controls_supported_for(.psp, .psp_phat));
-    try std.testing.expect(!new_3ds_old_controls_supported_for(.nintendo_3ds, .old_3ds));
-    try std.testing.expect(new_3ds_old_controls_supported_for(.nintendo_3ds, .new_3ds));
-    try std.testing.expect(!new_3ds_old_controls_supported_for(.nintendo_switch, .nintendo_switch));
-
-    try std.testing.expect(controls_rebinding_supported_for(.psp, .psp_phat));
-    try std.testing.expect(controls_rebinding_supported_for(.nintendo_3ds, .old_3ds));
-    try std.testing.expect(controls_rebinding_supported_for(.nintendo_3ds, .new_3ds));
-    try std.testing.expect(!controls_rebinding_supported_for(.nintendo_switch, .nintendo_switch));
-    try std.testing.expect(controls_rebinding_supported_for(.linux, .desktop));
+    return caps.controls.supports_single_stick_fallback(cfg.current().hardware);
 }
 
 pub fn pc_key_assignable(key: input.Key) bool {
@@ -239,14 +205,14 @@ pub fn pc_key_assignable(key: input.Key) bool {
         else => {},
     }
 
-    if (ae.platform != .psp) {
+    if (caps.controls.view_toggle_shortcuts) {
         switch (key) {
             .F1,
             .F5,
             => return false,
             else => {},
         }
-        if (builtin.mode == .Debug and key == .X) return false;
+        if (caps.controls.debug_noclip and key == .X) return false;
     }
 
     return true;
@@ -354,15 +320,15 @@ const LoadJsonOptions = struct {
     /// and FOV degrees.
     version: u8 = 1,
     active_texturepack: []const u8 = "",
-    render_distance: u8 = if (@import("aether").platform == .psp) 4 else 8,
+    render_distance: u8 = caps.defaults.render_distance,
     sound_volume: ?JsonNumber = null,
     music_volume: ?JsonNumber = null,
     fov: ?JsonNumber = null,
-    fancy_leaves: bool = @import("aether").platform != .psp,
+    fancy_leaves: bool = caps.defaults.fancy_leaves,
     sensitivity: ?JsonNumber = null,
     ambient_occlusion: bool = false,
     bouncy_chunks: bool = false,
-    vsync: bool = @import("aether").platform != .psp,
+    vsync: bool = caps.defaults.loaded_vsync,
     controller_tooltips: u8 = 0,
     rain: bool = false,
     fog: bool = true,

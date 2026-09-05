@@ -1,4 +1,36 @@
 {
+  "exclude_paths": ["src/capabilities.zig"],
+  "banned": [
+    {
+      "banned": "@import(\"builtin\")",
+      "replacement": "capabilities defined in src/capabilities.zig"
+    },
+    {
+      "banned": "@import(\"aether\").platform",
+      "replacement": "capabilities defined in src/capabilities.zig"
+    },
+    {
+      "banned": "@import(\"aether\").gfx",
+      "replacement": "capabilities defined in src/capabilities.zig"
+    }
+  ],
+  "symbol_bans": [
+    {
+      "kind": "qualified_symbol",
+      "symbol": "ae.platform",
+      "replacement": "capabilities defined in src/capabilities.zig"
+    },
+    {
+      "kind": "qualified_symbol",
+      "symbol": "ae.gfx",
+      "replacement": "capabilities defined in src/capabilities.zig"
+    },
+    {
+      "kind": "qualified_symbol",
+      "symbol": "config.platform",
+      "replacement": "build_policy in src/capabilities.zig"
+    }
+  ],
   "rules": {
     "control_characters": true,
     "ascii_only": true,
@@ -8,7 +40,7 @@
     "comptime_not": true,
     "configured_text_bans": true,
     "leftover_reminders": true,
-    "symbol_bans": false,
+    "symbol_bans": true,
     "packed_fields": true,
     "line_length": false,
     "trailing_whitespace": true,

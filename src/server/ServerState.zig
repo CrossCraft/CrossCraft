@@ -1,5 +1,5 @@
 const std = @import("std");
-const builtin = @import("builtin");
+const caps = @import("capabilities");
 const ae = @import("aether");
 const core = @import("core");
 
@@ -680,7 +680,7 @@ fn console_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
 }
 
 fn install_signal_handlers() void {
-    if (comptime builtin.os.tag == .windows) {
+    if (comptime caps.process.console_control_handler) {
         const windows = std.os.windows;
         const ws2_shutdown = struct {
             extern "ws2_32" fn shutdown(s: *anyopaque, how: c_int) callconv(.winapi) c_int;

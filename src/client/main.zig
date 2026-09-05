@@ -1,13 +1,10 @@
 const std = @import("std");
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 
 pub const aether_options: ae.Options = .{
     .title = "CrossCraft Classic",
-    .app_name = switch (ae.platform) {
-        .nintendo_3ds => "CrossCraft-Classic-3DS",
-        .nintendo_switch => "CrossCraft-Classic-Switch",
-        else => null,
-    },
+    .app_name = caps.resources.app_name,
     .psp = .{
         .module_name = "CrossCraft",
         .stack_size = 512 * 1024,

@@ -73,6 +73,20 @@ zig build serve-web
 
 Read `STYLE.MD` first. Run `zig fmt` before submitting. Run `zig build test` before opening a PR.
 
+### Architecture and target capabilities
+
+- `src/core` owns shared game logic, world generation, physics, protocol, and saves.
+- `src/client` provides the playable game, rendering, input, and UI.
+- `src/server` provides the PC-only standalone server and administration.
+
+[`src/capabilities.zig`](src/capabilities.zig) is the single place for target identity checks. Callers ask for behavior or limits, such as `execution.background_workers`, `filesystem.rename_replaces_destination`, or `controls.single_stick`. Add new target decisions there instead of checking `builtin`, `ae.platform`, or the graphics backend at the call site.
+
+Core and host tools import the std-only `capabilities` module. Client code uses `@import("capabilities").ClientType(ae)` for engine-dependent policy and system hooks. `client/config.zig` selects the runtime memory profile before allocation and applies its budgets; PSP model detection and Old/New 3DS control support remain runtime decisions. Build packaging uses `build_policy` with the requested target rather than the build runner's target.
+
+Run `zig build test-capabilities` to verify target capability policy. These tests also run under `zig build test`.
+
+`tiger_lint.json` bans direct target checks and excludes `src/capabilities.zig` from linting.
+
 ## Legal Notice
 
 **NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.**

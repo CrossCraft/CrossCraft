@@ -1,5 +1,6 @@
 const std = @import("std");
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Core = ae.Core;
 const Util = ae.Util;
 const Engine = ae.Engine;
@@ -135,7 +136,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     Options.save(engine.io, engine.dirs.data);
     engine.set_vsync(Options.current.vsync);
 
-    const default_pack_dir = if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch or build_options.embed_pack)
+    const default_pack_dir = if (caps.resources.default_pack_in_data_dir or build_options.embed_pack)
         engine.dirs.data
     else
         engine.dirs.resources;
@@ -311,7 +312,7 @@ fn write_converted_legacy_save(
     dest_name: []const u8,
     data: *World.WorldData,
 ) bool {
-    if (comptime ae.platform == .wasm) {
+    if (comptime !caps.saves.legacy_migration) {
         log.warn("legacy save migration unavailable on wasm", .{});
         return false;
     }
@@ -528,7 +529,7 @@ fn dc_join(self: *@This(), engine: *Engine) !void {
     } else {
         Session.set_username("Player");
     }
-    const net_ready = if (ae.platform == .psp) ae.Psp.showNetDialog() else true;
+    const net_ready = caps.networking.prepare();
     if (!net_ready) return;
     Session.mode = .multiplayer;
     LoadState.transition_here(engine);
@@ -688,8 +689,8 @@ fn enter_main(self: *@This()) void {
 
 fn main_menu_options() MainMenu.Options {
     return .{
-        .multiplayer_enabled = ae.platform != .wasm,
-        .texture_packs_enabled = ae.platform != .wasm,
+        .multiplayer_enabled = caps.networking.multiplayer,
+        .texture_packs_enabled = caps.resources.texture_pack_selection,
     };
 }
 
@@ -699,7 +700,7 @@ fn enter_direct_connect(self: *@This()) void {
 }
 
 fn enter_texture_packs(self: *@This(), engine: *Engine) void {
-    const default_pack_dir = if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) engine.dirs.data else engine.dirs.resources;
+    const default_pack_dir = if (caps.resources.default_pack_in_data_dir) engine.dirs.data else engine.dirs.resources;
     self.tp_entry_count = TexturePacks.scan(engine.io, default_pack_dir, engine.dirs.data, &self.tp_entries);
     self.tp_selected_index = TexturePacks.find_active_index(self.tp_entries[0..self.tp_entry_count]);
     self.active_screen = .texture_packs;

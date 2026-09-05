@@ -1,6 +1,6 @@
 /// Gameplay action-set registration and bindings.
 const std = @import("std");
-const builtin = @import("builtin");
+const caps = @import("capabilities").ClientType(ae);
 const ae = @import("aether");
 const input = ae.Core.input;
 const Options = @import("../Options.zig");
@@ -54,26 +54,26 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
     try bind_jump(sys, jump);
     const sneak = try sys.add_action(set, "sneak", .button);
     try sys.bind_action(sneak, &.{ .source = .{ .key = .LeftShift } });
-    if (ae.platform == .psp or Options.uses_old_3ds_controls()) {
+    if (Options.uses_single_stick_controls()) {
         try sys.bind_action(sneak, &.{ .source = .{ .gamepad_button = .DpadDown } });
     } else {
         try sys.bind_action(sneak, &.{ .source = .{ .gamepad_button = .X } });
     }
 
     var noclip: input.ActionHandle = .none;
-    if (comptime builtin.mode == .Debug and ae.platform != .psp) {
+    if (comptime caps.controls.debug_noclip) {
         noclip = try sys.add_action(set, "noclip", .button);
         try sys.bind_action(noclip, &.{ .source = .{ .key = .X } });
     }
 
     var hud_toggle: input.ActionHandle = .none;
-    if (ae.platform != .psp) {
+    if (caps.controls.view_toggle_shortcuts) {
         hud_toggle = try sys.add_action(set, "hud_toggle", .button);
         try sys.bind_action(hud_toggle, &.{ .source = .{ .key = .F1 } });
     }
 
     var rain_toggle: input.ActionHandle = .none;
-    if (ae.platform != .psp) {
+    if (caps.controls.view_toggle_shortcuts) {
         rain_toggle = try sys.add_action(set, "rain_toggle", .button);
         try sys.bind_action(rain_toggle, &.{ .source = .{ .key = .F5 } });
     }
@@ -106,7 +106,7 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
         try sys.bind_action(place, &.{ .source = .{ .gamepad_button = .LButton } });
         try sys.bind_action(break_, &.{ .source = .{ .gamepad_axis = .RightTrigger } });
         try sys.bind_action(place, &.{ .source = .{ .gamepad_axis = .LeftTrigger } });
-    } else if (ae.platform != .psp) {
+    } else if (caps.controls.trigger_block_actions) {
         try sys.bind_action(break_, &.{ .source = .{ .gamepad_axis = .RightTrigger } });
         try sys.bind_action(place, &.{ .source = .{ .gamepad_axis = .LeftTrigger } });
         pick_block = try sys.add_action(set, "pick_block", .button);
@@ -115,7 +115,7 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
 
     const shoulder_r = try sys.add_action(set, "shoulder_r", .button);
     const shoulder_l = try sys.add_action(set, "shoulder_l", .button);
-    if (ae.platform == .psp) {
+    if (caps.controls.shoulder_action_chords) {
         try sys.bind_action(shoulder_r, &.{ .source = .{ .gamepad_button = .RButton } });
         try sys.bind_action(shoulder_l, &.{ .source = .{ .gamepad_button = .LButton } });
     }
@@ -135,7 +135,7 @@ pub fn init(sys: *input.InputSystem) !ActionSetHandle {
     try sys.bind_action(hotbar_right, &.{ .source = .{ .gamepad_button = .DpadRight } });
     const hotbar_scroll = try sys.add_action(set, "hotbar_scroll", .axis);
     try sys.bind_action(hotbar_scroll, &.{ .source = .{ .mouse_wheel = .y } });
-    if (ae.platform != .psp and !Options.uses_old_3ds_controls()) {
+    if (!Options.uses_single_stick_controls()) {
         try sys.bind_action(hotbar_left, &.{ .source = .{ .gamepad_button = .LButton } });
         try sys.bind_action(hotbar_right, &.{ .source = .{ .gamepad_button = .RButton } });
     }
@@ -239,7 +239,7 @@ test "refreshing gameplay after an overlay consumes held Escape" {
 }
 
 fn bind_move(sys: *input.InputSystem, action: input.ActionHandle) !void {
-    if (ae.platform == .psp) {
+    if (caps.controls.single_stick) {
         switch (Options.current.psp_analog_mode) {
             .move => {
                 try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .LeftX }, .component = .x, .multiplier = 1.0 });
@@ -287,7 +287,7 @@ fn bind_old_3ds_face_move(sys: *input.InputSystem, action: input.ActionHandle) !
 
 fn bind_jump(sys: *input.InputSystem, action: input.ActionHandle) !void {
     try sys.bind_action(action, &.{ .source = .{ .key = .Space } });
-    if (ae.platform == .psp) {
+    if (caps.controls.single_stick) {
         const button: input.Button = switch (Options.current.psp_jump_mode) {
             .up => .DpadUp,
             .select => .Back,
@@ -306,13 +306,13 @@ fn bind_jump(sys: *input.InputSystem, action: input.ActionHandle) !void {
 
 fn bind_inventory_toggle(sys: *input.InputSystem, action: input.ActionHandle) !void {
     try sys.bind_action(action, &.{ .source = .{ .key = Options.current.key_inventory } });
-    if (ae.platform != .psp and !Options.uses_old_3ds_controls()) {
+    if (!Options.uses_single_stick_controls()) {
         try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .Y } });
     }
 }
 
 fn bind_look_stick(sys: *input.InputSystem, action: input.ActionHandle) !void {
-    if (ae.platform == .psp) {
+    if (caps.controls.single_stick) {
         switch (Options.current.psp_analog_mode) {
             .look => {
                 try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .LeftX }, .component = .x });
@@ -338,18 +338,15 @@ fn bind_look_stick(sys: *input.InputSystem, action: input.ActionHandle) !void {
                 try sys.bind_action(action, &.{ .source = .{ .gamepad_button = .B }, .component = .y, .multiplier = 1.0 });
             },
         }
-    } else if (ae.platform == .nintendo_3ds) {
-        try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .RightX }, .component = .x, .deadzone = 0.0 });
-        try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .RightY }, .component = .y, .deadzone = 0.0 });
     } else {
-        try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .RightX }, .component = .x });
-        try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .RightY }, .component = .y });
+        try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .RightX }, .component = .x, .deadzone = caps.controls.look_deadzone });
+        try sys.bind_action(action, &.{ .source = .{ .gamepad_axis = .RightY }, .component = .y, .deadzone = caps.controls.look_deadzone });
     }
 }
 
 fn bind_playerlist(sys: *input.InputSystem, action: input.ActionHandle) !void {
     try sys.bind_action(action, &.{ .source = .{ .key = .Tab } });
-    const button: input.Button = if (ae.platform == .psp)
+    const button: input.Button = if (caps.controls.single_stick)
         switch (Options.current.psp_jump_mode) {
             .up => .Back,
             .select => .DpadUp,

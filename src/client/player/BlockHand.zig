@@ -10,6 +10,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
@@ -49,8 +50,8 @@ const SwingKind = enum { idle, place, dig };
 
 const BlockHand = @This();
 
-const hand_near_plane: f32 = if (ae.platform == .psp) 0.3 else Camera.near_plane;
-const hand_far_plane: f32 = if (ae.platform == .nintendo_3ds) Camera.far_plane else 128.0;
+const hand_near_plane: f32 = caps.render.hand_near_plane;
+const hand_far_plane: f32 = caps.render.hand_far_plane;
 
 atlas: TextureAtlas,
 mesh_data: Rendering.MeshDataType(Vertex),

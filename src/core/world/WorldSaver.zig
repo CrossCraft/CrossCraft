@@ -2,7 +2,7 @@
 // between bands, so this is a race-free progressive capture, not one instant.
 
 const std = @import("std");
-const builtin = @import("builtin");
+const caps = @import("capabilities");
 
 const WorldData = @import("WorldData.zig");
 const fmt_mod = @import("SaveFormat.zig");
@@ -116,7 +116,7 @@ fn dispatch_save(self: *WorldSaver, data: *WorldData, format: SaveFormat, overri
         self.save_override_world_name_len = @intCast(value.world_name.len);
     }
 
-    if (comptime builtin.os.tag == .wasi) {
+    if (comptime !caps.execution.background_workers) {
         defer self.cw_job.mark_done(self.io);
 
         save_worker(self);
@@ -252,7 +252,7 @@ fn promote_temp(
     target: []const u8,
     previous_name: []const u8,
 ) !void {
-    if (comptime builtin.os.tag != .psp) {
+    if (comptime caps.filesystem.rename_replaces_destination) {
         return dir.rename(temp_name, dir, target, io);
     }
 

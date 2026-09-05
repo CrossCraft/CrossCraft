@@ -54,9 +54,8 @@ const ae_input = ae.Core.input;
 
 const log = std.log.scoped(.game);
 
-const wasm_host = if (ae.platform == .wasm) struct {
-    extern "aether_host" fn aether_crosscraft_download_file(path_ptr: [*]const u8, path_len: usize) bool;
-} else struct {};
+const caps = @import("capabilities").ClientType(ae);
+const execution = @import("capabilities").execution;
 
 const selection_depth_nudge: f32 = 1.0 / 320.0;
 const MP_READ_STACK_SIZE = 512 * 1024;
@@ -136,23 +135,10 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             self.conn.drain_packets();
         },
         .multiplayer => {
-            if (comptime ae.platform == .wasm) return error.UnsupportedPlatform;
+            if (comptime !caps.networking.multiplayer) return error.UnsupportedPlatform;
 
-            const pspsdk = if (ae.platform == .psp) @import("pspsdk") else {};
-            const PSP_MAIN_PRIO_RUNTIME: i32 = 64;
-            const psp_main_thid = if (ae.platform == .psp)
-                pspsdk.kernel.get_thread_id()
-            else {};
-            const psp_orig_prio: i32 = if (ae.platform == .psp)
-                pspsdk.kernel.get_thread_current_priority()
-            else
-                0;
-            if (ae.platform == .psp) {
-                try pspsdk.kernel.change_thread_priority(psp_main_thid, psp_orig_prio - 10);
-            }
-            defer if (ae.platform == .psp) {
-                pspsdk.kernel.change_thread_priority(psp_main_thid, PSP_MAIN_PRIO_RUNTIME) catch {};
-            };
+            try caps.networking.begin_connect_setup();
+            defer caps.networking.end_connect_setup();
 
             // LoadState consumed the handshake through LevelFinalize.
             self.conn.init(&Session.mp_reader.interface, &Session.mp_writer.interface);
@@ -283,7 +269,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     switch (Session.mode) {
         .singleplayer => {},
         .multiplayer => {
-            if (comptime ae.platform == .wasm) return error.UnsupportedPlatform;
+            if (comptime !caps.networking.multiplayer) return error.UnsupportedPlatform;
 
             try CompressWorker.init(engine.allocator(.user), engine.io);
             errdefer CompressWorker.deinit();
@@ -329,11 +315,7 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
                 self.mp_read_thread = null;
             }
             // PSP reconnects fail unless the networking stack is reinitialized.
-            if (ae.platform == .psp) {
-                const pspsdk = @import("pspsdk");
-                pspsdk.extra.net.disconnect();
-                pspsdk.extra.net.deinit();
-            }
+            caps.networking.release();
         },
     }
     self.held.deinit();
@@ -377,7 +359,7 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
 }
 
 fn ensure_sp_compressor_started(self: *@This(), engine: *Engine) !void {
-    if (comptime ae.platform == .wasm) return;
+    if (comptime !execution.background_workers) return;
 
     if (self.compressor_thread != null) return;
     // Drain save jobs queued by Server.init only after the state transition
@@ -593,11 +575,11 @@ fn try_dump_world(self: *@This()) bool {
 
 fn save_pause_world() void {
     World.save();
-    if (comptime ae.platform == .wasm) {
+    if (comptime caps.saves.download) {
         World.wait_for_save();
         const session_save = Session.singleplayer_save();
         const save_path = if (session_save.len > 0) session_save else Server.default_save_location;
-        if (!wasm_host.aether_crosscraft_download_file(save_path.ptr, save_path.len)) {
+        if (!caps.saves.download_file(save_path)) {
             log.warn("failed to download save file '{s}'", .{save_path});
         }
     }

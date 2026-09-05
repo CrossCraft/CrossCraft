@@ -1,12 +1,13 @@
 const std = @import("std");
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
 const Camera = @This();
 
-pub const near_plane: f32 = if (ae.platform == .psp) 0.3275 else 0.1;
-pub const far_plane: f32 = if (ae.platform == .psp) 132.0 else 256.0;
+pub const near_plane: f32 = caps.render.near_plane;
+pub const far_plane: f32 = caps.render.far_plane;
 
 x: f32,
 y: f32,

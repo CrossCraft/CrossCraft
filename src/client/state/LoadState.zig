@@ -20,7 +20,8 @@ const Session = @import("Session.zig");
 const proto = core.protocol;
 const flate = std.compress.flate;
 
-const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
+const caps = @import("capabilities").ClientType(ae);
+const execution = @import("capabilities").execution;
 
 const log = std.log.scoped(.game);
 
@@ -49,7 +50,7 @@ fn start_server_task(
     data_dir: std.Io.Dir,
     save_location: []const u8,
 ) ?Util.Thread {
-    if (comptime ae.platform == .wasm) {
+    if (comptime !execution.background_workers) {
         run_server_task(alloc, scratch, seed, data_dir, save_location);
         return null;
     }
@@ -72,7 +73,7 @@ fn start_connect_task(
     seed: u64,
     data_dir: std.Io.Dir,
 ) ?Util.Thread {
-    if (comptime ae.platform == .wasm) {
+    if (comptime !caps.networking.multiplayer) {
         session_error = error.UnsupportedPlatform;
         server_ready.store(true, .release);
         return null;
@@ -150,10 +151,7 @@ fn cleanup_failed_multiplayer_connect(io: std.Io) void {
     // On PSP, MenuState's net dialog initialises sceNet before LoadState runs.
     // Normal disconnects unwind it in GameState.deinit; early load-screen
     // failures never reach GameState, so release it here.
-    if (ae.platform == .psp) {
-        pspsdk.extra.net.disconnect();
-        pspsdk.extra.net.deinit();
-    }
+    caps.networking.release();
 }
 
 fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.Io.Dir) !void {
@@ -173,10 +171,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     const reader = &Session.mp_reader.interface;
 
     // PSP: disable Nagle so per-tick packets hit the wire immediately.
-    if (ae.platform == .psp) {
-        pspsdk.extra.net.disableNagle(@intCast(stream.socket.handle)) catch |err|
-            log.warn("TCP_NODELAY failed: {}", .{err});
-    }
+    caps.networking.configure_stream(stream);
 
     proto.send_player_id_to_server(&Session.mp_writer.interface, Session.username()) catch |err| {
         capture_disconnect_after_write_failed(reader);
@@ -348,7 +343,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     session_error = null;
     Session.clear_disconnect_reason();
     const data_dir = engine.dirs.data;
-    const server_scratch = if (comptime ae.platform == .wasm)
+    const server_scratch = if (comptime caps.memory.separate_worldgen_scratch)
         std.heap.wasm_allocator
     else
         engine.allocator(.user);
@@ -516,7 +511,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // 3DS already blocks on vblank after draw; sleeping here delays the
     // present itself and can let the worker finish before any phase frame
     // reaches the screen.
-    if (ae.platform != .nintendo_3ds and ae.platform != .nintendo_switch) {
+    if (!caps.render.present_paces_loading) {
         try std.Io.sleep(engine.io, .fromMilliseconds(50), .real);
     }
 }

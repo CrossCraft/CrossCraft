@@ -1,5 +1,6 @@
 const std = @import("std");
 const Aether = @import("engine");
+const Capabilities = @import("src/capabilities.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -54,6 +55,11 @@ pub fn build(b: *std.Build) void {
     const skip_pack = b.option(bool, "skip-pack", "Skip zipping resources into pack.zip (for CI builds without LFS assets)") orelse false;
 
     const config = Aether.config.Config.resolve(target, overrides);
+    const policy = Capabilities.build_policy(config, target.result);
+    const capabilities = b.addModule("capabilities", .{
+        .root_source_file = b.path("src/capabilities.zig"),
+        .optimize = optimize,
+    });
 
     const zbc = b.dependency("ZeeBuffer", .{});
 
@@ -69,7 +75,7 @@ pub fn build(b: *std.Build) void {
     const worldgen = b.addModule("worldgen", .{
         .root_source_file = b.path("src/core/worldgen/root.zig"),
         .optimize = .ReleaseFast,
-        .imports = &.{},
+        .imports = &.{.{ .name = "capabilities", .module = capabilities }},
     });
 
     const core = b.addModule("core", .{
@@ -78,28 +84,11 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "protocol", .module = protocol },
             .{ .name = "worldgen", .module = worldgen },
+            .{ .name = "capabilities", .module = capabilities },
         },
     });
 
-    const console_client_dir: ?[]const u8 = switch (config.platform) {
-        .psp => "CrossCraft-Classic-PSP",
-        .nintendo_3ds => "CrossCraft-Classic-3DS",
-        .nintendo_switch => "CrossCraft-Classic-Switch",
-        else => null,
-    };
-    const is_psp = config.platform == .psp;
-    const is_macos = config.platform == .macos;
-    const is_3ds = config.platform == .nintendo_3ds;
-    const is_switch = config.platform == .nintendo_switch;
-    const is_windows = config.platform == .windows;
-    const is_desktop = switch (config.platform) {
-        .windows, .linux => true,
-        else => false,
-    };
-    const is_pc_server = switch (config.platform) {
-        .windows, .linux, .macos => true,
-        else => false,
-    };
+    const console_client_dir = policy.client_dir;
 
     // CI can skip packing when the LFS-backed resources are unavailable.
     const pack_zip_path: ?std.Build.LazyPath = if (skip_pack) null else blk: {
@@ -119,11 +108,11 @@ pub fn build(b: *std.Build) void {
     };
     const archival_save_path = b.path("saves/origins.cw");
 
-    const should_embed = is_desktop and pack_zip_path != null and !(overrides.use_cwd orelse false);
+    const should_embed = policy.embed_default_pack and pack_zip_path != null and !(overrides.use_cwd orelse false);
 
     const install_pack: ?*std.Build.Step = if (pack_zip_path) |pack_zip| blk: {
         // macOS packaging installs the pack inside the signed app bundle.
-        if (is_macos or should_embed) break :blk null;
+        if (policy.bundle_resources or should_embed) break :blk null;
         const path = if (console_client_dir) |dir| b.fmt("bin/{s}/pack.zip", .{dir}) else "bin/pack.zip";
         break :blk &b.addInstallFile(pack_zip, path).step;
     } else null;
@@ -144,12 +133,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .overrides = overrides,
     });
-    if (target.result.os.tag == .linux and target.result.isGnuLibC()) {
+    if (policy.use_llvm_linker) {
         client_exe.use_llvm = true;
         client_exe.use_lld = true;
     }
     const client_root = Aether.modules.userRootModule(client_exe);
     client_root.addImport("core", core);
+    client_root.addImport("capabilities", capabilities);
+    if (client_root.import_table.get("pspsdk")) |sdk| capabilities.addImport("pspsdk", sdk);
     client_root.addImport("protocol", protocol);
 
     if (should_embed) {
@@ -162,7 +153,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "embed_pack", should_embed);
     client_root.addImport("build_options", build_options.createModule());
 
-    const mac_resources: []const Aether.packaging.Resource = if (is_macos) blk: {
+    const mac_resources: []const Aether.packaging.Resource = if (policy.bundle_resources) blk: {
         if (pack_zip_path) |pack_zip| {
             break :blk &.{
                 .{ .path = pack_zip, .name = "pack.zip" },
@@ -176,19 +167,19 @@ pub fn build(b: *std.Build) void {
         .output_dir = console_client_dir,
         .bundle_id = "com.iridescentrose.crosscraft-classic",
         .resources = mac_resources,
-        .nintendo_3ds_description = if (is_3ds) "Clean-room Minecraft Classic" else "",
-        .nintendo_3ds_publisher = if (is_3ds) "CrossCraft" else "",
-        .switch_author = if (is_switch) "CrossCraft" else "",
-        .switch_version = if (is_switch) "0.0.0" else "",
-        .icon_png = if (is_macos) b.path("assets/icon-osx.png") else null,
-        .windows_icon = if (is_windows) b.path("assets/icon-win32.ico") else null,
-        .icon0 = if (is_psp) b.path("assets/icon-psp.png") else null,
-        .pic1 = if (is_psp) b.path("assets/banner-psp-pic1.png") else null,
-        .nintendo_3ds_icon = if (is_3ds) b.path("assets/icon-3ds.png") else null,
-        .switch_icon = if (is_switch) b.path("assets/icon-switch.jpg") else null,
+        .nintendo_3ds_description = policy.description,
+        .nintendo_3ds_publisher = policy.publisher,
+        .switch_author = policy.author,
+        .switch_version = policy.version,
+        .icon_png = if (policy.icon_png) |path| b.path(path) else null,
+        .windows_icon = if (policy.windows_icon) |path| b.path(path) else null,
+        .icon0 = if (policy.icon0) |path| b.path(path) else null,
+        .pic1 = if (policy.pic1) |path| b.path(path) else null,
+        .nintendo_3ds_icon = if (policy.nintendo_3ds_icon) |path| b.path(path) else null,
+        .switch_icon = if (policy.switch_icon) |path| b.path(path) else null,
     });
 
-    if (is_pc_server) {
+    if (policy.standalone_server) {
         const server_overrides: Aether.config.Config.Overrides = .{
             .use_cwd = true,
         };
@@ -201,6 +192,7 @@ pub fn build(b: *std.Build) void {
         });
         const server_root = Aether.modules.userRootModule(server_exe);
         server_root.addImport("core", core);
+        server_root.addImport("capabilities", capabilities);
 
         const build_server_step = b.step("server", "Build the server");
         build_server_step.dependOn(lint_step);
@@ -230,16 +222,16 @@ pub fn build(b: *std.Build) void {
     const build_game_step = b.step("game", "Build the game");
     build_game_step.dependOn(lint_step);
     // Bundled targets install through the packaging pipeline.
-    if (!is_macos and !is_3ds and !is_switch) {
+    if (policy.install_raw_executable) {
         build_game_step.dependOn(&b.addInstallArtifact(client_exe, .{}).step);
     }
     if (install_pack) |ip| build_game_step.dependOn(ip);
-    if (is_psp or is_macos or is_3ds or is_switch) {
+    if (policy.install_package) {
         build_game_step.dependOn(b.getInstallStep());
     }
 
     const run_client_step = b.step("run-game", "Run the app");
-    if (is_3ds) {
+    if (policy.launch == .network_3ds) {
         const threedsx = packaged.nintendo_3dsx orelse unreachable;
         const link_cmd = Aether.packaging.addLink3dsx(b, threedsx, .{
             .address = b.option([]const u8, "3dslink-address", "3DS: target IP for 3dslink push (default: broadcast auto-discover)"),
@@ -250,7 +242,7 @@ pub fn build(b: *std.Build) void {
 
         const link_step = b.step("3dslink", "Push the 3dsx to a networked 3DS via 3dslink");
         link_step.dependOn(&link_cmd.step);
-    } else if (is_switch) {
+    } else if (policy.launch == .network_switch) {
         const nro_path = b.getInstallPath(
             .bin,
             b.fmt("{s}/{s}.nro", .{ console_client_dir.?, client_name }),
@@ -281,7 +273,7 @@ pub fn build(b: *std.Build) void {
         link_step.dependOn(&link_cmd.step);
     } else {
         // macOS resolves resources relative to the installed app bundle.
-        const run_client_cmd = if (is_macos)
+        const run_client_cmd = if (policy.launch == .app_bundle)
             b.addSystemCommand(&.{b.getInstallPath(
                 .bin,
                 b.fmt("{s}.app/Contents/MacOS/{s}", .{ client_name, client_name }),
@@ -302,6 +294,18 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(lint_step);
 
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &.{};
+    const capability_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/capabilities.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+        .filters = test_filters,
+    });
+    const run_capability_tests = b.addRunArtifact(capability_tests);
+    test_step.dependOn(&run_capability_tests.step);
+    b.step("test-capabilities", "Verify target capability policy").dependOn(&run_capability_tests.step);
+
     const unit_tests = b.addTest(.{
         .root_module = unit_tests_root: {
             const root = b.createModule(.{
@@ -311,6 +315,7 @@ pub fn build(b: *std.Build) void {
             });
             root.addImport("aether", client_root.import_table.get("aether").?);
             root.addImport("protocol", protocol);
+            root.addImport("capabilities", capabilities);
             root.addImport("core", core);
             break :unit_tests_root root;
         },
@@ -318,7 +323,7 @@ pub fn build(b: *std.Build) void {
     });
     // Same glibc .sframe workaround as the desktop client executable: the
     // system linker cannot consume GCC 16's R_X86_64_PC64 relocations.
-    if (target.result.os.tag == .linux and target.result.isGnuLibC()) {
+    if (policy.use_llvm_linker) {
         unit_tests.use_llvm = true;
         unit_tests.use_lld = true;
     }
@@ -334,12 +339,13 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             });
             root.addImport("protocol", protocol);
+            root.addImport("capabilities", capabilities);
             root.addImport("worldgen", worldgen);
             break :core_tests_root root;
         },
         .filters = test_filters,
     });
-    if (target.result.os.tag == .linux and target.result.isGnuLibC()) {
+    if (policy.use_llvm_linker) {
         core_tests.use_llvm = true;
         core_tests.use_lld = true;
     }
@@ -351,6 +357,7 @@ pub fn build(b: *std.Build) void {
         .name = "worldgen_tests",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/core/worldgen/root.zig"),
+            .imports = &.{.{ .name = "capabilities", .module = capabilities }},
             .target = target,
             .optimize = .ReleaseFast,
         }),
@@ -402,6 +409,7 @@ pub fn build(b: *std.Build) void {
     });
     const web_root = Aether.modules.userRootModule(web_exe);
     web_root.addImport("core", core);
+    web_root.addImport("capabilities", capabilities);
     web_root.addImport("protocol", protocol);
 
     const web_build_options = b.addOptions();
