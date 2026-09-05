@@ -22,8 +22,8 @@ const GravityLeaves: f32 = 10.0;
 const HalfSize: f32 = 0.06;
 const SubtileDiv: i16 = 4;
 
-// Bake moving world positions into SNORM16: 128 vertex units per block,
-// then restore world units with a 256x model scale.
+// Encode positions relative to the mesh origin at 128 vertex units per block,
+// then restore world units with a 256x model scale and origin translation.
 const PosScale: f32 = 128.0;
 const ModelScale: f32 = 256.0;
 
@@ -53,6 +53,7 @@ const ParticleSystem = @This();
 
 mesh_data: Rendering.MeshDataType(Vertex),
 mesh: Rendering.MeshType(Vertex),
+mesh_origin: Math.Vec3,
 atlas: TextureAtlas,
 particles: [MaxParticles]Particle,
 count: u16,
@@ -63,6 +64,7 @@ pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !ParticleSystem {
     var self: ParticleSystem = .{
         .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
         .mesh = try Rendering.MeshType(Vertex).init(&.{}),
+        .mesh_origin = Math.Vec3.zero(),
         .atlas = atlas,
         .particles = undefined,
         .count = 0,
@@ -132,6 +134,12 @@ pub fn spawn_break(self: *ParticleSystem, block_id: Block, bx: u16, by: u16, bz:
 }
 
 pub fn update(self: *ParticleSystem, dt: f32, camera: *const Camera) void {
+    self.update_particles(dt);
+    self.rebuild_mesh(camera);
+    if (self.mesh_data.vertices.items.len != 0) self.mesh.update(&self.mesh_data);
+}
+
+fn update_particles(self: *ParticleSystem, dt: f32) void {
     assert(dt >= 0);
     assert(std.math.isFinite(dt));
     assert(self.count <= self.particles.len);
@@ -149,15 +157,8 @@ pub fn update(self: *ParticleSystem, dt: f32, camera: *const Camera) void {
         step_axis_x(p, p.vx * dt);
         step_axis_y(p, p.vy * dt);
         step_axis_z(p, p.vz * dt);
-        if (!encodable(p.px) or !encodable(p.py) or !encodable(p.pz)) {
-            self.count -= 1;
-            self.particles[i] = self.particles[self.count];
-            continue;
-        }
         i += 1;
     }
-
-    self.rebuild_mesh(camera);
 }
 
 // Only block entry into new solid geometry: particles initially spawn before
@@ -237,13 +238,15 @@ fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
 }
 
 pub fn draw(self: *ParticleSystem) void {
-    if (self.count == 0) return;
-    const m = Math.Mat4.scaling(ModelScale, ModelScale, ModelScale);
+    if (self.mesh_data.vertices.items.len == 0) return;
+    const m = Math.Mat4.scaling(ModelScale, ModelScale, ModelScale)
+        .mul(Math.Mat4.translation(self.mesh_origin.x, self.mesh_origin.y, self.mesh_origin.z));
     self.mesh.draw(&m);
 }
 
 fn rebuild_mesh(self: *ParticleSystem, camera: *const Camera) void {
     self.mesh_data.clear_retaining_capacity();
+    self.mesh_origin = Math.Vec3.new(@floor(camera.x), @floor(camera.y), @floor(camera.z));
     if (self.count == 0) return;
 
     // Yaw-only right vector prevents roll; pitched up vector faces the camera.
@@ -259,27 +262,33 @@ fn rebuild_mesh(self: *ParticleSystem, camera: *const Camera) void {
 
     var i: u16 = 0;
     while (i < self.count) : (i += 1) {
-        emit_particle(&self.mesh_data, &self.particles[i], rx, rz, upx, upy, upz);
+        emit_particle(&self.mesh_data, &self.particles[i], self.mesh_origin, rx, rz, upx, upy, upz);
     }
-    self.mesh.update(&self.mesh_data);
 }
 
 fn emit_particle(
     mesh: *Rendering.MeshDataType(Vertex),
     p: *const Particle,
+    origin: Math.Vec3,
     rx: f32,
     rz: f32,
     upx: f32,
     upy: f32,
     upz: f32,
 ) void {
+    const px = p.px - origin.x;
+    const py = p.py - origin.y;
+    const pz = p.pz - origin.z;
+    // Cull distant geometry without ending the particle's simulation.
+    if (!encodable(px) or !encodable(py) or !encodable(pz)) return;
+
     const base: u32 = 0xFF999999;
     const color: u32 = if (point_sunlit(p.px, p.py, p.pz)) base else face_mod.apply_shadow(base);
 
-    const v0 = make_vertex(p.px - rx - upx, p.py - upy, p.pz - rz - upz, p.u0, p.v1, color);
-    const v1 = make_vertex(p.px + rx - upx, p.py - upy, p.pz + rz - upz, p.u1, p.v1, color);
-    const v2 = make_vertex(p.px + rx + upx, p.py + upy, p.pz + rz + upz, p.u1, p.v0, color);
-    const v3 = make_vertex(p.px - rx + upx, p.py + upy, p.pz - rz + upz, p.u0, p.v0, color);
+    const v0 = make_vertex(px - rx - upx, py - upy, pz - rz - upz, p.u0, p.v1, color);
+    const v1 = make_vertex(px + rx - upx, py - upy, pz + rz - upz, p.u1, p.v1, color);
+    const v2 = make_vertex(px + rx + upx, py + upy, pz + rz + upz, p.u1, p.v0, color);
+    const v3 = make_vertex(px - rx + upx, py + upy, pz - rz + upz, p.u0, p.v0, color);
 
     mesh.add_quad_assume_capacity(v0, v1, v2, v3);
 }
@@ -292,14 +301,84 @@ fn make_vertex(wx: f32, wy: f32, wz: f32, u: i16, v: i16, color: u32) Vertex {
     };
 }
 
-fn encodable(world: f32) bool {
+fn encodable(local: f32) bool {
     const margin = 2.0 * HalfSize * PosScale;
-    const scaled = @round(world * PosScale);
+    const scaled = @round(local * PosScale);
     return scaled >= -32768.0 + margin and scaled <= 32767.0 - margin;
 }
 
-fn encode(world: f32) i16 {
-    assert(std.math.isFinite(world));
-    assert(@round(world * PosScale) >= -32768.0 and @round(world * PosScale) <= 32767.0);
-    return @intFromFloat(@round(world * PosScale));
+fn encode(local: f32) i16 {
+    assert(std.math.isFinite(local));
+    assert(@round(local * PosScale) >= -32768.0 and @round(local * PosScale) <= 32767.0);
+    return @intFromFloat(@round(local * PosScale));
+}
+
+test "particles survive and render across 512 block worlds" {
+    const allocator = std.testing.allocator;
+    try World.data.init_in_place(allocator, core.world_dims.WorldDims.init(512, 128, 512), 0);
+    defer World.data.deinit();
+
+    // Exercise CPU simulation and mesh generation without a graphics context.
+    var particles: ParticleSystem = .{
+        .mesh_data = try Rendering.MeshDataType(Vertex).init(allocator),
+        .mesh = undefined,
+        .mesh_origin = Math.Vec3.zero(),
+        .atlas = TextureAtlas.init(16, 16),
+        .particles = undefined,
+        .count = 0,
+        .rng = std.Random.DefaultPrng.init(0xC0FFEE),
+        .allocator = allocator,
+    };
+    defer particles.mesh_data.deinit(allocator);
+
+    try particles.mesh_data.ensure_quad_capacity(allocator, MaxParticles);
+
+    const positions = [_][2]u16{ .{ 0, 0 }, .{ 255, 255 }, .{ 256, 32 }, .{ 32, 256 }, .{ 256, 256 }, .{ 511, 511 } };
+    const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
+    for (positions) |pos| {
+        const bx, const bz = pos;
+        const x: f32 = @floatFromInt(bx);
+        const z: f32 = @floatFromInt(bz);
+        // Only the world-space spawn column is shaded.
+        @memset(World.data.light_map, 0);
+        World.data.light_map[@as(usize, bz) * 512 + bx] = 128;
+        particles.spawn_break(.stone, bx, 64, bz);
+        particles.update_particles(1.0 / 60.0);
+        try std.testing.expectEqual(PerBreak, particles.count);
+
+        for ([_]f32{ 0.0, 1.75, -2.5 }) |camera_offset| {
+            var camera = Camera.init(x + camera_offset, 65.5, z - camera_offset);
+            particles.rebuild_mesh(&camera);
+            try std.testing.expectEqual(PerBreak * verts_per_quad, particles.mesh_data.vertices.items.len);
+            for (particles.particles[0..particles.count], 0..) |p, i| {
+                const vertices = particles.mesh_data.vertices.items[i * verts_per_quad ..][0..3];
+                const expected = [_][3]f32{
+                    .{ p.px - HalfSize, p.py - HalfSize, p.pz },
+                    .{ p.px + HalfSize, p.py - HalfSize, p.pz },
+                    .{ p.px + HalfSize, p.py + HalfSize, p.pz },
+                };
+                const origin = particles.mesh_origin;
+                for (vertices, expected) |vertex, corner| {
+                    for (vertex.pos, corner, [3]f32{ origin.x, origin.y, origin.z }) |encoded, world, offset| {
+                        const decoded = @as(f32, @floatFromInt(encoded)) / PosScale + offset;
+                        try std.testing.expectApproxEqAbs(world, decoded, 0.5 / PosScale);
+                    }
+                    try std.testing.expectEqual(face_mod.apply_shadow(0xFF999999), vertex.color);
+                }
+            }
+        }
+
+        var camera = Camera.init(x + 512.0, 65.5, z);
+        particles.rebuild_mesh(&camera);
+        try std.testing.expectEqual(0, particles.mesh_data.vertices.items.len);
+        try std.testing.expectEqual(PerBreak, particles.count);
+        camera.x = x;
+        particles.rebuild_mesh(&camera);
+        try std.testing.expectEqual(PerBreak * verts_per_quad, particles.mesh_data.vertices.items.len);
+
+        particles.update_particles(LifetimeMax);
+        particles.rebuild_mesh(&camera);
+        try std.testing.expectEqual(0, particles.count);
+        try std.testing.expectEqual(0, particles.mesh_data.vertices.items.len);
+    }
 }
