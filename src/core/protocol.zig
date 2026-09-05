@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const zb = @import("protocol");
 const Block = @import("blocks.zig").Block;
 
@@ -57,6 +58,7 @@ pub fn send_position_to_server(writer: *Writer, pid: i8, x: u16, y: u16, z: u16,
 }
 
 pub fn send_set_block_to_server(writer: *Writer, x: u16, y: u16, z: u16, mode: u8, block: Block) !void {
+    assert(mode == 0 or mode == 1);
     var packet = zb.SetBlockToServer{
         .x = x,
         .y = y,
@@ -97,6 +99,7 @@ pub fn send_spawn_to_client(writer: *Writer, packet: *zb.SpawnPlayer) !void {
 }
 
 pub fn send_despawn_to_client(writer: *Writer, id: i8) !void {
+    assert(id >= 0);
     var packet = zb.DespawnPlayer{ .pid = id };
     try packet.write(writer);
 }
@@ -124,6 +127,8 @@ pub fn send_block_change_to_client(writer: *Writer, x: u16, y: u16, z: u16, bloc
 }
 
 pub fn send_level_chunk_to_client(writer: *Writer, length: u16, data: *const [1024]u8, percent: u8) !void {
+    assert(length <= data.len);
+    assert(percent <= 100);
     var packet = zb.LevelDataChunk{
         .length = length,
         .data = data.*,
@@ -133,6 +138,7 @@ pub fn send_level_chunk_to_client(writer: *Writer, length: u16, data: *const [10
 }
 
 pub fn send_level_finalize_to_client(writer: *Writer, x: u16, y: u16, z: u16) !void {
+    assert(@import("world_dims.zig").WorldDims.valid(.{ x, y, z }));
     var packet = zb.LevelFinalize{
         .x = x,
         .y = y,

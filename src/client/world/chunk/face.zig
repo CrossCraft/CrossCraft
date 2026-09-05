@@ -18,6 +18,8 @@ pub fn encode_pos(local: u32) i16 {
 /// Encode position with fractional offset (units of 1/256 block).
 pub fn encode_pos_frac(local: u32, frac256: u32) i16 {
     assert(local <= 16);
+    assert(frac256 <= 256);
+    assert(local < 16 or frac256 == 0);
     return @intCast(@min(@as(i32, @intCast(local)) * 2048 + @as(i32, @intCast(frac256)) * 8, 32767));
 }
 
@@ -56,6 +58,10 @@ pub fn uniform_colors(c: u32) [4]u32 {
 }
 
 fn make_quad(face: Face, px: i16, px1: i16, py: i16, py1: i16, pz: i16, pz1: i16, tu0: i16, tv0: i16, tu1: i16, tv1: i16, colors: [4]u32) [4]Vertex {
+    // The face-normal interval may collapse (for example a slab's top).
+    assert(px <= px1 and (face == .x_pos or face == .x_neg or px < px1));
+    assert(py <= py1 and (face == .y_pos or face == .y_neg or py < py1));
+    assert(pz <= pz1 and (face == .z_pos or face == .z_neg or pz < pz1));
     return switch (face) {
         .x_pos => .{
             .{ .pos = .{ px1, py, pz }, .uv = .{ tu0, tv1 }, .color = colors[0] },

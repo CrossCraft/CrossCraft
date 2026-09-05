@@ -117,6 +117,9 @@ pub fn deinit(self: *WorldSimulation, allocator: std.mem.Allocator) void {
 /// of changes emitted. Entries that do not fit remain in ready_tail for the
 /// next tick; their dedup membership is kept intact until they execute.
 pub fn tick(self: *WorldSimulation, data: *WorldData, sink: BlockChangeSink) u32 {
+    assert(self.pool_used <= self.node_pool.len);
+    assert(self.enqueued.items.len <= self.pool_used);
+    assert((self.free_head == SENTINEL) == (self.pool_used == self.node_pool.len));
     var emitted: u32 = 0;
     var processed: u32 = 0;
     const slot = @as(u32, @intCast(self.tick_count & WHEEL_MASK));
@@ -140,6 +143,8 @@ pub fn tick(self: *WorldSimulation, data: *WorldData, sink: BlockChangeSink) u32
     }
 
     self.tick_count +%= 1;
+    assert(emitted <= MAX_BLOCK_CHANGES_PER_TICK);
+    assert(self.enqueued.items.len <= self.pool_used);
     data.tick_count = self.tick_count;
     return emitted;
 }
@@ -194,6 +199,9 @@ fn process_block_update(
 /// Push at the head of a circular list while retaining its tail index. This
 /// preserves the old wheel's newest-first order within a deadline bucket.
 fn circular_push_head(self: *WorldSimulation, tail: *u32, node_idx: u32) void {
+    assert(node_idx < self.node_pool.len);
+    assert(tail.* == SENTINEL or tail.* < self.node_pool.len);
+    assert(tail.* != node_idx);
     if (tail.* == SENTINEL) {
         self.node_pool[node_idx].next = node_idx;
         tail.* = node_idx;
@@ -207,6 +215,9 @@ fn circular_push_head(self: *WorldSimulation, tail: *u32, node_idx: u32) void {
 /// Append src after dst in FIFO order. Both values are tails of circular
 /// lists; no node allocation or traversal is required.
 fn circular_append(self: *WorldSimulation, dst_tail: *u32, src_tail: u32) void {
+    assert(src_tail == SENTINEL or src_tail < self.node_pool.len);
+    assert(dst_tail.* == SENTINEL or dst_tail.* < self.node_pool.len);
+    assert(src_tail == SENTINEL or src_tail != dst_tail.*);
     if (src_tail == SENTINEL) return;
     if (dst_tail.* == SENTINEL) {
         dst_tail.* = src_tail;
@@ -215,6 +226,8 @@ fn circular_append(self: *WorldSimulation, dst_tail: *u32, src_tail: u32) void {
 
     const dst_head = self.node_pool[dst_tail.*].next;
     const src_head = self.node_pool[src_tail].next;
+    assert(dst_head < self.node_pool.len);
+    assert(src_head < self.node_pool.len);
     self.node_pool[dst_tail.*].next = src_head;
     self.node_pool[src_tail].next = dst_head;
     dst_tail.* = src_tail;
@@ -224,6 +237,7 @@ fn circular_pop_head(self: *WorldSimulation, tail: *u32) u32 {
     assert(tail.* != SENTINEL);
     const tail_idx = tail.*;
     const head_idx = self.node_pool[tail_idx].next;
+    assert(head_idx < self.node_pool.len);
     if (head_idx == tail_idx) {
         tail.* = SENTINEL;
     } else {
@@ -233,6 +247,9 @@ fn circular_pop_head(self: *WorldSimulation, tail: *u32) u32 {
 }
 
 fn release_node(self: *WorldSimulation, node_idx: u32) void {
+    assert(node_idx < self.node_pool.len);
+    assert(self.pool_used > 0);
+    assert(node_idx != self.free_head);
     self.node_pool[node_idx].next = self.free_head;
     self.free_head = node_idx;
     self.pool_used -= 1;
@@ -241,6 +258,7 @@ fn release_node(self: *WorldSimulation, node_idx: u32) void {
 fn wheel_insert(self: *WorldSimulation, loc: Location, delay: u32) void {
     assert(delay < WHEEL_SIZE);
     assert(self.free_head != SENTINEL);
+    assert(self.pool_used < self.node_pool.len);
     const node_idx = self.free_head;
     self.free_head = self.node_pool[node_idx].next;
     self.pool_used += 1;
@@ -319,6 +337,7 @@ comptime {
 }
 
 fn water_change_bound(data: *const WorldData, x: u16, y: u16, z: u16, block: Block) u32 {
+    assert(block.is_water());
     const lava_neighbors = count_lava_neighbors(data, x, y, z);
     if (block == .flowing_water and !has_fluid_neighbor(data, x, y, z, true)) return lava_neighbors + 1;
     if (y > 0 and data.get_block(x, y - 1, z).is_air() and !is_near_sponge(data, x, y - 1, z)) return lava_neighbors + 1;
@@ -326,6 +345,7 @@ fn water_change_bound(data: *const WorldData, x: u16, y: u16, z: u16, block: Blo
 }
 
 fn lava_change_bound(data: *const WorldData, x: u16, y: u16, z: u16, block: Block) u32 {
+    assert(block.is_lava());
     if (has_fluid_neighbor(data, x, y, z, true)) return 1;
     if (block == .flowing_lava and !has_fluid_neighbor(data, x, y, z, false)) return 1;
     if (y > 0 and data.get_block(x, y - 1, z).is_air()) return 1;
@@ -363,6 +383,7 @@ fn process_fluid(
     block: Block,
 ) void {
     const water = block.is_water();
+    assert(block.is_fluid());
     const flow: Block = if (water) .flowing_water else .flowing_lava;
 
     if (self.check_lava_water(data, sink, emitted, x, y, z, water)) return;

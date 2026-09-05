@@ -149,6 +149,7 @@ fn flush_if_due_locked(now: i64) void {
 }
 
 fn find_index_locked(ip: []const u8) ?u32 {
+    assert(count <= records.len);
     for (0..count) |i| {
         if (std.mem.eql(u8, records[i].ip_slice(), ip)) return @intCast(i);
     }
@@ -156,6 +157,8 @@ fn find_index_locked(ip: []const u8) ?u32 {
 }
 
 fn upsert_index_locked(ip: []const u8) u32 {
+    assert(initialized);
+    assert(records.len > 0);
     if (find_index_locked(ip)) |index| return index;
 
     const index: u32 = if (count < records.len) blk: {
@@ -229,6 +232,9 @@ fn load_locked() !void {
 }
 
 fn save_locked() !void {
+    assert(initialized);
+    assert(count <= records.len);
+    assert(json_records.len == records.len);
     for (0..count) |i| {
         json_records[i] = .{
             .ip = records[i].ip_slice(),

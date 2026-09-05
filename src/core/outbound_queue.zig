@@ -5,6 +5,7 @@
 // queue and is kicked, never waited on.
 
 const std = @import("std");
+const assert = std.debug.assert;
 
 pub const out_queue_bytes = 256 * 1024;
 
@@ -50,6 +51,10 @@ pub const OutboundQueue = struct {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
 
+        assert(q.len <= q.buf.len);
+        assert(q.catchup_len <= q.buf.len - q.len);
+        assert(q.catchup_len % 8 == 0);
+
         const start = q.buf.len - q.catchup_len;
         const journal = q.buf[start..];
         std.mem.reverse([8]u8, std.mem.bytesAsSlice([8]u8, journal));
@@ -64,6 +69,9 @@ pub const OutboundQueue = struct {
         q.mutex.lockUncancelable(io);
         defer q.mutex.unlock(io);
 
+        assert(q.len <= q.buf.len);
+        assert(q.catchup_len <= q.buf.len - q.len);
+
         const n = @min(q.len, dest.len);
         @memcpy(dest[0..n], q.buf[0..n]);
         const remaining = q.len - n;
@@ -73,6 +81,9 @@ pub const OutboundQueue = struct {
     }
 
     fn ensure_capacity(q: *OutboundQueue, additional: usize) Error!void {
+        assert(q.len <= q.buf.len);
+        assert(q.catchup_len <= q.buf.len - q.len);
+        assert(q.catchup_len % 8 == 0);
         if (q.kicked or q.len + q.catchup_len + additional > q.buf.len) {
             q.kicked = true;
             return error.QueueFull;

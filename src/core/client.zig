@@ -74,7 +74,8 @@ pub const AtomicPlayerPose = struct {
 
     pub fn store(self: *AtomicPlayerPose, pose: PlayerPose) void {
         const bits: u64 = @bitCast(pose);
-        _ = self.sequence.fetchAdd(1, .acq_rel);
+        const previous = self.sequence.fetchAdd(1, .acq_rel);
+        assert(previous & 1 == 0); // Only one writer may publish a pose.
         self.low.store(@truncate(bits), .monotonic);
         self.high.store(@truncate(bits >> 32), .monotonic);
         _ = self.sequence.fetchAdd(1, .release);
@@ -158,6 +159,7 @@ const ChunkSender = struct {
     }
 
     fn percent(cs: *const ChunkSender) u8 {
+        assert(cs.raw_written <= cs.total_raw);
         if (cs.total_raw == 0) return 100;
         const pct = @min((@as(u64, cs.raw_written) * 100) / cs.total_raw, 100);
         return @intCast(pct);
@@ -167,6 +169,7 @@ const ChunkSender = struct {
         _ = splat;
         const cs: *ChunkSender = @alignCast(@fieldParentPtr("interface", w));
         const CHUNK: usize = 1024;
+        assert(w.end <= CHUNK);
 
         var chunk: [CHUNK]u8 = @splat(0);
         var filled: usize = 0;
@@ -268,6 +271,7 @@ fn process_packet(self: *Client, reader: *std.Io.Reader) !bool {
     }
 
     const len = try proto.packet_length_to_server(packet_id);
+    assert(len > 0 and len <= self.buffer.len);
     @memcpy(self.buffer[0..len], try reader.peek(len));
     reader.toss(len);
     try self.protocol.handle_packet(self.buffer[1..len], packet_id);
@@ -367,6 +371,8 @@ pub fn send_update_player_type(self: *Client, is_op: bool) !void {
 }
 
 fn send_world(self: *Client) !void {
+    assert(self.id >= 0);
+    assert(self.local or self.out != null);
     try self.send_packet(std.Io.Writer.writeByte, .{@as(u8, 0x02)});
     self.drain_outbound();
 
@@ -413,6 +419,7 @@ fn world_send_run(base: *compress_worker.Job) anyerror!void {
 }
 
 fn send_world_impl(self: *Client) !void {
+    assert(!self.local);
     var chunk_buf: [1024]u8 = @splat(0);
 
     const out = self.out orelse return error.WriteFailed;
@@ -427,6 +434,7 @@ fn send_world_impl(self: *Client) !void {
     std.mem.writeInt(u32, &size_header, @intCast(volume), .big);
     world.lock_world();
     Server.lock_roster_shared();
+    assert(self.catchup_mode.load(.acquire) == .none);
     self.catchup_mode.store(.capturing, .release);
     Server.unlock_roster_shared();
     world.unlock_world();
@@ -455,6 +463,7 @@ fn send_world_impl(self: *Client) !void {
     // future edits append directly even if the peer is still downloading.
     world.lock_world();
     Server.lock_roster_shared();
+    assert(self.catchup_mode.load(.acquire) == .capturing);
     out.promote_catchup(Server.io);
     self.catchup_mode.store(.direct, .release);
     Server.unlock_roster_shared();

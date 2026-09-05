@@ -86,10 +86,13 @@ io: std.Io,
 const GridRef = packed struct { cx: u8, cz: u8, sy: u8 };
 
 fn column_index(self: *const WorldRenderer, cx: usize, cz: usize) u32 {
+    assert(cx < self.grid_cx);
+    assert(cz < self.grid_cz);
     return @intCast((cz << self.log2_cx) | cx);
 }
 
 fn section_index(self: *const WorldRenderer, cx: usize, cz: usize, sy: usize) u32 {
+    assert(sy < self.grid_sy);
     return @intCast((@as(usize, self.column_index(cx, cz)) << self.log2_sy) | sy);
 }
 
@@ -105,6 +108,7 @@ pub fn init_in_place(
     camera: *const Camera,
 ) !void {
     // GameState creates the renderer only after world dimensions are final.
+    assert(World.get_load_status() == .complete);
     const dims = World.data.dims;
     self.grid_cx = dims.chunks_x;
     self.grid_cz = dims.chunks_z;
@@ -197,6 +201,9 @@ pub fn deinit(self: *WorldRenderer) void {
 }
 
 pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
+    assert(std.math.isFinite(dt) and dt >= 0.0);
+    assert(self.build_cursor <= self.build_end);
+    assert(self.build_end <= self.build_queue.len);
     self.sky.update(dt);
     self.particles.update(dt, camera);
     self.rain.update(dt, camera);
@@ -261,6 +268,8 @@ pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, 
         const ref = self.build_queue[i];
         const idx = self.section_index(ref.cx, ref.cz, ref.sy);
         self.build_estimator.begin(self.io);
+        assert(self.loaded[self.column_index(ref.cx, ref.cz)]);
+        assert(self.in_queue[idx]);
         if (self.grid[idx].rebuild(&self.atlas)) {
             self.build_estimator.end(self.io);
         } else |_| {
@@ -301,6 +310,7 @@ pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera) void {
             for (0..self.grid_sy) |sy| {
                 const sec = &self.grid[self.section_index(cx, cz, sy)];
                 if (!camera.section_visible(sec.cx, sec.sy, sec.cz)) continue;
+                assert(self.frame_visible_count < self.frame_visible.len);
                 self.frame_visible[self.frame_visible_count] = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
                 self.frame_visible_count += 1;
             }
@@ -449,6 +459,7 @@ fn recollect(self: *WorldRenderer, camera: *const Camera) void {
 }
 
 fn init_column(self: *WorldRenderer, cx: u8, cz: u8, cam: *const Camera) bool {
+    assert(!self.loaded[self.column_index(cx, cz)]);
     var count: u32 = 0;
     for (0..self.grid_sy) |sy| {
         self.grid[self.section_index(cx, cz, sy)] = ChunkMesh.init(
@@ -469,6 +480,7 @@ fn init_column(self: *WorldRenderer, cx: u8, cz: u8, cam: *const Camera) bool {
 }
 
 fn deinit_column(self: *WorldRenderer, cx: u8, cz: u8) void {
+    assert(self.loaded[self.column_index(cx, cz)]);
     for (0..self.grid_sy) |sy| {
         const idx = self.section_index(cx, cz, sy);
         self.grid[idx].deinit();
@@ -508,6 +520,7 @@ fn queue_unbuilt_sections(self: *WorldRenderer, cam: *const Camera) void {
 
 /// Insert dirty sections directly, falling back to a full rescan on overflow.
 fn flush_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
+    assert(self.dirty_buf_len <= self.dirty_buf.len);
     if (self.dirty_preserve_order) {
         self.flush_ordered_dirty_sections(cam);
         return;
@@ -621,6 +634,9 @@ pub fn mark_block_change_dirty(self: *WorldRenderer, cx: u8, sy: u8, cz: u8, lx:
 }
 
 fn mark_block_neighbor_sections_dirty(self: *WorldRenderer, cx: u8, sy: u8, cz: u8, lx: u16, ly: u16, lz: u16) void {
+    assert(lx < core.world_dims.chunk_size);
+    assert(ly < core.world_dims.chunk_size);
+    assert(lz < core.world_dims.chunk_size);
     if (lx == 0 and cx > 0) self.mark_section_dirty_impl(cx - 1, sy, cz, true, true);
     if (lx == 15) self.mark_section_dirty_impl(cx + 1, sy, cz, true, true);
     if (lz == 0 and cz > 0) self.mark_section_dirty_impl(cx, sy, cz - 1, true, true);
@@ -641,6 +657,7 @@ fn mark_section_dirty_impl(self: *WorldRenderer, cx: u8, sy: u8, cz: u8, track_q
 }
 
 fn record_dirty_ref(self: *WorldRenderer, ref: GridRef, preserve_order: bool) void {
+    assert(self.dirty_buf_len <= self.dirty_buf.len);
     if (!self.dirty_overflow) {
         if (contains_grid_ref(self.dirty_buf[0..self.dirty_buf_len], ref)) {
             if (preserve_order) self.dirty_preserve_order = true;

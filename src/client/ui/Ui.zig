@@ -352,6 +352,11 @@ pub const SliderOpts = struct {
 };
 
 pub fn slider(self: *Ui, id: WidgetId, value: *f32, opts: SliderOpts) bool {
+    assert(std.math.isFinite(value.*));
+    assert(std.math.isFinite(opts.min) and std.math.isFinite(opts.max));
+    assert(opts.min <= opts.max);
+    assert(opts.nudge >= 0.0 and std.math.isFinite(opts.nudge));
+    assert(opts.scale != .log10 or opts.min > 0.0);
     const draw_start = self.draw.count;
     const focus_start = self.focus_count;
     const scroll_start = self.scroll_view_count;
@@ -462,6 +467,9 @@ pub const SlotGridOpts = struct {
 };
 
 pub fn slot_grid(self: *Ui, id: WidgetId, opts: SlotGridOpts) ?u8 {
+    assert(opts.cols > 0 and opts.rows > 0);
+    assert(opts.cell > 0);
+    assert(@as(u16, opts.cols) * opts.rows <= 256);
     const draw_start = self.draw.count;
     const focus_start = self.focus_count;
     const scroll_start = self.scroll_view_count;
@@ -502,6 +510,9 @@ pub const ScrollListOpts = struct {
 };
 
 pub fn scroll_list(self: *Ui, id: WidgetId, opts: ScrollListOpts) ScopeHandle {
+    assert(self.depth > 0);
+    assert(opts.width > 0 and opts.height > 0);
+    assert(opts.wheel_step > 0);
     const parent = &self.scopes[self.depth - 1];
     const rect = self.reserve_rect(parent, .{ .x = opts.width, .y = opts.height });
     const scroll_y = self.state.scroll_y(id);
@@ -686,11 +697,13 @@ fn pop_scope(self: *Ui) void {
 }
 
 fn alloc_rect(self: *Ui, sz: Point) LogicalRect {
+    assert(self.depth > 0);
     const s = &self.scopes[self.depth - 1];
     return self.reserve_rect(s, sz);
 }
 
 fn reserve_rect(_: *Ui, s: *Scope, sz: Point) LogicalRect {
+    assert(sz.x >= 0 and sz.y >= 0);
     if (s.children > 0) s.cursor_main += s.gap;
     const rect: LogicalRect = if (s.axis == .vertical)
         .{
@@ -725,6 +738,9 @@ fn record_child(
     rect: LogicalRect,
 ) void {
     if (self.depth == 0) return;
+    assert(draw_start <= draw_end and draw_end <= self.draw.count);
+    assert(focus_start <= focus_end and focus_end <= self.focus_count);
+    assert(scroll_start <= scroll_end and scroll_end <= self.scroll_view_count);
     const s = &self.scopes[self.depth - 1];
     assert(self.item_count < MAX_ITEMS);
     const item_idx = self.item_count;
@@ -781,6 +797,7 @@ fn align_scope_children(self: *Ui, s: *Scope) void {
 }
 
 fn resolve_dim(size: Size, intrinsic: i16, parent: i16, min: i16, max: i16) i16 {
+    assert(min >= 0 and min <= max);
     const raw = switch (size) {
         .fixed => |v| v,
         .content => intrinsic,
@@ -796,6 +813,7 @@ fn parent_rect(s: Scope) LogicalRect {
 
 fn push_focusable(self: *Ui, f_in: UiState.Focusable) void {
     assert(self.focus_count < MAX_FOCUSABLES);
+    assert(self.find_current_id(f_in.id) == null); // Widget IDs must be unique within a frame.
     var f = f_in;
     if (f.scroll_clip == null) f.scroll_clip = self.current_scroll_clip();
     self.focusables[self.focus_count] = f;
@@ -829,6 +847,7 @@ fn first_visible_focusable_idx(focusables: []const UiState.Focusable) ?u8 {
 }
 
 fn offset_focus_range(self: *Ui, start: u8, finish: u8, dx: i16, dy: i16) void {
+    assert(start <= finish and finish <= self.focus_count);
     if (dx == 0 and dy == 0) return;
     var i = start;
     while (i < finish) : (i += 1) {
@@ -846,6 +865,7 @@ fn offset_focus_range(self: *Ui, start: u8, finish: u8, dx: i16, dy: i16) void {
 }
 
 fn offset_scroll_range(self: *Ui, start: u8, finish: u8, dx: i16, dy: i16) void {
+    assert(start <= finish and finish <= self.scroll_view_count);
     if (dx == 0 and dy == 0) return;
     var i = start;
     while (i < finish) : (i += 1) {
@@ -1065,6 +1085,7 @@ fn persist(self: *Ui, text: []const u8) []const u8 {
 }
 
 fn slider_pos_from_value(value: f32, opts: SliderOpts) f32 {
+    assert(std.math.isFinite(value));
     const span = opts.max - opts.min;
     if (span <= 0) return 0;
     return switch (opts.scale) {
@@ -1081,6 +1102,7 @@ fn slider_pos_from_value(value: f32, opts: SliderOpts) f32 {
 }
 
 fn slider_value_from_pos(opts: SliderOpts, pos: f32) f32 {
+    assert(std.math.isFinite(pos));
     const p = std.math.clamp(pos, 0.0, 1.0);
     return switch (opts.scale) {
         .linear => opts.min + (opts.max - opts.min) * p,

@@ -81,6 +81,9 @@ pub fn deinit(self: *ParticleSystem) void {
 
 pub fn spawn_break(self: *ParticleSystem, block_id: Block, bx: u16, by: u16, bz: u16) void {
     assert(!block_id.is_air());
+    assert(bx < World.data.dims.length);
+    assert(by < World.data.dims.height);
+    assert(bz < World.data.dims.depth);
 
     const tile = block_id.face_tile(.x_neg);
     const tu = self.atlas.tile_u(tile.col);
@@ -130,6 +133,8 @@ pub fn spawn_break(self: *ParticleSystem, block_id: Block, bx: u16, by: u16, bz:
 
 pub fn update(self: *ParticleSystem, dt: f32, camera: *const Camera) void {
     assert(dt >= 0);
+    assert(std.math.isFinite(dt));
+    assert(self.count <= self.particles.len);
 
     var i: u16 = 0;
     while (i < self.count) {
@@ -294,5 +299,7 @@ fn encodable(world: f32) bool {
 }
 
 fn encode(world: f32) i16 {
+    assert(std.math.isFinite(world));
+    assert(@round(world * POS_SCALE) >= -32768.0 and @round(world * POS_SCALE) <= 32767.0);
     return @intFromFloat(@round(world * POS_SCALE));
 }

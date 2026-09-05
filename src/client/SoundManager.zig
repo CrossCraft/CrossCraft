@@ -1,6 +1,7 @@
 /// Streams audio from the active pack, with two shared DEFLATE slots for
 /// compatibility with compressed audio entries.
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const caps = @import("capabilities").ClientType(ae);
 const Audio = ae.Audio;
@@ -82,6 +83,7 @@ const max_music_delay: f32 = 300.0;
 var rng: u64 = 0xDEAD_BEEF_CAFE_BABE;
 
 fn xorshift(state: *u64) u64 {
+    assert(state.* != 0); // Zero is an absorbing state for this generator.
     var x = state.*;
     x ^= x << 13;
     x ^= x >> 7;
@@ -91,6 +93,7 @@ fn xorshift(state: *u64) u64 {
 }
 
 fn rand_u32(max: u32) u32 {
+    assert(max > 0);
     return @intCast(xorshift(&rng) % max);
 }
 
@@ -174,6 +177,7 @@ fn scan_entries(
     limits: *const [material_count]u8,
 ) void {
     for (0..material_count) |mi| {
+        assert(limits[mi] <= max_variants);
         var loaded: u8 = 0;
         for (0..@as(usize, limits[mi])) |vi| {
             var buf: [128]u8 = undefined;
@@ -275,6 +279,7 @@ fn parse_wav_stream(reader: *Io.Reader) !WavInfo {
 }
 
 pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32) void {
+    assert(std.math.isFinite(dt) and dt >= 0.0);
     if (!initialised) return;
 
     const sy = @sin(yaw);
@@ -419,6 +424,7 @@ fn release_voice(v: *Voice) void {
 
 fn release_deflate(v: *Voice) void {
     if (v.deflate) |ds| {
+        assert(ds.in_use);
         ds.in_use = false;
         v.deflate = null;
     }
@@ -430,6 +436,9 @@ fn start_voice(
     pos: ?Math.Vec3,
     opts: Audio.PlayOptions,
 ) !void {
+    assert(initialised);
+    assert(!v.active);
+    assert(v.deflate == null);
     v.file_reader = File.Reader.init(stored_file, stored_io, &v.read_buf);
     v.deflate = null;
     errdefer release_deflate(v);

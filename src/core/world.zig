@@ -3,6 +3,7 @@
 // Both paths finish through `finalize_loaded`.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const worldgen = @import("worldgen");
 const wd = @import("world_dims.zig");
 const blocks = @import("blocks.zig");
@@ -86,6 +87,7 @@ pub fn init_empty(
     seed: u64,
     format: SaveFormat,
 ) !void {
+    assert(sim == null);
     try data.init_in_place(allocator, geometry, seed);
     saver = WorldSaver.init(io, save_dir, save_file_name, format);
     set_load_status(.loading);
@@ -191,14 +193,18 @@ pub fn finalize_loaded() void {
 }
 
 pub fn tick(sink: BlockChangeSink) u32 {
+    assert(saver.owned_locally);
+    assert(get_load_status() == .complete);
     return sim.?.tick(&data, sink);
 }
 
 pub fn set_block(x: u16, y: u16, z: u16, block: Block) void {
+    assert(saver.owned_locally);
     sim.?.set_block(&data, x, y, z, block);
 }
 
 pub fn enqueue_neighbors_of(x: u16, y: u16, z: u16) void {
+    assert(saver.owned_locally);
     sim.?.enqueue_neighbors_of(&data, x, y, z);
 }
 

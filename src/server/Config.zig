@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const core = @import("core");
 
 const Server = core.Server;
@@ -24,6 +25,9 @@ pub const Heartbeat = struct {
     count: usize = 0,
 
     pub fn url(self: *const Heartbeat, index: usize) []const u8 {
+        assert(index < self.count);
+        assert(self.count <= self.urls.len);
+        assert(self.lens[index] > 0 and self.lens[index] <= self.urls[index].len);
         return self.urls[index][0..self.lens[index]];
     }
 };

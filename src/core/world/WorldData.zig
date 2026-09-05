@@ -104,6 +104,7 @@ pub fn release_blocks(self: *WorldData) void {
 }
 
 pub fn adopt_blocks(self: *WorldData, blocks: []u8) void {
+    assert(self.blocks.len == 0); // Ownership must have been released first.
     assert(blocks.len == self.dims.volume());
     self.blocks = @ptrCast(blocks);
 }
@@ -142,15 +143,19 @@ pub fn apply_block(self: *WorldData, x: u16, y: u16, z: u16, block: Block) void 
 
     const ci = self.dims.chunk_index(x, y, z);
     if (old.is_air() and !block.is_air()) {
+        assert(self.chunk_counts[ci] < wd.chunk_volume);
         self.chunk_counts[ci] += 1;
     } else if (!old.is_air() and block.is_air()) {
+        assert(self.chunk_counts[ci] > 0);
         self.chunk_counts[ci] -= 1;
     }
     const old_opq = old.is_opaque();
     const new_opq = block.is_opaque();
     if (old_opq and !new_opq) {
+        assert(self.chunk_non_opaque[ci] < wd.chunk_volume);
         self.chunk_non_opaque[ci] += 1;
     } else if (!old_opq and new_opq) {
+        assert(self.chunk_non_opaque[ci] > 0);
         self.chunk_non_opaque[ci] -= 1;
     }
 
@@ -158,6 +163,9 @@ pub fn apply_block(self: *WorldData, x: u16, y: u16, z: u16, block: Block) void 
 }
 
 pub fn compute_chunk_counts(self: *WorldData) void {
+    assert(self.blocks.len == self.dims.volume());
+    assert(self.chunk_counts.len == self.dims.chunk_count());
+    assert(self.chunk_non_opaque.len == self.chunk_counts.len);
     for (0..self.chunk_counts.len) |ci| {
         const base = ci * wd.chunk_volume;
         var non_air: u16 = 0;
@@ -172,6 +180,8 @@ pub fn compute_chunk_counts(self: *WorldData) void {
 }
 
 pub fn compute_light_map(self: *WorldData) void {
+    assert(self.blocks.len == self.dims.volume());
+    assert(self.light_map.len == self.dims.length * self.dims.depth);
     for (0..self.dims.depth) |z| {
         for (0..self.dims.length) |x| {
             self.light_map[self.column_index(@intCast(z), @intCast(x))] = self.column_height(@intCast(x), @intCast(z));
@@ -180,6 +190,8 @@ pub fn compute_light_map(self: *WorldData) void {
 }
 
 fn column_index(self: *const WorldData, z: u16, x: u16) u32 {
+    assert(x < self.dims.length);
+    assert(z < self.dims.depth);
     return (@as(u32, z) << self.dims.log2_length) | x;
 }
 
@@ -198,6 +210,7 @@ fn column_height(self: *const WorldData, x: u16, z: u16) u8 {
 fn update_light_column(self: *WorldData, x: u16, y: u16, z: u16, block: Block) void {
     const col_idx = self.column_index(z, x);
     const cur = self.light_map[col_idx];
+    assert(cur <= self.dims.height);
     if (!block.light_passes()) {
         const new_h: u8 = @intCast(y + 1);
         if (new_h > cur) self.light_map[col_idx] = new_h;
@@ -300,6 +313,7 @@ pub fn read_blocks_yzx(self: *WorldData, reader: *std.Io.Reader) !void {
 }
 
 pub fn read_blocks_yzx_into(dims: WorldDims, blocks: []Block, reader: *std.Io.Reader) !void {
+    assert(blocks.len == dims.volume());
     for (0..dims.height) |yi| {
         for (0..dims.depth) |zi| {
             for (0..dims.chunks_x) |cxi| {
@@ -325,6 +339,7 @@ pub fn remap_yzx_to_chunk_aware(
     const rows = blocks.len / wd.chunk_size;
     const rows_per_slab_shift = dims.shift_slab;
     const rows_per_chunk = wd.chunk_size * wd.chunk_size;
+    assert(blocks.len == dims.volume());
     assert(blocks.len % wd.chunk_size == 0);
     assert(visited.len * 8 >= rows);
 
@@ -347,11 +362,14 @@ pub fn remap_yzx_to_chunk_aware(
                 const within = (y & wd.chunk_mask) * wd.chunk_size + (z & wd.chunk_mask);
                 break :blk chunk * rows_per_chunk + within;
             };
+            // Each cycle must visit a new row until it returns to its start.
+            assert(k < rows);
             if (k == start) {
                 @memcpy(blocks[k * wd.chunk_size ..][0..wd.chunk_size], lookaside[0..wd.chunk_size]);
                 set_row_bit(visited, k);
                 break;
             }
+            assert(!row_bit(visited, k));
             @memcpy(lookaside[wd.chunk_size .. 2 * wd.chunk_size], blocks[k * wd.chunk_size ..][0..wd.chunk_size]);
             @memcpy(blocks[k * wd.chunk_size ..][0..wd.chunk_size], lookaside[0..wd.chunk_size]);
             @memcpy(lookaside[0..wd.chunk_size], lookaside[wd.chunk_size .. 2 * wd.chunk_size]);

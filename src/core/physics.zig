@@ -72,6 +72,12 @@ pub fn move_and_wall_slide(
     step_size: f32,
     was_on_ground: bool,
 ) MoveResult {
+    assert(std.math.isFinite(vel[0]) and std.math.isFinite(vel[1]) and std.math.isFinite(vel[2]));
+    assert(std.math.isFinite(step_size) and step_size >= 0.0);
+    // The fixed broadphase capacity assumes at most a 1x2x1 entity.
+    assert(half_w > 0.0 and half_w <= 0.5);
+    assert(height > 0.0 and height <= 2.0);
+    assert(std.math.isFinite(pos[0]) and std.math.isFinite(pos[1]) and std.math.isFinite(pos[2]));
     if (vel[0] == 0.0 and vel[1] == 0.0 and vel[2] == 0.0) {
         return .{
             .x = pos[0],
@@ -169,6 +175,9 @@ pub fn is_on_ground(
 }
 
 fn entity_aabb(px: f32, py: f32, pz: f32, half_w: f32, height: f32) Aabb {
+    assert(std.math.isFinite(px) and std.math.isFinite(py) and std.math.isFinite(pz));
+    assert(std.math.isFinite(half_w) and half_w > 0.0);
+    assert(std.math.isFinite(height) and height > 0.0);
     return .{
         .min_x = px - half_w,
         .min_y = py,
@@ -198,6 +207,7 @@ fn broadphase(
     count: *usize,
 ) void {
     const extent = extent_of(entity, vel);
+    assert(count.* == 0);
 
     const bx_min: i32 = floor_i32(extent.min_x);
     const by_min: i32 = floor_i32(extent.min_y);
@@ -218,7 +228,8 @@ fn broadphase(
                 const t = calc_time(entity, bb, vel);
                 if (t[0] > 1.0 or t[1] > 1.0 or t[2] > 1.0) continue;
 
-                if (count.* >= out.len) return;
+                // Truncating this list would silently miss collisions.
+                assert(count.* < out.len);
                 out[count.*] = .{
                     .bounds = bb,
                     .t_squared = t[0] * t[0] + t[1] * t[1] + t[2] * t[2],
@@ -281,6 +292,8 @@ fn calc_time(entity: Aabb, block: Aabb, vel: [3]f32) [3]f32 {
 }
 
 fn axis_time(e_min: f32, e_max: f32, b_min: f32, b_max: f32, v: f32) f32 {
+    assert(e_min < e_max);
+    assert(b_min < b_max);
     // Already overlapping on this axis -> time is 0 so face classification
     // falls on one of the still-moving axes.
     if (e_max >= b_min and e_min <= b_max) return 0.0;
@@ -370,6 +383,8 @@ fn clip(state: *ResolveState, block: Aabb, face: Face) void {
 }
 
 fn clip_interval(min: *f32, max: *f32, velocity: *f32, barrier: f32, move_min: bool) void {
+    assert(min.* < max.*);
+    assert(std.math.isFinite(barrier));
     const size = max.* - min.*;
     if (move_min) {
         min.* = barrier + EPSILON;
@@ -589,13 +604,17 @@ test "broadphase holds a maximum-speed dense sweep" {
     }
 
     var candidates: [MAX_CANDIDATES]Candidate = undefined;
-    var count: usize = 0;
-    broadphase(
-        &data,
-        entity_aabb(10.75, 10.25, 10.75, 0.3, 1.8),
-        .{ MAX_TICK_VEL, MAX_TICK_VEL, MAX_TICK_VEL },
-        &candidates,
-        &count,
-    );
-    try std.testing.expectEqual(@as(usize, 392), count);
+    // Check all sweep directions at the largest supported entity size.
+    const speeds = [_]f32{ -MAX_TICK_VEL, MAX_TICK_VEL };
+    for (speeds) |vx| for (speeds) |vy| for (speeds) |vz| {
+        var count: usize = 0;
+        broadphase(
+            &data,
+            entity_aabb(if (vx > 0) 10.5 else 15.5, if (vy > 0) 10.0 else 15.0, if (vz > 0) 10.5 else 15.5, 0.5, 2.0),
+            .{ vx, vy, vz },
+            &candidates,
+            &count,
+        );
+        try std.testing.expectEqual(@as(usize, 392), count);
+    };
 }

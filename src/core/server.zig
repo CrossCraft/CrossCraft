@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const blocks = @import("blocks.zig");
 const protocol = @import("protocol.zig");
 pub const Client = @import("client.zig");
@@ -440,7 +441,9 @@ pub fn find_client_by_name(name: []const u8) ?ClientSnapshot {
 }
 
 fn client_from_handle_locked(handle: PlayerHandle) ?*Client {
+    assert(handle.id < MaxPlayers);
     const client = &(players.items[handle.id] orelse return null);
+    assert(client.id == handle.id);
     if (client.generation != handle.generation) return null;
     return client;
 }
@@ -505,6 +508,8 @@ pub fn remove_client(handle: PlayerHandle) void {
 }
 
 pub fn broadcast_spawn_player(sender_id: i8, packet: *zb.SpawnPlayer) void {
+    assert(sender_id >= 0);
+    assert(packet.pid == sender_id);
     lock_roster_shared();
     defer unlock_roster_shared();
 
@@ -530,6 +535,7 @@ pub fn broadcast_block_change(x: u16, y: u16, z: u16, block: blocks.Block) void 
     var catchup_packet: [8]u8 = undefined;
     var fixed = std.Io.Writer.fixed(&catchup_packet);
     protocol.send_block_change_to_client(&fixed, x, y, z, block) catch unreachable;
+    assert(fixed.buffered().len == catchup_packet.len);
 
     lock_roster_shared();
     defer unlock_roster_shared();
@@ -604,6 +610,11 @@ pub const PlayerSlots = struct {
 
     // Protocol dispatch retains the client address, so initialize in its final slot.
     fn add(self: *PlayerSlots, client: Client) ?*Client {
+        assert(!client.initialized);
+        assert(client.id == -1);
+        assert(client.name_len <= client.name.len);
+        assert(client.local == (client.transport == null));
+        assert(client.local == (client.out == null));
         for (&self.items, 0..) |*slot, i| {
             if (slot.* != null) continue;
             slot.* = client;

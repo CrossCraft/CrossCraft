@@ -2,6 +2,7 @@ comptime {
     _ = @import("client/util/Zip.zig");
     _ = @import("client/graphics/TextureAtlas.zig");
     _ = @import("client/world/chunk/face.zig");
+    _ = @import("client/world/chunk/mesher.zig");
     _ = @import("client/state/Session.zig");
     _ = @import("client/connection/ClientConn.zig");
     _ = @import("client/state/BundledSave.zig");

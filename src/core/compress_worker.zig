@@ -31,6 +31,7 @@ pub const Job = struct {
     }
 
     pub fn mark_done(self: *Job, io: std.Io) void {
+        assert(!self.is_done());
         self.state.store(.done, .release);
         io.futexWake(State, &self.state.raw, std.math.maxInt(u32));
     }
@@ -65,6 +66,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io) !void {
 }
 
 pub fn deinit() void {
+    assert(queue_head.load(.acquire) == null);
     backing_allocator.destroy(compressor);
     backing_allocator.destroy(compress_buf);
 }
@@ -115,6 +117,7 @@ pub fn submit(job: *Job) void {
     assert(!job.is_done());
     while (true) {
         const head = queue_head.load(.monotonic);
+        assert(head != job); // Re-submission must not create a queue cycle.
         job.next = head;
         if (queue_head.cmpxchgWeak(head, job, .release, .monotonic) == null) return;
     }
@@ -152,6 +155,8 @@ fn drain_once() bool {
     var node: ?*Job = head;
     while (node) |j| {
         const next = j.next;
+        assert(next != j);
+        assert(!j.is_done());
         j.run(j) catch |e| {
             j.err = e;
         };

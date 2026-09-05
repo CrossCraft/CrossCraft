@@ -190,6 +190,7 @@ pub fn finish_legacy_migration() !void {
 }
 
 fn find_index_locked(ip: []const u8) ?u32 {
+    assert(count <= records.len);
     for (0..count) |i| {
         if (std.mem.eql(u8, records[i].ip_slice(), ip)) return @intCast(i);
     }
@@ -197,6 +198,7 @@ fn find_index_locked(ip: []const u8) ?u32 {
 }
 
 fn upsert_index_locked(ip: []const u8) !u32 {
+    assert(initialized);
     if (find_index_locked(ip)) |index| return index;
     if (count >= records.len) return error.PolicyStoreFull;
 
@@ -210,6 +212,7 @@ fn upsert_index_locked(ip: []const u8) !u32 {
 }
 
 fn remove_if_empty_locked(index: u32) void {
+    assert(index < count);
     const rec = &records[index];
     if (rec.banned or rec.op or rec.whitelisted) return;
     const last: u32 = count - 1;
@@ -266,6 +269,9 @@ fn load_locked() !bool {
 }
 
 fn save_locked() !void {
+    assert(initialized);
+    assert(count <= records.len);
+    assert(json_records.len == records.len);
     for (0..count) |i| {
         json_records[i] = .{
             .ip = records[i].ip_slice(),

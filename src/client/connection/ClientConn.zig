@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const zb = @import("protocol");
 const core = @import("core");
 const proto = core.protocol;
@@ -68,6 +69,7 @@ fn process_packet(self: *ClientConn) !void {
         return err;
     };
     const buf = try self.reader.peek(len);
+    assert(len > 0 and len <= self.buffer.len);
     @memcpy(self.buffer[0..len], buf);
     self.reader.toss(len);
     self.protocol.handle_packet(self.buffer[1..len], self.buffer[0]) catch |err| {

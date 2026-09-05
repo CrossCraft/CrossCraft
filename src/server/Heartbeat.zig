@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const max_url_len = @import("Config.zig").max_heartbeat_url_len;
 const request_buffer_len = max_url_len + 384;
 const redirect_buffer_len = 8 * 1024;
@@ -44,6 +45,9 @@ pub fn send(
 }
 
 pub fn build_url(endpoint: []const u8, data: RequestData, out: []u8) std.Io.Writer.Error![]const u8 {
+    assert(data.users <= data.max_players);
+    assert(data.max_players > 0);
+    assert(data.port != 0);
     var writer = std.Io.Writer.fixed(out);
     const fragment_start = std.mem.indexOfScalar(u8, endpoint, '#') orelse endpoint.len;
     const base = endpoint[0..fragment_start];

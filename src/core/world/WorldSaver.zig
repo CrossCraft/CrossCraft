@@ -2,6 +2,7 @@
 // between bands, so this is a race-free progressive capture, not one instant.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const caps = @import("capabilities");
 
 const WorldData = @import("WorldData.zig");
@@ -65,6 +66,7 @@ pub fn init(io: std.Io, save_dir: std.Io.Dir, save_file_name: []const u8, format
 }
 
 pub fn deinit(self: *WorldSaver) void {
+    assert(self.cw_job.is_done());
     self.* = undefined;
 }
 
@@ -146,6 +148,10 @@ fn cw_save_run(base: *compress_worker.Job) anyerror!void {
 }
 
 fn save_worker(self: *WorldSaver) void {
+    assert(!self.cw_job.is_done());
+    assert(self.owned_locally or self.save_override_active);
+    assert(self.save_override_file_name_len <= self.save_override_file_name.len);
+    assert(self.save_override_world_name_len <= self.save_override_world_name.len);
     const save_file_name = if (self.save_override_active)
         self.save_override_file_name[0..self.save_override_file_name_len]
     else
@@ -169,6 +175,9 @@ fn save_worker(self: *WorldSaver) void {
     const ctx: SaveContext = blk: {
         data.lock_shared(self.io);
         defer data.unlock_shared(self.io);
+
+        assert(data.name_len <= data.name.len);
+        assert(data.blocks.len == data.dims.volume());
 
         const world_name = if (self.save_override_active)
             self.save_override_world_name[0..self.save_override_world_name_len]
@@ -227,6 +236,9 @@ fn write_and_promote(
     previous_name: []const u8,
     body: anytype,
 ) !u64 {
+    assert(!std.mem.eql(u8, target, temp_name));
+    assert(!std.mem.eql(u8, target, previous_name));
+    assert(!std.mem.eql(u8, temp_name, previous_name));
     dir.deleteFile(io, temp_name) catch {};
     errdefer dir.deleteFile(io, temp_name) catch {};
 

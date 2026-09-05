@@ -184,6 +184,8 @@ pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf)
 /// All-opaque inner rows require classification only at their two borders.
 fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     const dims = World.data.dims;
+    assert(y >= 0 and y < dims.height);
+    assert(wz_raw >= 0 and wz_raw < dims.depth);
     var opq: u32 = SECTION_MASK;
     var vis: u32 = SECTION_MASK;
     var flu: u32 = 0;
@@ -259,6 +261,8 @@ const FaceMasks = struct {
 };
 
 fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
+    assert(by > 0 and by < BUF_Y - 1);
+    assert(bz > 0 and bz < BUF_Z - 1);
     const cur = buf[by][bz];
 
     // Cross-plants are not in vis, so they require a separate empty-row check.
@@ -438,12 +442,14 @@ fn assert_has_room(mesh: *const BatchMesh, quad_count: u32) void {
 const AO_MUL: [4]u8 = .{ 128, 170, 212, 255 };
 
 fn eff_bit(buf: *const SectionBuf, by: u32, bz: u32, bit: u32) u32 {
+    assert(bit < SECTION_H + 2);
     const row = &buf[by][bz];
     const eff = row.opq | row.solid_leaf;
     return (eff >> @intCast(bit)) & 1;
 }
 
 fn ao_level(t1: u32, t2: u32, d: u32) u32 {
+    assert(t1 <= 1 and t2 <= 1 and d <= 1);
     if (t1 != 0 and t2 != 0) return 0;
     return 3 - (t1 + t2 + d);
 }
@@ -460,6 +466,9 @@ fn ao_modulate(color: u32, level: u32) u32 {
 /// Compute the 4 per-corner colors for a cube face at buffer position
 /// (by, bz, bit). Vertex order matches `make_quad` for the given face.
 fn compute_ao_colors(buf: *const SectionBuf, by: u32, bz: u32, bit: u5, face: Face, shadowed: bool) [4]u32 {
+    assert(by > 0 and by < BUF_Y - 1);
+    assert(bz > 0 and bz < BUF_Z - 1);
+    assert(bit > 0 and bit <= SECTION_H);
     const base_unshadowed = face_mod.face_color(face);
     const base: u32 = if (shadowed) face_mod.apply_shadow(base_unshadowed) else base_unshadowed;
     const b: u32 = bit;
@@ -743,6 +752,69 @@ pub fn emit_section(
             if (f.tfl_zn != 0) emit_fluid_overlay_mask(f.tfl_zn, world_y, @intCast(lz), cx, cz, .z_neg, m.fluid, atlas);
             if (f.tfl_yp != 0) emit_fluid_overlay_mask(f.tfl_yp, world_y, @intCast(lz), cx, cz, .y_pos, m.fluid, atlas);
             if (f.tfl_yn != 0) emit_fluid_overlay_mask(f.tfl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.fluid, atlas);
+        }
+    }
+}
+
+test "section counts match emission at world boundaries with fluids slabs leaves and AO" {
+    const allocator = std.testing.allocator;
+    const dims = core.world_dims.WorldDims.init(128, 64, 128);
+    try World.data.init_in_place(allocator, dims, 0);
+    defer World.data.deinit();
+
+    const atlas = TextureAtlas.init(16, 16);
+    var opaque_mesh = try BatchMesh.init(allocator);
+    defer opaque_mesh.deinit(allocator);
+
+    var trans_mesh = try BatchMesh.init(allocator);
+    defer trans_mesh.deinit(allocator);
+
+    var fluid_mesh = try BatchMesh.init(allocator);
+    defer fluid_mesh.deinit(allocator);
+
+    const sections = [_][3]u32{ .{ 0, 0, 0 }, .{ 1, 1, 1 }, .{ 7, 3, 7 } };
+    for (sections) |section| {
+        const cx, const sy, const cz = section;
+        const start = dims.block_index(cx * SECTION_H, sy * SECTION_H, cz * SECTION_H);
+        for ([_]bool{ false, true }) |solid| {
+            @memset(World.data.blocks, .air);
+            if (solid) {
+                @memset(World.data.blocks[start..][0..core.world_dims.chunk_volume], .stone);
+            } else {
+                // Exercise all Classic materials, including cells on section edges.
+                for (0..50) |id| {
+                    const x: u32 = @intCast(id % 16);
+                    const y: u32 = @intCast(id / 16);
+                    const z: u32 = @intCast((id * 5) % 16);
+                    World.data.blocks[dims.block_index(cx * SECTION_H + x, sy * SECTION_H + y, cz * SECTION_H + z)] = @enumFromInt(id);
+                }
+                // A transparent/fluid boundary emits overlays; a leaf cluster
+                // exercises both interior and exterior leaf routing at each LOD.
+                World.data.blocks[dims.block_index(cx * SECTION_H + 7, sy * SECTION_H + 8, cz * SECTION_H + 8)] = .glass;
+                World.data.blocks[dims.block_index(cx * SECTION_H + 8, sy * SECTION_H + 8, cz * SECTION_H + 8)] = .still_water;
+                for (10..13) |y| for (10..13) |z| for (10..13) |x| {
+                    World.data.blocks[dims.block_index(cx * SECTION_H + @as(u32, @intCast(x)), sy * SECTION_H + @as(u32, @intCast(y)), cz * SECTION_H + @as(u32, @intCast(z)))] = .leaves;
+                };
+            }
+            World.data.compute_chunk_counts();
+            World.data.compute_light_map();
+            for ([_]bool{ false, true }) |near_lod| {
+                var buf: SectionBuf = undefined;
+                const counts = pack_section(cx, sy, cz, near_lod, &buf);
+                for ([_]bool{ false, true }) |ao| {
+                    opaque_mesh.clear_retaining_capacity();
+                    trans_mesh.clear_retaining_capacity();
+                    fluid_mesh.clear_retaining_capacity();
+                    try opaque_mesh.ensure_quad_capacity(allocator, counts.opaque_verts / 6);
+                    try trans_mesh.ensure_quad_capacity(allocator, counts.transparent_verts / 6);
+                    try fluid_mesh.ensure_quad_capacity(allocator, counts.fluid_verts / 6);
+                    emit_section(&buf, cx, sy, cz, .{ .@"opaque" = &opaque_mesh, .transparent = &trans_mesh, .fluid = &fluid_mesh }, &atlas, ao);
+                    const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
+                    try std.testing.expectEqual(counts.opaque_verts / 6 * verts_per_quad, opaque_mesh.vertices.items.len);
+                    try std.testing.expectEqual(counts.transparent_verts / 6 * verts_per_quad, trans_mesh.vertices.items.len);
+                    try std.testing.expectEqual(counts.fluid_verts / 6 * verts_per_quad, fluid_mesh.vertices.items.len);
+                }
+            }
         }
     }
 }

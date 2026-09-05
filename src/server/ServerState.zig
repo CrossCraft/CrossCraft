@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const caps = @import("capabilities");
 const ae = @import("aether");
 const core = @import("core");
@@ -251,6 +252,7 @@ const PendingReservation = union(enum) {
 };
 
 fn slot_ip(slot: *const ConnectionSlot) []const u8 {
+    assert(slot.state != .free);
     return std.mem.sliceTo(slot.data.ip[0..], 0);
 }
 
@@ -274,6 +276,9 @@ fn reserve_pending_slot_locked(
     const slot = for (self.connection_pool) |*candidate| {
         if (candidate.state == .free) break candidate;
     } else return .pending_full;
+
+    assert(slot.worker_done);
+    assert(slot.player_handle == null);
 
     slot.* = .{
         .data = .{
@@ -299,6 +304,8 @@ fn reserve_pending_slot_locked(
 }
 
 fn release_slot_locked(slot: *ConnectionSlot, engine: *Engine) void {
+    assert(slot.state != .free);
+    assert(slot.worker_done);
     if (!slot.data.closed) {
         slot.data.stream.close(engine.io);
         slot.data.closed = true;
@@ -314,6 +321,9 @@ fn release_slot_locked(slot: *ConnectionSlot, engine: *Engine) void {
 }
 
 fn reject_slot_locked(slot: *ConnectionSlot, engine: *Engine, reason: []const u8) void {
+    // A pending worker must finish before the host writes on its socket.
+    assert(slot.worker_done);
+    assert(slot.player_handle == null);
     if (slot.data.closed) return;
     core.protocol.send_disconnect_to_client(&slot.data.writer.interface, reason) catch {};
     slot.data.stream.close(engine.io);
@@ -326,6 +336,8 @@ fn finish_worker(self: *ServerState, slot: *ConnectionSlot, engine: *Engine) voi
     defer self.connections_mutex.unlock(engine.io);
 
     if (slot.state == .pending) slot.state = .failed;
+    assert(slot.state != .free);
+    assert(!slot.worker_done);
     slot.worker_done = true;
 }
 
@@ -358,6 +370,10 @@ fn promote_ready_logins(self: *ServerState, engine: *Engine) void {
     }
     for (self.connection_pool, 0..) |*slot, index| {
         if (slot.state != .ready or !slot.worker_done) continue;
+        assert(active_count <= Server.MaxPlayers);
+        assert(slot.player_handle == null);
+        assert(slot.data.out_queue.buf.len == 0);
+        assert(!slot.data.closed);
         if (active_count == Server.MaxPlayers) {
             log.info("&4Server full, rejecting completed login", .{});
             reject_slot_locked(slot, engine, "Server is full!");
@@ -630,6 +646,7 @@ fn accept_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
                 self.tasks.concurrent(engine.io, pending_login_loop, .{ self, slot, engine }) catch |err| {
                     log.err("Failed to spawn pending-login task: {}", .{err});
                     self.connections_mutex.lockUncancelable(engine.io);
+                    slot.worker_done = true; // No worker acquired this reservation.
                     release_slot_locked(slot, engine);
                     self.connections_mutex.unlock(engine.io);
                 };

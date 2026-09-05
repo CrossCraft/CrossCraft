@@ -1,6 +1,7 @@
 //! Section meshes: opaque blocks and buried leaves, transparent blocks, and fluids.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const caps = @import("capabilities").ClientType(ae);
 const Math = ae.Math;
@@ -52,6 +53,8 @@ pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !ChunkMesh 
 }
 
 pub fn update_animation(self: *ChunkMesh, dt: f32) void {
+    assert(std.math.isFinite(dt) and dt >= 0.0);
+    assert(self.anim_progress >= 0.0 and self.anim_progress <= 1.0);
     if (self.anim_progress < 1.0) {
         self.anim_progress = @min(self.anim_progress + dt, 1.0);
     }
@@ -79,20 +82,36 @@ pub fn rebuild(self: *ChunkMesh, atlas: *const TextureAtlas) error{ OutOfMemory,
     self.opaque_data.clear_retaining_capacity();
     self.trans_data.clear_retaining_capacity();
     self.fluid_data.clear_retaining_capacity();
-    if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) return;
+    {
+        // Network block updates must not change the world between counting
+        // faces and emitting their geometry.
+        World.lock_world_shared();
+        defer World.unlock_world_shared();
 
-    var buf: mesher.SectionBuf = undefined;
-    const counts = mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
-    const a = self.allocator;
-    try self.opaque_data.ensure_quad_capacity(a, counts.opaque_verts / 6);
-    try self.trans_data.ensure_quad_capacity(a, counts.transparent_verts / 6);
-    try self.fluid_data.ensure_quad_capacity(a, counts.fluid_verts / 6);
+        if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) return;
 
-    mesher.emit_section(&buf, self.cx, self.sy, self.cz, .{
-        .@"opaque" = &self.opaque_data,
-        .transparent = &self.trans_data,
-        .fluid = &self.fluid_data,
-    }, atlas, self.ao_enabled);
+        var buf: mesher.SectionBuf = undefined;
+        const counts = mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
+        assert(counts.opaque_verts % 6 == 0);
+        assert(counts.transparent_verts % 6 == 0);
+        assert(counts.fluid_verts % 6 == 0);
+        const a = self.allocator;
+        try self.opaque_data.ensure_quad_capacity(a, counts.opaque_verts / 6);
+        try self.trans_data.ensure_quad_capacity(a, counts.transparent_verts / 6);
+        try self.fluid_data.ensure_quad_capacity(a, counts.fluid_verts / 6);
+
+        mesher.emit_section(&buf, self.cx, self.sy, self.cz, .{
+            .@"opaque" = &self.opaque_data,
+            .transparent = &self.trans_data,
+            .fluid = &self.fluid_data,
+        }, atlas, self.ao_enabled);
+
+        // Counting and emission must agree, including double-sided fluid faces.
+        const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
+        assert(self.opaque_data.vertices.items.len == counts.opaque_verts / 6 * verts_per_quad);
+        assert(self.trans_data.vertices.items.len == counts.transparent_verts / 6 * verts_per_quad);
+        assert(self.fluid_data.vertices.items.len == counts.fluid_verts / 6 * verts_per_quad);
+    }
 
     inline for (&.{ .{ &self.opaque_data, &self.@"opaque" }, .{ &self.trans_data, &self.trans }, .{ &self.fluid_data, &self.fluid } }) |pair| {
         if (pair[0].vertices.items.len > 0) pair[1].update(pair[0]);

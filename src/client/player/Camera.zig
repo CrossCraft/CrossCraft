@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const caps = @import("capabilities").ClientType(ae);
 const Math = ae.Math;
@@ -38,6 +39,9 @@ pub fn init(x: f32, y: f32, z: f32) Camera {
 }
 
 pub fn apply(self: *Camera) void {
+    assert(self.fov > 0.0 and self.fov < std.math.pi);
+    assert(std.math.isFinite(self.x) and std.math.isFinite(self.y) and std.math.isFinite(self.z));
+    assert(std.math.isFinite(self.yaw) and std.math.isFinite(self.pitch));
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));

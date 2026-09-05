@@ -83,6 +83,10 @@ pub const WorldDims = struct {
     }
 
     pub fn chunk_at(self: WorldDims, cx: u32, cy: u32, cz: u32) u32 {
+        // Out-of-range components alias other chunks in the packed index.
+        assert(cx < self.chunks_x);
+        assert(cy < self.chunks_y);
+        assert(cz < self.chunks_z);
         return (cy << self.shift_cy) | (cz << self.shift_cz) | cx;
     }
 
