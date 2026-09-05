@@ -1,21 +1,21 @@
 const Ui = @import("../Ui.zig");
 const Prompts = @import("../Prompts.zig");
 const widget_id = @import("../widget_id.zig");
-const common = @import("common");
+const core = @import("core");
 
 pub const Widget = enum(u16) {
     grid = 1,
     _,
 };
 
-pub const LAYER_BASE: u8 = 247;
+pub const LayerBase: u8 = 247;
 pub const Action = enum { none, select, back };
 
 pub fn wid(w: Widget) widget_id.WidgetId {
     return widget_id.from(Widget, w);
 }
 
-pub fn run(ui: *Ui, blocks: []const common.consts.Block, slot: *u8) Action {
+pub fn run(ui: *Ui, blocks: []const core.blocks.Block, slot: *u8) Action {
     var col = ui.stack(.{ .axis = .vertical, .anchor = .middle_center, .cross_align = .center });
     var action: Action = .none;
     if (ui.slot_grid(wid(.grid), .{

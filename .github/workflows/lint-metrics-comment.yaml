@@ -1,0 +1,206 @@
+name: Lint metrics comment
+
+on:
+  workflow_run:
+    workflows: ["Lint metrics"]
+    types: [completed]
+
+permissions:
+  actions: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: lint-metrics-comment-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  comment:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository != null
+    runs-on: ubuntu-latest
+    name: update pull request comment
+    steps:
+      # This privileged workflow never checks out or executes pull-request
+      # code. The downloaded artifact is parsed only as untrusted JSON.
+      - name: Download lint metrics
+        uses: actions/download-artifact@v8
+        with:
+          pattern: lint-metrics-*
+          path: ${{ runner.temp }}/lint-metrics
+          merge-multiple: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Update lint metrics comment
+        uses: actions/github-script@v9
+        env:
+          REPORT_PATH: ${{ runner.temp }}/lint-metrics/lint-metrics-report.json
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HTML_URL: ${{ github.event.workflow_run.html_url }}
+        with:
+          retries: 3
+          script: |
+            const fs = require('fs');
+
+            const marker = '<!-- crosscraft-lint-metrics -->';
+            const reportPath = process.env.REPORT_PATH;
+            const stat = fs.statSync(reportPath);
+            if (stat.size > 256 * 1024) {
+              throw new Error(`Lint metrics artifact is too large: ${stat.size} bytes`);
+            }
+
+            const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+            const fail = (message) => {
+              throw new Error(`Invalid lint metrics artifact: ${message}`);
+            };
+            const isCount = (value) =>
+              Number.isSafeInteger(value) && value >= 0;
+            const isMetric = (value) =>
+              typeof value === 'number' && Number.isFinite(value) && value >= 0;
+            const isDerivedMetric = (value, statements) =>
+              statements === 0 ? value === null : isMetric(value);
+
+            if (report.schema_version !== 1) fail('unsupported schema version');
+            const artifactPr = report.pull_request;
+            if (!artifactPr || !Number.isSafeInteger(artifactPr.number) || artifactPr.number <= 0) {
+              fail('invalid pull request number');
+            }
+            if (artifactPr.head_repository !== process.env.RUN_HEAD_REPOSITORY) {
+              fail('head repository does not match the workflow run');
+            }
+            if (artifactPr.head_ref !== process.env.RUN_HEAD_BRANCH) {
+              fail('head branch does not match the workflow run');
+            }
+            if (artifactPr.head_sha !== process.env.RUN_HEAD_SHA) {
+              fail('head SHA does not match the workflow run');
+            }
+
+            const { owner, repo } = context.repo;
+            const pull = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: artifactPr.number,
+            });
+            if (pull.data.state !== 'open') {
+              core.notice(`Pull request #${artifactPr.number} is no longer open`);
+              return;
+            }
+            if (pull.data.base.repo.full_name !== `${owner}/${repo}`) {
+              fail('pull request targets a different repository');
+            }
+            if (pull.data.head.repo?.full_name !== process.env.RUN_HEAD_REPOSITORY ||
+                pull.data.head.ref !== process.env.RUN_HEAD_BRANCH ||
+                pull.data.head.sha !== process.env.RUN_HEAD_SHA) {
+              core.notice(`Workflow run is stale for pull request #${artifactPr.number}`);
+              return;
+            }
+
+            const metrics = report.metrics;
+            if (!metrics || !isCount(metrics.files_analyzed) || !isCount(metrics.files_skipped)) {
+              fail('invalid file counts');
+            }
+            if (!metrics.total || !isCount(metrics.total.nsloc) || metrics.total.nsloc === 0 ||
+                !isCount(metrics.total.assertions) ||
+                !isMetric(metrics.total.assertion_percentage) ||
+                !isMetric(metrics.total.assertions_per_knsloc)) {
+              fail('invalid totals');
+            }
+            if (!Array.isArray(metrics.files) || metrics.files.length !== metrics.files_analyzed) {
+              fail('file list does not match files_analyzed');
+            }
+
+            const paths = new Set();
+            let nsloc = 0;
+            let assertions = 0;
+            for (const file of metrics.files) {
+              if (!file || typeof file.path !== 'string' || file.path.length === 0 ||
+                  file.path.length > 4096 || paths.has(file.path) ||
+                  !isCount(file.nsloc) || !isCount(file.assertions) ||
+                  !isDerivedMetric(file.assertion_percentage, file.nsloc) ||
+                  !isDerivedMetric(file.assertions_per_knsloc, file.nsloc)) {
+                fail('invalid file entry');
+              }
+              paths.add(file.path);
+              nsloc += file.nsloc;
+              assertions += file.assertions;
+            }
+            if (!Number.isSafeInteger(nsloc) || !Number.isSafeInteger(assertions) ||
+                nsloc !== metrics.total.nsloc || assertions !== metrics.total.assertions) {
+              fail('file totals do not match aggregate totals');
+            }
+
+            const withAssertions = metrics.files.filter((file) => file.assertions > 0).length;
+            const withoutAssertions = metrics.files.filter(
+              (file) => file.assertions === 0 && file.nsloc > 0,
+            ).length;
+            const largest = metrics.files.reduce(
+              (best, file) => !best || file.nsloc > best.nsloc ? file : best,
+              null,
+            );
+            const mostAssertions = metrics.files.reduce(
+              (best, file) => !best || file.assertions > best.assertions ? file : best,
+              null,
+            );
+            if (!largest || !mostAssertions) fail('empty file list');
+
+            const integer = new Intl.NumberFormat('en-US');
+            const escapeHtml = (value) => String(value)
+              .replaceAll('&', '&amp;')
+              .replaceAll('<', '&lt;')
+              .replaceAll('>', '&gt;')
+              .replaceAll('"', '&quot;')
+              .replaceAll("'", '&#39;')
+              .replaceAll('|', '&#124;')
+              .replace(/\r?\n/g, ' ');
+            const shortSha = process.env.RUN_HEAD_SHA.slice(0, 7);
+            const body = [
+              marker,
+              '## Tiger lint metrics',
+              '',
+              '| Metric | Value |',
+              '| --- | ---: |',
+              `| Files analyzed | ${integer.format(metrics.files_analyzed)} |`,
+              `| Files skipped | ${integer.format(metrics.files_skipped)} |`,
+              `| Normalized source statements | ${integer.format(metrics.total.nsloc)} |`,
+              `| Assertions | ${integer.format(metrics.total.assertions)} |`,
+              `| Assertion density | ${metrics.total.assertion_percentage.toFixed(3)}% |`,
+              `| Assertions per 1,000 statements | ${metrics.total.assertions_per_knsloc.toFixed(2)} |`,
+              `| Files with assertions | ${integer.format(withAssertions)} |`,
+              `| Files without assertions | ${integer.format(withoutAssertions)} |`,
+              `| Largest file | <code>${escapeHtml(largest.path)}</code> (${integer.format(largest.nsloc)} statements) |`,
+              `| Most assertions | <code>${escapeHtml(mostAssertions.path)}</code> (${integer.format(mostAssertions.assertions)}) |`,
+              '',
+              `<sub>Updated for <code>${shortSha}</code> by [Lint metrics](${process.env.RUN_HTML_URL}). ` +
+                'Test declarations and their bodies are excluded.</sub>',
+            ].join('\n');
+
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number: artifactPr.number, per_page: 100 },
+            );
+            const existing = comments.find((comment) =>
+              comment.user?.login === 'github-actions[bot]' &&
+              comment.body?.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: artifactPr.number,
+                body,
+              });
+            }

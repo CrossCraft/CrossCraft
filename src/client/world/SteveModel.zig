@@ -1,66 +1,47 @@
-// Hardcoded Steve player model for rendering remote players.
-//
-// Geometry is derived from the Minecraft Classic skin layout (64x32 char.png).
-// Six static meshes are built at init and never rebuilt:
-//   torso     - torso only (36 vertices)
-//   head      - head, rotated independently for pitch (36 vertices)
-//   right_arm / left_arm  - idle sway + walk swing (36 vertices each)
-//   right_leg / left_leg  - walk swing (36 vertices each)
-//
-// Left-side limbs mirror the right-side UVs (u0/u1 swapped per face).
-// Positions are interpolated with exponential smoothing so movement looks
-// fluid between the server's 20 Hz position ticks.
+// Classic 64x32 skins mirror right-side UVs onto the left limbs.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const c = @import("common").consts;
+const core = @import("core");
 const collision = @import("../player/collision.zig");
 const Vertex = @import("aether").Rendering.Vertex;
 const Colors = @import("../graphics/Color.zig");
-const Color = Colors.Color;
 const Player = @import("../player/Player.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
-const FontBatcher = ae.UI.FontBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const ResourcePack = @import("../ResourcePack.zig");
 
-const Self = @This();
+const SteveModel = @This();
 
 // SNORM16 scale: 1 block = 2048 units (matches face.zig:encode_pos).
 // Model matrix scales by 16.0 to recover world units.
-const WORLD_UNIT_SCALE: f32 = 16.0;
+const WorldUnitScale: f32 = 16.0;
 
-// Render distance for remote players (blocks).
-const RENDER_DIST: f32 = 32.0;
-const RENDER_DIST_SQ: f32 = RENDER_DIST * RENDER_DIST;
+const RenderDist: f32 = 32.0;
+const RenderDistSq: f32 = RenderDist * RenderDist;
 
-// Interpolation speed (units: 1/s). At 20 Hz server ticks (50ms apart),
-// a speed of 15 converges ~53% per tick - fast enough to track but smooth
-// enough to hide jitter.
-const INTERP_SPEED: f32 = 15.0;
+const InterpSpeed: f32 = 15.0;
 
-// Idle arm sway (Z-axis, outward only).
-const IDLE_AMPLITUDE: f32 = 0.05; // ~3 degrees
-const IDLE_SPEED: f32 = 1.5 / 8.0; // cycles per second
+const IdleAmplitude: f32 = 0.05;
+const IdleSpeed: f32 = 1.5 / 8.0;
 
-// Walk animation (X-axis, forward/back swing).
-const WALK_AMPLITUDE: f32 = 0.7; // ~40 degrees at full walk speed
-const WALK_SPEED: f32 = 2.0; // cycles per second
+const WalkAmplitude: f32 = 0.7;
+const WalkSpeed: f32 = 2.0;
 // Classic walk speed (~4.3 blocks/s). At this speed walk_blend = 1.0.
-const WALK_FULL_SPEED: f32 = 4.3;
-// How fast walk_blend tracks the measured velocity (1/s, exponential smoothing).
-const WALK_BLEND_SPEED: f32 = 10.0;
+const WalkFullSpeed: f32 = 4.3;
+const WalkBlendSpeed: f32 = 10.0;
 
-const LIMB_QUADS: usize = 6;
-const LIMB_VERTS: usize = LIMB_QUADS * 6;
+const LimbQuads: usize = 6;
+const LimbVerts: usize = LimbQuads * 6;
 
-// Name tag billboard above the head.
-const TAG_HEIGHT: f32 = 0.3; // world-space height of text (blocks)
-const TAG_Y_OFFSET: f32 = 2.2; // above feet (head top is 2.0)
-const BatchMesh = Rendering.Mesh(Vertex);
-const BatchMeshData = Rendering.MeshData(Vertex);
+const TagHeight: f32 = 0.3;
+const TagYOffset: f32 = 2.2;
+const BatchMesh = Rendering.MeshType(Vertex);
+const BatchMeshData = Rendering.MeshDataType(Vertex);
 
 const PlayerState = struct {
     active: bool,
@@ -84,14 +65,14 @@ right_leg_data: BatchMeshData,
 right_leg: BatchMesh,
 left_leg_data: BatchMeshData,
 left_leg: BatchMesh,
-states: [c.MAX_PLAYERS]PlayerState,
-name_tags: [c.MAX_PLAYERS]?FontBatcher.TextMesh,
-name_aspects: [c.MAX_PLAYERS]f32,
+states: [core.Server.MaxPlayers]PlayerState,
+name_tags: [core.Server.MaxPlayers]?FontBatcher.TextMesh,
+name_aspects: [core.Server.MaxPlayers]f32,
 anim_time: f32,
 allocator: std.mem.Allocator,
 
-pub fn init(allocator: std.mem.Allocator) !Self {
-    var self: Self = .{
+pub fn init(allocator: std.mem.Allocator) !SteveModel {
+    var self: SteveModel = .{
         .torso_data = try BatchMeshData.init(allocator),
         .torso = try BatchMesh.init(&.{}),
         .head_data = try BatchMeshData.init(allocator),
@@ -104,9 +85,9 @@ pub fn init(allocator: std.mem.Allocator) !Self {
         .right_leg = try BatchMesh.init(&.{}),
         .left_leg_data = try BatchMeshData.init(allocator),
         .left_leg = try BatchMesh.init(&.{}),
-        .states = std.mem.zeroes([c.MAX_PLAYERS]PlayerState),
-        .name_tags = .{null} ** c.MAX_PLAYERS,
-        .name_aspects = .{1.0} ** c.MAX_PLAYERS,
+        .states = std.mem.zeroes([core.Server.MaxPlayers]PlayerState),
+        .name_tags = .{null} ** core.Server.MaxPlayers,
+        .name_aspects = .{1.0} ** core.Server.MaxPlayers,
         .anim_time = 0,
         .allocator = allocator,
     };
@@ -121,23 +102,27 @@ pub fn init(allocator: std.mem.Allocator) !Self {
         &self.right_leg, &self.left_leg,
     };
     for (data_meshes) |m| {
-        try m.ensure_quad_capacity(allocator, LIMB_QUADS);
+        try m.ensure_quad_capacity(allocator, LimbQuads);
     }
-    build_torso(&self.torso_data);
-    build_head(&self.head_data);
-    build_right_arm(&self.right_arm_data);
-    build_left_arm(&self.left_arm_data);
-    build_right_leg(&self.right_leg_data);
-    build_left_leg(&self.left_leg_data);
+    // Coordinates are blocks/256. Torso coordinates are feet-relative; the
+    // head and limbs are local to their neck, shoulder, or hip rotation pivot.
+    emit_box(&self.torso_data, -64, 192, -32, 64, 384, 32, &torso_uvs);
+    emit_box(&self.head_data, -64, 0, -64, 64, 128, 64, &head_uvs);
+    emit_box(&self.right_arm_data, -32, -192, -32, 32, 0, 32, &arm_uvs);
+    const left_arm_uvs = comptime mirror_uvs(arm_uvs);
+    emit_box(&self.left_arm_data, -32, -192, -32, 32, 0, 32, &left_arm_uvs);
+    emit_box(&self.right_leg_data, -32, -192, -32, 32, 0, 32, &leg_uvs);
+    const left_leg_uvs = comptime mirror_uvs(leg_uvs);
+    emit_box(&self.left_leg_data, -32, -192, -32, 32, 0, 32, &left_leg_uvs);
     for (data_meshes, render_meshes) |data, mesh| {
-        const expected_verts: usize = if (Rendering.mesh.indexing_enabled) LIMB_QUADS * 4 else LIMB_VERTS;
-        std.debug.assert(data.vertices.items.len == expected_verts);
+        const expected_verts: usize = if (Rendering.mesh.indexing_enabled) LimbQuads * 4 else LimbVerts;
+        assert(data.vertices.items.len == expected_verts);
         mesh.update(data);
     }
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *SteveModel) void {
     for (&self.name_tags) |*nt| {
         if (nt.*) |*m| {
             m.deinit(self.allocator);
@@ -156,15 +141,14 @@ pub fn deinit(self: *Self) void {
     };
     for (render_meshes) |m| m.deinit();
     for (data_meshes) |m| m.deinit(self.allocator);
+    self.* = undefined;
 }
 
-// --- Per-frame update (call from GameState.update) ---
-
-pub fn update(self: *Self, dt: f32, player_list: *const PlayerList, fonts: *const FontBatcher) void {
+pub fn update(self: *SteveModel, dt: f32, player_list: *const PlayerList, fonts: *const FontBatcher) void {
     const tau = std.math.tau;
     const pi = std.math.pi;
-    const f = 1.0 - @exp(-INTERP_SPEED * dt);
-    const wf = 1.0 - @exp(-WALK_BLEND_SPEED * dt);
+    const f = 1.0 - @exp(-InterpSpeed * dt);
+    const wf = 1.0 - @exp(-WalkBlendSpeed * dt);
 
     self.anim_time += dt;
     if (self.anim_time > 1000.0) self.anim_time -= 1000.0;
@@ -179,7 +163,6 @@ pub fn update(self: *Self, dt: f32, player_list: *const PlayerList, fonts: *cons
             continue;
         }
 
-        // Build name tag mesh on first sighting.
         if (nt.* == null and e.name_len > 0) {
             const name = e.name[0..e.name_len];
             const tw = fonts.string_width(name, 0, 1);
@@ -208,8 +191,6 @@ pub fn update(self: *Self, dt: f32, player_list: *const PlayerList, fonts: *cons
             continue;
         }
 
-        // Smooth position toward target; measure how far we moved this frame
-        // to derive horizontal speed for walk animation amplitude.
         const prev_x = st.x;
         const prev_z = st.z;
         st.x += (tx - st.x) * f;
@@ -219,7 +200,7 @@ pub fn update(self: *Self, dt: f32, player_list: *const PlayerList, fonts: *cons
         const move_dx = st.x - prev_x;
         const move_dz = st.z - prev_z;
         const speed = @sqrt(move_dx * move_dx + move_dz * move_dz) / @max(dt, 0.001);
-        const target_blend = @min(speed / WALK_FULL_SPEED, 1.5);
+        const target_blend = @min(speed / WalkFullSpeed, 1.5);
         st.walk_blend += (target_blend - st.walk_blend) * wf;
         st.yaw = lerp_angle(st.yaw, tyaw, f);
         st.pitch = lerp_angle(st.pitch, tpitch, f);
@@ -235,104 +216,88 @@ fn lerp_angle(current: f32, target: f32, f_factor: f32) f32 {
     return current + diff * f_factor;
 }
 
-// --- Draw (call from GameState.draw) ---
-
-pub fn draw(self: *Self, local: *const Player) void {
+pub fn draw(self: *SteveModel, local: *const Player) void {
     const local_x = local.pos_x;
     const local_y = local.pos_y;
     const local_z = local.pos_z;
 
     Rendering.gfx.api.bind_texture(ResourcePack.get_tex(.char).handle);
 
-    // Idle sway (Z-axis, outward only, always active).
-    const idle_swing = (@sin(self.anim_time * std.math.tau * IDLE_SPEED) * 0.5 + 0.5) * IDLE_AMPLITUDE;
+    const idle_swing = (@sin(self.anim_time * std.math.tau * IdleSpeed) * 0.5 + 0.5) * IdleAmplitude;
 
-    // Walk cycle (X-axis, sinusoidal, blended per-player).
-    const walk_phase = @sin(self.anim_time * std.math.tau * WALK_SPEED * 0.67) * 1.5;
+    const walk_phase = @sin(self.anim_time * std.math.tau * WalkSpeed * 0.67) * 1.5;
 
     for (&self.states) |*st| {
         if (!st.active) continue;
 
-        const feet_y = st.y - collision.EYE_HEIGHT;
+        const feet_y = st.y - collision.EyeHeight;
 
         const dx = st.x - local_x;
         const dy = feet_y - local_y;
         const dz = st.z - local_z;
-        if (dx * dx + dy * dy + dz * dz > RENDER_DIST_SQ) continue;
+        if (dx * dx + dy * dy + dz * dz > RenderDistSq) continue;
 
-        const scale = Math.Mat4.scaling(WORLD_UNIT_SCALE, WORLD_UNIT_SCALE, WORLD_UNIT_SCALE);
-        const rot_y = Math.Mat4.rotationY(st.yaw);
+        const scale = Math.Mat4.scaling(WorldUnitScale, WorldUnitScale, WorldUnitScale);
+        const rot_y = Math.Mat4.rotation_y(st.yaw);
         const world_t = Math.Mat4.translation(st.x, feet_y, st.z);
 
-        // Torso: scale -> yaw -> world position
         const torso_model = scale.mul(rot_y).mul(world_t);
         self.torso.draw(&torso_model);
 
-        // Head: scale -> pitch -> neck offset -> yaw -> world position
-        const rot_x = Math.Mat4.rotationX(st.pitch);
+        const rot_x = Math.Mat4.rotation_x(st.pitch);
         const neck_t = Math.Mat4.translation(0, 1.5, 0);
         const head_model = scale.mul(rot_x).mul(neck_t).mul(rot_y).mul(world_t);
         self.head.draw(&head_model);
 
-        // Walk swing for this player, scaled by blend factor.
-        const walk_swing = walk_phase * WALK_AMPLITUDE * st.walk_blend;
+        const walk_swing = walk_phase * WalkAmplitude * st.walk_blend;
 
-        // Right arm: walk swing (X) + idle sway (Z, outward = -Z)
-        // Right arm forward when left leg forward: +walk_swing on arm, -walk_swing on leg.
-        const r_arm_walk = Math.Mat4.rotationX(walk_swing);
-        const r_arm_idle = Math.Mat4.rotationZ(-idle_swing);
+        const r_arm_walk = Math.Mat4.rotation_x(walk_swing);
+        const r_arm_idle = Math.Mat4.rotation_z(-idle_swing);
         const r_shoulder = Math.Mat4.translation(-0.375, 1.5, 0);
         const r_arm_model = scale.mul(r_arm_walk).mul(r_arm_idle).mul(r_shoulder).mul(rot_y).mul(world_t);
         self.right_arm.draw(&r_arm_model);
 
-        // Left arm: opposite walk phase + idle sway (outward = +Z)
-        const l_arm_walk = Math.Mat4.rotationX(-walk_swing);
-        const l_arm_idle = Math.Mat4.rotationZ(idle_swing);
+        const l_arm_walk = Math.Mat4.rotation_x(-walk_swing);
+        const l_arm_idle = Math.Mat4.rotation_z(idle_swing);
         const l_shoulder = Math.Mat4.translation(0.375, 1.5, 0);
         const l_arm_model = scale.mul(l_arm_walk).mul(l_arm_idle).mul(l_shoulder).mul(rot_y).mul(world_t);
         self.left_arm.draw(&l_arm_model);
 
-        // Right leg: opposite to right arm
-        const r_leg_swing = Math.Mat4.rotationX(-walk_swing);
+        const r_leg_swing = Math.Mat4.rotation_x(-walk_swing);
         const r_hip = Math.Mat4.translation(-0.125, 0.75, 0);
         const r_leg_model = scale.mul(r_leg_swing).mul(r_hip).mul(rot_y).mul(world_t);
         self.right_leg.draw(&r_leg_model);
 
-        // Left leg: opposite to left arm (same phase as right arm)
-        const l_leg_swing = Math.Mat4.rotationX(walk_swing);
+        const l_leg_swing = Math.Mat4.rotation_x(walk_swing);
         const l_hip = Math.Mat4.translation(0.125, 0.75, 0);
         const l_leg_model = scale.mul(l_leg_swing).mul(l_hip).mul(rot_y).mul(world_t);
         self.left_leg.draw(&l_leg_model);
     }
 }
 
-// --- Name tags (call from GameState.draw after draw()) ---
-
-pub fn draw_nametags(self: *Self, local: *const Player, fonts: *const FontBatcher) void {
+pub fn draw_nametags(self: *SteveModel, local: *const Player, fonts: *const FontBatcher) void {
     Rendering.gfx.api.bind_texture(fonts.texture.handle);
 
     for (&self.states, &self.name_tags, &self.name_aspects) |*st, *nt, aspect| {
         if (!st.active) continue;
         const mesh = &(nt.* orelse continue);
 
-        const feet_y = st.y - collision.EYE_HEIGHT;
+        const feet_y = st.y - collision.EyeHeight;
         const dx = st.x - local.pos_x;
         const dy = feet_y - local.pos_y;
         const dz = st.z - local.pos_z;
-        if (dx * dx + dy * dy + dz * dz > RENDER_DIST_SQ) continue;
+        if (dx * dx + dy * dy + dz * dz > RenderDistSq) continue;
 
         // Cylindrical billboard: faces camera horizontally, stays upright.
-        const half_h = TAG_HEIGHT / 2.0;
+        const half_h = TagHeight / 2.0;
         const half_w = half_h * aspect;
         const sca = Math.Mat4.scaling(half_w, half_h, 0.001);
-        const rot = Math.Mat4.rotationY(local.camera.yaw);
-        const trans = Math.Mat4.translation(st.x, feet_y + TAG_Y_OFFSET, st.z);
+        const rot = Math.Mat4.rotation_y(local.camera.yaw);
+        const trans = Math.Mat4.translation(st.x, feet_y + TagYOffset, st.z);
         const model = sca.mul(rot).mul(trans);
         mesh.draw(&model);
     }
 }
-
-// --- Geometry builders ---
 
 const UVRect = struct { tu0: i16, tv0: i16, tu1: i16, tv1: i16 };
 
@@ -360,42 +325,43 @@ fn face_color(face: Face) u32 {
     };
 }
 
+// UV order: top, bottom, front (+Z), back (-Z), right (-X), left (+X).
 const FaceUVs = [6]UVRect;
 
 const head_uvs: FaceUVs = .{
-    char_uv(8, 0, 8, 8), // top
-    char_uv(16, 0, 8, 8), // bottom
-    char_uv(8, 8, 8, 8), // front (z_pos)
-    char_uv(24, 8, 8, 8), // back (z_neg)
-    char_uv(0, 8, 8, 8), // right (x_neg)
-    char_uv(16, 8, 8, 8), // left (x_pos)
+    char_uv(8, 0, 8, 8),
+    char_uv(16, 0, 8, 8),
+    char_uv(8, 8, 8, 8),
+    char_uv(24, 8, 8, 8),
+    char_uv(0, 8, 8, 8),
+    char_uv(16, 8, 8, 8),
 };
 
 const torso_uvs: FaceUVs = .{
-    char_uv(20, 16, 8, 4), // top
-    char_uv(28, 16, 8, 4), // bottom
-    char_uv(20, 20, 8, 12), // front
-    char_uv(32, 20, 8, 12), // back
-    char_uv(16, 20, 4, 12), // right
-    char_uv(28, 20, 4, 12), // left
+    char_uv(20, 16, 8, 4),
+    char_uv(28, 16, 8, 4),
+    char_uv(20, 20, 8, 12),
+    char_uv(32, 20, 8, 12),
+    char_uv(16, 20, 4, 12),
+    char_uv(28, 20, 4, 12),
 };
 
 const arm_uvs: FaceUVs = .{
-    char_uv(44, 16, 4, 4), // top
-    char_uv(48, 16, 4, 4), // bottom
-    char_uv(44, 20, 4, 12), // front
-    char_uv(52, 20, 4, 12), // back
-    char_uv(40, 20, 4, 12), // right
-    char_uv(48, 20, 4, 12), // left
+    char_uv(44, 16, 4, 4),
+    char_uv(48, 16, 4, 4),
+    char_uv(44, 20, 4, 12),
+    char_uv(52, 20, 4, 12),
+    char_uv(40, 20, 4, 12),
+    char_uv(48, 20, 4, 12),
 };
 
 const leg_uvs: FaceUVs = .{
-    char_uv(4, 16, 4, 4), // top
-    char_uv(8, 16, 4, 4), // bottom
-    char_uv(4, 20, 4, 12), // front
-    char_uv(12, 20, 4, 12), // back
-    char_uv(0, 20, 4, 12), // right
-    char_uv(8, 20, 4, 12), // left
+    char_uv(4, 16, 4, 4),
+    char_uv(8, 16, 4, 4),
+    char_uv(4, 20, 4, 12),
+    char_uv(12, 20, 4, 12),
+    char_uv(0, 20, 4, 12),
+    char_uv(8, 20, 4, 12),
 };
 
 fn mirror_uvs(uvs: FaceUVs) FaceUVs {
@@ -477,38 +443,4 @@ fn emit_box(
     for (faces, 0..) |face, i| {
         emit_quad(mesh, make_quad(face, px, px1, py, py1, pz, pz1, uvs[i], face_color(face)));
     }
-}
-
-// --- Body part builders ---
-// All limbs are built relative to their rotation pivot so that rotations
-// in the model matrix produce natural joint movement.
-
-fn build_torso(mesh: *BatchMeshData) void {
-    // 0.5 wide, 0.75 tall, 0.25 deep. Positioned at model origin (feet).
-    emit_box(mesh, -64, 192, -32, 64, 384, 32, &torso_uvs);
-}
-
-fn build_head(mesh: *BatchMeshData) void {
-    // Pivot at bottom-center (neck). Y [0, 0.5] relative to pivot.
-    emit_box(mesh, -64, 0, -64, 64, 128, 64, &head_uvs);
-}
-
-fn build_right_arm(mesh: *BatchMeshData) void {
-    // Pivot at shoulder (top-center). Y [-0.75, 0] relative to pivot.
-    emit_box(mesh, -32, -192, -32, 32, 0, 32, &arm_uvs);
-}
-
-fn build_left_arm(mesh: *BatchMeshData) void {
-    const left_arm_uvs = comptime mirror_uvs(arm_uvs);
-    emit_box(mesh, -32, -192, -32, 32, 0, 32, &left_arm_uvs);
-}
-
-fn build_right_leg(mesh: *BatchMeshData) void {
-    // Pivot at hip (top-center). Y [-0.75, 0] relative to pivot.
-    emit_box(mesh, -32, -192, -32, 32, 0, 32, &leg_uvs);
-}
-
-fn build_left_leg(mesh: *BatchMeshData) void {
-    const left_leg_uvs = comptime mirror_uvs(leg_uvs);
-    emit_box(mesh, -32, -192, -32, 32, 0, 32, &left_leg_uvs);
 }

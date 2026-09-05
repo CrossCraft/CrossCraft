@@ -6,13 +6,12 @@ const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
-const SpriteBatcher = ae.UI.SpriteBatcher;
-const FontBatcher = ae.UI.FontBatcher;
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const UiDrawList = @import("../ui/UiDrawList.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
-const Scaling = ae.UI.Scaling;
-const Colors = @import("../graphics/Color.zig");
+const Screen = @import("../ui/Screen.zig");
 const ResourcePack = @import("../ResourcePack.zig");
 const ui_input = @import("../ui/input.zig");
 const DisconnectScreen = @import("../ui/screens/Disconnect.zig");
@@ -29,6 +28,7 @@ pub fn transition_here(engine: *Engine) void {
 
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
+prepared_ui: ?UiDrawList.Prepared = null,
 ui_state: UiState,
 ui_repeat: ui_input.Repeat,
 dirt: *const Rendering.Texture,
@@ -38,13 +38,14 @@ inited: bool,
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
+    self.prepared_ui = null;
 
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
     try ResourcePack.apply_tex_set(&.{ .dirt, .font, .gui, .glyphs });
 
     self.batcher = try SpriteBatcher.init(render_alloc);
-    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
+    self.font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
     self.ui_repeat = .{};
     self.ui_state = .{};
 
@@ -66,6 +67,9 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
     _ = engine.input.pop_context() catch {};
+    if (self.prepared_ui) |*prepared| prepared.deinit();
+    self.prepared_ui = null;
+    self.ui_state.deinit();
     self.font_batcher.deinit();
     self.batcher.deinit();
     self.inited = false;
@@ -91,14 +95,14 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
 fn prepare_batches(self: *@This()) !void {
     self.batcher.clear();
     self.font_batcher.clear();
-    draw_dirt_tiles(self);
+    Screen.add_dirt_background(&self.batcher, self.dirt);
 
     var list: UiDrawList = .{};
-    var none = empty_input();
+    var none: ui_input.UiInput = .{};
     var ui = self.begin_ui(&list, &none);
     _ = DisconnectScreen.run(&ui, Session.disconnect_reason());
     ui.end();
-    list.flush_into(&self.batcher, &self.font_batcher, null);
+    try list.prepare_into(&self.prepared_ui, &self.font_batcher, null);
 
     try self.batcher.update();
     try self.font_batcher.update();
@@ -108,6 +112,8 @@ fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyer
     var self = Util.ctx_to_self(@This(), ctx);
     self.batcher.draw();
     self.font_batcher.draw();
+    Rendering.gfx.api.clear_depth();
+    if (self.prepared_ui) |*prepared| prepared.draw();
 }
 
 fn begin_ui(self: *@This(), list: *UiDrawList, in: *const ui_input.UiInput) Ui {
@@ -118,63 +124,7 @@ fn begin_ui(self: *@This(), list: *UiDrawList, in: *const ui_input.UiInput) Ui {
         .fonts = &self.font_batcher,
         .gui_tex = ResourcePack.get_tex(.gui),
         .glyphs_tex = ResourcePack.get_tex(.glyphs),
-        .screen = current_screen_rect(),
-    });
-}
-
-fn current_screen_rect() Ui.LogicalRect {
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const scale = Scaling.compute(screen_w, screen_h);
-    return .{
-        .x0 = 0,
-        .y0 = 0,
-        .x1 = @intCast((screen_w + scale - 1) / scale),
-        .y1 = @intCast((screen_h + scale - 1) / scale),
-    };
-}
-
-fn empty_input() ui_input.UiInput {
-    return .{
-        .input_system = null,
-        .cursor_x = 0,
-        .cursor_y = 0,
-        .cursor_available = false,
-        .cursor_moved = false,
-        .click_edge = false,
-        .click_held = false,
-        .nav = .none,
-        .confirm_edge = false,
-        .cancel_edge = false,
-        .pause_edge = false,
-        .title_exit_edge = false,
-        .inventory_edge = false,
-        .wheel_dy = 0,
-        .text_events = false,
-    };
-}
-
-fn draw_dirt_tiles(self: *@This()) void {
-    const rect = current_screen_rect();
-    var y: i16 = 0;
-    const tile_size: i16 = 32;
-    while (y < rect.y1) : (y += tile_size) {
-        var x: i16 = 0;
-        while (x < rect.x1) : (x += tile_size) {
-            add_dirt_tile(self, x, y, tile_size);
-        }
-    }
-}
-
-fn add_dirt_tile(self: *@This(), x: i16, y: i16, tile_size: i16) void {
-    self.batcher.add_sprite(&.{
-        .texture = self.dirt,
-        .pos_offset = .{ .x = x, .y = y },
-        .pos_extent = .{ .x = tile_size, .y = tile_size },
-        .tex_offset = .{ .x = 0, .y = 0 },
-        .tex_extent = .{ .x = @intCast(self.dirt.width), .y = @intCast(self.dirt.height) },
-        .color = Colors.menu_tiles,
-        .layer = 0,
+        .screen = Screen.logical_rect(),
     });
 }
 

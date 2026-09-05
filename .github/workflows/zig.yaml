@@ -15,12 +15,47 @@ concurrency:
 # still ships Node 20, so keep the runner-level Node 24 opt-in until mlugg
 # cuts a Node 24 release; drop this once it does.
 env:
+  CI: "true"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # Builds every (target, kind) with -Dskip-pack=true so we never have to
-  # pull the LFS-backed resources submodule. No artifacts are uploaded.
+  zig-packages:
+    runs-on: ubuntu-latest
+    name: prepare Zig packages
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Check Zig package cache
+        id: zig-pkg-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          lookup-only: true
+          enableCrossOsArchive: true
+
+      - name: Setup Zig
+        if: steps.zig-pkg-cache.outputs.cache-hit != 'true'
+        uses: mlugg/setup-zig@v2
+
+      - name: Fetch Zig packages
+        if: steps.zig-pkg-cache.outputs.cache-hit != 'true'
+        run: zig build --fetch=all
+
+      - name: Save Zig package cache
+        if: steps.zig-pkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          enableCrossOsArchive: true
+
+  # Pull-request builds skip the LFS-backed resource pack.
   dev:
+    needs: zig-packages
     if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
@@ -46,6 +81,13 @@ jobs:
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
+
+      - name: Restore Zig packages
+        uses: actions/cache/restore@v5
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          enableCrossOsArchive: true
 
       # macOS game: SDL3 is vendored and statically linked; the only system
       # dependency is MoltenVK, which Aether.exportArtifact bundles into the
@@ -81,6 +123,7 @@ jobs:
   # devkitPro image provides under /opt/devkitpro. Keep this separate from
   # the platform matrix: GitHub job containers cannot be used for macOS.
   switch-dev:
+    needs: zig-packages
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     name: dev game (switch)
@@ -97,6 +140,13 @@ jobs:
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
+
+      - name: Restore Zig packages
+        uses: actions/cache/restore@v5
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          enableCrossOsArchive: true
 
       - name: Build Nintendo Switch game
         run: zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch -Doptimize=ReleaseSafe -Dskip-pack=true
@@ -122,6 +172,7 @@ jobs:
   # verification, and uploads each (kind, target) as a separate workflow
   # artifact for download.
   rel:
+    needs: zig-packages
     if: github.event_name == 'push'
     strategy:
       fail-fast: false
@@ -150,6 +201,13 @@ jobs:
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
+
+      - name: Restore Zig packages
+        uses: actions/cache/restore@v5
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          enableCrossOsArchive: true
 
       - name: Install macOS dependencies
         if: matrix.name == 'mac' && matrix.kind == 'game'
@@ -287,6 +345,7 @@ jobs:
   # Release-style Switch build.  This is separate from rel because devkitA64
   # and libnx live in the job container rather than on GitHub's runner image.
   switch-rel:
+    needs: zig-packages
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     name: rel game (switch)
@@ -310,6 +369,13 @@ jobs:
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
+
+      - name: Restore Zig packages
+        uses: actions/cache/restore@v5
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          enableCrossOsArchive: true
 
       - name: Build Nintendo Switch game
         run: zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch -Doptimize=ReleaseSafe
@@ -344,31 +410,30 @@ jobs:
           path: zig-out/bin/CrossCraft-Classic-Switch/
           if-no-files-found: error
 
-  # Build the pack_zip host tool for distribution. This is the canonical
-  # way to produce a CrossCraft pack.zip from a resource directory.
-  pack-tool:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-latest,  name: linux }
-          - { os: macos-latest,   name: mac }
-          - { os: windows-latest, name: windows }
-    runs-on: ${{ matrix.os }}
-    name: pack-tool (${{ matrix.name }})
+  # Host tests need no LFS resources. The golden corpus checks worldgen
+  # byte parity with the reference generator.
+  tests:
+    needs: zig-packages
+    runs-on: ubuntu-latest
+    name: unit and worldgen tests
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          submodules: true
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
 
-      - name: Build pack_zip
-        run: zig build pack-tool -Doptimize=ReleaseSafe
-
-      - name: Upload pack-tool
-        uses: actions/upload-artifact@v7
+      - name: Restore Zig packages
+        uses: actions/cache/restore@v5
         with:
-          name: pack-tool_${{ matrix.name }}
-          path: zig-out/bin/
-          if-no-files-found: error
+          path: zig-pkg
+          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          enableCrossOsArchive: true
+
+      - name: Unit tests
+        run: zig build test -Dskip-pack=true
+
+      - name: Worldgen golden hashes (100 worlds)
+        run: zig build worldgen-test -Doptimize=ReleaseSafe -Dskip-pack=true

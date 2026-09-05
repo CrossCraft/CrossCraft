@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const Ui = @import("../Ui.zig");
 const Prompts = @import("../Prompts.zig");
 const widget_id = @import("../widget_id.zig");
@@ -30,27 +31,18 @@ pub const default_path = "pack.zip";
 pub const row_base: u16 = 100;
 
 pub fn wid_for_row(i: u8) WidgetId {
-    std.debug.assert(i <= max_packs);
+    assert(i <= max_packs);
     return widget_id.raw(row_base + @as(u16, i));
 }
 
-pub fn row_from_wid(id: WidgetId) ?u8 {
-    const raw = widget_id.value(id);
-    if (raw < row_base) return null;
-    const idx: u16 = raw - row_base;
-    if (idx > max_packs) return null;
-    return @intCast(idx);
-}
-
 pub const Entry = struct {
-    label_buf: [max_path_len]u8 = undefined,
-    label_len: u8 = 0,
     path_buf: [max_path_len]u8 = undefined,
     path_len: u8 = 0,
     dir: std.Io.Dir = undefined,
 
     pub fn label(self: *const Entry) []const u8 {
-        return self.label_buf[0..self.label_len];
+        const value = self.path();
+        return if (std.mem.eql(u8, value, default_path)) "Default" else value["texturepacks/".len .. value.len - 4];
     }
 
     pub fn path(self: *const Entry) []const u8 {
@@ -86,7 +78,7 @@ pub fn run(ui: *Ui, entries: []const Entry, selected_index: ?u8) Result {
 
 pub fn scan(io: std.Io, default_pack_dir: std.Io.Dir, data_dir: std.Io.Dir, out: *[max_packs + 1]Entry) u8 {
     var count: u8 = 0;
-    add_entry(out, &count, "Default", default_path, default_pack_dir);
+    add_entry(out, &count, default_path, default_pack_dir);
 
     var dir = data_dir.openDir(io, "texturepacks", .{ .iterate = true }) catch |err| {
         log.warn("texturepacks/ not iterable: {}", .{err});
@@ -104,19 +96,16 @@ pub fn scan(io: std.Io, default_pack_dir: std.Io.Dir, data_dir: std.Io.Dir, out:
 
         var path_tmp: [max_path_len]u8 = undefined;
         const full_path = std.fmt.bufPrint(&path_tmp, "texturepacks/{s}", .{entry.name}) catch continue;
-        const stem = entry.name[0 .. entry.name.len - 4];
-        add_entry(out, &count, stem, full_path, data_dir);
+        add_entry(out, &count, full_path, data_dir);
     }
     return count;
 }
 
-fn add_entry(out: *[max_packs + 1]Entry, count: *u8, label: []const u8, path: []const u8, dir: std.Io.Dir) void {
+fn add_entry(out: *[max_packs + 1]Entry, count: *u8, path: []const u8, dir: std.Io.Dir) void {
     if (count.* >= max_packs + 1) return;
-    if (label.len > max_path_len or path.len > max_path_len) return;
+    if (path.len > max_path_len) return;
 
     var e: Entry = .{ .dir = dir };
-    @memcpy(e.label_buf[0..label.len], label);
-    e.label_len = @intCast(label.len);
     @memcpy(e.path_buf[0..path.len], path);
     e.path_len = @intCast(path.len);
 

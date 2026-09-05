@@ -1,26 +1,28 @@
 const std = @import("std");
-const common = @import("common");
-const BlockRegistry = common.BlockRegistry;
+const assert = std.debug.assert;
+const core = @import("core");
+const blocks = core.blocks;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Rendering = @import("aether").Rendering;
 const Vertex = Rendering.Vertex;
-const BatchMesh = Rendering.MeshData(Vertex);
+const BatchMesh = Rendering.MeshDataType(Vertex);
 
-pub const Face = common.consts.Face;
+pub const Face = blocks.Face;
 
 /// Map local coordinate [0, 16] to SNORM16 [0, 32767].
 pub fn encode_pos(local: u32) i16 {
-    std.debug.assert(local <= 16);
+    assert(local <= 16);
     return @intCast(@min(@as(i32, @intCast(local)) * 2048, 32767));
 }
 
 /// Encode position with fractional offset (units of 1/256 block).
 pub fn encode_pos_frac(local: u32, frac256: u32) i16 {
-    std.debug.assert(local <= 16);
+    assert(local <= 16);
+    assert(frac256 <= 256);
+    assert(local < 16 or frac256 == 0);
     return @intCast(@min(@as(i32, @intCast(local)) * 2048 + @as(i32, @intCast(frac256)) * 8, 32767));
 }
 
-/// Directional face shading.
 pub fn face_color(face: Face) u32 {
     return switch (face) {
         .y_pos => 0xFFFFFFFF,
@@ -30,7 +32,6 @@ pub fn face_color(face: Face) u32 {
     };
 }
 
-/// Darken a color for shadowed geometry. Multiplies RGB by 153/256 (~0.6).
 pub fn apply_shadow(color: u32) u32 {
     const r = (color >> 16) & 0xFF;
     const g = (color >> 8) & 0xFF;
@@ -41,23 +42,26 @@ pub fn apply_shadow(color: u32) u32 {
 
 const UVRect = struct { tu0: i16, tv0: i16, tu1: i16, tv1: i16 };
 
-fn tile_uvs(tile: BlockRegistry.Tile, atlas: *const TextureAtlas) UVRect {
-    const base_u = atlas.tileU(tile.col);
-    const base_v = atlas.tileV(tile.row);
+fn tile_uvs(tile: blocks.Tile, atlas: *const TextureAtlas) UVRect {
+    const base_u = atlas.tile_u(tile.col);
+    const base_v = atlas.tile_v(tile.row);
     return .{
-        .tu0 = @intCast(@as(i32, base_u) + @as(i32, atlas.tileWidth())),
+        .tu0 = @intCast(@as(i32, base_u) + @as(i32, atlas.tile_width())),
         .tv0 = base_v,
         .tu1 = base_u,
-        .tv1 = @intCast(@as(i32, base_v) + @as(i32, atlas.tileHeight())),
+        .tv1 = @intCast(@as(i32, base_v) + @as(i32, atlas.tile_height())),
     };
 }
 
-/// Four identical corner colors for paths without per-vertex AO.
 pub fn uniform_colors(c: u32) [4]u32 {
     return .{ c, c, c, c };
 }
 
 fn make_quad(face: Face, px: i16, px1: i16, py: i16, py1: i16, pz: i16, pz1: i16, tu0: i16, tv0: i16, tu1: i16, tv1: i16, colors: [4]u32) [4]Vertex {
+    // The face-normal interval may collapse (for example a slab's top).
+    assert(px <= px1 and (face == .x_pos or face == .x_neg or px < px1));
+    assert(py <= py1 and (face == .y_pos or face == .y_neg or py < py1));
+    assert(pz <= pz1 and (face == .z_pos or face == .z_neg or pz < pz1));
     return switch (face) {
         .x_pos => .{
             .{ .pos = .{ px1, py, pz }, .uv = .{ tu0, tv1 }, .color = colors[0] },
@@ -110,18 +114,13 @@ fn brighter_along_02(verts: [4]Vertex) bool {
 
 fn emit_quad(mesh: *BatchMesh, verts: [4]Vertex) void {
     if (brighter_along_02(verts)) {
-        // Diagonal 0-2 (original winding).
         mesh.add_quad_assume_capacity(verts[0], verts[3], verts[2], verts[1]);
     } else {
-        // Diagonal 1-3 (flipped, same winding orientation).
         mesh.add_quad_assume_capacity(verts[3], verts[2], verts[1], verts[0]);
     }
 }
 
-/// Specialization of emit_quad for uniform corner colors. brighter_along_02
-/// always picks diagonal 0-2 when the four greens match, so the per-quad
-/// 4 byte-extracts + add + compare are pure waste on the non-AO path. Any
-/// caller that builds verts via uniform_colors should use this.
+/// Uniform colors always select diagonal 0-2, so bypass the AO comparison.
 fn emit_quad_uniform(mesh: *BatchMesh, verts: [4]Vertex) void {
     mesh.add_quad_assume_capacity(verts[0], verts[3], verts[2], verts[1]);
 }
@@ -135,17 +134,13 @@ fn emit_quad_uniform_double_sided(mesh: *BatchMesh, verts: [4]Vertex) void {
     emit_quad_reversed(mesh, verts);
 }
 
-// --- Public emission functions ---
-
-/// Emit one block face (6 vertices). All 4 corners share `color`, so the
-/// AO-aware brighter-diagonal pick is skipped.
 pub fn emit_face(
     mesh: *BatchMesh,
     face: Face,
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
 ) void {
@@ -168,15 +163,14 @@ pub fn emit_face(
     ));
 }
 
-/// Emit one block face (6 vertices) with per-corner colors. Used by the AO
-/// path; `colors[i]` is applied to vertex `i` as laid out by `make_quad`.
+/// `colors` follows the vertex order produced by `make_quad`.
 pub fn emit_face_colors(
     mesh: *BatchMesh,
     face: Face,
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     colors: [4]u32,
 ) void {
@@ -197,31 +191,25 @@ pub fn emit_face_colors(
     ));
 }
 
-/// Emit one face of a half-height slab (6 vertices). Top face sits at
-/// y + 0.5; side faces span [y, y + 0.5]; bottom face is unchanged.
 pub fn emit_slab_face(
     mesh: *BatchMesh,
     face: Face,
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
 ) void {
     const base = face_color(face);
     const color = if (shadowed) apply_shadow(base) else base;
     const uv = tile_uvs(tile, atlas);
-    // 128/256 = 0.5 block. Top face sits at y + 0.5; sides span [y, y+0.5].
     const py_top: i16 = encode_pos_frac(y, 128);
     const py_bot: i16 = encode_pos(y);
-    // make_quad uses only py1 for y_pos and only py for y_neg, so the
-    // unused bound on those faces is harmless.
     const py0: i16 = if (face == .y_pos) py_top else py_bot;
     const py1: i16 = py_top;
 
-    // Side faces sample only the lower half of the tile so the texture
-    // matches the geometry rather than getting squashed.
+    // Crop the lower half of the tile rather than squash its texture.
     const use_lower_half = face != .y_pos and face != .y_neg;
     const half_v: i16 = @intCast(@divTrunc(@as(i32, uv.tv1) - @as(i32, uv.tv0), 2));
     const tv0: i16 = if (use_lower_half) @intCast(@as(i32, uv.tv0) + half_v) else uv.tv0;
@@ -242,22 +230,19 @@ pub fn emit_slab_face(
     ));
 }
 
-/// Emit one side face of a fluid block (6 vertices). The top of the quad
-/// matches the fluid top plane (inset ~0.9 blocks) when the block above is
-/// not also fluid; otherwise it spans the full block so stacked fluid
-/// columns remain flush. Not valid for y_pos / y_neg faces.
+/// Exposed sides meet the inset fluid top; stacked sides span the full block.
 pub fn emit_fluid_side_face(
     mesh: *BatchMesh,
     face: Face,
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
     above_is_fluid: bool,
 ) void {
-    std.debug.assert(face != .y_pos and face != .y_neg);
+    assert(face != .y_pos and face != .y_neg);
     const base = face_color(face);
     const color = if (shadowed) apply_shadow(base) else base;
     const uv = tile_uvs(tile, atlas);
@@ -280,13 +265,13 @@ pub fn emit_fluid_side_face(
     ));
 }
 
-/// Emit fluid top face at 0.9 block height, double-sided (12 vertices).
+/// Double-sided fluid surface at 0.9 block height.
 pub fn emit_fluid_top(
     mesh: *BatchMesh,
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
 ) void {
@@ -308,18 +293,15 @@ pub fn emit_fluid_top(
     ));
 }
 
-/// Emit a fluid-overlay face on a transparent block's boundary with fluid.
-/// Inset 1/256 block past the boundary toward the fluid so the face sits
-/// just in front of the transparent block's own face when viewed from the
-/// fluid side, passing the depth test. Perpendicular axes are expanded by
-/// the same amount to close hairline seams at block corners. (6 vertices)
+/// Offset 1/256 block toward the fluid to pass the transparent face's depth
+/// test, and expand the other axes by the same amount to close corner seams.
 pub fn emit_fluid_overlay(
     mesh: *BatchMesh,
     face: Face,
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
 ) void {
@@ -334,64 +316,61 @@ pub fn emit_fluid_overlay(
     var pz = encode_pos(z);
     var pz1 = encode_pos(z + 1);
 
-    // Shift the face plane 1/256 block past the boundary (toward the fluid)
-    // and expand perpendicular axes by the same amount to close corner seams.
-    const INSET: i16 = 8; // 1/256 block in SNORM16 encoding
+    const Inset: i16 = 8;
     switch (face) {
         .x_pos => {
-            px1 = px1 +| INSET;
-            py = py -| INSET;
-            py1 = py1 +| INSET;
-            pz = pz -| INSET;
-            pz1 = pz1 +| INSET;
+            px1 = px1 +| Inset;
+            py = py -| Inset;
+            py1 = py1 +| Inset;
+            pz = pz -| Inset;
+            pz1 = pz1 +| Inset;
         },
         .x_neg => {
-            px = px -| INSET;
-            py = py -| INSET;
-            py1 = py1 +| INSET;
-            pz = pz -| INSET;
-            pz1 = pz1 +| INSET;
+            px = px -| Inset;
+            py = py -| Inset;
+            py1 = py1 +| Inset;
+            pz = pz -| Inset;
+            pz1 = pz1 +| Inset;
         },
         .y_pos => {
-            py1 = py1 +| INSET;
-            px = px -| INSET;
-            px1 = px1 +| INSET;
-            pz = pz -| INSET;
-            pz1 = pz1 +| INSET;
+            py1 = py1 +| Inset;
+            px = px -| Inset;
+            px1 = px1 +| Inset;
+            pz = pz -| Inset;
+            pz1 = pz1 +| Inset;
         },
         .y_neg => {
-            py = py -| INSET;
-            px = px -| INSET;
-            px1 = px1 +| INSET;
-            pz = pz -| INSET;
-            pz1 = pz1 +| INSET;
+            py = py -| Inset;
+            px = px -| Inset;
+            px1 = px1 +| Inset;
+            pz = pz -| Inset;
+            pz1 = pz1 +| Inset;
         },
         .z_pos => {
-            pz1 = pz1 +| INSET;
-            px = px -| INSET;
-            px1 = px1 +| INSET;
-            py = py -| INSET;
-            py1 = py1 +| INSET;
+            pz1 = pz1 +| Inset;
+            px = px -| Inset;
+            px1 = px1 +| Inset;
+            py = py -| Inset;
+            py1 = py1 +| Inset;
         },
         .z_neg => {
-            pz = pz -| INSET;
-            px = px -| INSET;
-            px1 = px1 +| INSET;
-            py = py -| INSET;
-            py1 = py1 +| INSET;
+            pz = pz -| Inset;
+            px = px -| Inset;
+            px1 = px1 +| Inset;
+            py = py -| Inset;
+            py1 = py1 +| Inset;
         },
     }
 
     emit_quad_uniform(mesh, make_quad(face, px, px1, py, py1, pz, pz1, uv.tu0, uv.tv0, uv.tu1, uv.tv1, uniform_colors(color)));
 }
 
-/// Emit two intersecting diagonal planes for cross-plants (24 vertices).
 pub fn emit_cross(
     mesh: *BatchMesh,
     x: u32,
     y: u32,
     z: u32,
-    tile: BlockRegistry.Tile,
+    tile: blocks.Tile,
     atlas: *const TextureAtlas,
     shadowed: bool,
 ) void {
@@ -441,6 +420,53 @@ test "vertical faces preserve their U orientation" {
         const verts = make_quad(face, 0, 1, 2, 3, 4, 5, 20, 30, 10, 40, uniform_colors(0));
         for (expected_u, 0..) |u, i| {
             try std.testing.expectEqual(u, verts[i].uv[0]);
+        }
+    }
+}
+
+test "chunk faces wind outward for cubes slabs and both AO diagonals" {
+    const allocator = std.testing.allocator;
+    const atlas = TextureAtlas.init_grid(16, 16);
+    const tile: blocks.Tile = .{ .col = 0, .row = 0 };
+    var mesh = try BatchMesh.init(allocator);
+    defer mesh.deinit(allocator);
+
+    try mesh.ensure_quad_capacity(allocator, 1);
+
+    for (std.enums.values(Face)) |face| {
+        const axis: usize = switch (face) {
+            .x_pos, .x_neg => 0,
+            .y_pos, .y_neg => 1,
+            .z_pos, .z_neg => 2,
+        };
+        const sign: i64 = switch (face) {
+            .x_pos, .y_pos, .z_pos => 1,
+            .x_neg, .y_neg, .z_neg => -1,
+        };
+        const modes = enum { cube, slab, ao_02, ao_13 };
+        for (std.enums.values(modes)) |mode| {
+            mesh.clear_retaining_capacity();
+            switch (mode) {
+                .cube => emit_face(&mesh, face, 2, 3, 4, tile, &atlas, false),
+                .slab => emit_slab_face(&mesh, face, 2, 3, 4, tile, &atlas, false),
+                .ao_02 => emit_face_colors(&mesh, face, 2, 3, 4, tile, &atlas, .{ 0xFFFFFFFF, 0xFF808080, 0xFFFFFFFF, 0xFF808080 }),
+                .ao_13 => emit_face_colors(&mesh, face, 2, 3, 4, tile, &atlas, .{ 0xFF808080, 0xFFFFFFFF, 0xFF808080, 0xFFFFFFFF }),
+            }
+
+            // Inspect the triangles actually submitted, including mesh indices.
+            for (0..2) |triangle| {
+                var pos: [3][3]i64 = undefined;
+                for (&pos, 0..) |*p, corner| {
+                    const element = triangle * 3 + corner;
+                    const index = if (Rendering.mesh.indexing_enabled) mesh.indices.items[element] else element;
+                    for (mesh.vertices.items[index].pos, 0..) |v, component| p[component] = v;
+                }
+                const u = (axis + 1) % 3;
+                const v = (axis + 2) % 3;
+                const normal = (pos[1][u] - pos[0][u]) * (pos[2][v] - pos[0][v]) -
+                    (pos[1][v] - pos[0][v]) * (pos[2][u] - pos[0][u]);
+                try std.testing.expect(normal * sign > 0);
+            }
         }
     }
 }

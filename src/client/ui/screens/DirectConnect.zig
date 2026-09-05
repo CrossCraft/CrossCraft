@@ -9,13 +9,13 @@ pub const Widget = enum(u16) {
     _,
 };
 
-pub const IP_MAX: u8 = 32;
-pub const NAME_MAX: u8 = 16;
+pub const IpMax: u8 = 32;
+pub const NameMax: u8 = 16;
 
 pub const Ctx = struct {
-    ip: *[IP_MAX]u8,
+    ip: *[IpMax]u8,
     ip_len: *u8,
-    name: *[NAME_MAX]u8,
+    name: *[NameMax]u8,
     name_len: *u8,
 };
 
@@ -31,10 +31,10 @@ pub fn run(ui: *Ui, ctx: *Ctx) Action {
 
     ui.label("Direct Connect");
     ui.label("Server Address");
-    var ip_buf: Ui.TextBuf = .{ .bytes = ctx.ip, .len = ctx.ip_len, .max = IP_MAX };
+    var ip_buf: Ui.TextBuf = .{ .bytes = ctx.ip, .len = ctx.ip_len, .max = IpMax };
     _ = ui.text_field(wid(.ip), &ip_buf, .{ .placeholder = "ip:port", .session_id = "direct_connect.ip" });
     ui.label("Name");
-    var name_buf: Ui.TextBuf = .{ .bytes = ctx.name, .len = ctx.name_len, .max = NAME_MAX };
+    var name_buf: Ui.TextBuf = .{ .bytes = ctx.name, .len = ctx.name_len, .max = NameMax };
     _ = ui.text_field(wid(.name), &name_buf, .{ .placeholder = "Player", .session_id = "direct_connect.name" });
     if (ui.button(wid(.join), "Join Server", .{})) action = .join;
     if (ui.button(wid(.back), "Back", .{}) and action == .none) action = .back;

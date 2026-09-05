@@ -1,58 +1,28 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 
-const World = @import("game").World;
-const c = @import("common").consts;
+const core = @import("core");
+const World = core.World;
 
-const Vertex = @import("aether").Rendering.Vertex;
+const effect_positions = @import("../graphics/effect_positions.zig");
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const face_mod = @import("chunk/face.zig");
-const Face = face_mod.Face;
-const collision = @import("../player/collision.zig");
+const Block = core.blocks.Block;
 
-// --- Tunables ---
+const MaxParticles: u16 = 512;
+const PerBreak: u16 = 48;
+const LifetimeMin: f32 = 0.3;
+const LifetimeMax: f32 = 1.0;
+const Gravity: f32 = 16.0;
+const GravityLeaves: f32 = 10.0;
+const HalfSize: f32 = 0.06;
+const SubtileDiv: i16 = 4;
 
-/// Hard cap on simultaneously alive particles. 6 verts each => 3072 verts.
-const MAX_PARTICLES: u16 = 512;
-/// Particles emitted per block break (clamped by remaining capacity).
-const PER_BREAK: u16 = 48;
-/// Particle lifetime range in seconds. Each spawn picks uniformly within
-/// this window so a burst doesn't vanish all at once.
-const LIFETIME_MIN: f32 = 0.3;
-const LIFETIME_MAX: f32 = 1.0;
-/// Default downward acceleration in blocks/s^2. Per-particle gravity is set
-/// from this at spawn; lightweight materials (leaves, flowers) override it.
-const GRAVITY: f32 = 16.0;
-const GRAVITY_LEAVES: f32 = 10.0;
-/// Half extent of a particle quad in blocks.
-const HALF_SIZE: f32 = 0.06;
-/// Subdivisions of the broken block's face tile; each particle samples one cell.
-const SUBTILE_DIV: i16 = 4;
-/// Verts per particle: two triangles (the gfx backend only supports
-/// triangles/lines, so quads are expanded just like face.zig:emit_quad).
-
-// --- Vertex/model space ---
-//
-// ChunkMesh encodes block-local positions as `local * 2048` (i16) and uses
-// `Mat4.scaling(16) * translation(world)`. The shader applies SNORM dequant
-// (`v / 32768`) before the model matrix, so 1 vertex unit there resolves to
-// `2048 / 32768 * 16 = 1` block of world space.
-//
-// Particles live in absolute world coordinates that change every frame, so
-// we can't reuse a per-section translation. Instead we bake world-space
-// positions directly into the vertex buffer using a fixed scale factor.
-//   v_i16 = round(world * POS_SCALE)
-// To make `(v / 32768) * MODEL_SCALE = world`, we need
-//   MODEL_SCALE = 32768 / POS_SCALE
-// At POS_SCALE = 128 the i16 range covers ~256 blocks (the full Classic
-// world) with ~8mm precision -- ample for sub-block sized shards.
-const POS_SCALE: f32 = 128.0;
-const MODEL_SCALE: f32 = 256.0;
-
-// --- Types ---
+const PosScale = effect_positions.encoding.units_per_world_unit;
 
 const Particle = struct {
     px: f32,
@@ -69,62 +39,58 @@ const Particle = struct {
     gravity: f32,
 };
 
-fn gravity_for(block_id: c.Block) f32 {
-    return switch (block_id.id) {
-        .leaves => GRAVITY_LEAVES,
-        else => GRAVITY,
+fn gravity_for(block_id: Block) f32 {
+    return switch (block_id) {
+        .leaves => GravityLeaves,
+        else => Gravity,
     };
 }
 
-const Self = @This();
+const ParticleSystem = @This();
 
-mesh_data: Rendering.MeshData(Vertex),
-mesh: Rendering.Mesh(Vertex),
+billboards: Rendering.BillboardBatcher,
 atlas: TextureAtlas,
-particles: [MAX_PARTICLES]Particle,
+particles: [MaxParticles]Particle,
 count: u16,
 rng: std.Random.DefaultPrng,
-allocator: std.mem.Allocator,
 
-// --- Lifecycle ---
+pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !ParticleSystem {
+    var billboards = try Rendering.BillboardBatcher.init(allocator, .{
+        .capacity = MaxParticles,
+        .units_per_world_unit = PosScale,
+        .normalization = effect_positions.encoding.normalization,
+    });
+    errdefer billboards.deinit();
 
-pub fn init(allocator: std.mem.Allocator, atlas: TextureAtlas) !Self {
-    var self: Self = .{
-        .mesh_data = try Rendering.MeshData(Vertex).init(allocator),
-        .mesh = try Rendering.Mesh(Vertex).init(&.{}),
+    // Preserve eager GPU allocation: updates remain infallible after init.
+    billboards.gpu_mesh = try Rendering.BillboardBatcher.Mesh.init(&.{});
+    return .{
+        .billboards = billboards,
         .atlas = atlas,
         .particles = undefined,
         .count = 0,
-        // Deterministic seed; "no std.os/std.c" rules out wall-clock seeding.
         .rng = std.Random.DefaultPrng.init(0xC0FFEE),
-        .allocator = allocator,
     };
-    // Pre-reserve the CPU vertex buffer so per-frame rebuilds don't allocate.
-    try self.mesh_data.ensure_quad_capacity(allocator, MAX_PARTICLES);
-    return self;
 }
 
-pub fn deinit(self: *Self) void {
-    self.mesh.deinit();
-    self.mesh_data.deinit(self.allocator);
+pub fn deinit(self: *ParticleSystem) void {
+    self.billboards.deinit();
+    self.* = undefined;
 }
 
-// --- Spawn ---
+pub fn spawn_break(self: *ParticleSystem, block_id: Block, bx: u16, by: u16, bz: u16) void {
+    assert(!block_id.is_air());
+    assert(bx < World.data.dims.length);
+    assert(by < World.data.dims.height);
+    assert(bz < World.data.dims.depth);
 
-/// Emit a burst of particles for a block that just got broken.
-/// `bx/by/bz` are world block coordinates; `face` selects which atlas tile
-/// (top/bottom/side) the shards sample from.
-pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, _: Face) void {
-    std.debug.assert(!block_id.is_air());
-
-    const face: Face = .x_neg;
-    const tile = block_id.face_tile(face);
-    const tu = self.atlas.tileU(tile.col);
-    const tv = self.atlas.tileV(tile.row);
-    const tw = self.atlas.tileWidth();
-    const th = self.atlas.tileHeight();
-    const du: i16 = @divTrunc(tw, SUBTILE_DIV);
-    const dv: i16 = @divTrunc(th, SUBTILE_DIV);
+    const tile = block_id.face_tile(.x_neg);
+    const tu = self.atlas.tile_u(tile.col);
+    const tv = self.atlas.tile_v(tile.row);
+    const tw = self.atlas.tile_width();
+    const th = self.atlas.tile_height();
+    const du: i16 = @divTrunc(tw, SubtileDiv);
+    const dv: i16 = @divTrunc(th, SubtileDiv);
 
     const cx: f32 = @as(f32, @floatFromInt(bx)) + 0.5;
     const cy: f32 = @as(f32, @floatFromInt(by)) + 0.5;
@@ -134,21 +100,15 @@ pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, _:
     const gravity = gravity_for(block_id);
 
     var i: u16 = 0;
-    while (i < PER_BREAK) : (i += 1) {
-        if (self.count >= MAX_PARTICLES) break;
+    while (i < PerBreak) : (i += 1) {
+        if (self.count >= MaxParticles) break;
 
-        const sx: i16 = @intCast(rand.intRangeLessThan(u8, 0, @intCast(SUBTILE_DIV)));
-        const sy: i16 = @intCast(rand.intRangeLessThan(u8, 0, @intCast(SUBTILE_DIV)));
+        const sx: i16 = @intCast(rand.intRangeLessThan(u8, 0, @intCast(SubtileDiv)));
+        const sy: i16 = @intCast(rand.intRangeLessThan(u8, 0, @intCast(SubtileDiv)));
 
-        // Spread spawn positions through most of the block volume (+/-0.45)
-        // so the burst visibly fills the cube the player just removed.
         const ox = (rand.float(f32) - 0.5) * 0.9;
         const oy = (rand.float(f32) - 0.5) * 0.9;
         const oz = (rand.float(f32) - 0.5) * 0.9;
-        // Velocity = outward from center along the spawn offset, plus a
-        // small jitter so neighboring particles don't fly in lockstep.
-        // The outward speed scales with offset magnitude (corner spawns fly
-        // faster than near-center ones), giving a natural radial burst.
         const burst_speed: f32 = 4.0;
         const jitter: f32 = 0.4;
         const upward_bias: f32 = 2.0;
@@ -163,62 +123,44 @@ pub fn spawn_break(self: *Self, block_id: c.Block, bx: u16, by: u16, bz: u16, _:
             .v0 = tv + sy * dv,
             .u1 = tu + (sx + 1) * du,
             .v1 = tv + (sy + 1) * dv,
-            .life = LIFETIME_MIN + rand.float(f32) * (LIFETIME_MAX - LIFETIME_MIN),
+            .life = LifetimeMin + rand.float(f32) * (LifetimeMax - LifetimeMin),
             .gravity = gravity,
         };
         self.count += 1;
     }
 }
 
-// --- Simulation ---
+pub fn update(self: *ParticleSystem, dt: f32, camera: *const Camera) void {
+    self.update_particles(dt);
+    self.rebuild_mesh(camera);
+    if (self.billboards.count != 0) self.billboards.upload() catch unreachable;
+}
 
-pub fn update(self: *Self, dt: f32, camera: *const Camera) void {
-    std.debug.assert(dt >= 0);
+fn update_particles(self: *ParticleSystem, dt: f32) void {
+    assert(dt >= 0);
+    assert(std.math.isFinite(dt));
+    assert(self.count <= self.particles.len);
 
     var i: u16 = 0;
     while (i < self.count) {
         const p = &self.particles[i];
         p.life -= dt;
         if (p.life <= 0.0) {
-            // Swap-remove: move the last live particle into this slot and
-            // re-process the new occupant on the next iteration.
             self.count -= 1;
             self.particles[i] = self.particles[self.count];
             continue;
         }
         p.vy -= p.gravity * dt;
-        // Per-axis voxel collision: integrate one axis at a time and revert
-        // (zeroing the velocity component) on contact. Treats the particle
-        // as a point - its visual extent is much smaller than a block.
         step_axis_x(p, p.vx * dt);
         step_axis_y(p, p.vy * dt);
         step_axis_z(p, p.vz * dt);
-        // Kill particles that drift outside the i16-encodable range so
-        // encode() doesn't overflow during rendering.
-        if (!encodable(p.px) or !encodable(p.py) or !encodable(p.pz)) {
-            self.count -= 1;
-            self.particles[i] = self.particles[self.count];
-            continue;
-        }
         i += 1;
     }
-
-    self.rebuild_mesh(camera);
 }
 
-// Particles spawn inside the block they came from (the local world isn't
-// overwritten to Air until the server round-trips the break). To let them
-// escape, each axis step only blocks when the destination AABB overlaps a
-// solid voxel AND the current AABB doesn't -- i.e. we're trying to enter
-// new solid geometry. Particles already embedded in a solid voxel pass
-// through freely until they reach open space.
-//
-// Testing an AABB (instead of the center point) means a particle's center
-// stops COLLISION_RADIUS away from any block face. The billboard quad
-// extends at most HALF_SIZE per axis from the center, so a radius of
-// HALF_SIZE guarantees the quad never clips terrain on any side -- floor,
-// ceiling, or walls -- at typical viewing angles.
-const COLLISION_RADIUS: f32 = HALF_SIZE;
+// Only block entry into new solid geometry: particles initially spawn before
+// the server's air update has round-tripped to the client.
+const CollisionRadius: f32 = HalfSize;
 
 fn step_axis_x(p: *Particle, dx: f32) void {
     const nx = p.px + dx;
@@ -232,10 +174,6 @@ fn step_axis_x(p: *Particle, dx: f32) void {
 fn step_axis_y(p: *Particle, dy: f32) void {
     const ny = p.py + dy;
     if (aabb_hits_solid(p.px, ny, p.pz) and !aabb_hits_solid(p.px, p.py, p.pz)) {
-        // Downward Y collision == hit the floor: arrest the whole particle
-        // so it sticks where it landed instead of sliding across the
-        // surface. Upward collisions only stop vertical motion (lets the
-        // particle ricochet sideways off a ceiling).
         if (dy < 0.0) {
             p.vx = 0;
             p.vz = 0;
@@ -255,132 +193,147 @@ fn step_axis_z(p: *Particle, dz: f32) void {
     p.pz = nz;
 }
 
-/// True when the axis-aligned box of half-extent COLLISION_RADIUS centered
-/// at (wx,wy,wz) overlaps any solid voxel. Out-of-world voxels are treated
-/// as non-solid so particles that drift past the edge don't pin to the
-/// boundary. HALF_SIZE is small (~0.06), so the box spans at most 2 voxels
-/// per axis -- the loop body runs 1-8 times in the worst case.
 fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
-    const bx0: i32 = @intFromFloat(@floor(wx - COLLISION_RADIUS));
-    const bx1: i32 = @intFromFloat(@floor(wx + COLLISION_RADIUS));
-    const by0: i32 = @intFromFloat(@floor(wy - COLLISION_RADIUS));
-    const by1: i32 = @intFromFloat(@floor(wy + COLLISION_RADIUS));
-    const bz0: i32 = @intFromFloat(@floor(wz - COLLISION_RADIUS));
-    const bz1: i32 = @intFromFloat(@floor(wz + COLLISION_RADIUS));
+    const bx0: i32 = @intFromFloat(@floor(wx - CollisionRadius));
+    const bx1: i32 = @intFromFloat(@floor(wx + CollisionRadius));
+    const by0: i32 = @intFromFloat(@floor(wy - CollisionRadius));
+    const by1: i32 = @intFromFloat(@floor(wy + CollisionRadius));
+    const bz0: i32 = @intFromFloat(@floor(wz - CollisionRadius));
+    const bz1: i32 = @intFromFloat(@floor(wz + CollisionRadius));
+
+    const dims = World.data.dims;
+    const max_x: i32 = @intCast(dims.length);
+    const max_y: i32 = @intCast(dims.height);
+    const max_z: i32 = @intCast(dims.depth);
 
     var bx = bx0;
     while (bx <= bx1) : (bx += 1) {
-        if (bx < 0 or bx >= c.WorldLength) continue;
+        if (bx < 0 or bx >= max_x) continue;
         var by = by0;
         while (by <= by1) : (by += 1) {
-            if (by < 0 or by >= c.WorldHeight) continue;
+            if (by < 0 or by >= max_y) continue;
             var bz = bz0;
             while (bz <= bz1) : (bz += 1) {
-                if (bz < 0 or bz >= c.WorldDepth) continue;
+                if (bz < 0 or bz >= max_z) continue;
                 const id = World.get_block(@intCast(bx), @intCast(by), @intCast(bz));
-                if (collision.block_height(id) > 0.0) return true;
+                if (id.collision_height() > 0.0) return true;
             }
         }
     }
     return false;
 }
 
-/// Match chunk/cross-plant shadowing for the voxel containing a particle.
-/// Out-of-world positions are treated as sunlit, matching face_sunlit.
 fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
     const bx: i32 = @intFromFloat(@floor(wx));
     const by: i32 = @intFromFloat(@floor(wy));
     const bz: i32 = @intFromFloat(@floor(wz));
-    if (bx < 0 or bx >= c.WorldLength) return true;
-    if (by < 0 or by >= c.WorldHeight) return true;
-    if (bz < 0 or bz >= c.WorldDepth) return true;
+    const dims = World.data.dims;
+    if (bx < 0 or bx >= @as(i32, @intCast(dims.length))) return true;
+    if (by < 0 or by >= @as(i32, @intCast(dims.height))) return true;
+    if (bz < 0 or bz >= @as(i32, @intCast(dims.depth))) return true;
     return World.is_sunlit(@intCast(bx), @intCast(by), @intCast(bz));
 }
 
-// --- Rendering ---
-
-pub fn draw(self: *Self) void {
-    if (self.count == 0) return;
-    const m = Math.Mat4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE);
-    self.mesh.draw(&m);
+pub fn draw(self: *ParticleSystem) void {
+    self.billboards.draw();
 }
 
-fn rebuild_mesh(self: *Self, camera: *const Camera) void {
-    self.mesh_data.clear_retaining_capacity();
-    if (self.count == 0) return;
-
-    // Camera basis for billboarding. Right is yaw-only so the quad never
-    // rolls when the player tilts; up tilts with pitch so the quad still
-    // faces the camera when looking up or down.
-    //   forward = (-sin(yaw)*cos(pitch), -sin(pitch), -cos(yaw)*cos(pitch))
-    //   right   = ( cos(yaw),            0,           -sin(yaw))
-    //   up = right x forward
-    //         = (-sin(yaw)*sin(pitch), cos(pitch), -cos(yaw)*sin(pitch))
-    const cy = @cos(camera.yaw);
-    const sy = @sin(camera.yaw);
-    const cp = @cos(camera.pitch);
-    const sp = @sin(camera.pitch);
-    const rx = cy * HALF_SIZE;
-    const rz = -sy * HALF_SIZE;
-    const upx = -sy * sp * HALF_SIZE;
-    const upy = cp * HALF_SIZE;
-    const upz = -cy * sp * HALF_SIZE;
-
-    var i: u16 = 0;
-    while (i < self.count) : (i += 1) {
-        emit_particle(&self.mesh_data, &self.particles[i], rx, rz, upx, upy, upz);
-    }
-    self.mesh.update(&self.mesh_data);
+fn rebuild_mesh(self: *ParticleSystem, camera: *const Camera) void {
+    const origin = Math.Vec3.new(@floor(camera.x), @floor(camera.y), @floor(camera.z));
+    self.billboards.begin(origin, camera.billboard_basis()) catch unreachable;
+    for (self.particles[0..self.count]) |*particle| self.emit_particle(particle);
 }
 
-/// Append the 6 verts (two triangles) of one billboarded particle quad.
-/// `rx`/`rz` is the camera-right vector (XZ only, pre-scaled by HALF_SIZE);
-/// `(upx,upy,upz)` is camera-up (pre-scaled). Capacity is reserved in init.
-fn emit_particle(
-    mesh: *Rendering.MeshData(Vertex),
-    p: *const Particle,
-    rx: f32,
-    rz: f32,
-    upx: f32,
-    upy: f32,
-    upz: f32,
-) void {
-    // Corners of the quad in world space, CCW from the camera:
-    //   v0 bottom-left  (-r - up)
-    //   v1 bottom-right ( r - up)
-    //   v2 top-right    ( r + up)
-    //   v3 top-left     (-r + up)
-    // Shards render a touch darker than full-bright block faces so they read
-    // as debris rather than bright specks against the broken voxel.
+fn emit_particle(self: *ParticleSystem, particle: *const Particle) void {
+    const position = Math.Vec3.new(particle.px, particle.py, particle.pz);
+    const local = position.sub(self.billboards.origin);
+    // Keep the existing conservative range cull without ending simulation.
+    if (!encodable(local.x) or !encodable(local.y) or !encodable(local.z)) return;
+
     const base: u32 = 0xFF999999;
-    const color: u32 = if (point_sunlit(p.px, p.py, p.pz)) base else face_mod.apply_shadow(base);
-
-    const v0 = make_vertex(p.px - rx - upx, p.py - upy, p.pz - rz - upz, p.u0, p.v1, color);
-    const v1 = make_vertex(p.px + rx - upx, p.py - upy, p.pz + rz - upz, p.u1, p.v1, color);
-    const v2 = make_vertex(p.px + rx + upx, p.py + upy, p.pz + rz + upz, p.u1, p.v0, color);
-    const v3 = make_vertex(p.px - rx + upx, p.py + upy, p.pz - rz + upz, p.u0, p.v0, color);
-
-    mesh.add_quad_assume_capacity(v0, v1, v2, v3);
-}
-
-fn make_vertex(wx: f32, wy: f32, wz: f32, u: i16, v: i16, color: u32) Vertex {
-    return .{
-        .pos = .{ encode(wx), encode(wy), encode(wz) },
-        .uv = .{ u, v },
+    const color = if (point_sunlit(particle.px, particle.py, particle.pz)) base else face_mod.apply_shadow(base);
+    self.billboards.add(.{
+        .position = position,
+        .size = .{ HalfSize * 2, HalfSize * 2 },
+        .uv = .{ .min = .{ particle.u0, particle.v0 }, .max = .{ particle.u1, particle.v1 } },
         .color = color,
+    }) catch |err| switch (err) {
+        error.PositionOutOfRange => return,
+        else => unreachable,
     };
 }
 
-/// True when the world coordinate - plus billboard offsets - can be
-/// losslessly encoded into an i16.  The billboard corners are at most
-/// 2 * HALF_SIZE away from the particle center on any axis, so we
-/// shrink the safe window by that margin.
-fn encodable(world: f32) bool {
-    const margin = 2.0 * HALF_SIZE * POS_SCALE; // billboard corner offset in scaled units
-    const scaled = @round(world * POS_SCALE);
+fn encodable(local: f32) bool {
+    const margin = 2.0 * HalfSize * PosScale;
+    const scaled: f32 = @floatFromInt(effect_positions.encoding.encode_component(local) catch return false);
     return scaled >= -32768.0 + margin and scaled <= 32767.0 - margin;
 }
 
-fn encode(world: f32) i16 {
-    return @intFromFloat(@round(world * POS_SCALE));
+test "particles survive and render across 512 block worlds" {
+    const allocator = std.testing.allocator;
+    try World.data.init_in_place(allocator, core.world_dims.WorldDims.init(512, 128, 512), 0);
+    defer World.data.deinit();
+
+    // Exercise CPU simulation and mesh generation without a graphics context.
+    var particles: ParticleSystem = .{
+        .billboards = try Rendering.BillboardBatcher.init(allocator, .{
+            .capacity = MaxParticles,
+            .units_per_world_unit = PosScale,
+            .normalization = effect_positions.encoding.normalization,
+        }),
+        .atlas = TextureAtlas.init_grid(16, 16),
+        .particles = undefined,
+        .count = 0,
+        .rng = std.Random.DefaultPrng.init(0xC0FFEE),
+    };
+    defer particles.billboards.deinit();
+
+    const positions = [_][2]u16{ .{ 0, 0 }, .{ 255, 255 }, .{ 256, 32 }, .{ 32, 256 }, .{ 256, 256 }, .{ 511, 511 } };
+    const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
+    for (positions) |pos| {
+        const bx, const bz = pos;
+        const x: f32 = @floatFromInt(bx);
+        const z: f32 = @floatFromInt(bz);
+        // Only the world-space spawn column is shaded.
+        @memset(World.data.light_map, 0);
+        World.data.light_map[@as(usize, bz) * 512 + bx] = 128;
+        particles.spawn_break(.stone, bx, 64, bz);
+        particles.update_particles(1.0 / 60.0);
+        try std.testing.expectEqual(PerBreak, particles.count);
+
+        for ([_]f32{ 0.0, 1.75, -2.5 }) |camera_offset| {
+            var camera = Camera.init(x + camera_offset, 65.5, z - camera_offset);
+            particles.rebuild_mesh(&camera);
+            try std.testing.expectEqual(PerBreak * verts_per_quad, particles.billboards.data.vertices.items.len);
+            for (particles.particles[0..particles.count], 0..) |p, i| {
+                const vertices = particles.billboards.data.vertices.items[i * verts_per_quad ..][0..3];
+                const expected = [_][3]f32{
+                    .{ p.px - HalfSize, p.py - HalfSize, p.pz },
+                    .{ p.px + HalfSize, p.py - HalfSize, p.pz },
+                    .{ p.px + HalfSize, p.py + HalfSize, p.pz },
+                };
+                const origin = particles.billboards.origin;
+                for (vertices, expected) |vertex, corner| {
+                    for (vertex.pos, corner, [3]f32{ origin.x, origin.y, origin.z }) |encoded, world, offset| {
+                        const decoded = @as(f32, @floatFromInt(encoded)) / PosScale + offset;
+                        try std.testing.expectApproxEqAbs(world, decoded, 0.5 / PosScale);
+                    }
+                    try std.testing.expectEqual(face_mod.apply_shadow(0xFF999999), vertex.color);
+                }
+            }
+        }
+
+        var camera = Camera.init(x + 512.0, 65.5, z);
+        particles.rebuild_mesh(&camera);
+        try std.testing.expectEqual(0, particles.billboards.data.vertices.items.len);
+        try std.testing.expectEqual(PerBreak, particles.count);
+        camera.x = x;
+        particles.rebuild_mesh(&camera);
+        try std.testing.expectEqual(PerBreak * verts_per_quad, particles.billboards.data.vertices.items.len);
+
+        particles.update_particles(LifetimeMax);
+        particles.rebuild_mesh(&camera);
+        try std.testing.expectEqual(0, particles.count);
+        try std.testing.expectEqual(0, particles.billboards.data.vertices.items.len);
+    }
 }

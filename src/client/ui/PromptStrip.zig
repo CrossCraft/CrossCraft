@@ -1,164 +1,105 @@
-//! Portable controller / KB+M prompt strip renderer.
-//!
-//! Given an array of Prompt entries, draws each as [glyph(s)] [label] laid
-//! out left-to-right with consistent padding.  The caller owns the batchers
-//! and the glyphs texture reference, so both the in-game HUD and any menu
-//! Screen can render prompts without duplicating layout math.
-
-const std = @import("std");
+//! CrossCraft prompt wording/artwork over Aether's generic prompt layout.
 const ae = @import("aether");
-const Rendering = ae.Rendering;
-
+const caps = @import("capabilities").ClientType(ae);
 const Buttons = @import("Buttons.zig");
-const FontBatcher = ae.UI.FontBatcher;
-const UiDrawList = @import("UiDrawList.zig");
-const layout = ae.UI.layout;
 const Options = @import("../Options.zig");
 const Colors = @import("../graphics/Color.zig");
-
-pub const Anchor = layout.Anchor;
-
-pub const Prompt = struct {
-    /// Physical buttons drawn left-to-right.  [1] is null for the common
-    /// single-button case; set both for chords (PSP L+R for "inventory").
-    chord: [2]?Buttons.Button,
-    /// Text shown immediately after the final glyph.
-    label: []const u8,
-    /// Optional ASCII string drawn centered on top of the glyph, used by
-    /// KB+M BlankKey prompts (e.g. "B" for inventory, "T" for chat).  The
-    /// slice must outlive the FontBatcher flush, so pass a string literal.
-    letter_overlay: ?[]const u8 = null,
-};
-
-comptime {
-    // Guard against accidental Prompt bloat -- PSP-friendly budget.
-    std.debug.assert(@sizeOf(Prompt) <= 64);
-}
-
-/// True when prompt strips should render at all.  `.off` in Options means
-/// the user wants a minimal UI without glyph hints anywhere.
+const UiDrawList = @import("UiDrawList.zig");
+const Screen = @import("Screen.zig");
+const Input = ae.Core.input;
+pub const Anchor = ae.Ui.Anchor;
+pub const Prompt = struct { chord: [2]?Buttons.Button, label: []const u8, letter_overlay: ?[]const u8 = null };
+pub const DefaultPosX: i16 = 20;
+pub const DefaultPosY: i16 = caps.ui.prompt_y;
 pub fn enabled() bool {
     return Options.current.controller_tooltips != .off;
 }
-
-// --- Layout constants (logical pixels) ---
-
-/// Canonical bottom-left offset used by every prompt strip site (menu
-/// screens and the in-game HUD) so the strip lands in the same visual
-/// spot across platforms and modes.  Reference layout was (20, 23) in
-/// 480x272 PSP-native space; x carries over unchanged (left margin
-/// reads the same on both targets), y scales to 20 in the 400x240
-/// reference.  Kept in one place so a tweak here moves every strip.
-pub const DEFAULT_POS_X: i16 = 20;
-pub const DEFAULT_POS_Y: i16 = 23 - if (@import("aether").platform == .psp) 8 else 16;
-
-const GLYPH_PAD: i16 = 4; // glyph -> its label
-const ENTRY_PAD: i16 = 12; // previous label -> next glyph
-const CHORD_PAD: i16 = 2; // glyph -> next glyph inside a chord
-
-/// Draw `prompts` as a horizontal strip starting at (`pos_x`, `pos_y`)
-/// relative to `anchor`.  `y_base` behaves like a bottom offset: the
-/// glyph sits `y_base` above the reference edge when `anchor` is one of
-/// the `bottom_*` variants.  Sprite / text layers are passed explicitly
-/// so callers can slot the strip into the appropriate Z band. `fonts`
-/// is borrowed read-only for `string_width`. Returns silently if
-/// `enabled()` is false or `prompts.len == 0`.
-pub fn draw_into(
-    list: *UiDrawList,
-    glyphs_tex: *const Rendering.Texture,
-    fonts: *const FontBatcher,
-    prompts: []const Prompt,
-    anchor: Anchor,
-    pos_x: i16,
-    y_base: i16,
-    sprite_layer: u8,
-    text_layer: u8,
-) void {
-    if (!enabled() or prompts.len == 0) return;
-
-    const style = Buttons.resolve_style();
-    const y_offset = Buttons.glyph_y_offset();
-
-    var cursor_x: i16 = pos_x;
-    for (prompts, 0..) |p, i| {
-        if (i > 0) cursor_x += ENTRY_PAD;
-        draw_one_into(
-            list,
-            &p,
-            style,
-            y_offset,
-            glyphs_tex,
-            fonts,
-            anchor,
-            &cursor_x,
-            y_base,
-            sprite_layer,
-            text_layer,
-        );
-    }
-}
-
-fn draw_one_into(
-    list: *UiDrawList,
-    prompt: *const Prompt,
+const Provider = struct {
+    texture: *const ae.Rendering.Texture,
     style: Buttons.Style,
-    y_offset: i16,
-    glyphs_tex: *const Rendering.Texture,
-    fonts: *const FontBatcher,
-    anchor: Anchor,
-    cursor_x: *i16,
-    y_base: i16,
-    sprite_layer: u8,
-    text_layer: u8,
-) void {
-    const glyph_y = y_base - y_offset;
-
-    var last_rect: Buttons.Rect = undefined;
-    for (prompt.chord, 0..) |maybe_btn, idx| {
-        const btn = maybe_btn orelse continue;
-        if (idx > 0) cursor_x.* += CHORD_PAD;
-        const rect = Buttons.lookup(btn, style);
-        last_rect = rect;
-        list.add_sprite(&.{
-            .texture = glyphs_tex,
-            .pos_offset = .{ .x = cursor_x.*, .y = -glyph_y },
-            .pos_extent = .{ .x = rect.render_w, .y = rect.render_h },
-            .tex_offset = .{ .x = rect.tex_x, .y = rect.tex_y },
-            .tex_extent = .{ .x = rect.tex_w, .y = rect.tex_h },
-            .color = Colors.white_fg,
-            .layer = sprite_layer,
-            .reference = anchor,
-            .origin = .bottom_left,
-        });
-        if (prompt.letter_overlay) |overlay| {
-            list.add_text(&.{
-                .str = overlay,
-                .pos_x = cursor_x.* + @divTrunc(rect.render_w, 2),
-                .pos_y = -(glyph_y + @divTrunc(rect.render_h, 2) - 1),
-                .color = Colors.white_fg,
-                .shadow_color = Colors.menu_gray,
-                .spacing = 0,
-                .layer = text_layer,
-                .reference = anchor,
-                .origin = .middle_center,
-            });
-        }
-        cursor_x.* += rect.render_w;
+    overlay: ?[]const u8,
+    fn glyph(context: *anyopaque, source: Input.BindingSource, _: Input.InputMode) ?ae.Ui.PromptStrip.Glyph {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        const button: Buttons.Button = switch (source) {
+            .key => |key| switch (key) {
+                .Enter => .EnterKey,
+                .Escape => .EscapeKey,
+                else => .BlankKey,
+            },
+            .mouse_button => |button| if (button == .Left) .Lmb else .Rmb,
+            .gamepad_axis => |axis| switch (axis) {
+                .LeftX => .LStick,
+                .RightX => .RStick,
+                .LeftTrigger => .LTrigger,
+                .RightTrigger => .RTrigger,
+                else => return null,
+            },
+            .gamepad_button => |button| switch (button) {
+                .A => .A,
+                .B => .B,
+                .X => .X,
+                .Y => .Y,
+                .DpadUp => .DpadUp,
+                .DpadDown => .DpadDown,
+                .DpadLeft => .DpadLeft,
+                .DpadRight => .DpadRight,
+                .LButton => .LButton,
+                .RButton => .RButton,
+                .Start => .Start,
+                .Back => .Select,
+                .Guide => .Home,
+                else => return null,
+            },
+            else => return null,
+        };
+        const rect = Buttons.lookup(button, self.style);
+        return .{ .texture = self.texture, .region = .{ .x = rect.tex_x, .y = rect.tex_y, .w = rect.tex_w, .h = rect.tex_h }, .width = rect.render_w, .height = rect.render_h, .overlay = self.overlay };
     }
-
-    const kbm_label_nudge: i16 = if (style == .kbm) 1 else 0;
-    const label_y_center: i16 = y_base + @divTrunc(last_rect.render_h, 2) - 1 - kbm_label_nudge;
-    cursor_x.* += GLYPH_PAD;
-    list.add_text(&.{
-        .str = prompt.label,
-        .pos_x = cursor_x.*,
-        .pos_y = -label_y_center,
-        .color = Colors.white_fg,
-        .shadow_color = Colors.menu_gray,
-        .spacing = 0,
-        .layer = text_layer,
-        .reference = anchor,
-        .origin = .middle_left,
-    });
-    cursor_x.* += fonts.string_width(prompt.label, 0, 1);
+};
+fn binding_source(button: Buttons.Button) Input.BindingSource {
+    return switch (button) {
+        .EnterKey => .{ .key = .Enter },
+        .EscapeKey => .{ .key = .Escape },
+        .BlankKey => .{ .key = .Space },
+        .Lmb => .{ .mouse_button = .Left },
+        .Rmb => .{ .mouse_button = .Right },
+        .LStick => .{ .gamepad_axis = .LeftX },
+        .RStick => .{ .gamepad_axis = .RightX },
+        .LTrigger => .{ .gamepad_axis = .LeftTrigger },
+        .RTrigger => .{ .gamepad_axis = .RightTrigger },
+        .A => .{ .gamepad_button = .A },
+        .B => .{ .gamepad_button = .B },
+        .X => .{ .gamepad_button = .X },
+        .Y => .{ .gamepad_button = .Y },
+        .DpadUp => .{ .gamepad_button = .DpadUp },
+        .DpadDown => .{ .gamepad_button = .DpadDown },
+        .DpadLeft => .{ .gamepad_button = .DpadLeft },
+        .DpadRight => .{ .gamepad_button = .DpadRight },
+        .LButton => .{ .gamepad_button = .LButton },
+        .RButton => .{ .gamepad_button = .RButton },
+        .Start => .{ .gamepad_button = .Start },
+        .Select => .{ .gamepad_button = .Back },
+        .Home => .{ .gamepad_button = .Guide },
+    };
+}
+pub fn draw_into(list: *UiDrawList, texture: *const ae.Rendering.Texture, font: *const ae.Ui.FontBatcher, prompts: []const Prompt, anchor: Anchor, pos_x: i16, y_base: i16, _: u8, _: u8) void {
+    if (!enabled()) return;
+    const screen = Screen.logical_rect();
+    const reference = ae.Ui.layout.anchor_point(anchor, screen.width(), screen.height());
+    var x = reference.x + pos_x;
+    const style = Buttons.resolve_style();
+    for (prompts, 0..) |prompt, index| {
+        if (index > 0) x += 12;
+        var sources: [2]Input.BindingSource = undefined;
+        var count: usize = 0;
+        var height: i16 = 8;
+        for (prompt.chord) |optional| if (optional) |button| {
+            sources[count] = binding_source(button);
+            count += 1;
+            height = Buttons.lookup(button, style).render_h;
+        };
+        var provider: Provider = .{ .texture = texture, .style = style, .overlay = prompt.letter_overlay };
+        x += ae.Ui.PromptStrip.draw(list.native(), font, .{ .context = &provider, .get = Provider.glyph }, &.{.{ .chord = sources[0..count], .label = prompt.label }}, .{ .origin = .{ .x = x, .y = reference.y - y_base - height }, .height = height, .chord_separator = "", .chord_gap = 2, .label_gap = 4, .glyph_offset_y = Buttons.glyph_y_offset(), .text_offset_y = 1 + @as(i16, if (style == .kbm) 1 else 0), .shadow_color = Colors.menu_gray }) catch @panic("Prompt command capacity exhausted");
+    }
+    list.count = list.native().count;
 }

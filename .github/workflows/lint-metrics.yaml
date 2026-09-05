@@ -1,0 +1,86 @@
+name: Lint metrics
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-metrics-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    name: collect lint metrics
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Cache Zig packages
+        id: zig-pkg-cache
+        uses: actions/cache@v5
+        with:
+          path: zig-pkg
+          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          enableCrossOsArchive: true
+
+      # Keep this cache complete even when this shorter workflow wins the
+      # first-write race with the main CI workflow after a manifest change.
+      - name: Fetch Zig packages
+        if: steps.zig-pkg-cache.outputs.cache-hit != 'true'
+        run: zig build --fetch=all
+
+      - name: Collect lint metrics
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build lint-metrics -Dskip-pack=true > lint-metrics.json
+          jq -e '
+            .files_analyzed == (.files | length) and
+            .files_skipped >= 0 and
+            .total.nsloc >= 0 and
+            .total.assertions >= 0 and
+            (.total.assertion_percentage | type == "number") and
+            (.total.assertions_per_knsloc | type == "number")
+          ' lint-metrics.json >/dev/null
+          jq -n \
+            --argjson number "$PR_NUMBER" \
+            --arg head_ref "$PR_HEAD_REF" \
+            --arg head_repository "$PR_HEAD_REPOSITORY" \
+            --arg head_sha "$PR_HEAD_SHA" \
+            --slurpfile metrics lint-metrics.json \
+            '{
+              schema_version: 1,
+              pull_request: {
+                number: $number,
+                head_ref: $head_ref,
+                head_repository: $head_repository,
+                head_sha: $head_sha
+              },
+              metrics: $metrics[0]
+            }' > lint-metrics-report.json
+
+      - name: Upload lint metrics
+        uses: actions/upload-artifact@v7
+        with:
+          name: lint-metrics-${{ github.event.pull_request.number }}
+          path: lint-metrics-report.json
+          if-no-files-found: error
+          retention-days: 1

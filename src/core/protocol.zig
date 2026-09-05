@@ -1,0 +1,163 @@
+const std = @import("std");
+const assert = std.debug.assert;
+const zb = @import("protocol");
+const Block = @import("blocks.zig").Block;
+
+const Writer = std.Io.Writer;
+
+pub const Message = @FieldType(zb.Message, "message");
+
+pub fn packet_length_to_server(packet_id: u8) !u8 {
+    return switch (packet_id) {
+        0x00 => 131, // PlayerIDToServer
+        0x05 => 9, // SetBlockToServer
+        0x08 => 10, // PositionAndOrientationToServer
+        0x0D => 66, // Message
+        else => return error.InvalidPacketID,
+    };
+}
+
+pub fn packet_length_to_client(packet_id: u8) !u16 {
+    return switch (packet_id) {
+        0x00 => 131, // PlayerIDToClient
+        0x01 => 1, // Ping
+        0x02 => 1, // LevelInitialize
+        0x03 => 1028, // LevelDataChunk
+        0x04 => 7, // LevelFinalize
+        0x06 => 8, // SetBlockToClient
+        0x07 => 74, // SpawnPlayer
+        0x08 => 10, // SetPositionOrientation
+        0x0C => 2, // DespawnPlayer
+        0x0D => 66, // Message
+        0x0E => 65, // DisconnectPlayer
+        0x0F => 2, // UpdatePlayerType
+        else => return error.InvalidPacketID,
+    };
+}
+
+pub fn send_player_id_to_server(writer: *Writer, username: []const u8) !void {
+    var packet = zb.PlayerIDToServer{
+        .protocol_version = 0x07,
+        .username = padded_string(username),
+        .key = @splat(' '),
+        .extension = 0,
+    };
+    try packet.write(writer);
+}
+
+pub fn send_position_to_server(writer: *Writer, pid: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) !void {
+    var packet = zb.PositionAndOrientationToServer{
+        .pid = pid,
+        .x = x,
+        .y = y,
+        .z = z,
+        .yaw = yaw,
+        .pitch = pitch,
+    };
+    try packet.write(writer);
+}
+
+pub fn send_set_block_to_server(writer: *Writer, x: u16, y: u16, z: u16, mode: u8, block: Block) !void {
+    assert(mode == 0 or mode == 1);
+    var packet = zb.SetBlockToServer{
+        .x = x,
+        .y = y,
+        .z = z,
+        .mode = mode,
+        .block = @intFromEnum(block),
+    };
+    try packet.write(writer);
+}
+
+pub fn send_player_id_to_client(writer: *Writer, server_name: *const [64]u8, server_motd: *const [64]u8, is_op: bool) !void {
+    var packet = zb.PlayerIDToClient{
+        .protocol_version = 0x07,
+        .server_name = server_name.*,
+        .server_motd = server_motd.*,
+        .user_type = if (is_op) .op else .normal,
+    };
+    try packet.write(writer);
+}
+
+pub fn send_update_player_type_to_client(writer: *Writer, is_op: bool) !void {
+    var packet: zb.UpdatePlayerType = .{
+        .mode = if (is_op) .op else .normal,
+    };
+    try packet.write(writer);
+}
+
+pub fn send_disconnect_to_client(writer: *Writer, reason: []const u8) !void {
+    var packet: zb.DisconnectPlayer = .{
+        .reason = padded_string(reason),
+    };
+    try packet.write(writer);
+    try writer.flush();
+}
+
+pub fn send_spawn_to_client(writer: *Writer, packet: *zb.SpawnPlayer) !void {
+    try packet.write(writer);
+}
+
+pub fn send_despawn_to_client(writer: *Writer, id: i8) !void {
+    assert(id >= 0);
+    var packet = zb.DespawnPlayer{ .pid = id };
+    try packet.write(writer);
+}
+
+pub fn send_position_to_client(writer: *Writer, id: i8, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) !void {
+    var packet = zb.SetPositionOrientation{
+        .pid = id,
+        .x = x,
+        .y = y,
+        .z = z,
+        .yaw = yaw,
+        .pitch = pitch,
+    };
+    try packet.write(writer);
+}
+
+pub fn send_block_change_to_client(writer: *Writer, x: u16, y: u16, z: u16, block: Block) !void {
+    var packet = zb.SetBlockToClient{
+        .x = x,
+        .y = y,
+        .z = z,
+        .block = @intFromEnum(block),
+    };
+    try packet.write(writer);
+}
+
+pub fn send_level_chunk_to_client(writer: *Writer, length: u16, data: *const [1024]u8, percent: u8) !void {
+    assert(length <= data.len);
+    assert(percent <= 100);
+    var packet = zb.LevelDataChunk{
+        .length = length,
+        .data = data.*,
+        .percent = percent,
+    };
+    try packet.write(writer);
+}
+
+pub fn send_level_finalize_to_client(writer: *Writer, x: u16, y: u16, z: u16) !void {
+    assert(@import("world_dims.zig").WorldDims.valid(.{ x, y, z }));
+    var packet = zb.LevelFinalize{
+        .x = x,
+        .y = y,
+        .z = z,
+    };
+    try packet.write(writer);
+}
+
+pub fn send_message(writer: *Writer, pid: i8, message: []const u8) !void {
+    var packet = zb.Message{
+        .pid = pid,
+        .message = padded_string(message),
+    };
+    try packet.write(writer);
+}
+
+pub fn padded_string(value: []const u8) [64]u8 {
+    var out: [64]u8 = @splat(' ');
+    const len = @min(value.len, out.len);
+    @memcpy(out[0..len], value[0..len]);
+    return out;
+}

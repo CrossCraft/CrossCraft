@@ -1,22 +1,13 @@
-/// Centralised resource ownership for all game states.
-///
-/// Resources are identified by typed enums (`Tex`, future `Sound`/`Music`)
-/// and loaded on demand from the open Zip archive. Each state declares
-/// its required set via `apply_tex_set`; unneeded resources are freed
-/// automatically. The Zip stays open for the lifetime of the program,
-/// enabling future resource-pack switching (close old, open new, reload).
-const ResourcePack = @This();
-
+/// Game asset names and animation policy over Aether's staged resource store.
 const SoundManager = @import("SoundManager.zig");
-
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Rendering = ae.Rendering;
 const Image = ae.Util.Image;
-const Zip = @import("util/Zip.zig");
+const Zip = ae.Util.Zip;
 const TextureAtlas = @import("graphics/TextureAtlas.zig").TextureAtlas;
-
-// --- texture identifiers ---
 
 pub const Tex = enum(u8) {
     dirt,
@@ -46,390 +37,263 @@ fn tex_path(id: Tex) []const u8 {
         .water_still => "crosscraft/textures/water_still",
         .lava_still => "crosscraft/textures/lava_still",
         .char => "minecraft/textures/char",
-        .glyphs => if (@import("aether").platform == .psp)
-            "crosscraft/textures/interface/controller_glyphs/psp"
-        else
-            "crosscraft/textures/interface/controller_glyphs/pc",
+        .glyphs => caps.resources.glyph_texture,
         .rain => "minecraft/textures/rain",
         .particles => "minecraft/textures/particles",
     };
 }
 
-// --- storage ---
+const asset_paths: [Tex.count][]const u8 = blk: {
+    var paths: [Tex.count][]const u8 = undefined;
+    for (0..Tex.count) |i| paths[i] = "assets/" ++ tex_path(@enumFromInt(i)) ++ ".png";
+    break :blk paths;
+};
+const Animation = struct { image: Image.Image, flipbook: Rendering.Flipbook };
+const Asset = union(enum) { texture: Rendering.Texture, animation: Animation };
+const Store = ae.Resources.AssetStore(Asset);
+var assets: Store = undefined;
+var active_mask: u16 = 0;
 
-var textures: [Tex.count]Rendering.Texture = undefined;
-var tex_loaded: u16 = 0;
-var anim_images: [Tex.count]Image.Image = undefined;
-var anim_loaded: u16 = 0;
-
-pub var atlas: TextureAtlas = undefined;
-var alloc: std.mem.Allocator = undefined;
+pub const atlas = TextureAtlas.init_grid(16, 16);
 var pack: *Zip = undefined;
-
-/// Backing store for the path of the currently-open archive. Owned here so
-/// other systems (e.g. SoundManager) can re-open the same file by absolute
-/// name when they need a private file handle.
+const archive_options: Zip.Options = .{
+    // Keep one reader available for textures while all game voices are active.
+    .max_streams = caps.audio.max_voices + 1,
+    // Two compressed audio voices plus one texture/animation decoder.
+    .max_deflate_streams = 3,
+};
 const max_pack_path_len: usize = 256;
 var pack_path_buf: [max_pack_path_len]u8 = undefined;
 var pack_path_len: usize = 0;
-/// Dir the current pack was opened against. Recorded by `init`/`switch_pack`
-/// so later operations (texture reload, audio stream reopen) don't have to
-/// thread a Dir through every call site.
 var pack_dir: std.Io.Dir = undefined;
-
 const log = std.log.scoped(.respack);
-
-// --- animation state ---
-
 const tile_size: u32 = 16;
 const water_tile_col: u32 = 14;
 const water_tile_row: u32 = 0;
 const lava_tile_col: u32 = 14;
 const lava_tile_row: u32 = 1;
 const anim_period_ticks: u32 = 2;
-
 var anim_tick: u32 = 0;
 var pack_initialized: bool = false;
 
-// --- lifecycle ---
-
-/// Open the resource pack at `path` (resolved against `dir`) and prepare
-/// for texture loading. Safe to call multiple times -- subsequent calls
-/// are no-ops so MenuState.init can be re-entered after a disconnect
-/// without leaking the already-open Zip.
-///
-/// Pass `engine.dirs.resources` for the bundled default pack or
-/// `engine.dirs.data` (with a `texturepacks/...` path) for a
-/// user-installed pack. `dir` is captured for the lifetime of the pack
-/// so later `switch_pack` calls can rebind without taking a new `dir`
-/// parameter.
-pub fn init(
-    render_alloc: std.mem.Allocator,
-    game_alloc: std.mem.Allocator,
-    io: std.Io,
-    dir: std.Io.Dir,
-    path: []const u8,
-) !void {
+/// Open a pack relative to dir. Repeated calls keep the current pack open.
+pub fn init(render_alloc: std.mem.Allocator, game_alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) !void {
     if (pack_initialized) return;
-    std.debug.assert(path.len > 0 and path.len <= max_pack_path_len);
-    alloc = render_alloc;
-    tex_loaded = 0;
-    anim_loaded = 0;
+    assert(path.len > 0 and path.len <= max_pack_path_len);
+    pack = try Zip.init_options(game_alloc, io, dir, path, archive_options);
+    assets = Store.init(render_alloc, .{ .load = load_asset, .destroy = destroy_asset }, Tex.count);
+    active_mask = 0;
     anim_tick = 0;
-    pack = try Zip.init(game_alloc, io, dir, path);
     @memcpy(pack_path_buf[0..path.len], path);
     pack_path_len = path.len;
     pack_dir = dir;
     pack_initialized = true;
-    SoundManager.init();
+    SoundManager.init(pack);
 }
 
 pub fn deinit() void {
     if (!pack_initialized) return;
+    // Stop backend reads and release all owned audio sources before the archive.
     SoundManager.deinit();
-    var i: u8 = 0;
-    while (i < Tex.count) : (i += 1) {
-        if (tex_loaded & (@as(u16, 1) << @intCast(i)) != 0) {
-            textures[i].deinit(alloc);
-        }
-        if (anim_loaded & (@as(u16, 1) << @intCast(i)) != 0) {
-            anim_images[i].deinit(alloc);
-        }
-    }
-    tex_loaded = 0;
-    anim_loaded = 0;
+    assets.deinit();
+    active_mask = 0;
     pack.deinit();
+    pack = undefined;
     pack_initialized = false;
 }
 
-// --- pack access ---
-
-pub fn get_pack() *Zip {
-    return pack;
-}
-
-pub fn get_pack_path() []const u8 {
-    return pack_path_buf[0..pack_path_len];
-}
-
-pub fn get_dir() std.Io.Dir {
-    return pack_dir;
-}
-
-/// Replace the active archive at `path` (resolved against `dir`),
-/// transparently re-loading every texture currently in the resident set
-/// so cached `*const Texture` pointers (kept alive in screens, font
-/// batchers, etc.) stay valid -- only the pixel data behind them
-/// changes. The new pack is fully validated and every required texture
-/// is loaded into a temporary array before the swap, so a malformed
-/// pack leaves the prior pack untouched.
-///
-/// Callers pick the dir based on source: `engine.dirs.resources` to go
-/// back to the bundled default pack; `engine.dirs.data` for a
-/// user-installed pack under `texturepacks/`.
+/// One union store stages both GPU textures and CPU animation images. Retained
+/// texture addresses survive a successful reload; failure leaves the active pack
+/// and sounds intact. Audio is restarted only after the asset commit succeeds.
 pub fn switch_pack(dir: std.Io.Dir, path: []const u8) !void {
-    std.debug.assert(pack_initialized);
-    std.debug.assert(path.len > 0 and path.len <= max_pack_path_len);
+    assert(pack_initialized);
+    assert(path.len > 0 and path.len <= max_pack_path_len);
+    if (dir.handle == pack_dir.handle and std.mem.eql(u8, path, pack_path_buf[0..pack_path_len])) return;
 
-    // Same dir + path -- nothing to do (avoids closing & reopening the file).
-    if (same_dir(dir, pack_dir) and
-        std.mem.eql(u8, path, pack_path_buf[0..pack_path_len])) return;
+    const replacement = try Zip.init_options(pack.allocator, pack.io, dir, path, archive_options);
+    errdefer replacement.deinit();
 
-    const game_alloc = pack.allocator;
-    const io_handle = pack.io;
-
-    var new_pack = try Zip.init(game_alloc, io_handle, dir, path);
-    errdefer new_pack.deinit();
-
-    // Stage replacements for every currently-resident texture before
-    // touching the live array. If any required asset is missing the
-    // previously loaded set stays in place.
-    var staged_textures: [Tex.count]Rendering.Texture = undefined;
-    var staged_tex_mask: u16 = 0;
-    var staged_anim_images: [Tex.count]Image.Image = undefined;
-    var staged_anim_mask: u16 = 0;
-
-    const old_pack = pack;
-    pack = new_pack;
-
-    var i: u8 = 0;
-    while (i < Tex.count) : (i += 1) {
-        const bit: u16 = @as(u16, 1) << @intCast(i);
-        if (tex_loaded & bit == 0) continue;
-        staged_textures[i] = load_texture_from_zip(@enumFromInt(i)) catch |err| {
-            log.warn("pack '{s}' missing {s}: {}", .{ path, @tagName(@as(Tex, @enumFromInt(i))), err });
-            // Roll back staged uploads and the pack swap.
-            free_staged_textures(&staged_textures, staged_tex_mask);
-            pack = old_pack;
-            new_pack.deinit();
-            return err;
-        };
-        staged_tex_mask |= bit;
+    var paths: [Tex.count][]const u8 = undefined;
+    var count: usize = 0;
+    for (0..Tex.count) |i| {
+        if (active_mask & (@as(u16, 1) << @intCast(i)) == 0) continue;
+        paths[count] = asset_paths[i];
+        count += 1;
     }
+    assets.apply(replacement.source(), paths[0..count]) catch |err| {
+        log.warn("cannot load pack '{s}': {}", .{ path, err });
+        return err;
+    };
 
-    i = 0;
-    while (i < Tex.count) : (i += 1) {
-        const bit: u16 = @as(u16, 1) << @intCast(i);
-        if (anim_loaded & bit == 0) continue;
-        staged_anim_images[i] = load_image_from_zip(@enumFromInt(i)) catch |err| {
-            log.warn("pack '{s}' missing {s}: {}", .{ path, @tagName(@as(Tex, @enumFromInt(i))), err });
-            free_staged_textures(&staged_textures, staged_tex_mask);
-            free_staged_anim_images(&staged_anim_images, staged_anim_mask);
-            pack = old_pack;
-            new_pack.deinit();
-            return err;
-        };
-        staged_anim_mask |= bit;
-    }
-
-    // Commit: free old GPU textures, install staged ones, reapply tags
-    // (force_resident, atlas regen) so transient state matches load_tex().
-    i = 0;
-    while (i < Tex.count) : (i += 1) {
-        const bit: u16 = @as(u16, 1) << @intCast(i);
-        if (staged_tex_mask & bit == 0) continue;
-        textures[i].deinit(alloc);
-        textures[i] = staged_textures[i];
-        switch (@as(Tex, @enumFromInt(i))) {
-            .terrain => {
-                textures[i].force_resident();
-                atlas = TextureAtlas.init(256, 256, 16, 16);
-            },
-            .logo => textures[i].force_resident(),
-            else => {},
-        }
-    }
-
-    i = 0;
-    while (i < Tex.count) : (i += 1) {
-        const bit: u16 = @as(u16, 1) << @intCast(i);
-        if (staged_anim_mask & bit == 0) continue;
-        anim_images[i].deinit(alloc);
-        anim_images[i] = staged_anim_images[i];
-    }
-
-    old_pack.deinit();
-
+    SoundManager.deinit();
+    pack.deinit();
+    pack = replacement;
     @memcpy(pack_path_buf[0..path.len], path);
     pack_path_len = path.len;
     pack_dir = dir;
-
-    SoundManager.deinit();
-    SoundManager.init();
-
+    SoundManager.init(pack);
     log.info("switched to pack '{s}'", .{path});
 }
 
-fn same_dir(a: std.Io.Dir, b: std.Io.Dir) bool {
-    return a.handle == b.handle;
-}
-
-// --- texture access ---
-
 pub fn get_tex(id: Tex) *const Rendering.Texture {
-    std.debug.assert(!is_anim_source(id));
-    const i = @intFromEnum(id);
-    std.debug.assert(tex_loaded & (@as(u16, 1) << @intCast(i)) != 0);
-    return &textures[i];
+    assert(!is_anim_source(id));
+    return &get_asset(id).texture;
 }
 
-pub fn load_tex(id: Tex) !void {
-    const i = @intFromEnum(id);
-    const bit: u16 = @as(u16, 1) << @intCast(i);
-    if (is_anim_source(id)) {
-        if (anim_loaded & bit != 0) return;
-        anim_images[i] = try load_image_from_zip(id);
-        anim_loaded |= bit;
-        return;
-    }
-
-    if (tex_loaded & bit != 0) return;
-    textures[i] = try load_texture_from_zip(id);
-    tex_loaded |= bit;
-
-    switch (id) {
-        .terrain => {
-            textures[i].force_resident();
-            atlas = TextureAtlas.init(256, 256, 16, 16);
-        },
-        .logo => textures[i].force_resident(),
-        else => {},
-    }
+fn get_asset(id: Tex) *Asset {
+    assert(active_mask & (@as(u16, 1) << @intCast(@intFromEnum(id))) != 0);
+    return assets.get(asset_paths[@intFromEnum(id)]).?;
 }
 
-pub fn unload_tex(id: Tex) void {
-    const i = @intFromEnum(id);
-    const bit: u16 = @as(u16, 1) << @intCast(i);
-    if (is_anim_source(id)) {
-        if (anim_loaded & bit == 0) return;
-        anim_images[i].deinit(alloc);
-        anim_loaded &= ~bit;
-        return;
-    }
-
-    if (tex_loaded & bit == 0) return;
-    textures[i].deinit(alloc);
-    tex_loaded &= ~bit;
-}
-
-/// Load every texture in `set`, then unload everything not in it.
-/// Phase 1 (load) may fail; phase 2 (unload) only runs on success so
-/// the previous resource set is preserved on error.
+/// Stage additions before dropping obsolete resources. Retained assets are not
+/// decoded or uploaded again when only the game state's requested set changes.
 pub fn apply_tex_set(set: []const Tex) !void {
-    for (set) |id| try load_tex(id);
-
-    var i: u8 = 0;
-    while (i < Tex.count) : (i += 1) {
-        var needed = false;
-        for (set) |s| {
-            if (@intFromEnum(s) == i) {
-                needed = true;
-                break;
-            }
-        }
-        if (!needed) unload_tex(@enumFromInt(i));
+    var paths: [Tex.count][]const u8 = undefined;
+    var count: usize = 0;
+    var requested_mask: u16 = 0;
+    for (set) |id| {
+        const bit = @as(u16, 1) << @intCast(@intFromEnum(id));
+        if (requested_mask & bit != 0) continue;
+        requested_mask |= bit;
+        paths[count] = asset_paths[@intFromEnum(id)];
+        count += 1;
     }
+    try assets.apply_options(pack.source(), paths[0..count], .{ .reload_existing = false });
+    active_mask = requested_mask;
 }
 
-// --- animation ---
-
-/// Advance fluid tile animations. Called every game tick; actually blits
-/// a new frame once every `anim_period_ticks` ticks.
 pub fn tick_animations() void {
-    const t_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.terrain);
-    const w_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.water_still);
-    const l_bit: u16 = @as(u16, 1) << @intFromEnum(Tex.lava_still);
-    std.debug.assert(tex_loaded & t_bit == t_bit);
-    std.debug.assert(anim_loaded & (w_bit | l_bit) == (w_bit | l_bit));
-
+    const terrain = &get_asset(.terrain).texture;
+    const water = &get_asset(.water_still).animation;
+    const lava = &get_asset(.lava_still).animation;
     anim_tick +%= 1;
     if (anim_tick % anim_period_ticks != 0) return;
-
-    const water = &anim_images[@intFromEnum(Tex.water_still)];
-    const lava = &anim_images[@intFromEnum(Tex.lava_still)];
-    const water_frames: u32 = water.height / tile_size;
-    const lava_frames: u32 = lava.height / tile_size;
-    const step = anim_tick / anim_period_ticks;
-
-    blit_frame(water, step % water_frames, water_tile_col, water_tile_row);
-    blit_frame(lava, ping_pong_frame(step, lava_frames), lava_tile_col, lava_tile_row);
-    textures[@intFromEnum(Tex.terrain)].update() catch {};
+    const step: f64 = @floatFromInt(anim_tick / anim_period_ticks);
+    blit_frame(terrain, water, step, water_tile_col, water_tile_row);
+    blit_frame(terrain, lava, step, lava_tile_col, lava_tile_row);
+    terrain.update() catch {};
 }
 
-// Ping-pong sequence: 0,1,...,N-1,N-2,...,1,0,1,... with period 2*(N-1).
-fn ping_pong_frame(step: u32, frames: u32) u32 {
-    if (frames <= 1) return 0;
-    const period = 2 * (frames - 1);
-    const s = step % period;
-    return if (s < frames) s else period - s;
-}
-
-fn blit_frame(
-    src: *const Image.Image,
-    frame: u32,
-    dst_col: u32,
-    dst_row: u32,
-) void {
-    const dst_x0 = dst_col * tile_size;
-    const dst_y0 = dst_row * tile_size;
-    const src_y0 = frame * tile_size;
-    var y: u32 = 0;
-    while (y < tile_size) : (y += 1) {
-        var x: u32 = 0;
-        while (x < tile_size) : (x += 1) {
-            const px = image_pixel(src, x, src_y0 + y);
-            textures[@intFromEnum(Tex.terrain)].set_pixel(dst_x0 + x, dst_y0 + y, px) catch {};
-        }
-    }
-}
-
-// --- helpers ---
-
-fn is_anim_source(id: Tex) bool {
-    return switch (id) {
-        .water_still, .lava_still => true,
-        else => false,
+fn blit_frame(destination: *Rendering.Texture, animation: *const Animation, step: f64, col: u32, row: u32) void {
+    const frame = animation.flipbook.frame_at(step) catch unreachable;
+    animation.flipbook.copy_to_texture(destination, animation.image.view(), frame, col * tile_size, row * tile_size) catch |err| {
+        log.warn("animation copy failed: {}", .{err});
     };
 }
 
-fn image_pixel(img: *const Image.Image, x: u32, y: u32) [4]u8 {
-    std.debug.assert(img.mode == .rgba8);
-    std.debug.assert(x < img.width);
-    std.debug.assert(y < img.height);
-    const offset = (@as(usize, y) * img.width + x) * 4;
-    return img.data[offset..][0..4].*;
+fn is_anim_source(id: Tex) bool {
+    return id == .water_still or id == .lava_still;
 }
 
-fn load_texture_from_zip(id: Tex) !Rendering.Texture {
-    var buf: [256]u8 = undefined;
-    const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{tex_path(id)});
-    var stream = try pack.open(path);
-    defer pack.close_stream(&stream);
-    return try Rendering.Texture.load_from_reader(alloc, stream.reader, &.{ .cpu_access = .read_write });
+fn load_asset(_: ?*anyopaque, allocator: std.mem.Allocator, path: []const u8, reader: *std.Io.Reader) !Asset {
+    const id: Tex = for (asset_paths, 0..) |candidate, i| {
+        if (std.mem.eql(u8, candidate, path)) break @enumFromInt(i);
+    } else return error.UnknownAsset;
+    if (is_anim_source(id)) {
+        const image = try Image.load_png_ex(allocator, allocator, reader, .rgba8);
+        return .{ .animation = try make_animation(allocator, image, if (id == .lava_still) .ping_pong else .loop) };
+    }
+    var texture = try Rendering.Texture.load_from_reader(allocator, reader, &.{ .cpu_access = .read_write });
+    errdefer texture.deinit(allocator);
+
+    // Animation destination regions must be valid before a staged set commits.
+    if (id == .terrain and (texture.width < (water_tile_col + 1) * tile_size or texture.height < (lava_tile_row + 1) * tile_size)) return error.InvalidTerrainTexture;
+    if (id == .terrain or id == .logo) texture.force_resident();
+    return .{ .texture = texture };
 }
 
-fn load_image_from_zip(id: Tex) !Image.Image {
-    var buf: [256]u8 = undefined;
-    const path = try std.fmt.bufPrint(&buf, "assets/{s}.png", .{tex_path(id)});
-    var stream = try pack.open(path);
-    defer pack.close_stream(&stream);
-    return try Image.load_png_ex(alloc, alloc, stream.reader, .rgba8);
-}
-
-fn free_staged_textures(staged: *[Tex.count]Rendering.Texture, mask: u16) void {
-    var i: u8 = 0;
-    while (i < Tex.count) : (i += 1) {
-        if (mask & (@as(u16, 1) << @intCast(i)) != 0) {
-            staged[i].deinit(alloc);
-        }
+fn destroy_asset(_: ?*anyopaque, allocator: std.mem.Allocator, asset: *Asset) void {
+    switch (asset.*) {
+        .texture => |*texture| texture.deinit(allocator),
+        .animation => |*animation| animation.image.deinit(allocator),
     }
 }
 
-fn free_staged_anim_images(staged: *[Tex.count]Image.Image, mask: u16) void {
-    var i: u8 = 0;
-    while (i < Tex.count) : (i += 1) {
-        if (mask & (@as(u16, 1) << @intCast(i)) != 0) {
-            staged[i].deinit(alloc);
-        }
+/// Preserve the pack's vertical first-column animation convention. Extra source
+/// columns and incomplete trailing rows are cropped once when the image loads.
+fn make_animation(allocator: std.mem.Allocator, image: Image.Image, playback: Rendering.Flipbook.Playback) !Animation {
+    var owned = image;
+    errdefer owned.deinit(allocator);
+
+    if (owned.width < tile_size or owned.height < tile_size) return error.InvalidAnimation;
+    const height = owned.height / tile_size * tile_size;
+    if (owned.width != tile_size or owned.height != height) {
+        const byte_count = std.math.mul(usize, tile_size * 4, height) catch return error.InvalidAnimation;
+        var cropped: Image.Image = .{
+            .width = tile_size,
+            .height = height,
+            .mode = .rgba8,
+            .data = try allocator.alignedAlloc(u8, .fromByteUnits(16), byte_count),
+        };
+        errdefer cropped.deinit(allocator);
+
+        try cropped.copy_region(owned.view(), .{ .width = tile_size, .height = height }, 0, 0);
+        owned.deinit(allocator);
+        owned = cropped;
     }
+    return .{
+        .image = owned,
+        // The game supplies integer animation steps, so one second represents
+        // one original step; tick cadence remains exactly two game ticks.
+        .flipbook = try Rendering.Flipbook.init(owned.view(), .{
+            .frame_width = tile_size,
+            .frame_height = tile_size,
+            .frame_count = height / tile_size,
+            .frames_per_second = 1,
+            .playback = playback,
+        }),
+    };
+}
+
+fn check_animation(allocator: std.mem.Allocator) !void {
+    var image: Image.Image = .{
+        .width = 32,
+        .height = 34,
+        .mode = .rgba8,
+        .data = try allocator.alignedAlloc(u8, .fromByteUnits(16), 32 * 34 * 4),
+    };
+    for (0..34) |y| for (0..32) |x| {
+        const offset = (y * 32 + x) * 4;
+        const red: u8 = if (x >= 16) 99 else if (y >= 32) 88 else if (y >= 16) 2 else 1;
+        @memcpy(image.data[offset..][0..4], &[_]u8{ red, 0, 0, 255 });
+    };
+    var animation = try make_animation(allocator, image, .ping_pong);
+    defer animation.image.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u32, 16), animation.image.width);
+    try std.testing.expectEqual(@as(u32, 32), animation.image.height);
+    for ([_]u32{ 0, 1, 0, 1, 0 }, 0..) |frame, step| {
+        try std.testing.expectEqual(frame, try animation.flipbook.frame_at(@floatFromInt(step)));
+    }
+    var target: [16 * 16 * 4]u8 = undefined;
+    try animation.flipbook.copy_to_image(.{ .width = 16, .height = 16, .data = &target }, animation.image.view(), 1, 0, 0);
+    for (0..16 * 16) |i| try std.testing.expectEqualSlices(u8, &.{ 2, 0, 0, 255 }, target[i * 4 ..][0..4]);
+}
+
+test "resource animation migration preserves vertical frames and ping pong cadence" {
+    try check_animation(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, check_animation, .{});
+}
+
+test "resource store migration stages mixed assets without invalidating active textures" {
+    if (!caps.render.headless) return error.SkipZigTest;
+    const t = std.testing;
+    const pixel = @embedFile("util/testdata/pixel.png");
+    var first: ae.Resources.MemorySource = .{ .allocator = t.allocator, .files = &.{.{ .path = asset_paths[@intFromEnum(Tex.dirt)], .bytes = pixel }} };
+    var broken: ae.Resources.MemorySource = .{ .allocator = t.allocator, .files = &.{
+        .{ .path = asset_paths[@intFromEnum(Tex.dirt)], .bytes = pixel },
+        .{ .path = asset_paths[@intFromEnum(Tex.water_still)], .bytes = "not a PNG" },
+    } };
+    var store = Store.init(t.allocator, .{ .load = load_asset, .destroy = destroy_asset }, Tex.count);
+    defer store.deinit();
+
+    const dirt = asset_paths[@intFromEnum(Tex.dirt)];
+    try store.apply(first.source(), &.{dirt});
+    const stable = &store.get(dirt).?.texture;
+    const original_handle = stable.handle;
+    try t.expectError(error.InvalidPNG, store.apply(broken.source(), &.{ dirt, asset_paths[@intFromEnum(Tex.water_still)] }));
+    try t.expect(stable == &store.get(dirt).?.texture);
+    try t.expectEqual(original_handle, stable.handle);
+    try store.apply(first.source(), &.{dirt});
+    try t.expect(stable == &store.get(dirt).?.texture);
 }

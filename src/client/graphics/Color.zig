@@ -1,46 +1,12 @@
-const UI = @import("aether").UI;
+const Ui = @import("aether").Ui;
 
-pub const Color = UI.Color;
+pub const Color = Ui.Color;
 
 pub const none = Color.rgba(0, 0, 0, 0);
-pub const gold = Color.rgba(255, 170, 0, 255);
-
-// Minecraft Classic chat color palette (foreground / background pairs),
-// indexed by the '&' code (&0..&f). Names use the "alternate" naming.
-pub const black_fg = Color.rgba(0, 0, 0, 255);
-pub const black_bg = Color.rgba(0, 0, 0, 255);
-pub const navy_fg = Color.rgba(0, 0, 170, 255);
-pub const navy_bg = Color.rgba(0, 0, 42, 255);
-pub const green_fg = Color.rgba(0, 170, 0, 255);
-pub const green_bg = Color.rgba(0, 42, 0, 255);
-pub const teal_fg = Color.rgba(0, 170, 170, 255);
-pub const teal_bg = Color.rgba(0, 42, 42, 255);
-pub const maroon_fg = Color.rgba(170, 0, 0, 255);
-pub const maroon_bg = Color.rgba(42, 0, 0, 255);
-pub const purple_fg = Color.rgba(170, 0, 170, 255);
-pub const purple_bg = Color.rgba(42, 0, 42, 255);
-pub const gold_fg = Color.rgba(170, 170, 0, 255);
-pub const gold_bg = Color.rgba(42, 42, 0, 255);
 pub const silver_fg = Color.rgba(170, 170, 170, 255);
-pub const silver_bg = Color.rgba(42, 42, 42, 255);
 pub const gray_fg = Color.rgba(85, 85, 85, 255);
-pub const gray_bg = Color.rgba(21, 21, 21, 255);
-pub const blue_fg = Color.rgba(85, 85, 255, 255);
-pub const blue_bg = Color.rgba(21, 21, 63, 255);
-pub const lime_fg = Color.rgba(85, 255, 85, 255);
-pub const lime_bg = Color.rgba(21, 63, 21, 255);
-pub const aqua_fg = Color.rgba(85, 255, 255, 255);
-pub const aqua_bg = Color.rgba(21, 63, 63, 255);
-pub const red_fg = Color.rgba(255, 85, 85, 255);
-pub const red_bg = Color.rgba(63, 21, 21, 255);
-pub const pink_fg = Color.rgba(255, 85, 255, 255);
-pub const pink_bg = Color.rgba(63, 21, 63, 255);
-pub const yellow_fg = Color.rgba(255, 255, 85, 255);
-pub const yellow_bg = Color.rgba(63, 63, 21, 255);
 pub const white_fg = Color.rgba(255, 255, 255, 255);
-pub const white_bg = Color.rgba(63, 63, 63, 255);
 
-pub const be_mtx_gold = Color.rgba(221, 214, 5, 255);
 pub const select_front = Color.rgba(255, 255, 160, 255);
 pub const select_back = Color.rgba(63, 63, 40, 255);
 pub const splash_front = Color.rgba(255, 255, 0, 255);

@@ -1,50 +1,23 @@
 //! Physical controller / keyboard-and-mouse button to sprite-rect lookup.
-//!
-//! Owns the translation from a single physical button (under a given input
-//! style) to the texture rectangle that should appear.  Pure data: no
-//! allocation, no draw calls.  Style is resolved from Options.current; see
-//! `resolve_style`.
-//!
-//! Sheet conventions (resources/default/assets/crosscraft/textures/
-//! interface/controller_glyphs/):
-//!   pc.png  (256x256, 32x32 tiles).  Rows come in pairs: Xbox 0-1,
-//!           Nintendo 2-3, PlayStation 4-5, KB+M 6-7.
-//!           Controller row N: A, B, X, Y, DpadUp, DpadDown, DpadLeft, DpadRight.
-//!           Controller row N+1: LStick, RStick, LButton, RButton,
-//!             LTrigger, RTrigger, Start, Select.
-//!           KB+M row 7 (cols 0-4): LMB, RMB, BlankKey, Enter, Escape.
-//!   psp.png (64x64).
-//!           Row 0 (8x8 tiles): Cross, Circle, Square, Triangle,
-//!             DpadUp, DpadDown, DpadLeft, DpadRight.
-//!           Row 1 (16x8 tiles): L shoulder, R shoulder, Start, Select.
-//!           Row 2 (16x8 tiles): Home.
+//! `pc.png` uses paired 32px rows for Xbox, Nintendo, PlayStation, and KBM.
+//! `psp.png` uses 8px face buttons and 16x8 wide buttons.
 
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Options = @import("../Options.zig");
 const input = ae.Core.input;
 
 pub const Rect = struct {
-    /// Source rect in the glyph sheet.
     tex_x: i16,
     tex_y: i16,
     tex_w: i16,
     tex_h: i16,
-    /// On-screen rendered size in logical pixels.  May differ from the
-    /// source size when the desktop sheet is sampled smaller so the glyph
-    /// sits next to 8 px font text without towering over it.
     render_w: i16,
     render_h: i16,
 };
 
-/// A single physical button.  Semantic naming: A=bottom, B=right, X=left,
-/// Y=top, matching Xbox conventions.  On Nintendo-style sheets this maps to
-/// B/A/Y/X labels respectively; on PSP it maps to Cross/Circle/Square/
-/// Triangle.  Sprite art lives in the physically-correct position on each
-/// sheet regardless of manufacturer label.
-///
-/// Not every value is valid in every style (e.g. `.LMB` is KB+M-only,
-/// `.Home` is PSP-only).  `lookup` hits `unreachable` on invalid combos;
-/// Prompts.zig resolves style first and picks a valid button.
+/// Face buttons use physical positions: A=bottom, B=right, X=left, Y=top.
+/// Some values are only valid for one style (`Home`, `Lmb`, and so on).
 pub const Button = enum(u8) {
     A,
     B,
@@ -63,15 +36,13 @@ pub const Button = enum(u8) {
     Start,
     Select,
     Home,
-    LMB,
-    RMB,
+    Lmb,
+    Rmb,
     BlankKey,
     EnterKey,
     EscapeKey,
 };
 
-/// Resolved rendering style.  `.off` is not in this enum; callers must
-/// short-circuit via `PromptStrip.enabled` before resolving.
 pub const Style = enum {
     kbm,
     nintendo,
@@ -80,19 +51,10 @@ pub const Style = enum {
     psp,
 };
 
-/// Logical-pixel height by which the hotbar rides up while the strip
-/// is visible, so the strip sits in a clean band below the hotbar.
-/// Reference layout lifted the hotbar 32 px in 480x272 PSP native,
-/// which scales to 28 in the 400x240 desktop reference.  PSP runs in
-/// its native space at scale=1, so the raw reference value applies.
 pub fn strip_height() i16 {
-    return if (ae.platform == .psp) 32 else 28;
+    return caps.ui.prompt_strip_height;
 }
 
-/// Per-style vertical nudge applied to the glyph (and any letter overlay)
-/// in logical pixels, positive = down.  Keyboard art has built-in padding
-/// that reads as floating above the label baseline; dropping it one pixel
-/// lines KB+M up with the controller glyphs.
 pub fn glyph_y_offset() i16 {
     return if (resolve_style() == .kbm) 1 else 0;
 }
@@ -104,11 +66,10 @@ pub fn note_input_mode(mode: input.InputMode) void {
 }
 
 pub fn resolve_style() Style {
-    if (ae.platform == .psp) return .psp;
-    if ((ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) and Options.current.controller_tooltips != .off) return .nintendo;
+    if (caps.ui.compact_controller_glyphs) return .psp;
+    if (caps.ui.nintendo_controller_glyphs and Options.current.controller_tooltips != .off) return .nintendo;
     return switch (Options.current.controller_tooltips) {
-        // Auto follows whatever device produced input most recently; the
-        // Xbox sheet stands in for any gamepad since we don't probe vendor.
+        // Xbox stands in for gamepads whose vendor is unknown.
         .auto => switch (last_mode) {
             .keyboard_mouse => .kbm,
             .gamepad => .xbox,
@@ -116,51 +77,43 @@ pub fn resolve_style() Style {
         .nintendo => .nintendo,
         .xbox => .xbox,
         .playstation => .playstation,
-        // Callers must not reach resolve_style with .off; fall back so a
-        // misbehaving caller lands somewhere sane rather than UB.
         .off => .kbm,
     };
 }
 
-/// Look up the sheet rect for `button` under `style`.  Invalid combos
-/// (e.g. `.LMB` on a controller style) hit `unreachable`.
 pub fn lookup(button: Button, style: Style) Rect {
     if (style == .psp) return lookup_psp(button);
     if (style == .kbm) return lookup_kbm(button);
     return lookup_controller(button, style);
 }
 
-// --- pc.png (controller styles) ---
-
-const PC_TILE: i16 = 32;
-/// Desktop sheet tiles are 32x32 in source, rendered at half-size so the
-/// glyph sits next to 8 px font text without towering over it.
-const PC_RENDER: i16 = 16;
+const PcTile: i16 = 32;
+const PcRender: i16 = 16;
 
 fn pc_row_pair_base(style: Style) i16 {
     return switch (style) {
         .xbox => 0,
-        .nintendo => 2 * PC_TILE,
-        .playstation => 4 * PC_TILE,
-        .kbm => 6 * PC_TILE,
+        .nintendo => 2 * PcTile,
+        .playstation => 4 * PcTile,
+        .kbm => 6 * PcTile,
         .psp => unreachable,
     };
 }
 
 fn pc_tile(col: i16, row_y: i16) Rect {
     return .{
-        .tex_x = col * PC_TILE,
+        .tex_x = col * PcTile,
         .tex_y = row_y,
-        .tex_w = PC_TILE,
-        .tex_h = PC_TILE,
-        .render_w = PC_RENDER,
-        .render_h = PC_RENDER,
+        .tex_w = PcTile,
+        .tex_h = PcTile,
+        .render_w = PcRender,
+        .render_h = PcRender,
     };
 }
 
 fn lookup_controller(button: Button, style: Style) Rect {
     const row0 = pc_row_pair_base(style);
-    const row1 = row0 + PC_TILE;
+    const row1 = row0 + PcTile;
     return switch (button) {
         .A => pc_tile(if (style == .nintendo) 1 else 0, row0),
         .B => pc_tile(if (style == .nintendo) 0 else 1, row0),
@@ -174,9 +127,7 @@ fn lookup_controller(button: Button, style: Style) Rect {
         .RStick => pc_tile(1, row1),
         .LButton => pc_tile(2, row1),
         .RButton => pc_tile(3, row1),
-        // Triggers: the sheet art has the right trigger at col 4 and
-        // the left at col 5, which is the reverse of the nominal
-        // "LTrigger, RTrigger" column ordering in the sheet comment.
+        // Trigger art is ordered right, then left.
         .RTrigger => pc_tile(4, row1),
         .LTrigger => pc_tile(5, row1),
         .Start => pc_tile(6, row1),
@@ -186,10 +137,10 @@ fn lookup_controller(button: Button, style: Style) Rect {
 }
 
 fn lookup_kbm(button: Button) Rect {
-    const row = 7 * PC_TILE;
+    const row = 7 * PcTile;
     return switch (button) {
-        .LMB => pc_tile(0, row),
-        .RMB => pc_tile(1, row),
+        .Lmb => pc_tile(0, row),
+        .Rmb => pc_tile(1, row),
         .BlankKey => pc_tile(2, row),
         .EnterKey => pc_tile(3, row),
         .EscapeKey => pc_tile(4, row),
@@ -197,22 +148,20 @@ fn lookup_kbm(button: Button) Rect {
     };
 }
 
-// --- psp.png ---
-
-const PSP_FACE: i16 = 8;
-const PSP_WIDE_W: i16 = 16;
-const PSP_WIDE_H: i16 = 8;
+const PspFace: i16 = 8;
+const PspWideW: i16 = 16;
+const PspWideH: i16 = 8;
 
 fn psp_rect(x: i16, y: i16, w: i16, h: i16) Rect {
     return .{ .tex_x = x, .tex_y = y, .tex_w = w, .tex_h = h, .render_w = w, .render_h = h };
 }
 
 fn psp_face(col: i16) Rect {
-    return psp_rect(col * PSP_FACE, 0, PSP_FACE, PSP_FACE);
+    return psp_rect(col * PspFace, 0, PspFace, PspFace);
 }
 
 fn psp_wide(col: i16, row_y: i16) Rect {
-    return psp_rect(col * PSP_WIDE_W, row_y, PSP_WIDE_W, PSP_WIDE_H);
+    return psp_rect(col * PspWideW, row_y, PspWideW, PspWideH);
 }
 
 fn lookup_psp(button: Button) Rect {
@@ -225,27 +174,25 @@ fn lookup_psp(button: Button) Rect {
         .DpadDown => psp_face(5),
         .DpadLeft => psp_face(6),
         .DpadRight => psp_face(7),
-        .LButton => psp_wide(0, PSP_FACE),
-        .RButton => psp_wide(1, PSP_FACE),
-        .Start => psp_wide(2, PSP_FACE),
-        .Select => psp_wide(3, PSP_FACE),
-        .Home => psp_wide(0, PSP_FACE * 2),
+        .LButton => psp_wide(0, PspFace),
+        .RButton => psp_wide(1, PspFace),
+        .Start => psp_wide(2, PspFace),
+        .Select => psp_wide(3, PspFace),
+        .Home => psp_wide(0, PspFace * 2),
         else => unreachable,
     };
 }
 
-test "lookup covers every style for the buttons it supports" {
+test "glyph sheets map platform-specific controls" {
     const std = @import("std");
-    // Spot-check a handful of combinations so the switch exhaustiveness
-    // is exercised at comptime by the compiler for the rest.
     const r = lookup(.A, .xbox);
     try std.testing.expect(r.render_w > 0 and r.render_h > 0);
-    try std.testing.expect(lookup(.A, .nintendo).tex_x == PC_TILE);
+    try std.testing.expect(lookup(.A, .nintendo).tex_x == PcTile);
     try std.testing.expect(lookup(.B, .nintendo).tex_x == 0);
-    try std.testing.expect(lookup(.X, .nintendo).tex_x == 3 * PC_TILE);
-    try std.testing.expect(lookup(.Y, .nintendo).tex_x == 2 * PC_TILE);
+    try std.testing.expect(lookup(.X, .nintendo).tex_x == 3 * PcTile);
+    try std.testing.expect(lookup(.Y, .nintendo).tex_x == 2 * PcTile);
     const p = lookup(.LButton, .psp);
-    try std.testing.expect(p.tex_w == PSP_WIDE_W);
+    try std.testing.expect(p.tex_w == PspWideW);
     const k = lookup(.EscapeKey, .kbm);
-    try std.testing.expect(k.render_w == PC_RENDER);
+    try std.testing.expect(k.render_w == PcRender);
 }

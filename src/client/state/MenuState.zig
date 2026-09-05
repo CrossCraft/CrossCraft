@@ -1,17 +1,18 @@
 const std = @import("std");
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Core = ae.Core;
 const Util = ae.Util;
 const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
-const SpriteBatcher = ae.UI.SpriteBatcher;
-const FontBatcher = ae.UI.FontBatcher;
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const UiDrawList = @import("../ui/UiDrawList.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
-const Scaling = ae.UI.Scaling;
+const Screen = @import("../ui/Screen.zig");
 const Colors = @import("../graphics/Color.zig");
 const Options = @import("../Options.zig");
 const ResourcePack = @import("../ResourcePack.zig");
@@ -28,13 +29,11 @@ const ControlsScreen = @import("../ui/screens/Controls.zig");
 const GameplayBindings = @import("../player/bindings.zig");
 const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
-const common = @import("common");
-const c = common.consts;
-const game = @import("game");
-const Server = game.Server;
-const World = game.World;
-const CompressWorker = game.CompressWorker;
-const CompressorThread = @import("CompressorThread.zig");
+const core = @import("core");
+const Server = core.Server;
+const World = core.World;
+const wd = core.world_dims;
+const CompressWorker = core.CompressWorker;
 
 const build_options = @import("build_options");
 
@@ -47,11 +46,6 @@ const embedded_pack: []const u8 =
 var menu_state: @This() = undefined;
 var menu_state_inst: State = undefined;
 
-pub fn initial_state() State {
-    menu_state_inst = menu_state.state();
-    return menu_state_inst;
-}
-
 pub fn transition_here(engine: *Engine) void {
     menu_state_inst = menu_state.state();
     engine.transition(&menu_state_inst);
@@ -61,6 +55,7 @@ pub const ScreenId = enum { main, direct_connect, texture_packs, select_world, c
 
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
+prepared_ui: ?UiDrawList.Prepared = null,
 splash_mesh: FontBatcher.TextMesh,
 time: f32,
 active_screen: ScreenId,
@@ -74,9 +69,9 @@ sw_ui_state: UiState,
 cw_ui_state: UiState,
 ui_repeat: ui_input.Repeat,
 
-dc_ip: [DirectConnect.IP_MAX]u8,
+dc_ip: [DirectConnect.IpMax]u8,
 dc_ip_len: u8,
-dc_name: [DirectConnect.NAME_MAX]u8,
+dc_name: [DirectConnect.NameMax]u8,
 dc_name_len: u8,
 
 options_rd_view: f32,
@@ -91,10 +86,12 @@ sw_entries: [SelectWorld.max_worlds]SelectWorld.Entry,
 sw_entry_count: u8,
 sw_delete_mode: bool,
 
-cw_name: [CreateWorld.NAME_MAX]u8,
+cw_name: [CreateWorld.NameMax]u8,
 cw_name_len: u8,
-cw_seed: [CreateWorld.SEED_MAX]u8,
+cw_seed: [CreateWorld.SeedMax]u8,
 cw_seed_len: u8,
+cw_size: wd.WorldSize,
+cw_height: wd.WorldHeight,
 cw_create_enabled: bool,
 
 dirt: *const Rendering.Texture,
@@ -103,8 +100,10 @@ render_alloc: std.mem.Allocator,
 inited: bool,
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
+    @import("engine_services").install();
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
+    self.prepared_ui = null;
     @import("../config.zig").apply_init_budgets(engine);
 
     const render_alloc = engine.allocator(.render);
@@ -125,11 +124,12 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     if (build_options.embed_pack) {
         engine.dirs.data.access(engine.io, "pack.zip", .{}) catch {
             const file = engine.dirs.data.createFile(engine.io, "pack.zip", .{}) catch |err|
-                return menu_init_error(.extract_pack_create, err);
+                return menu_init_error("extract_pack_create", err);
             defer file.close(engine.io);
+
             file.writeStreamingAll(engine.io, embedded_pack) catch |err| {
                 log.err("failed to extract pack.zip to data dir: {}", .{err});
-                return menu_init_error(.extract_pack_write, err);
+                return menu_init_error("extract_pack_write", err);
             };
         };
     }
@@ -138,22 +138,22 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     Options.save(engine.io, engine.dirs.data);
     engine.set_vsync(Options.current.vsync);
 
-    const default_pack_dir = if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch or build_options.embed_pack)
+    const default_pack_dir = if (caps.resources.default_pack_in_data_dir or build_options.embed_pack)
         engine.dirs.data
     else
         engine.dirs.resources;
     ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, default_pack_dir, "pack.zip") catch |err|
-        return menu_init_error(.default_pack_open, err);
+        return menu_init_error("default_pack_open", err);
     errdefer ResourcePack.deinit();
     ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui, .glyphs }) catch |err|
-        return menu_init_error(.default_textures, err);
+        return menu_init_error("default_textures", err);
 
     self.batcher = SpriteBatcher.init(render_alloc) catch |err|
-        return menu_init_error(.sprite_batcher, err);
-    self.font_batcher = FontBatcher.init(render_alloc, ResourcePack.get_tex(.font)) catch |err|
-        return menu_init_error(.font_batcher, err);
+        return menu_init_error("sprite_batcher", err);
+    self.font_batcher = @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font)) catch |err|
+        return menu_init_error("font_batcher", err);
     self.splash_mesh = self.font_batcher.build_mesh("Classic!", Colors.splash_front, Colors.splash_back, 0, 1) catch |err|
-        return menu_init_error(.splash_mesh, err);
+        return menu_init_error("splash_mesh", err);
     self.time = 0;
     self.ui_repeat = .{};
     self.main_ui_state = .{};
@@ -174,17 +174,19 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.sw_delete_mode = false;
     self.cw_name_len = 0;
     self.cw_seed_len = 0;
+    self.cw_size = .normal;
+    self.cw_height = .normal;
     self.cw_create_enabled = false;
 
     ui_input.ensure_registered(&engine.input) catch |err|
-        return menu_init_error(.input_register, err);
+        return menu_init_error("input_register", err);
     ui_input.set_profile(ui_input.default_profile());
     engine.input.push_context(&.{
         .name = "menu",
         .cursor_mode = .visible,
         .actions = ui_input.menu_set(),
         .consumes_text = true,
-    }) catch |err| return menu_init_error(.input_context, err);
+    }) catch |err| return menu_init_error("input_context", err);
 
     self.dirt = ResourcePack.get_tex(.dirt);
     self.logo = ResourcePack.get_tex(.logo);
@@ -198,32 +200,9 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     engine.report();
 }
 
-const MenuInitStage = enum {
-    extract_pack_create,
-    extract_pack_write,
-    default_pack_open,
-    default_textures,
-    sprite_batcher,
-    font_batcher,
-    splash_mesh,
-    input_register,
-    input_context,
-};
-
-fn menu_init_error(comptime stage: MenuInitStage, err: anyerror) anyerror {
-    if (err != error.Unexpected) return err;
-
-    return switch (stage) {
-        .extract_pack_create => error.MenuInitExtractPackCreateUnexpected,
-        .extract_pack_write => error.MenuInitExtractPackWriteUnexpected,
-        .default_pack_open => error.MenuInitDefaultPackOpenUnexpected,
-        .default_textures => error.MenuInitDefaultTexturesUnexpected,
-        .sprite_batcher => error.MenuInitSpriteBatcherUnexpected,
-        .font_batcher => error.MenuInitFontBatcherUnexpected,
-        .splash_mesh => error.MenuInitSplashMeshUnexpected,
-        .input_register => error.MenuInitInputRegisterUnexpected,
-        .input_context => error.MenuInitInputContextUnexpected,
-    };
+fn menu_init_error(stage: []const u8, err: anyerror) anyerror {
+    log.err("menu initialization failed at {s}: {}", .{ stage, err });
+    return err;
 }
 
 fn migrate_default_saves(alloc: std.mem.Allocator, io: std.Io, data_dir: std.Io.Dir) void {
@@ -276,14 +255,13 @@ fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.
         return;
     };
 
-    common.BlockRegistry.init();
     const data = alloc.create(World.WorldData) catch |err| {
         log.warn("legacy save migration: failed to allocate world data object: {}", .{err});
         return;
     };
     defer alloc.destroy(data);
 
-    data.init_in_place(alloc, 0) catch |err| {
+    data.init_in_place(alloc, legacy_dims, 0) catch |err| {
         log.warn("legacy save migration: failed to allocate world data: {}", .{err});
         return;
     };
@@ -303,6 +281,9 @@ fn migrate_legacy_world_dat(alloc: std.mem.Allocator, io: std.Io, data_dir: std.
     });
 }
 
+// Legacy world.dat files predate configurable dimensions.
+const legacy_dims = core.world_dims.default;
+
 fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldData) bool {
     const file = data_dir.openFile(io, Server.legacy_save_file_name, .{}) catch return false;
     defer file.close(io);
@@ -310,25 +291,11 @@ fn load_legacy_world_dat(io: std.Io, data_dir: std.Io.Dir, data: *World.WorldDat
     var read_buf: [32768]u8 = undefined;
     var reader = file.reader(io, &read_buf);
     const load_format: World.SaveFormat = .{ .classic_dat = .{} };
-    const outcome = load_format.load_world(data.backing_allocator, data.raw_blocks, data.blocks, &reader.interface) catch |err| {
+    const outcome = load_format.load_world(data.backing_allocator, data.dims, data.blocks, &reader.interface) catch |err| {
         log.warn("legacy save migration: failed to load {s}: {}", .{ Server.legacy_save_file_name, err });
         return false;
     };
 
-    if (outcome.dimensions[0] != c.WorldLength or
-        outcome.dimensions[1] != c.WorldHeight or
-        outcome.dimensions[2] != c.WorldDepth)
-    {
-        log.warn("legacy save migration: {s} dimensions mismatch: {}x{}x{}", .{
-            Server.legacy_save_file_name,
-            outcome.dimensions[0],
-            outcome.dimensions[1],
-            outcome.dimensions[2],
-        });
-        return false;
-    }
-
-    data.world_size = outcome.dimensions;
     data.seed = outcome.seed;
     data.tick_count = outcome.tick_count;
     if (outcome.name_len > 0) {
@@ -347,7 +314,7 @@ fn write_converted_legacy_save(
     dest_name: []const u8,
     data: *World.WorldData,
 ) bool {
-    if (comptime ae.platform == .wasm) {
+    if (comptime !caps.saves.legacy_migration) {
         log.warn("legacy save migration unavailable on wasm", .{});
         return false;
     }
@@ -356,19 +323,16 @@ fn write_converted_legacy_save(
         log.warn("legacy save migration: failed to init compressor: {}", .{err});
         return false;
     };
-    var thread = CompressorThread.spawn_named("legacy_save_convert", alloc) catch |err| {
+    CompressWorker.start("legacy_save_convert") catch |err| {
         CompressWorker.deinit();
         log.warn("legacy save migration: failed to start compressor: {}", .{err});
         return false;
     };
-    defer {
-        CompressWorker.signal_exit();
-        thread.join();
-        CompressWorker.deinit();
-    }
+    defer CompressWorker.deinit();
 
     var saver = World.WorldSaver.init(io, saves_dir, dest_name, World.default_format);
     defer saver.deinit();
+
     saver.owned_locally = true;
     saver.save(data);
     saver.wait_for_save();
@@ -378,6 +342,7 @@ fn write_converted_legacy_save(
         return false;
     };
     defer file.close(io);
+
     const st = file.stat(io) catch |err| {
         log.warn("legacy save migration: converted save stat failed: {}", .{err});
         return false;
@@ -418,6 +383,15 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     if (!self.inited) return;
     ControlsScreen.cancel_capture(&engine.input, controls_ctx(self));
     self.splash_mesh.deinit(self.render_alloc);
+    if (self.prepared_ui) |*prepared| prepared.deinit();
+    self.prepared_ui = null;
+    self.main_ui_state.deinit();
+    self.dc_ui_state.deinit();
+    self.options_ui_state.deinit();
+    self.controls_ui_state.deinit();
+    self.tp_ui_state.deinit();
+    self.sw_ui_state.deinit();
+    self.cw_ui_state.deinit();
     self.font_batcher.deinit();
     self.batcher.deinit();
     _ = engine.input.pop_context() catch {};
@@ -448,7 +422,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContex
 fn prepare_batches(self: *@This(), _: *Engine) !void {
     self.batcher.clear();
     self.font_batcher.clear();
-    draw_dirt_tiles(self);
+    Screen.add_dirt_background(&self.batcher, self.dirt);
 
     switch (self.active_screen) {
         .main => {
@@ -459,7 +433,7 @@ fn prepare_batches(self: *@This(), _: *Engine) !void {
     }
 
     var list: UiDrawList = .{};
-    var none = empty_input();
+    var none: ui_input.UiInput = .{};
     switch (self.active_screen) {
         .main => {
             var ui = self.begin_ui(&list, &self.main_ui_state, &none, 0);
@@ -494,6 +468,8 @@ fn prepare_batches(self: *@This(), _: *Engine) !void {
                 .name_len = &self.cw_name_len,
                 .seed = &self.cw_seed,
                 .seed_len = &self.cw_seed_len,
+                .size = &self.cw_size,
+                .height = &self.cw_height,
                 .create_enabled = self.cw_create_enabled,
             };
             _ = CreateWorld.run(&ui, &cw);
@@ -510,7 +486,7 @@ fn prepare_batches(self: *@This(), _: *Engine) !void {
             ui.end();
         },
     }
-    list.flush_into(&self.batcher, &self.font_batcher, null);
+    try list.prepare_into(&self.prepared_ui, &self.font_batcher, null);
 
     try self.batcher.update();
     try self.font_batcher.update();
@@ -560,7 +536,7 @@ fn dc_join(self: *@This(), engine: *Engine) !void {
     } else {
         Session.set_username("Player");
     }
-    const net_ready = if (ae.platform == .psp) ae.Psp.showNetDialog() else true;
+    const net_ready = caps.networking.prepare();
     if (!net_ready) return;
     Session.mode = .multiplayer;
     LoadState.transition_here(engine);
@@ -602,6 +578,8 @@ fn update_create_world(self: *@This(), engine: *Engine, in: *const ui_input.UiIn
         .name_len = &self.cw_name_len,
         .seed = &self.cw_seed,
         .seed_len = &self.cw_seed_len,
+        .size = &self.cw_size,
+        .height = &self.cw_height,
         .create_enabled = self.cw_create_enabled,
     };
     const action = CreateWorld.run(&ui, &cw);
@@ -630,28 +608,26 @@ fn sw_select_row(self: *@This(), engine: *Engine, row: u8) void {
     Session.mode = .singleplayer;
     Session.set_username("Player");
     Session.set_singleplayer_save(entry.path());
-    Session.clear_singleplayer_seed_override();
+    Session.singleplayer_seed_override = null;
+    Session.singleplayer_size = null;
+    Session.singleplayer_height = null;
     LoadState.transition_here(engine);
 }
 
-fn create_world_available(self: *const @This(), engine: *Engine) bool {
-    return create_world_name_available(engine, self.create_world_name_slice());
-}
-
 fn refresh_create_world_available(self: *@This(), engine: *Engine) void {
-    self.cw_create_enabled = self.create_world_available(engine);
+    self.cw_create_enabled = create_world_name_available(engine, self.create_world_name_slice());
 }
 
 fn create_world_name_available(engine: *Engine, name: []const u8) bool {
-    var path_buf: [World.CreateName.PATH_MAX]u8 = undefined;
-    var name_buf: [World.CreateName.NAME_MAX]u8 = undefined;
+    var path_buf: [World.CreateName.PathMax]u8 = undefined;
+    var name_buf: [World.CreateName.NameMax]u8 = undefined;
     const result = World.CreateName.build_path(name, &path_buf, &name_buf) catch return false;
     return !file_exists(engine.io, engine.dirs.data, result.path);
 }
 
 fn create_world(self: *@This(), engine: *Engine) void {
-    var path_buf: [World.CreateName.PATH_MAX]u8 = undefined;
-    var name_buf: [World.CreateName.NAME_MAX]u8 = undefined;
+    var path_buf: [World.CreateName.PathMax]u8 = undefined;
+    var name_buf: [World.CreateName.NameMax]u8 = undefined;
     const result = World.CreateName.build_path(self.create_world_name_slice(), &path_buf, &name_buf) catch |err| {
         log.warn("invalid create-world name: {}", .{err});
         return;
@@ -664,16 +640,14 @@ fn create_world(self: *@This(), engine: *Engine) void {
     Session.mode = .singleplayer;
     Session.set_username("Player");
     Session.set_singleplayer_save(result.path);
-    Session.set_singleplayer_seed_override(Session.seed_from_text(self.create_world_seed_slice()));
+    Session.singleplayer_seed_override = Session.seed_from_text(self.cw_seed[0..self.cw_seed_len]);
+    Session.singleplayer_size = self.cw_size;
+    Session.singleplayer_height = self.cw_height;
     LoadState.transition_here(engine);
 }
 
 fn create_world_name_slice(self: *const @This()) []const u8 {
     return self.cw_name[0..self.cw_name_len];
-}
-
-fn create_world_seed_slice(self: *const @This()) []const u8 {
-    return self.cw_seed[0..self.cw_seed_len];
 }
 
 fn tp_select_row(self: *@This(), engine: *Engine, row: u8) void {
@@ -722,8 +696,8 @@ fn enter_main(self: *@This()) void {
 
 fn main_menu_options() MainMenu.Options {
     return .{
-        .multiplayer_enabled = ae.platform != .wasm,
-        .texture_packs_enabled = ae.platform != .wasm,
+        .multiplayer_enabled = caps.networking.multiplayer,
+        .texture_packs_enabled = caps.resources.texture_pack_selection,
     };
 }
 
@@ -733,7 +707,7 @@ fn enter_direct_connect(self: *@This()) void {
 }
 
 fn enter_texture_packs(self: *@This(), engine: *Engine) void {
-    const default_pack_dir = if (ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch) engine.dirs.data else engine.dirs.resources;
+    const default_pack_dir = if (caps.resources.default_pack_in_data_dir) engine.dirs.data else engine.dirs.resources;
     self.tp_entry_count = TexturePacks.scan(engine.io, default_pack_dir, engine.dirs.data, &self.tp_entries);
     self.tp_selected_index = TexturePacks.find_active_index(self.tp_entries[0..self.tp_entry_count]);
     self.active_screen = .texture_packs;
@@ -743,7 +717,9 @@ fn enter_texture_packs(self: *@This(), engine: *Engine) void {
 fn enter_select_world(self: *@This(), engine: *Engine) void {
     self.sw_entry_count = SelectWorld.scan(engine.io, engine.dirs.data, &self.sw_entries);
     self.sw_delete_mode = false;
-    Session.clear_singleplayer_seed_override();
+    Session.singleplayer_seed_override = null;
+    Session.singleplayer_size = null;
+    Session.singleplayer_height = null;
     self.active_screen = .select_world;
     self.sw_ui_state.open(ui_input.seed_focus_on_open());
 }
@@ -763,7 +739,7 @@ fn seed_create_world_name(self: *@This(), engine: *Engine) void {
         return;
     }
 
-    var candidate_buf: [World.CreateName.NAME_MAX]u8 = undefined;
+    var candidate_buf: [World.CreateName.NameMax]u8 = undefined;
     var i: u16 = 1;
     while (i < 1000) : (i += 1) {
         const candidate = std.fmt.bufPrint(&candidate_buf, "world_{d}", .{i}) catch break;
@@ -813,6 +789,8 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     _ = engine;
     self.batcher.draw();
     self.font_batcher.draw();
+    Rendering.gfx.api.clear_depth();
+    if (self.prepared_ui) |*prepared| prepared.draw();
 
     if (self.active_screen == .main) {
         const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;
@@ -830,41 +808,9 @@ fn begin_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *const ui
         .fonts = &self.font_batcher,
         .gui_tex = ResourcePack.get_tex(.gui),
         .glyphs_tex = ResourcePack.get_tex(.glyphs),
-        .screen = current_screen_rect(),
+        .screen = Screen.logical_rect(),
         .layer_base = layer_base,
     });
-}
-
-fn current_screen_rect() Ui.LogicalRect {
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const scale = Scaling.compute(screen_w, screen_h);
-    return .{
-        .x0 = 0,
-        .y0 = 0,
-        .x1 = @intCast((screen_w + scale - 1) / scale),
-        .y1 = @intCast((screen_h + scale - 1) / scale),
-    };
-}
-
-fn empty_input() ui_input.UiInput {
-    return .{
-        .input_system = null,
-        .cursor_x = 0,
-        .cursor_y = 0,
-        .cursor_available = false,
-        .cursor_moved = false,
-        .click_edge = false,
-        .click_held = false,
-        .nav = .none,
-        .confirm_edge = false,
-        .cancel_edge = false,
-        .pause_edge = false,
-        .title_exit_edge = false,
-        .inventory_edge = false,
-        .wheel_dy = 0,
-        .text_events = false,
-    };
 }
 
 fn draw_corner_labels(self: *@This()) void {
@@ -889,30 +835,6 @@ fn draw_corner_labels(self: *@This()) void {
         .layer = 2,
         .reference = .bottom_right,
         .origin = .bottom_right,
-    });
-}
-
-fn draw_dirt_tiles(self: *@This()) void {
-    const rect = current_screen_rect();
-    var y: i16 = 0;
-    const tile_size: i16 = 32;
-    while (y < rect.y1) : (y += tile_size) {
-        var x: i16 = 0;
-        while (x < rect.x1) : (x += tile_size) {
-            add_dirt_tile(self, x, y, tile_size);
-        }
-    }
-}
-
-fn add_dirt_tile(self: *@This(), x: i16, y: i16, tile_size: i16) void {
-    self.batcher.add_sprite(&.{
-        .texture = self.dirt,
-        .pos_offset = .{ .x = x, .y = y },
-        .pos_extent = .{ .x = tile_size, .y = tile_size },
-        .tex_offset = .{ .x = 0, .y = 0 },
-        .tex_extent = .{ .x = @intCast(self.dirt.width), .y = @intCast(self.dirt.height) },
-        .color = Colors.menu_tiles,
-        .layer = 0,
     });
 }
 

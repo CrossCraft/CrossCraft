@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Core = ae.Core;
 const Util = ae.Util;
@@ -6,13 +7,11 @@ const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
-const game = @import("game");
-const Server = game.Server;
-const World = game.World;
-const CompressWorker = game.CompressWorker;
-const CompressorThread = @import("CompressorThread.zig");
-const c = @import("common").consts;
-const proto = @import("common").protocol;
+const core = @import("core");
+const Server = core.Server;
+const World = core.World;
+const CompressWorker = core.CompressWorker;
+const proto = core.protocol;
 const collision = @import("../player/collision.zig");
 const FakeConn = @import("../connection/FakeConn.zig").FakeConn;
 const ClientConn = @import("../connection/ClientConn.zig");
@@ -28,10 +27,10 @@ const SelectionOutline = @import("../world/SelectionOutline.zig");
 const SteveModel = @import("../world/SteveModel.zig");
 const Player = @import("../player/Player.zig");
 const BlockHand = @import("../player/BlockHand.zig");
-const SpriteBatcher = ae.UI.SpriteBatcher;
-const FontBatcher = ae.UI.FontBatcher;
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
-const BlockRegistry = @import("common").BlockRegistry;
+const blocks = core.blocks;
 const PlayerList = @import("../ui/PlayerList.zig");
 const Chat = @import("../ui/Chat.zig");
 const Buttons = @import("../ui/Buttons.zig");
@@ -40,6 +39,7 @@ const Prompts = @import("../ui/Prompts.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
 const UiDrawList = @import("../ui/UiDrawList.zig");
+const Screen = @import("../ui/Screen.zig");
 const Colors = @import("../graphics/Color.zig");
 const Color = Colors.Color;
 const ui_input = @import("../ui/input.zig");
@@ -53,40 +53,33 @@ const ae_input = ae.Core.input;
 
 const log = std.log.scoped(.game);
 
-const wasm_host = if (ae.platform == .wasm) struct {
-    extern "aether_host" fn aether_crosscraft_download_file(path_ptr: [*]const u8, path_len: usize) bool;
-} else struct {};
+const caps = @import("capabilities").ClientType(ae);
 
 const selection_depth_nudge: f32 = 1.0 / 320.0;
-const MP_READ_STACK_SIZE = 512 * 1024;
-const MP_FLY_WARNING = "&cUsing fly in multiplayer may get you banned! Know what you're doing! Triple tap to enable.";
+const MpReadStackSize = 512 * 1024;
+const MpFlyWarning = "&cUsing fly in multiplayer may get you banned! Know what you're doing! Triple tap to enable.";
 const PauseScreen = enum { main, options, controls, dump_world };
 
 fake_conn: FakeConn,
 conn: ClientConn,
-// MP read-loop task: owns the TCP read side, drives ClientConn
-// callbacks, clears `Session.mp_connected` on exit.
+// Owns the multiplayer TCP read side and clears mp_connected on exit.
 mp_read_thread: ?Util.Thread,
-/// Singleplayer compressor worker thread that drains save jobs owned by the
-/// embedded server. Standalone servers spawn an equivalent thread in
-/// `ServerState.init`.
-sp_compressor_thread: ?CompressorThread.Thread,
-/// Multiplayer-only compressor worker used by explicit world dumps.
-mp_compressor_thread: ?CompressorThread.Thread,
+compressor_started: bool,
 world: WorldRenderer,
 player: Player,
 ui_batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 iso_blocks: IsoBlockDrawer,
+hud_prepared: ?UiDrawList.Prepared = null,
+inventory_prepared: ?UiDrawList.Prepared = null,
+pause_prepared: ?UiDrawList.Prepared = null,
 inventory_open: bool,
 inventory_slot: u8,
 inventory_ui_state: UiState,
 inventory_repeat: ui_input.Repeat,
-inventory_blocks: [BlockRegistry.INVENTORY_SLOTS]c.Block,
+inventory_blocks: [core.blocks.InventorySlots]core.blocks.Block,
 player_list: PlayerList,
 chat: Chat,
-/// Controller social overlay: true while the Select/Back-toggled player
-/// list + chat cursor is visible. Keyboard Tab keeps hold-to-show behavior.
 social_mode: bool,
 mp_fly_unlocked: bool,
 selection: SelectionOutline,
@@ -96,9 +89,6 @@ render_alloc: std.mem.Allocator,
 hotbar_tooltip_timer: f32,
 prev_selected_slot: u8,
 report_timer: f32,
-/// Desktop F1 toggles HUD visibility. When set, the crosshair, hotbar,
-/// version text, hotbar tooltip, prompt strip, and held-block viewmodel
-/// are all suppressed. Pause, inventory, and chat overlays stay visible.
 hud_hidden: bool,
 paused: bool,
 pause_screen: PauseScreen,
@@ -109,30 +99,21 @@ pause_dump_ui_state: UiState,
 pause_options_rd_view: f32,
 pause_controls_capture: ?Options.PcControl,
 pause_controls_status: ControlsScreen.Status,
-dump_world_name: [DumpWorldScreen.NAME_MAX]u8,
+dump_world_name: [DumpWorldScreen.NameMax]u8,
 dump_world_name_len: u8,
 pause_ui_repeat: ui_input.Repeat,
 pause_batcher: SpriteBatcher,
 pause_font_batcher: FontBatcher,
-/// True once `init` has run to completion. Guards `deinit` so a partially
-/// initialised state -- e.g. `init` errored on OOM after enough world reload
-/// cycles -- does not crash on undefined sub-allocations.
 inited: bool,
-trace_first_tick: bool,
-trace_first_update: bool,
-trace_first_draw: bool,
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
+    self.hud_prepared = null;
+    self.inventory_prepared = null;
+    self.pause_prepared = null;
     self.mp_read_thread = null;
-    self.sp_compressor_thread = null;
-    self.mp_compressor_thread = null;
-    self.trace_first_tick = true;
-    self.trace_first_update = true;
-    self.trace_first_draw = true;
-    // Push the gameplay context up front so any later init failure is
-    // matched by the deinit pop below.
+    self.compressor_started = false;
     const gameplay_set = try bindings.init(&engine.input);
     try engine.input.push_context(&.{
         .name = "gameplay",
@@ -141,8 +122,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         .consumes_text = false,
     });
 
-    // SP uses FakeConn + in-process server; MP wraps ClientConn around the
-    // live TCP stream that LoadState opened.
     switch (Session.mode) {
         .singleplayer => {
             self.fake_conn.init();
@@ -160,33 +139,16 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             self.conn.drain_packets();
         },
         .multiplayer => {
-            if (comptime ae.platform == .wasm) return error.UnsupportedPlatform;
+            if (comptime !caps.networking.multiplayer) return error.UnsupportedPlatform;
 
-            const pspsdk = if (ae.platform == .psp) @import("pspsdk") else {};
-            const PSP_MAIN_PRIO_RUNTIME: i32 = 64;
-            const psp_main_thid = if (ae.platform == .psp)
-                pspsdk.kernel.get_thread_id()
-            else {};
-            const psp_orig_prio: i32 = if (ae.platform == .psp)
-                pspsdk.kernel.get_thread_current_priority()
-            else
-                0;
-            if (ae.platform == .psp) {
-                try pspsdk.kernel.change_thread_priority(psp_main_thid, psp_orig_prio - 10);
-            }
-            defer if (ae.platform == .psp) {
-                pspsdk.kernel.change_thread_priority(psp_main_thid, PSP_MAIN_PRIO_RUNTIME) catch {};
-            };
+            try caps.networking.begin_connect_setup();
+            defer caps.networking.end_connect_setup();
 
-            // Handshake + LevelFinalize were already consumed in
-            // LoadState.connectTask; the socket's now pointed at SpawnPlayer.
+            // LoadState consumed the handshake through LevelFinalize.
             self.conn.init(&Session.mp_reader.interface, &Session.mp_writer.interface);
             Session.mp_connected.store(true, .release);
 
-            // Wire up player_list and chat BEFORE the read loop starts so
-            // that SpawnPlayer packets for already-connected players (sent
-            // by the server right after LevelFinalize) are not silently
-            // dropped due to null pointers.
+            // Install recipients before the read loop can dispatch their packets.
             self.player_list = PlayerList.init();
             self.conn.player_list = &self.player_list;
             self.chat = Chat.init();
@@ -195,7 +157,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             self.mp_read_thread = try Util.Thread.spawn(
                 .{
                     .name = "mp_read",
-                    .stack_size = MP_READ_STACK_SIZE,
+                    .stack_size = MpReadStackSize,
                     .priority = .normal,
                     .allocator = engine.allocator(.user),
                 },
@@ -205,12 +167,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         },
     }
 
-    // Redistribute memory for game state
     @import("../config.zig").apply_runtime_budgets(engine);
 
-    // Player -- owns the camera; spawn Y is eye-level from the server.
-    // Use whichever writer the active connection drains position packets
-    // into: the FakeConn ring for SP, or the live TCP stream for MP.
     const player_writer: *std.Io.Writer = switch (Session.mode) {
         .singleplayer => &self.fake_conn.client_writer,
         .multiplayer => &Session.mp_writer.interface,
@@ -223,7 +181,16 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
             player_writer,
         );
     } else {
-        try self.player.init(128.0, 44.0, 128.0, player_writer);
+        // Handshake has not landed yet. Fall back to the world center at
+        // eye-level-ish rather than a fixed position, so tiny worlds do not
+        // start on their edge; the spawn packet corrects this on arrival.
+        const dims = World.data.dims;
+        try self.player.init(
+            @as(f32, @floatFromInt(dims.length / 2)),
+            @as(f32, @floatFromInt(dims.height - 20)),
+            @as(f32, @floatFromInt(dims.depth / 2)),
+            player_writer,
+        );
     }
     self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
 
@@ -243,28 +210,20 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         &self.player.camera,
     );
 
-    // Let block-change packets find the renderer so they can mark sections.
     self.conn.world_renderer = &self.world;
 
-    // Wire break particles now that both player and world exist.
     self.player.particle_sink = &self.world.particles;
 
-    // UI sprite batcher for HUD overlay (crosshair, hotbar bg, selector).
     self.ui_batcher = try SpriteBatcher.init(render_alloc);
 
-    // Font batcher used by the inventory tooltip.
-    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
+    self.font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
 
-    // Iso-projected block icons for hotbar + inventory slots; draws to the
-    // same terrain atlas as the world.
     self.iso_blocks = try IsoBlockDrawer.init(
         render_alloc,
         ResourcePack.get_tex(.terrain),
         ResourcePack.atlas,
     );
 
-    // ensure_registered is idempotent; call it so the inventory overlay
-    // has the menu actions even if MenuState was skipped.
     try ui_input.ensure_registered(&engine.input);
     ui_input.set_profile(ui_input.default_profile());
     self.inventory_open = false;
@@ -272,11 +231,9 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.inventory_ui_state = .{};
     self.inventory_repeat = .{};
     var inv_i: u8 = 0;
-    while (inv_i < BlockRegistry.INVENTORY_SLOTS) : (inv_i += 1) {
-        self.inventory_blocks[inv_i] = BlockRegistry.inventory_block(inv_i);
+    while (inv_i < blocks.InventorySlots) : (inv_i += 1) {
+        self.inventory_blocks[inv_i] = blocks.inventory_block(inv_i);
     }
-    // Multiplayer already initialised player_list and chat before the
-    // read-loop thread was spawned (to avoid losing initial spawn packets).
     if (Session.mode == .singleplayer) {
         self.player_list = PlayerList.init();
         self.conn.player_list = &self.player_list;
@@ -290,13 +247,9 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.report_timer = 0;
     self.hud_hidden = false;
 
-    // Pause menu: built lazily-by-config. The lost-focus callback is a no-op
-    // on PSP (Aether never fires it there). Pause uses dedicated batchers so
-    // its dim quad and panel sprites/text flush after every gameplay UI pass
-    // (HUD sprites, iso blocks, HUD font) and cleanly sit on top of all of
-    // them without depending on layer ordering across separate render passes.
+    // Separate batchers guarantee the pause overlay flushes after gameplay UI.
     self.pause_batcher = try SpriteBatcher.init(render_alloc);
-    self.pause_font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
+    self.pause_font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
     self.paused = false;
     self.pause_screen = .main;
     self.pause_ui_repeat = .{};
@@ -310,24 +263,22 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.dump_world_name = @splat(0);
     self.dump_world_name_len = 0;
 
-    // Block selection outline (line mesh, drawn after the world pass).
     self.selection = try SelectionOutline.init(render_alloc);
 
-    // Remote player Steve model renderer.
     self.steve = try SteveModel.init(render_alloc);
 
-    // Held-block viewmodel. Uses the same terrain atlas as the world.
     self.held = try BlockHand.init(render_alloc, ResourcePack.atlas);
     self.player.held_renderer = &self.held;
 
     switch (Session.mode) {
         .singleplayer => {},
         .multiplayer => {
-            if (comptime ae.platform == .wasm) return error.UnsupportedPlatform;
+            if (comptime !caps.networking.multiplayer) return error.UnsupportedPlatform;
 
             try CompressWorker.init(engine.allocator(.user), engine.io);
             errdefer CompressWorker.deinit();
-            self.mp_compressor_thread = try CompressorThread.spawn(engine.allocator(.user));
+            try CompressWorker.start("world_compress");
+            self.compressor_started = true;
         },
     }
 
@@ -346,7 +297,6 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     }
     ControlsScreen.cancel_capture(&engine.input, pause_controls_ctx(self));
 
-    // Pop gameplay and any overlays still stacked on top of it.
     while (engine.input.stack_top()) |top| {
         if (std.mem.eql(u8, top.name, "gameplay")) {
             _ = engine.input.pop_context() catch {};
@@ -356,13 +306,10 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
         _ = engine.input.pop_context() catch break;
     }
 
-    // Stop the read-loop task before freeing any resources it may still
-    // be accessing (world_renderer, conn.buffer, etc.).
+    // Join the reader before freeing its world and UI recipients.
     switch (Session.mode) {
         .singleplayer => self.fake_conn.connected = false,
         .multiplayer => {
-            // Signal the loop to exit, then close the socket to unblock any
-            // pending read, then await the task so we know it has returned.
             Session.mp_connected.store(false, .release);
             if (Session.mp_stream) |*s| {
                 s.close(engine.io);
@@ -372,19 +319,24 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
                 t.join();
                 self.mp_read_thread = null;
             }
-            // PSP: tear down the networking stack so the next connect cycle
-            // re-runs net dialog + net.init from a clean state. Skipping this
-            // leaves sceNet/Apctl/Resolver loaded and the second connect fails.
-            if (ae.platform == .psp) {
-                const pspsdk = @import("pspsdk");
-                pspsdk.extra.net.disconnect();
-                pspsdk.extra.net.deinit();
-            }
+            // PSP reconnects fail unless the networking stack is reinitialized.
+            caps.networking.release();
         },
     }
     self.held.deinit();
     self.steve.deinit();
     self.selection.deinit();
+    if (self.hud_prepared) |*prepared| prepared.deinit();
+    if (self.inventory_prepared) |*prepared| prepared.deinit();
+    if (self.pause_prepared) |*prepared| prepared.deinit();
+    self.hud_prepared = null;
+    self.inventory_prepared = null;
+    self.pause_prepared = null;
+    self.inventory_ui_state.deinit();
+    self.pause_ui_state.deinit();
+    self.pause_options_ui_state.deinit();
+    self.pause_controls_ui_state.deinit();
+    self.pause_dump_ui_state.deinit();
     self.iso_blocks.deinit();
     self.pause_font_batcher.deinit();
     self.pause_batcher.deinit();
@@ -392,88 +344,52 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     self.ui_batcher.deinit();
     self.world.deinit();
 
-    // Tear down the game-side world/server allocations. SP went through
-    // Server.init (which sets up the static allocator + compressor and owns
-    // World), so Server.deinit unwinds the whole stack. MP only ran
-    // World.init_empty, plus a small compressor worker for explicit dumps.
+    // Keep compression alive until the final singleplayer save completes.
     switch (Session.mode) {
         .singleplayer => {
-            // Server.deinit triggers the final save; the compressor thread
-            // must still be alive to drain it before we signal exit and
-            // join. Its backing storage is freed only after the thread is
-            // gone.
             self.ensure_sp_compressor_started(engine) catch |err| {
                 log.err("failed to start SP compressor before shutdown: {}", .{err});
             };
             Server.deinit();
-            if (self.sp_compressor_thread) |*t| {
-                CompressWorker.signal_exit();
-                t.join();
-                self.sp_compressor_thread = null;
-            }
-            CompressWorker.deinit();
         },
-        .multiplayer => {
-            World.deinit();
-            if (self.mp_compressor_thread) |*t| {
-                CompressWorker.signal_exit();
-                t.join();
-                self.mp_compressor_thread = null;
-            }
-            CompressWorker.deinit();
-        },
+        .multiplayer => World.deinit(),
     }
+    CompressWorker.deinit();
     self.inited = false;
 }
 
 fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    if (self.trace_first_tick) log.info("trace: first tick begin", .{});
-    // MP updates arrive as packets; no local world tick.
     if (Session.mode == .singleplayer) {
         Server.drain_local_packets();
-        if (self.trace_first_tick) log.info("trace: first tick drained local packets", .{});
         Server.tick();
-        if (self.trace_first_tick) log.info("trace: first tick server tick done", .{});
         try self.ensure_sp_compressor_started(engine);
-        if (self.trace_first_tick) log.info("trace: first tick compressor ready", .{});
     }
     ResourcePack.tick_animations();
-    if (self.trace_first_tick) log.info("trace: first tick animations done", .{});
     send_player_position(&self.player);
-    if (self.trace_first_tick) {
-        log.info("trace: first tick end", .{});
-        self.trace_first_tick = false;
-    }
 }
 
-fn ensure_sp_compressor_started(self: *@This(), engine: *Engine) !void {
-    if (comptime ae.platform == .wasm) return;
+fn ensure_sp_compressor_started(self: *@This(), _: *Engine) !void {
+    if (!ae.System.info().background_workers) return;
 
-    if (self.sp_compressor_thread != null) return;
+    if (self.compressor_started) return;
     // Drain save jobs queued by Server.init only after the state transition
     // and initial memory report have completed.
-    self.sp_compressor_thread = try CompressorThread.spawn(engine.allocator(.user));
+    try CompressWorker.start("world_compress");
+    self.compressor_started = true;
 }
 
-/// Emit PositionAndOrientationToServer every tick. Classic's wire format
-/// is u16 fixed-point (world*32) for position and u8 (turn/256) for
-/// yaw/pitch.
 fn send_player_position(player: *Player) void {
-    const eye_y = player.pos_y + collision.EYE_HEIGHT;
+    const eye_y = player.pos_y + collision.EyeHeight;
     const x_fp: u16 = fp_coord(player.pos_x);
     const y_fp: u16 = fp_coord(eye_y);
     const z_fp: u16 = fp_coord(player.pos_z);
 
-    // camera.yaw rotates CCW; Classic's u8 yaw rotates CW. Negate to
-    // flip handedness; the zero point already matches.
+    // Camera yaw is CCW; Classic yaw is CW with the same zero point.
     const yaw_u8 = angle_to_classic_u8(-player.camera.yaw);
     const pitch_u8 = angle_to_classic_u8(player.camera.pitch);
 
-    // Skip if the Writer is still holding data from a previous failed
-    // flush (transient ENOBUFS on PSP). Retry the flush so pending
-    // block/chat bytes get another chance; stale position history isn't
-    // worth preserving. Real disconnects go through the read_loop.
+    // Retry buffered chat/block packets after PSP ENOBUFS before adding newer positions.
     if (Session.mode == .multiplayer and Session.mp_writer.interface.end > 0) {
         player.writer.flush() catch {};
         return;
@@ -513,7 +429,7 @@ fn focus_lost_this_frame(sys: *ae_input.InputSystem) bool {
 
 fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !bool {
     var list: UiDrawList = .{};
-    var ui = begin_pause_ui(self, &list, &self.pause_ui_state, in, PauseMenu.LAYER_BASE);
+    var ui = begin_pause_ui(self, &list, &self.pause_ui_state, in, PauseMenu.LayerBase);
     const action = PauseMenu.run(&ui, Session.mode == .singleplayer);
     ui.end();
 
@@ -541,7 +457,7 @@ fn update_pause_menu(self: *@This(), engine: *Engine, in: *const ui_input.UiInpu
 
 fn update_pause_options(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
     var list: UiDrawList = .{};
-    var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, in, OptionsScreen.LAYER_BASE);
+    var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, in, OptionsScreen.LayerBase);
     const action = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
     ui.end();
     self.player.camera.fov = Options.current.fov * std.math.pi / 180.0;
@@ -558,7 +474,7 @@ fn update_pause_options(self: *@This(), engine: *Engine, in: *const ui_input.UiI
 
 fn update_pause_controls(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) !void {
     var list: UiDrawList = .{};
-    var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, in, OptionsScreen.LAYER_BASE);
+    var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, in, OptionsScreen.LayerBase);
     const result = ControlsScreen.run(&ui, &Options.current, pause_controls_ctx(self));
     ui.end();
     if (result.changed) apply_control_options(engine);
@@ -599,15 +515,15 @@ fn apply_control_options(engine: *Engine) void {
 }
 
 fn update_pause_dump_world(self: *@This(), in: *const ui_input.UiInput) !void {
-    var path_buf: [World.DumpName.PATH_MAX]u8 = undefined;
-    var name_buf: [World.DumpName.NAME_MAX]u8 = undefined;
+    var path_buf: [World.DumpName.PathMax]u8 = undefined;
+    var name_buf: [World.DumpName.NameMax]u8 = undefined;
     const can_save = blk: {
         _ = World.DumpName.build_path(self.dump_world_name_slice(), &path_buf, &name_buf) catch break :blk false;
         break :blk true;
     };
 
     var list: UiDrawList = .{};
-    var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, in, DumpWorldScreen.LAYER_BASE);
+    var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, in, DumpWorldScreen.LayerBase);
     var dump_ctx: DumpWorldScreen.Ctx = .{
         .name = &self.dump_world_name,
         .name_len = &self.dump_world_name_len,
@@ -654,8 +570,8 @@ fn seed_dump_world_name(self: *@This()) void {
 }
 
 fn try_dump_world(self: *@This()) bool {
-    var path_buf: [World.DumpName.PATH_MAX]u8 = undefined;
-    var name_buf: [World.DumpName.NAME_MAX]u8 = undefined;
+    var path_buf: [World.DumpName.PathMax]u8 = undefined;
+    var name_buf: [World.DumpName.NameMax]u8 = undefined;
     const result = World.DumpName.build_path(self.dump_world_name_slice(), &path_buf, &name_buf) catch |err| {
         log.warn("invalid world dump name: {}", .{err});
         return false;
@@ -671,11 +587,11 @@ fn try_dump_world(self: *@This()) bool {
 
 fn save_pause_world() void {
     World.save();
-    if (comptime ae.platform == .wasm) {
+    if (comptime caps.saves.download) {
         World.wait_for_save();
         const session_save = Session.singleplayer_save();
         const save_path = if (session_save.len > 0) session_save else Server.default_save_location;
-        if (!wasm_host.aether_crosscraft_download_file(save_path.ptr, save_path.len)) {
+        if (!caps.saves.download_file(save_path)) {
             log.warn("failed to download save file '{s}'", .{save_path});
         }
     }
@@ -712,10 +628,7 @@ fn close_pause(self: *@This(), engine: *Engine) void {
 fn open_inventory(self: *@This(), engine: *Engine) void {
     if (self.inventory_open) return;
     self.inventory_open = true;
-    // Seed the cursor from the player's current hotbar pick when it
-    // refers to a filled slot; otherwise drop to the first cell so the
-    // overlay always opens with a selectable highlight.
-    self.inventory_slot = if (self.player.selected_slot < BlockRegistry.INVENTORY_FILLED)
+    self.inventory_slot = if (self.player.selected_slot < blocks.InventoryFilled)
         self.player.selected_slot
     else
         0;
@@ -742,14 +655,14 @@ fn close_inventory(self: *@This(), engine: *Engine) void {
 
 fn update_inventory_tree(self: *@This(), engine: *Engine, in: *const ui_input.UiInput) void {
     var list: UiDrawList = .{};
-    var ui = begin_game_ui(self, &list, &self.inventory_ui_state, in, InventoryUi.LAYER_BASE);
+    var ui = begin_game_ui(self, &list, &self.inventory_ui_state, in, InventoryUi.LayerBase);
     const action = InventoryUi.run(&ui, self.inventory_blocks[0..], &self.inventory_slot);
     ui.end();
     switch (action) {
         .none => {},
         .select => {
-            std.debug.assert(self.player.selected_slot < Player.HOTBAR_SLOTS);
-            self.player.hotbar[self.player.selected_slot] = BlockRegistry.inventory_block(self.inventory_slot);
+            assert(self.player.selected_slot < Player.HotbarSlots);
+            self.player.hotbar[self.player.selected_slot] = blocks.inventory_block(self.inventory_slot);
             close_inventory(self, engine);
         },
         .back => close_inventory(self, engine),
@@ -764,7 +677,7 @@ fn begin_game_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *con
         .fonts = &self.font_batcher,
         .gui_tex = ResourcePack.get_tex(.gui),
         .glyphs_tex = ResourcePack.get_tex(.glyphs),
-        .screen = current_screen_rect(),
+        .screen = Screen.logical_rect(),
         .layer_base = layer_base,
     });
 }
@@ -777,47 +690,13 @@ fn begin_pause_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *co
         .fonts = &self.pause_font_batcher,
         .gui_tex = ResourcePack.get_tex(.gui),
         .glyphs_tex = ResourcePack.get_tex(.glyphs),
-        .screen = current_screen_rect(),
+        .screen = Screen.logical_rect(),
         .layer_base = layer_base,
     });
 }
 
-fn current_screen_rect() Ui.LogicalRect {
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const scale = ae.UI.Scaling.compute(screen_w, screen_h);
-    return .{
-        .x0 = 0,
-        .y0 = 0,
-        .x1 = @intCast((screen_w + scale - 1) / scale),
-        .y1 = @intCast((screen_h + scale - 1) / scale),
-    };
-}
-
-fn empty_input() ui_input.UiInput {
-    return .{
-        .input_system = null,
-        .cursor_x = 0,
-        .cursor_y = 0,
-        .cursor_available = false,
-        .cursor_moved = false,
-        .click_edge = false,
-        .click_held = false,
-        .nav = .none,
-        .confirm_edge = false,
-        .cancel_edge = false,
-        .pause_edge = false,
-        .title_exit_edge = false,
-        .inventory_edge = false,
-        .wheel_dy = 0,
-        .text_events = false,
-    };
-}
-
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    const trace = self.trace_first_update;
-    if (trace) log.info("trace: first update begin dt={d}", .{dt});
 
     // Controller Select/Back toggles the social overlay (player list + chat
     // cursor). Keyboard Tab still uses the Classic hold-to-show player list.
@@ -836,16 +715,12 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         }
     }
 
-    // Pick the repeat state owned by whichever overlay is on top.
     const active_repeat = if (self.paused)
         &self.pause_ui_repeat
     else
         &self.inventory_repeat;
     const ui_in = ui_input.build_frame(&engine.input, dt, active_repeat);
 
-    // Pause menu open/close. Focus loss only auto-pauses when nothing else is
-    // already grabbing input -- otherwise the chat or inventory overlay would
-    // sit awkwardly behind the pause panel.
     const can_open_pause = !self.paused and !self.chat.open and !self.inventory_open;
     var just_opened_pause = false;
     if (focus_lost_this_frame(&engine.input) and can_open_pause) {
@@ -864,9 +739,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         if (!just_opened_pause) {
             switch (self.pause_screen) {
                 .main => {
-                    // Skip tree.update on the open frame so the same Escape
-                    // press that opened the menu (which also raises
-                    // cancel_edge) does not immediately close it.
+                    // Do not let the opening Escape press close the menu again.
                     if (try update_pause_menu(self, engine, &ui_in)) return;
                 },
                 .options => try update_pause_options(self, engine, &ui_in),
@@ -904,8 +777,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             }
         }
 
-        // Chat open/close.  Inventory and chat are mutually exclusive; neither
-        // opens while the other is active.
         if (self.player.chat_open_pending) {
             self.player.chat_open_pending = false;
             if (!self.chat.open and !self.inventory_open) {
@@ -933,13 +804,10 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
             const block_id = World.data.get_block(hit.x, hit.y, hit.z);
             if (!block_id.is_air()) try self.selection.update(block_id.bounds());
         }
-        if (trace) log.info("trace: first update player done", .{});
     }
 
     self.steve.update(dt, &self.player_list, &self.font_batcher);
-    if (trace) log.info("trace: first update steve done", .{});
     self.world.update(dt, budget, &self.player.camera);
-    if (trace) log.info("trace: first update world done", .{});
     SoundManager.update(
         dt,
         self.player.camera.x,
@@ -948,7 +816,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         self.player.camera.yaw,
         self.player.camera.pitch,
     );
-    if (trace) log.info("trace: first update sound done", .{});
 
     self.report_timer += dt;
     if (self.report_timer >= 10.0) {
@@ -964,7 +831,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
     const slot_block = self.player.hotbar[self.player.selected_slot];
     self.held.update(dt, slot_block, player_in_shadow(&self.player));
 
-    // Hotbar tooltip: reset timer on slot change, tick down otherwise.
     if (self.player.selected_slot != self.prev_selected_slot) {
         self.prev_selected_slot = self.player.selected_slot;
         self.hotbar_tooltip_timer = 2.0;
@@ -973,10 +839,6 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
         if (self.hotbar_tooltip_timer < 0) self.hotbar_tooltip_timer = 0;
     }
     try prepare_ui_batches(self, engine);
-    if (trace) {
-        log.info("trace: first update end", .{});
-        self.trace_first_update = false;
-    }
 }
 
 fn handle_fly_tap(self: *@This()) void {
@@ -993,7 +855,7 @@ fn handle_fly_tap(self: *@This()) void {
             }
 
             switch (event) {
-                .double => self.chat.receive(MP_FLY_WARNING),
+                .double => self.chat.receive(MpFlyWarning),
                 .triple => {
                     self.mp_fly_unlocked = true;
                     self.player.set_fly(true);
@@ -1003,19 +865,15 @@ fn handle_fly_tap(self: *@This()) void {
     }
 }
 
-/// True when the voxel containing the player's eye is not directly sunlit.
-/// Used to tint the held-block viewmodel to match the surrounding lighting,
-/// matching the per-face shading the chunk mesher applies to world geometry.
-/// Out-of-world positions (e.g. the brief above-ceiling case during a
-/// teleport) read as lit so the held block never goes dark unexpectedly.
 fn player_in_shadow(player: *const Player) bool {
-    const eye_y = player.pos_y + collision.EYE_HEIGHT;
+    const eye_y = player.pos_y + collision.EyeHeight;
     const fx = @floor(player.pos_x);
     const fy = @floor(eye_y);
     const fz = @floor(player.pos_z);
-    if (fx < 0.0 or fx >= @as(f32, @floatFromInt(c.WorldLength))) return false;
-    if (fy < 0.0 or fy >= @as(f32, @floatFromInt(c.WorldHeight))) return false;
-    if (fz < 0.0 or fz >= @as(f32, @floatFromInt(c.WorldDepth))) return false;
+    const dims = World.data.dims;
+    if (fx < 0.0 or fx >= @as(f32, @floatFromInt(dims.length))) return false;
+    if (fy < 0.0 or fy >= @as(f32, @floatFromInt(dims.height))) return false;
+    if (fz < 0.0 or fz >= @as(f32, @floatFromInt(dims.depth))) return false;
     const bx_i: i32 = @intFromFloat(fx);
     const by_i: i32 = @intFromFloat(fy);
     const bz_i: i32 = @intFromFloat(fz);
@@ -1023,6 +881,14 @@ fn player_in_shadow(player: *const Player) bool {
 }
 
 fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
+    if (!self.inventory_open) {
+        if (self.inventory_prepared) |*prepared| prepared.deinit();
+        self.inventory_prepared = null;
+    }
+    if (!self.paused) {
+        if (self.pause_prepared) |*prepared| prepared.deinit();
+        self.pause_prepared = null;
+    }
     self.ui_batcher.clear();
     self.font_batcher.clear();
     self.iso_blocks.begin();
@@ -1052,11 +918,11 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
     }
     if (self.inventory_open) {
         var inv_list: UiDrawList = .{};
-        var none = empty_input();
-        var inv_ui = begin_game_ui(self, &inv_list, &self.inventory_ui_state, &none, InventoryUi.LAYER_BASE);
+        var none: ui_input.UiInput = .{};
+        var inv_ui = begin_game_ui(self, &inv_list, &self.inventory_ui_state, &none, InventoryUi.LayerBase);
         _ = InventoryUi.run(&inv_ui, self.inventory_blocks[0..], &self.inventory_slot);
         inv_ui.end();
-        inv_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
+        try inv_list.prepare_into(&self.inventory_prepared, &self.font_batcher, &self.iso_blocks);
     }
 
     const show_playerlist = Session.mode == .multiplayer and !self.inventory_open and
@@ -1096,7 +962,7 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
         self.draw_hud_prompts(&hud_list);
     }
 
-    hud_list.flush_into(&self.ui_batcher, &self.font_batcher, &self.iso_blocks);
+    try hud_list.prepare_into(&self.hud_prepared, &self.font_batcher, &self.iso_blocks);
     try self.ui_batcher.update();
     self.iso_blocks.update();
     try self.font_batcher.update();
@@ -1106,38 +972,38 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
     if (!self.paused) return;
 
     draw_pause_dim(self);
-    var none = empty_input();
+    var none: ui_input.UiInput = .{};
     switch (self.pause_screen) {
         .main => {
             var list: UiDrawList = .{};
-            var ui = begin_pause_ui(self, &list, &self.pause_ui_state, &none, PauseMenu.LAYER_BASE);
+            var ui = begin_pause_ui(self, &list, &self.pause_ui_state, &none, PauseMenu.LayerBase);
             _ = PauseMenu.run(&ui, Session.mode == .singleplayer);
             ui.end();
-            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            try list.prepare_into(&self.pause_prepared, &self.pause_font_batcher, null);
         },
         .options => {
             var list: UiDrawList = .{};
-            var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, &none, OptionsScreen.LAYER_BASE);
+            var ui = begin_pause_ui(self, &list, &self.pause_options_ui_state, &none, OptionsScreen.LayerBase);
             _ = OptionsScreen.run(&ui, &Options.current, &self.pause_options_rd_view, .{});
             ui.end();
-            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            try list.prepare_into(&self.pause_prepared, &self.pause_font_batcher, null);
         },
         .controls => {
             var list: UiDrawList = .{};
-            var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, &none, OptionsScreen.LAYER_BASE);
+            var ui = begin_pause_ui(self, &list, &self.pause_controls_ui_state, &none, OptionsScreen.LayerBase);
             _ = ControlsScreen.run(&ui, &Options.current, pause_controls_ctx(self));
             ui.end();
-            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            try list.prepare_into(&self.pause_prepared, &self.pause_font_batcher, null);
         },
         .dump_world => {
-            var path_buf: [World.DumpName.PATH_MAX]u8 = undefined;
-            var name_buf: [World.DumpName.NAME_MAX]u8 = undefined;
+            var path_buf: [World.DumpName.PathMax]u8 = undefined;
+            var name_buf: [World.DumpName.NameMax]u8 = undefined;
             const can_save = blk: {
                 _ = World.DumpName.build_path(self.dump_world_name_slice(), &path_buf, &name_buf) catch break :blk false;
                 break :blk true;
             };
             var list: UiDrawList = .{};
-            var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, &none, DumpWorldScreen.LAYER_BASE);
+            var ui = begin_pause_ui(self, &list, &self.pause_dump_ui_state, &none, DumpWorldScreen.LayerBase);
             var dump_ctx: DumpWorldScreen.Ctx = .{
                 .name = &self.dump_world_name,
                 .name_len = &self.dump_world_name_len,
@@ -1145,7 +1011,7 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
             };
             _ = DumpWorldScreen.run(&ui, &dump_ctx);
             ui.end();
-            list.flush_into(&self.pause_batcher, &self.pause_font_batcher, null);
+            try list.prepare_into(&self.pause_prepared, &self.pause_font_batcher, null);
         },
     }
     try self.pause_batcher.update();
@@ -1154,48 +1020,30 @@ fn prepare_ui_batches(self: *@This(), engine: *Engine) !void {
 
 fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    const trace = self.trace_first_draw;
-    if (trace) log.info("trace: first draw begin", .{});
-    // SP drains packets on the game thread; MP has the bg read-loop
-    // task doing it and just checks the connection flag here.
     if (Session.mode == .singleplayer) {
         self.conn.drain_packets();
-        if (trace) log.info("trace: first draw drained packets", .{});
     } else if (!Session.mp_connected.load(.acquire)) {
         DisconnectState.transition_here(engine);
         return;
     }
-    if (self.conn.quit_requested) {
+    if (Session.mode == .singleplayer and self.conn.quit_requested) {
         DisconnectState.transition_here(engine);
         return;
     }
+    // UI draw lists leave culling and depth writes disabled across frames.
+    // Establish the world pass state before applying its camera and fog.
+    Rendering.set_state(&.{ .blend = .solid, .depth_write = true, .cull = true });
     self.player.camera.apply();
-    if (trace) log.info("trace: first draw camera applied", .{});
     self.world.draw_world_pass(&self.player.camera);
-    if (trace) log.info("trace: first draw world pass done", .{});
 
-    // Rain: streaks + impact splashes.  No-op when Options.rain is off.
-    // Slotted here so streaks depth-test against opaque+transparent terrain
-    // and the fluid pass still draws on top of rain in submerged areas.
+    // Rain depth-tests against terrain; the later fluid pass overlays it.
     self.world.draw_rain_pass(&self.player.camera);
-    if (trace) log.info("trace: first draw rain pass done", .{});
 
-    // Remote player models: drawn in the 3D pass, depth-tested against the world.
-    // Slotted before the fluid pass so water/lava correctly occludes them.
+    // Draw before fluids so water and lava occlude remote players.
     self.steve.draw(&self.player);
     self.steve.draw_nametags(&self.player, &self.font_batcher);
-    if (trace) log.info("trace: first draw steve done", .{});
 
-    // Selection outline: still in the 3D pass, depth-tested against the world.
-    // Nudge the whole outline toward the camera by a tiny world-space amount.
-    // The outline prisms extrude outward from the block's AABB, but their
-    // inner-facing quads still share a depth plane with the outer faces of
-    // any neighbouring block (floor tops, adjacent sides) that have the same
-    // outward normal -- pulling the outline a fraction of a block toward the
-    // viewer resolves that z-fight without making the outline show through
-    // other geometry.
-    // The outline shape matches the block's subvoxel bounds (e.g. half-height
-    // for slabs, small box for flowers/mushrooms).
+    // Pull the block-bounds outline toward the camera to avoid coplanar z-fighting.
     if (self.player.selected) |hit| blk: {
         const block_id = World.data.get_block(hit.x, hit.y, hit.z);
         if (block_id.is_air()) break :blk;
@@ -1223,92 +1071,56 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         };
         self.selection.draw(&t);
     }
-    if (trace) log.info("trace: first draw selection done", .{});
 
-    // Fluid pass last so water/lava alpha-blends over the outline, steve
-    // models, and particles drawn just above instead of the depth-writeless
-    // fluid letting those overlays bleed through.
+    // Fluids do not write depth, so render them after other world geometry.
     self.world.draw_fluid_pass();
-    if (trace) log.info("trace: first draw fluid pass done", .{});
 
-    // Held-block viewmodel: swaps in its own projection + identity view,
-    // clears depth internally so it never z-fights against nearby world
-    // geometry. Matrices are left in that state on exit; the UI pass
-    // below installs its own identity proj/view before drawing.
+    // The viewmodel leaves its projection active; the UI draw restores its own.
     if (!self.hud_hidden) {
         self.held.draw(ResourcePack.get_tex(.terrain), &self.player.camera);
     }
-    if (trace) log.info("trace: first draw held done", .{});
 
-    // UI pass: orthographic overlay drawn on top of the 3D scene.
     Rendering.gfx.api.set_fog(false, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
-    // Draw order is hotbar bg -> selector -> inventory panel -> iso block
-    // icons -> tooltip text. The 2D sprites all batch into one pass; the
-    // iso blocks flush after them so they sit on top of the selector frame
-    // and the inventory panel. The font batcher flushes last for the
-    // tooltip. A depth clear between each pass keeps z-tests clean.
+    // Depth clears preserve the sprite, block-icon, then text ordering.
     Rendering.gfx.api.clear_depth();
     self.ui_batcher.draw();
-    if (trace) log.info("trace: first draw ui sprites flushed", .{});
 
     Rendering.gfx.api.clear_depth();
     self.iso_blocks.draw();
-    if (trace) log.info("trace: first draw iso flushed", .{});
 
     Rendering.gfx.api.clear_depth();
     self.font_batcher.draw();
-    if (trace) log.info("trace: first draw font flushed", .{});
+    Rendering.gfx.api.clear_depth();
+    if (self.inventory_prepared) |*prepared| prepared.draw();
+    if (self.hud_prepared) |*prepared| prepared.draw();
 
-    // Pause overlay uses its own batchers so it flushes cleanly after every
-    // gameplay UI pass without depending on cross-batcher layer ordering.
     if (self.paused) {
         Rendering.gfx.api.clear_depth();
         self.pause_batcher.draw();
 
         Rendering.gfx.api.clear_depth();
         self.pause_font_batcher.draw();
-    }
-    if (trace) {
-        log.info("trace: first draw end", .{});
-        self.trace_first_draw = false;
+        Rendering.gfx.api.clear_depth();
+        if (self.pause_prepared) |*prepared| prepared.draw();
     }
 }
 
-/// Translucent black quad covering the entire screen, drawn behind
-/// the pause widgets so the live game scene fades out. Layer puts it
-/// one above the HUD's deepest tooltip layer.
 fn draw_pause_dim(self: *@This()) void {
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const scale = ae.UI.Scaling.compute(screen_w, screen_h);
-    const extent_x: i16 = @intCast((screen_w + scale - 1) / scale);
-    const extent_y: i16 = @intCast((screen_h + scale - 1) / scale);
+    const screen = Screen.logical_rect();
 
     self.pause_batcher.add_sprite(&.{
         .texture = &Rendering.Texture.Default,
         .pos_offset = .{ .x = 0, .y = 0 },
-        .pos_extent = .{ .x = extent_x, .y = extent_y },
+        .pos_extent = .{ .x = screen.x1, .y = screen.y1 },
         .tex_offset = .{ .x = 0, .y = 0 },
         .tex_extent = .{ .x = 1, .y = 1 },
         .color = Color.rgba(0, 0, 0, 160),
-        .layer = PauseMenu.DIM_LAYER,
+        .layer = PauseMenu.DimLayer,
         .reference = .top_left,
         .origin = .top_left,
     });
 }
 
-/// Compose the bottom-left HUD prompt list and delegate to PromptStrip.
-///
-/// Content switches by context so the strip always describes the
-/// currently-available actions:
-///   * Controller social mode: [Exit, Chat].
-///   * Chat session open: [Send, Cancel].
-///   * Normal play: [Inventory, Place?, Break?] -- Place requires an
-///     aimed-at placement slot, Break any non-Air target.
-///
-/// The inventory overlay owns its own PromptStrip inside the
-/// Inventory overlay; this routine is short-circuited by the
-/// caller when the inventory is open.
 fn draw_hud_prompts(self: *@This(), list: *UiDrawList) void {
     const sprite_layer: u8 = 252;
     const text_layer: u8 = 252;
@@ -1349,8 +1161,8 @@ fn draw_hud_prompts(self: *@This(), list: *UiDrawList) void {
         &self.font_batcher,
         buf[0..n],
         .bottom_left,
-        PromptStrip.DEFAULT_POS_X,
-        PromptStrip.DEFAULT_POS_Y,
+        PromptStrip.DefaultPosX,
+        PromptStrip.DefaultPosY,
         sprite_layer,
         text_layer,
     );

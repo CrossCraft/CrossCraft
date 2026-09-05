@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const Ui = @import("../Ui.zig");
 const Prompts = @import("../Prompts.zig");
 const widget_id = @import("../widget_id.zig");
@@ -36,25 +37,22 @@ pub const visible_rows: u8 = 5;
 pub const row_base: u16 = 200;
 
 pub fn wid_for_row(i: u8) WidgetId {
-    std.debug.assert(i < max_worlds);
+    assert(i < max_worlds);
     return widget_id.raw(row_base + @as(u16, i));
 }
 
 pub const Entry = struct {
     label_buf: [max_label_len]u8 = undefined,
     label_len: u8 = 0,
-    file_name_buf: [max_file_name_len]u8 = undefined,
-    file_name_len: u8 = 0,
     path_buf: [max_path_len]u8 = undefined,
     path_len: u8 = 0,
-    byte_size: u64 = 0,
 
     pub fn label(self: *const Entry) []const u8 {
         return self.label_buf[0..self.label_len];
     }
 
     pub fn file_name(self: *const Entry) []const u8 {
-        return self.file_name_buf[0..self.file_name_len];
+        return self.path()["saves/".len..];
     }
 
     pub fn path(self: *const Entry) []const u8 {
@@ -116,8 +114,7 @@ pub fn scan(io: std.Io, data_dir: std.Io.Dir, out: *[max_worlds]Entry) u8 {
         add_entry(out, &count, entry.name, size);
     }
 
-    sort_entries(out[0..count]);
-    format_labels(out[0..count]);
+    std.sort.insertion(Entry, out[0..count], {}, less_than);
     return count;
 }
 
@@ -138,11 +135,7 @@ fn stat_file_size(io: std.Io, data_dir: std.Io.Dir, name: []const u8) ?u64 {
     var path_buf: [max_path_len]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "saves/{s}", .{name}) catch return null;
 
-    // Do not open the save relative to the temporary iterable directory.
-    // PSP's I/O layer tracks the base path for open directory handles in a
-    // small table; once that is full, iteration still works but relative file
-    // opens fail. Statting through the stable data directory avoids that
-    // handle-pressure failure and does not consume another file handle.
+    // PSP may exhaust its directory-path table during iteration; use the stable data handle.
     const st = data_dir.statFile(io, path, .{}) catch |err| {
         log.warn("failed to stat save '{s}': {}", .{ path, err });
         return null;
@@ -154,43 +147,26 @@ fn add_entry(out: *[max_worlds]Entry, count: *u8, file_name: []const u8, byte_si
     if (count.* >= max_worlds) return;
     if (file_name.len > max_file_name_len) return;
 
-    var e: Entry = .{ .byte_size = byte_size };
-    @memcpy(e.file_name_buf[0..file_name.len], file_name);
-    e.file_name_len = @intCast(file_name.len);
+    var e: Entry = .{};
 
     const path = std.fmt.bufPrint(&e.path_buf, "saves/{s}", .{file_name}) catch return;
     e.path_len = @intCast(path.len);
+
+    const mb_x100 = (byte_size + 5_000) / 10_000;
+    var display_name_buf: [max_display_name_len]u8 = undefined;
+    const label = std.fmt.bufPrint(
+        &e.label_buf,
+        "{s} ({d}.{d:0>2} MB)",
+        .{ display_name(file_name, &display_name_buf), mb_x100 / 100, mb_x100 % 100 },
+    ) catch "";
+    e.label_len = @intCast(label.len);
 
     out[count.*] = e;
     count.* += 1;
 }
 
-fn sort_entries(entries: []Entry) void {
-    var i: usize = 0;
-    while (i < entries.len) : (i += 1) {
-        var min = i;
-        var j = i + 1;
-        while (j < entries.len) : (j += 1) {
-            if (std.mem.lessThan(u8, entries[j].file_name(), entries[min].file_name())) min = j;
-        }
-        if (min != i) std.mem.swap(Entry, &entries[i], &entries[min]);
-    }
-}
-
-fn format_labels(entries: []Entry) void {
-    for (entries) |*entry| {
-        const mb_x100 = (entry.byte_size + 5_000) / 10_000;
-        const mb_whole = mb_x100 / 100;
-        const mb_frac = mb_x100 % 100;
-        var display_name_buf: [max_display_name_len]u8 = undefined;
-        const shown_name = display_name(entry.file_name(), &display_name_buf);
-        const label = std.fmt.bufPrint(
-            &entry.label_buf,
-            "{s} ({d}.{d:0>2} MB)",
-            .{ shown_name, mb_whole, mb_frac },
-        ) catch "";
-        entry.label_len = @intCast(label.len);
-    }
+fn less_than(_: void, a: Entry, b: Entry) bool {
+    return std.mem.lessThan(u8, a.file_name(), b.file_name());
 }
 
 fn display_name(file_name: []const u8, out: *[max_display_name_len]u8) []const u8 {

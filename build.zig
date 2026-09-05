@@ -1,11 +1,46 @@
 const std = @import("std");
 const Aether = @import("engine");
+const Capabilities = @import("src/capabilities.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const web_host = b.option([]const u8, "web-host", "serve-web: bind host (default: 127.0.0.1)") orelse "127.0.0.1";
     const web_port = b.option(u16, "web-port", "serve-web: bind port (default: 8080)") orelse 8080;
+
+    const lint_dep = b.dependency("lint", .{
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    });
+    const lint_roots: []const []const u8 = &.{
+        ".",
+        "src/unit.zig",
+        "src/client/web_main.zig",
+        "src/engine_services.zig",
+    };
+
+    const run_lint = b.addRunArtifact(lint_dep.artifact("lint"));
+    run_lint.setCwd(b.path("."));
+    if (b.graph.environ_map.get("CI") != null) {
+        run_lint.addArg("--check-only");
+    }
+    // Include roots that Zig imports cannot reach in dead-file analysis.
+    run_lint.addArgs(lint_roots);
+
+    const lint_step = b.step("lint", "Lint the codebase with tiger_lint");
+    lint_step.dependOn(&run_lint.step);
+    b.getInstallStep().dependOn(lint_step);
+
+    const run_lint_metrics = b.addRunArtifact(lint_dep.artifact("lint"));
+    run_lint_metrics.setCwd(b.path("."));
+    run_lint_metrics.addArgs(&.{ "--check-only", "--metrics" });
+    run_lint_metrics.addArgs(lint_roots);
+
+    const lint_metrics_step = b.step(
+        "lint-metrics",
+        "Lint the codebase and print AST metrics as JSON",
+    );
+    lint_metrics_step.dependOn(&run_lint_metrics.step);
 
     const overrides: Aether.config.Config.Overrides = .{
         .gfx = b.option(Aether.config.Gfx, "gfx", "Graphics backend override (default: auto-detect from target)"),
@@ -21,6 +56,11 @@ pub fn build(b: *std.Build) void {
     const skip_pack = b.option(bool, "skip-pack", "Skip zipping resources into pack.zip (for CI builds without LFS assets)") orelse false;
 
     const config = Aether.config.Config.resolve(target, overrides);
+    const policy = Capabilities.build_policy(config, target.result);
+    const capabilities = b.addModule("capabilities", .{
+        .root_source_file = b.path("src/capabilities.zig"),
+        .optimize = optimize,
+    });
 
     const zbc = b.dependency("ZeeBuffer", .{});
 
@@ -33,106 +73,23 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const common = b.addModule("common", .{
-        .root_source_file = b.path("src/common/root.zig"),
+    const worldgen = b.addModule("worldgen", .{
+        .root_source_file = b.path("src/core/worldgen/root.zig"),
+        .optimize = .ReleaseFast,
+        .imports = &.{.{ .name = "capabilities", .module = capabilities }},
+    });
+
+    const core = b.addModule("core", .{
+        .root_source_file = b.path("src/core/root.zig"),
         .optimize = optimize,
         .imports = &.{
             .{ .name = "protocol", .module = protocol },
+            .{ .name = "worldgen", .module = worldgen },
+            .{ .name = "capabilities", .module = capabilities },
         },
     });
 
-    const game = b.addModule("game", .{
-        .root_source_file = b.path("src/game/root.zig"),
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "protocol", .module = protocol },
-            .{ .name = "common", .module = common },
-        },
-    });
-
-    const psp_client_dir = "CrossCraft-Classic-PSP";
-    const nintendo_3ds_client_dir = "CrossCraft-Classic-3DS";
-    const nintendo_switch_client_dir = "CrossCraft-Classic-Switch";
-    const is_psp = config.platform == .psp;
-    const is_macos = config.platform == .macos;
-    const is_3ds = config.platform == .nintendo_3ds;
-    const is_switch = config.platform == .nintendo_switch;
-    const is_windows = config.platform == .windows;
-    const is_desktop = switch (config.platform) {
-        .windows, .linux => true,
-        else => false,
-    };
-    const is_pc_server = switch (config.platform) {
-        .windows, .linux, .macos => true,
-        else => false,
-    };
-
-    // Resource packing: ZIP the default resource pack at build time.
-    // Skipped via -Dskip-pack on CI where the LFS-backed resources submodule
-    // is not fetched, which would otherwise zip up LFS pointer stubs.
-    const pack_zip_path: ?std.Build.LazyPath = if (skip_pack) null else blk: {
-        const resources = b.dependency("resources", .{});
-
-        const pack_tool = b.addExecutable(.{
-            .name = "pack_zip",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("tools/pack_zip.zig"),
-                .target = b.graph.host,
-            }),
-        });
-
-        var pack_cmd = b.addRunArtifact(pack_tool);
-        pack_cmd.addDirectoryArg(resources.path("default"));
-        break :blk pack_cmd.addOutputFileArg("pack.zip");
-    };
-    const archival_save_path = b.path("saves/origins.cw");
-
-    // Whether pack.zip is embedded directly in the Linux/Windows binary.
-    // True for local release builds; false for -Duse-cwd (CI/dev) and all
-    // other platforms.
-    const should_embed = is_desktop and pack_zip_path != null and !(overrides.use_cwd orelse false);
-
-    // Packaging strategy per platform:
-    //   PSP: install into bin/<psp_client_dir>/ for EBOOT layout.
-    //   3DS: install beside the 3dsx; users copy the directory to SDMC.
-    //   Switch: install beside the NRO; users copy the directory to SDMC.
-    //   macOS: routed through Aether.exportArtifactWithOutputs into the .app bundle's
-    //     Contents/Resources/ — see below.
-    //   Desktop, embedding: pack.zip is baked into the binary; no loose file.
-    //   Desktop, -Duse-cwd: install to zig-out/bin/ so run-game (which cd's
-    //     into the install dir before exec) and distribution zips both find it.
-    const install_pack: ?*std.Build.Step = if (pack_zip_path) |pack_zip| blk: {
-        if (is_psp) {
-            const psp_install = b.addInstallFile(
-                pack_zip,
-                "bin/" ++ psp_client_dir ++ "/pack.zip",
-            );
-            break :blk &psp_install.step;
-        }
-        if (is_3ds) {
-            const nintendo_3ds_install = b.addInstallFile(
-                pack_zip,
-                "bin/" ++ nintendo_3ds_client_dir ++ "/pack.zip",
-            );
-            break :blk &nintendo_3ds_install.step;
-        }
-        if (is_switch) {
-            const nintendo_switch_install = b.addInstallFile(
-                pack_zip,
-                "bin/" ++ nintendo_switch_client_dir ++ "/pack.zip",
-            );
-            break :blk &nintendo_switch_install.step;
-        }
-        if (is_macos) break :blk null; // Aether.exportArtifactWithOutputs installs via opts.resources.
-        if (should_embed) break :blk null; // Baked into binary; no separate file needed.
-
-        // -Duse-cwd path: install pack.zip alongside the binary in
-        // zig-out/bin/. The run-game step sets cwd to the install dir so
-        // the binary finds it there, and distribution zips (zig-out/) get
-        // the pack for free.
-        const bin_install = b.addInstallFile(pack_zip, "bin/pack.zip");
-        break :blk &bin_install.step;
-    } else null;
+    const console_client_dir = policy.client_dir;
 
     const ae_dep = b.dependency("engine", .{
         .target = target,
@@ -141,23 +98,60 @@ pub fn build(b: *std.Build) void {
         .@"mesh-indexing" = overrides.mesh_indexing,
     });
 
+    // CI can skip packing when the LFS-backed resources are unavailable.
+    const pack_zip_path: ?std.Build.LazyPath = if (skip_pack) null else blk: {
+        const resources = b.dependency("resources", .{});
+
+        const pack_tool = b.addExecutable(.{
+            .name = "crosscraft-pack-zip",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/pack_zip.zig"),
+                .target = b.graph.host,
+                .optimize = .ReleaseSafe,
+                .imports = &.{.{ .name = "capabilities", .module = capabilities }},
+            }),
+        });
+        // Snapshot the inputs so edits, additions and removals invalidate the
+        // pack. A directory argument alone only caches the directory's path.
+        const snapshot = b.addWriteFiles();
+        const directory = snapshot.addCopyDirectory(resources.path("default"), "assets", .{});
+        const pack_cmd = b.addRunArtifact(pack_tool);
+        pack_cmd.addDirectoryArg(directory);
+        const output = pack_cmd.addOutputFileArg("pack.zip");
+        // Stored WAVs let the game's audio voices stream without DEFLATE windows.
+        pack_cmd.addArg("--store-extension=.wav");
+        break :blk output;
+    };
+    const archival_save_path = b.path("saves/origins.cw");
+
+    const should_embed = policy.embed_default_pack and pack_zip_path != null and !(overrides.use_cwd orelse false);
+
+    const install_pack: ?*std.Build.Step = if (pack_zip_path) |pack_zip| blk: {
+        // macOS packaging installs the pack inside the signed app bundle.
+        if (policy.bundle_resources or should_embed) break :blk null;
+        const path = if (console_client_dir) |dir| b.fmt("bin/{s}/pack.zip", .{dir}) else "bin/pack.zip";
+        break :blk &b.addInstallFile(pack_zip, path).step;
+    } else null;
+
     const client_name = "CrossCraft-Classic";
 
-    const client_exe = Aether.modules.addGame(ae_dep.builder, b, .{
+    const client_exe = Aether.modules.add_game(ae_dep.builder, b, .{
         .name = client_name,
         .root_source_file = b.path("src/client/main.zig"),
         .target = target,
         .optimize = optimize,
         .overrides = overrides,
     });
-    const client_root = Aether.modules.userRootModule(client_exe);
-    client_root.addImport("game", game);
-    client_root.addImport("common", common);
+    if (policy.use_llvm_linker) {
+        client_exe.use_llvm = true;
+        client_exe.use_lld = true;
+    }
+    const client_root = Aether.modules.user_root_module(client_exe);
+    client_root.addImport("core", core);
+    client_root.addImport("capabilities", capabilities);
     client_root.addImport("protocol", protocol);
+    add_engine_services(b, client_root, core);
 
-    // Embed pack.zip directly in the binary on Linux/Windows release builds.
-    // CI and dev builds use -Duse-cwd=true which skips embedding, keeping
-    // artifacts small (pack.zip can be 90+ MB).
     if (should_embed) {
         client_root.addAnonymousImport("default_pack", .{
             .root_source_file = pack_zip_path.?,
@@ -168,11 +162,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "embed_pack", should_embed);
     client_root.addImport("build_options", build_options.createModule());
 
-    // On macOS we pipe the default pack and archival save through
-    // exportArtifactWithOutputs so they land in Contents/Resources/ inside the .app
-    // bundle before Aether signs it. On PSP/3DS/desktop the install steps
-    // above and the release workflow handle their placement.
-    const mac_resources: []const Aether.packaging.Resource = if (is_macos) blk: {
+    const mac_resources: []const Aether.packaging.Resource = if (policy.bundle_resources) blk: {
         if (pack_zip_path) |pack_zip| {
             break :blk &.{
                 .{ .path = pack_zip, .name = "pack.zip" },
@@ -181,49 +171,46 @@ pub fn build(b: *std.Build) void {
         }
         break :blk &.{.{ .path = archival_save_path, .name = "saves/origins.cw" }};
     } else &.{};
-    const packaged = Aether.packaging.exportArtifactWithOutputs(ae_dep.builder, b, client_exe, config, .{
+    const packaged = Aether.packaging.export_artifact_with_outputs(ae_dep.builder, b, client_exe, config, .{
         .title = "CrossCraft Classic",
-        .output_dir = if (is_psp) psp_client_dir else if (is_3ds) nintendo_3ds_client_dir else if (is_switch) nintendo_switch_client_dir else null,
+        .output_dir = console_client_dir,
         .bundle_id = "com.iridescentrose.crosscraft-classic",
         .resources = mac_resources,
-        .nintendo_3ds_description = if (is_3ds) "Clean-room Minecraft Classic" else "",
-        .nintendo_3ds_publisher = if (is_3ds) "CrossCraft" else "",
-        .switch_author = if (is_switch) "CrossCraft" else "",
-        .switch_version = if (is_switch) "0.0.0" else "",
-        // Each platform consumes its native icon format: Aether turns the
-        // macOS PNG into an .icns, embeds the Windows .ico in the PE resource
-        // table, and feeds the console artwork to their package builders.
-        .icon_png = if (is_macos) b.path("assets/icon-osx.png") else null,
-        .windows_icon = if (is_windows) b.path("assets/icon-win32.ico") else null,
-        .icon0 = if (is_psp) b.path("assets/icon-psp.png") else null,
-        .pic1 = if (is_psp) b.path("assets/banner-psp-pic1.png") else null,
-        .nintendo_3ds_icon = if (is_3ds) b.path("assets/icon-3ds.png") else null,
-        .switch_icon = if (is_switch) b.path("assets/icon-switch.jpg") else null,
+        .nintendo_3ds_description = policy.description,
+        .nintendo_3ds_publisher = policy.publisher,
+        .switch_author = policy.author,
+        .switch_version = policy.version,
+        .icon_png = if (policy.icon_png) |path| b.path(path) else null,
+        .windows_icon = if (policy.windows_icon) |path| b.path(path) else null,
+        .icon0 = if (policy.icon0) |path| b.path(path) else null,
+        .pic1 = if (policy.pic1) |path| b.path(path) else null,
+        .nintendo_3ds_icon = if (policy.nintendo_3ds_icon) |path| b.path(path) else null,
+        .switch_icon = if (policy.switch_icon) |path| b.path(path) else null,
     });
 
-    if (is_pc_server) {
+    if (policy.standalone_server) {
         const server_overrides: Aether.config.Config.Overrides = .{
             .use_cwd = true,
         };
-        const server_exe = Aether.modules.addHeadless(ae_dep.builder, b, .{
+        const server_exe = Aether.modules.add_headless(ae_dep.builder, b, .{
             .name = "CrossCraft-Classic-Server",
             .root_source_file = b.path("src/server/main.zig"),
             .target = target,
             .optimize = optimize,
             .overrides = server_overrides,
         });
-        const server_root = Aether.modules.userRootModule(server_exe);
-        server_root.addImport("game", game);
-        server_root.addImport("common", common);
+        const server_root = Aether.modules.user_root_module(server_exe);
+        server_root.addImport("core", core);
+        server_root.addImport("capabilities", capabilities);
+        add_engine_services(b, server_root, core);
 
         const build_server_step = b.step("server", "Build the server");
+        build_server_step.dependOn(lint_step);
         build_server_step.dependOn(&b.addInstallArtifact(server_exe, .{}).step);
 
         const run_server_step = b.step("run-server", "Run the server");
         const run_server_cmd = b.addRunArtifact(server_exe);
-        // Run from zig-out/bin/ so server.zig's cwd-rooted data files
-        // (world.dat, server.properties) land in the install dir instead of
-        // polluting the source tree.
+        // Keep server data under zig-out/bin instead of the source tree.
         run_server_cmd.setCwd(.{ .cwd_relative = b.getInstallPath(.bin, "") });
         run_server_cmd.step.dependOn(build_server_step);
         run_server_step.dependOn(&run_server_cmd.step);
@@ -235,6 +222,7 @@ pub fn build(b: *std.Build) void {
         const unsupported_server = b.addFail("Standalone server builds are supported only on PC targets (Linux, macOS, Windows).");
 
         const build_server_step = b.step("server", "Build the server");
+        build_server_step.dependOn(lint_step);
         build_server_step.dependOn(&unsupported_server.step);
 
         const run_server_step = b.step("run-server", "Run the server");
@@ -242,25 +230,20 @@ pub fn build(b: *std.Build) void {
     }
 
     const build_game_step = b.step("game", "Build the game");
-    // macOS ships the exe inside CrossCraft-Classic.app (wired by
-    // Aether.exportArtifactWithOutputs onto b.getInstallStep()). Installing a flat
-    // copy alongside would duplicate the binary and confuse downstream
-    // packaging.
-    if (!is_macos and !is_3ds and !is_switch) {
+    build_game_step.dependOn(lint_step);
+    // Bundled targets install through the packaging pipeline.
+    if (policy.install_raw_executable) {
         build_game_step.dependOn(&b.addInstallArtifact(client_exe, .{}).step);
     }
     if (install_pack) |ip| build_game_step.dependOn(ip);
-    if (is_psp or is_macos or is_3ds or is_switch) {
-        // exportArtifactWithOutputs registers pipeline / bundle steps on
-        // b.getInstallStep(); wire them into the game step so
-        // `zig build game -Dtarget=<platform>` produces the artifact.
+    if (policy.install_package) {
         build_game_step.dependOn(b.getInstallStep());
     }
 
     const run_client_step = b.step("run-game", "Run the app");
-    if (is_3ds) {
+    if (policy.launch == .network_3ds) {
         const threedsx = packaged.nintendo_3dsx orelse unreachable;
-        const link_cmd = Aether.packaging.addLink3dsx(b, threedsx, .{
+        const link_cmd = Aether.packaging.add_link3dsx(b, threedsx, .{
             .address = b.option([]const u8, "3dslink-address", "3DS: target IP for 3dslink push (default: broadcast auto-discover)"),
             .retries = b.option(u32, "3dslink-retries", "3DS: broadcast-discovery retry count (default: Zitrus default)"),
         });
@@ -269,10 +252,10 @@ pub fn build(b: *std.Build) void {
 
         const link_step = b.step("3dslink", "Push the 3dsx to a networked 3DS via 3dslink");
         link_step.dependOn(&link_cmd.step);
-    } else if (is_switch) {
+    } else if (policy.launch == .network_switch) {
         const nro_path = b.getInstallPath(
             .bin,
-            b.fmt("{s}/{s}.nro", .{ nintendo_switch_client_dir, client_name }),
+            b.fmt("{s}/{s}.nro", .{ console_client_dir.?, client_name }),
         );
         const nxlink_path = b.option([]const u8, "nxlink-path", "Switch: path to nxlink (default: $DEVKITPRO/tools/bin/nxlink or /opt/devkitpro/tools/bin/nxlink)") orelse blk: {
             const dkp = b.graph.environ_map.get("DEVKITPRO") orelse "/opt/devkitpro";
@@ -299,22 +282,15 @@ pub fn build(b: *std.Build) void {
         const link_step = b.step("nxlink", "Push the nro to a networked Switch via nxlink");
         link_step.dependOn(&link_cmd.step);
     } else {
-        // macOS must run the binary from inside the .app bundle: pack.zip
-        // is installed into <Bundle>.app/Contents/Resources/ by
-        // exportArtifactWithOutputs, and the engine resolves the resources dir from
-        // the exe path (only bundle-laid-out exes look in Contents/).
-        // Running the raw cache artifact would leave it looking for
-        // pack.zip beside the cache binary and fail with FileNotFound.
-        const run_client_cmd = if (is_macos)
+        // macOS resolves resources relative to the installed app bundle.
+        const run_client_cmd = if (policy.launch == .app_bundle)
             b.addSystemCommand(&.{b.getInstallPath(
                 .bin,
                 b.fmt("{s}.app/Contents/MacOS/{s}", .{ client_name, client_name }),
             )})
         else
             b.addRunArtifact(client_exe);
-        // Same cwd reasoning as run-server: under -Duse-cwd=true the binary
-        // finds the installed pack.zip here, and any data it writes
-        // (options.json, texturepacks/) lands alongside it.
+        // Keep data and the loose resource pack together under -Duse-cwd.
         run_client_cmd.setCwd(.{ .cwd_relative = b.getInstallPath(.bin, "") });
         run_client_cmd.step.dependOn(build_game_step);
         run_client_step.dependOn(&run_client_cmd.step);
@@ -325,8 +301,32 @@ pub fn build(b: *std.Build) void {
     }
 
     const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(lint_step);
 
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &.{};
+    const pack_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/pack_zip.zig"),
+            .target = b.graph.host,
+            .imports = &.{.{ .name = "capabilities", .module = capabilities }},
+        }),
+        .filters = test_filters,
+    });
+    const run_pack_tests = b.addRunArtifact(pack_tests);
+    test_step.dependOn(&run_pack_tests.step);
+    b.step("test-pack", "Verify CrossCraft resource pack creation").dependOn(&run_pack_tests.step);
+    const capability_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/capabilities.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+        .filters = test_filters,
+    });
+    const run_capability_tests = b.addRunArtifact(capability_tests);
+    test_step.dependOn(&run_capability_tests.step);
+    b.step("test-capabilities", "Verify target capability policy").dependOn(&run_capability_tests.step);
+
     const unit_tests = b.addTest(.{
         .root_module = unit_tests_root: {
             const root = b.createModule(.{
@@ -335,31 +335,72 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             });
             root.addImport("aether", client_root.import_table.get("aether").?);
-            root.addImport("common", common);
-            root.addImport("game", game);
+            root.addImport("protocol", protocol);
+            root.addImport("capabilities", capabilities);
+            root.addImport("core", core);
+            root.addImport("engine_services", client_root.import_table.get("engine_services").?);
             break :unit_tests_root root;
         },
         .filters = test_filters,
     });
-    test_step.dependOn(&b.addRunArtifact(unit_tests).step);
-
-    // Standalone build step for the pack_zip host tool.
-    // Usage: zig build pack-tool
-    // Produces zig-out/bin/pack_zip (host-native binary).
-    const pack_tool_step = b.step("pack-tool", "Build the pack_zip resource packing tool");
-    const pack_tool_exe = b.addExecutable(.{
-        .name = "pack_zip",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/pack_zip.zig"),
-            .target = b.graph.host,
-        }),
+    // Same glibc .sframe workaround as the desktop client executable: the
+    // system linker cannot consume GCC 16's R_X86_64_PC64 relocations.
+    if (policy.use_llvm_linker) {
+        unit_tests.use_llvm = true;
+        unit_tests.use_lld = true;
+    }
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    test_step.dependOn(&run_unit_tests.step);
+    const service_tests = b.addTest(.{
+        .root_module = client_root.import_table.get("engine_services").?,
+        .filters = test_filters,
+        .use_llvm = unit_tests.use_llvm,
+        .use_lld = unit_tests.use_lld,
     });
-    pack_tool_step.dependOn(&b.addInstallArtifact(pack_tool_exe, .{}).step);
+    const run_service_tests = b.addRunArtifact(service_tests);
+    test_step.dependOn(&run_service_tests.step);
+    const hosts_step = b.step("test-hosts", "Run client and server host tests");
+    hosts_step.dependOn(&run_unit_tests.step);
+    hosts_step.dependOn(&run_service_tests.step);
+    b.step("test-services", "Verify injected Aether job and storage adapters").dependOn(&run_service_tests.step);
 
-    // Standalone save conversion/editing tool.
-    // Usage: zig build savetool
-    // Produces zig-out/bin/savetool (host-native binary).
-    const savetool_step = b.step("savetool", "Build the save conversion/editing tool");
+    const core_tests = b.addTest(.{
+        .root_module = core_tests_root: {
+            const root = b.createModule(.{
+                .root_source_file = b.path("src/core/unit.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            root.addImport("protocol", protocol);
+            root.addImport("capabilities", capabilities);
+            root.addImport("worldgen", worldgen);
+            break :core_tests_root root;
+        },
+        .filters = test_filters,
+    });
+    if (policy.use_llvm_linker) {
+        core_tests.use_llvm = true;
+        core_tests.use_lld = true;
+    }
+    const run_core_tests = b.addRunArtifact(core_tests);
+    test_step.dependOn(&run_core_tests.step);
+    b.step("test-core", "Run core tests").dependOn(&run_core_tests.step);
+
+    const worldgen_tests = b.addTest(.{
+        .name = "worldgen_tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/core/worldgen/root.zig"),
+            .imports = &.{.{ .name = "capabilities", .module = capabilities }},
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+        .filters = test_filters,
+    });
+    const run_worldgen_tests = b.addRunArtifact(worldgen_tests);
+    test_step.dependOn(&run_worldgen_tests.step);
+    b.step("test-worldgen", "Run world generation unit tests").dependOn(&run_worldgen_tests.step);
+
+    const savetool_step = b.step("savetool", "Build the save conversion tool");
     const savetool_exe = b.addExecutable(.{
         .name = "savetool",
         .root_module = b.createModule(.{
@@ -367,29 +408,43 @@ pub fn build(b: *std.Build) void {
             .target = b.graph.host,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "common", .module = common },
-                .{ .name = "game", .module = game },
+                .{ .name = "core", .module = core },
             },
         }),
     });
     savetool_step.dependOn(&b.addInstallArtifact(savetool_exe, .{}).step);
 
-    const web_target = Aether.config.webTarget(b);
+    const worldgen_test_step = b.step("worldgen-test", "Verify worldgen output against 100 oracle-captured golden hashes");
+    const worldgen_test_exe = b.addExecutable(.{
+        .name = "worldgen_test",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/worldgen_test.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "worldgen", .module = worldgen },
+            },
+        }),
+    });
+    worldgen_test_step.dependOn(&b.addRunArtifact(worldgen_test_exe).step);
+
+    const web_target = Aether.config.web_target(b);
     const web_overrides: Aether.config.Config.Overrides = .{
         .gfx = .webgl,
         .use_cwd = true,
     };
-    const web_exe = Aether.modules.addGame(ae_dep.builder, b, .{
+    const web_exe = Aether.modules.add_game(ae_dep.builder, b, .{
         .name = "CrossCraft-Classic",
         .root_source_file = b.path("src/client/web_main.zig"),
         .target = web_target,
         .optimize = optimize,
         .overrides = web_overrides,
     });
-    const web_root = Aether.modules.userRootModule(web_exe);
-    web_root.addImport("game", game);
-    web_root.addImport("common", common);
+    const web_root = Aether.modules.user_root_module(web_exe);
+    web_root.addImport("core", core);
+    web_root.addImport("capabilities", capabilities);
     web_root.addImport("protocol", protocol);
+    add_engine_services(b, web_root, core);
 
     const web_build_options = b.addOptions();
     web_build_options.addOption(bool, "embed_pack", false);
@@ -399,16 +454,15 @@ pub fn build(b: *std.Build) void {
         &.{.{ .path = pack_zip, .name = "pack.zip" }}
     else
         &.{};
-    const web_install = Aether.packaging.addWebBundle(ae_dep.builder, b, web_exe, .{
+    const web_install = Aether.packaging.add_web_bundle(ae_dep.builder, b, web_exe, .{
         .web_resource_files = web_resource_files,
         .web_resource_manifest = if (pack_zip_path != null) "pack.zip\n" else "",
-        .web_app_module = b.path("web/crosscraft.js"),
     });
 
     const web_step = b.step("web", "Build the browser-playable WASM site in zig-out/web");
     web_step.dependOn(&web_install.step);
 
-    const serve_web_cmd = Aether.packaging.addServeWebStep(
+    const serve_web_cmd = Aether.packaging.add_serve_web_step(
         ae_dep.builder,
         b,
         "crosscraft-serve-web",
@@ -419,4 +473,16 @@ pub fn build(b: *std.Build) void {
 
     const serve_web_step = b.step("serve-web", "Serve zig-out/web with WASM MIME and COOP/COEP headers");
     serve_web_step.dependOn(&serve_web_cmd.step);
+}
+
+fn add_engine_services(b: *std.Build, root: *std.Build.Module, core: *std.Build.Module) void {
+    root.addImport("engine_services", b.createModule(.{
+        .root_source_file = b.path("src/engine_services.zig"),
+        .target = root.resolved_target.?,
+        .optimize = root.optimize.?,
+        .imports = &.{
+            .{ .name = "aether", .module = root.import_table.get("aether").? },
+            .{ .name = "core", .module = core },
+        },
+    }));
 }

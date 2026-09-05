@@ -1,42 +1,39 @@
-// Portions adapted from ClassiCube[](https://github.com/ClassiCube/ClassiCube) by UnknownShadow200.
-// - Map generation & dig animation: primarily from wiki algorithm descriptions
-//   (https://github.com/ClassiCube/ClassiCube/wiki/Minecraft-Classic-map-generation-algorithm
-//    https://github.com/ClassiCube/ClassiCube/wiki/Dig-animation-details)
+// Portions adapted from ClassiCube (https://github.com/ClassiCube/ClassiCube) by UnknownShadow200.
+// - Dig animation: primarily from wiki algorithm descriptions
+//   (https://github.com/ClassiCube/ClassiCube/wiki/Dig-animation-details)
 // - Physics & view-bob: cross-referenced in part from source code.
-// - World generation also includes minimal cross-checks against the original BSD code
-//   (e.g. one-line differences).
-// See THIRD-PARTY-NOTICES.md for the full BSD 3-Clause license text.
+// See THIRD_PARTY_NOTICES.md for the full BSD 3-Clause license text.
 //
 // Ported to Zig for CrossCraft (GPLv2; uses separate Aether-Engine).
 // Modifications Copyright (c) 2026 CrossCraft
 
 const std = @import("std");
-const builtin = @import("builtin");
+const assert = std.debug.assert;
+const caps = @import("capabilities").ClientType(ae);
 const ae = @import("aether");
 const Math = ae.Math;
 const Rendering = ae.Rendering;
 const input = ae.Core.input;
 
-const World = @import("game").World;
-const c = @import("common").consts;
-const Block = c.Block;
-const proto = @import("common").protocol;
+const core = @import("core");
+const World = core.World;
+const Block = core.blocks.Block;
+const proto = core.protocol;
 
 const Camera = @import("Camera.zig");
 const bindings = @import("bindings.zig");
 const collision = @import("collision.zig");
 const UiDrawList = @import("../ui/UiDrawList.zig");
-const Scaling = ae.UI.Scaling;
-const layout = ae.UI.layout;
+const Scaling = ae.Ui.Scaling;
+const layout = ae.Ui.layout;
 const Colors = @import("../graphics/Color.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
-const BlockRegistry = @import("common").BlockRegistry;
+const blocks = core.blocks;
 const SoundManager = @import("../SoundManager.zig");
 const Face = @import("../world/chunk/face.zig").Face;
 const Options = @import("../Options.zig");
 
-/// Previous-frame button state for rising-edge detection in `poll_inputs`.
 const PrevInputs = struct {
     inventory_toggle: input.ButtonState = .released,
     noclip: input.ButtonState = .released,
@@ -61,13 +58,10 @@ fn rising_edge(prev: input.ButtonState, cur: input.ButtonState) bool {
 }
 
 pub const RaycastHit = struct {
-    /// Block coordinates of the solid voxel under the crosshair.
     x: u16,
     y: u16,
     z: u16,
-    /// Coordinates of the empty voxel the ray was in just before entering
-    /// the hit block. Used as the placement target. May equal the hit
-    /// position when the camera is already inside the block (no place).
+    // Empty voxel immediately before the hit, used for placement.
     place_x: u16,
     place_y: u16,
     place_z: u16,
@@ -79,53 +73,41 @@ pub const FlyTapEvent = enum {
     triple,
 };
 
-/// Maximum reach in blocks for the selection raycast.
-pub const REACH: f32 = 5.0;
+pub const Reach: f32 = 5.0;
 
-/// Number of slots in the hotbar (Classic uses 9).
-pub const HOTBAR_SLOTS: u8 = 9;
+pub const HotbarSlots: u8 = 9;
 
-/// Default hotbar contents in slot order.
-const DEFAULT_HOTBAR: [HOTBAR_SLOTS]Block = .{
-    .{ .id = .stone },
-    .{ .id = .cobblestone },
-    .{ .id = .brick },
-    .{ .id = .dirt },
-    .{ .id = .planks },
-    .{ .id = .log },
-    .{ .id = .leaves },
-    .{ .id = .glass },
-    .{ .id = .slab },
+const DefaultHotbar: [HotbarSlots]Block = .{
+    .stone,
+    .cobblestone,
+    .brick,
+    .dirt,
+    .planks,
+    .log,
+    .leaves,
+    .glass,
+    .slab,
 };
 
-// gui.png layout (Minecraft Classic): hotbar bg at (0,0) 182x22; selector
-// at (0,22) 24x24. Slots are 20px wide; first slot center 11px from the
-// hotbar's left edge, so slot i center is 20*i - 80 from hotbar center.
-const HOTBAR_TEX_X: i16 = 0;
-const HOTBAR_TEX_Y: i16 = 0;
-const HOTBAR_W: i16 = 182;
-const HOTBAR_H: i16 = 22;
-const SELECTOR_TEX_X: i16 = 0;
-const SELECTOR_TEX_Y: i16 = 22;
-const SELECTOR_SIZE: i16 = 24;
-const HOTBAR_SLOT_STRIDE: i16 = 20;
-// Keep HUD quads away from the PSP clip/depth edge. Low layer ids map very
-// close to +1 NDC in SpriteBatcher; that is fragile on the PSP GU path.
-const HOTBAR_BG_LAYER: u8 = 250;
-const SELECTOR_LAYER: u8 = 251;
+const HotbarTexX: i16 = 0;
+const HotbarTexY: i16 = 0;
+const HotbarW: i16 = 182;
+const HotbarH: i16 = 22;
+const SelectorTexX: i16 = 0;
+const SelectorTexY: i16 = 22;
+const SelectorSize: i16 = 24;
+const HotbarSlotStride: i16 = 20;
+// Keep HUD quads away from the PSP depth edge.
+const HotbarBgLayer: u8 = 250;
+const SelectorLayer: u8 = 251;
 
-// Mouse-wheel scroll axis returns +/-1.0 per click; deadband at half a click
-// so a single notch always advances exactly one slot and stray sub-tick
-// values from analog sources never trigger a wrap.
-const HOTBAR_SCROLL_DEADBAND: f32 = 0.5;
+const HotbarScrollDeadband: f32 = 0.5;
 
-const LOOK_PIXEL_TO_RAD: f32 = 0.002;
+const LookPixelToRad: f32 = 0.002;
 
-const Self = @This();
+const Player = @This();
 
-/// A block the client has sent to the server but which has not yet
-/// appeared in the world.  Used as a virtual collision surface so the
-/// player cannot fall through during the tick delay.
+// Client-side collision prediction until a placed block round-trips.
 const PendingBlock = struct {
     x: u16,
     y: u16,
@@ -133,111 +115,77 @@ const PendingBlock = struct {
     block: Block,
 };
 
-// --- Physics constants (blocks/tick, Classic units) ---
+const Tick: f32 = 0.05;
+const MaxFrameDt: f32 = 0.25;
+const NoclipSpeed: f32 = 20.0;
+const FlySpeed: f32 = NoclipSpeed;
 
-const TICK: f32 = 0.05; // 50 ms, 20 TPS
-const MAX_FRAME_DT: f32 = 0.25;
-const NOCLIP_SPEED: f32 = 20.0;
-const FLY_SPEED: f32 = NOCLIP_SPEED;
+const JumpVel: f32 = 0.42;
+const Gravity: f32 = 0.08;
+const LiquidGravity: f32 = 0.02;
+const LiquidSwimUp: f32 = 0.04;
 
-const JUMP_VEL: f32 = 0.42;
-const GRAVITY: f32 = 0.08;
-const LIQUID_GRAVITY: f32 = 0.02;
-const LIQUID_SWIM_UP: f32 = 0.04; // per tick while submerged + jump held
+const WaterWallBoost: f32 = 0.13;
+const WaterBobBoost: f32 = 0.10;
+const LavaWallBoost: f32 = 0.30;
+const LavaBobBoost: f32 = 0.20;
 
-// Water-to-land exit boosts (past jump point)
-const WATER_WALL_BOOST: f32 = 0.13; // climbing onto a block
-const WATER_BOB_BOOST: f32 = 0.10; // open water bob
-const LAVA_WALL_BOOST: f32 = 0.30;
-const LAVA_BOB_BOOST: f32 = 0.20;
+const DragX: f32 = 0.91;
+const DragY: f32 = 0.98;
+const DragZ: f32 = 0.91;
 
-// Drag per tick (XYZ)
-const DRAG_X: f32 = 0.91;
-const DRAG_Y: f32 = 0.98;
-const DRAG_Z: f32 = 0.91;
+const GroundFrictionX: f32 = 0.6;
+const GroundFrictionZ: f32 = 0.6;
 
-// Extra XZ friction when on ground (applied after drag)
-const GROUND_FRICTION_X: f32 = 0.6;
-const GROUND_FRICTION_Z: f32 = 0.6;
+const GroundAccel: f32 = 0.1;
+const AirAccel: f32 = 0.02;
+const LiquidAccel: f32 = 0.02;
 
-// Acceleration factor added to velocity per tick
-const GROUND_ACCEL: f32 = 0.1;
-const AIR_ACCEL: f32 = 0.02;
-const LIQUID_ACCEL: f32 = 0.02;
+const WaterDrag: f32 = 0.8;
+const LavaDrag: f32 = 0.5;
 
-// Liquid-specific drag per tick
-const WATER_DRAG: f32 = 0.8;
-const LAVA_DRAG: f32 = 0.5;
+const RepeatDelay: f32 = 0.20;
+const RepeatInterval: f32 = 0.20;
 
-// --- Hold-to-repeat timing ---
-// First action fires immediately on press. After REPEAT_DELAY the action
-// repeats every REPEAT_INTERVAL while the button stays held.
-const REPEAT_DELAY: f32 = 0.20; // seconds before first repeat
-const REPEAT_INTERVAL: f32 = 0.20; // seconds between subsequent repeats (~5/sec)
+const FlyTapWindow: f32 = 0.25;
 
-const FLY_TAP_WINDOW: f32 = 0.25;
+const BobBaseUnit: f32 = 2.5 / 16.0;
+const BobHorScale: f32 = 0.3;
+const BobVerScale: f32 = 0.6;
 
-// --- View bobbing tuning ---
-// Drives both the camera sway and the held-block screen-space sway. The
-// underlying state is a walk phase (advanced by horizontal travel), an
-// envelope (walk_swing) that fades in/out with motion, and a smoothed
-// strength (bob_amount) that fades to zero in midair.
+const BobTiltDeg: f32 = 0.15;
+const BobTiltXGain: f32 = 3.0;
 
-// Spec base unit: ~0.156 blocks. Final hor/ver scale this by 0.3/0.6.
-const BOB_BASE_UNIT: f32 = 2.5 / 16.0;
-const BOB_HOR_SCALE: f32 = 0.3;
-const BOB_VER_SCALE: f32 = 0.6;
+const BobWalkThreshold: f32 = 0.05;
+const BobWalkPhaseRate: f32 = 40.0;
 
-// Camera tilt (degrees). The X-rotation component is multiplied by 3 to
-// match the Classic feel.
-const BOB_TILT_DEG: f32 = 0.15;
-const BOB_TILT_X_GAIN: f32 = 3.0;
+const BobSwingRate: f32 = 3.0;
+const BobStrengthDecay: f32 = 0.84;
+const BobStrengthGain: f32 = 0.1;
+const BobStrengthSubsteps: u32 = 3;
 
-// Walk-phase advance: minimum tick distance to count as moving, and the
-// rate (= 2 * 20 in the spec, where 20 is TPS).
-const BOB_WALK_THRESHOLD: f32 = 0.05;
-const BOB_WALK_PHASE_RATE: f32 = 40.0;
-
-// Envelope rates (per second) and grounded-strength smoothing.
-const BOB_SWING_RATE: f32 = 3.0;
-const BOB_STRENGTH_DECAY: f32 = 0.84;
-const BOB_STRENGTH_GAIN: f32 = 0.1;
-// Three substeps per 50 ms tick to match the spec's 60 Hz design.
-const BOB_STRENGTH_SUBSTEPS: u32 = 3;
-
-// Fall tilt: small extra X-rotation driven by vertical velocity. The
-// +0.08 offset cancels gravity at rest so it doesn't drift while standing.
-const FALL_TILT_GAIN: f32 = 0.05;
-const FALL_TILT_GRAVITY_OFFSET: f32 = 0.08;
-
-// --- Fields ---
+const FallTiltGain: f32 = 0.05;
+const FallTiltGravityOffset: f32 = 0.08;
 
 camera: Camera,
-// Current tick position (feet)
 pos_x: f32,
 pos_y: f32,
 pos_z: f32,
-// Previous tick position (for interpolation)
 prev_x: f32,
 prev_y: f32,
 prev_z: f32,
-// Velocity in blocks/tick
 vel_x: f32,
 vel_y: f32,
 vel_z: f32,
-// Previous-tick vertical velocity for sub-tick fall-tilt interpolation.
-// Without this, fall-tilt snaps at tick boundaries; the artefact is invisible
-// on land but very obvious in water, where vel_y oscillates each tick from
-// drag (0.8) + LIQUID_SWIM_UP/LIQUID_GRAVITY pushing it through zero.
 vel_y_prev: f32,
 on_ground: bool,
-hit_horizontal: bool, // horizontal collision last tick (for water exit)
-can_liquid_jump: bool, // one-shot flag for water exit boost
+hit_horizontal: bool,
+can_liquid_jump: bool,
 noclip: bool,
 fly: bool,
 tick_remainder: f32,
 
-move_dir: [2]f32, // x = strafe (right +), y = forward/back (forward +)
+move_dir: [2]f32,
 look_delta: [2]f32,
 look_rate: [2]f32,
 jumping: bool,
@@ -245,55 +193,31 @@ sneaking: bool,
 mouse_captured: bool,
 stick_look_speed: f32,
 
-/// Block currently under the crosshair, if any. Refreshed each frame in
-/// `update`. Consumed by GameState to draw the selection outline.
 selected: ?RaycastHit,
 
-/// Hotbar contents (block IDs) and currently selected slot index.
-hotbar: [HOTBAR_SLOTS]Block,
+hotbar: [HotbarSlots]Block,
 selected_slot: u8,
 
-/// Edge flag set by the inventory_toggle input callback. GameState polls and
-/// clears this each frame so the player struct doesn't need to know about
-/// the inventory overlay's lifetime or its mouse-capture handoff.
 inventory_toggle_pending: bool,
 
-/// Gamepad shoulder-button state for L+R chord detection.
-/// Break/place are deferred by one frame so a same-frame chord can cancel
-/// them before they execute.
 shoulder_l_held: bool,
 shoulder_r_held: bool,
 pending_shoulder_break: bool,
 pending_shoulder_place: bool,
 
-/// Hold-to-repeat state for break/place. The mouse/keyboard callbacks
-/// set the held flag on press and clear it on release; the shoulder
-/// buttons reuse their existing held flags. The timer accumulates dt
-/// while any source for the action is held.
 break_held: bool,
 place_held: bool,
 break_repeat_timer: f32,
 place_repeat_timer: f32,
 
-/// True while the playerlist key/button is held (desktop: hold-to-show).
 playerlist_held: bool,
-/// Rising edge of the playerlist press; consumed by GameState each frame.
-/// Controller-sourced edges drive the social-mode toggle instead of
-/// keyboard Tab's hold-to-show behavior.
 playerlist_edge: bool,
-/// True when `playerlist_edge` came from the controller player-list button.
 playerlist_edge_controller: bool,
 
-/// Rising edge of the hud_toggle press (desktop F1); consumed by GameState
-/// each frame to flip its `hud_hidden` state.
 hud_toggle_pending: bool,
 
-/// Rising edge of the rain_toggle press (desktop F5); consumed by GameState
-/// each frame to flip `Options.current.rain` and persist the change.
 rain_toggle_pending: bool,
 
-/// Edge flags set by the chat triggers; GameState polls and clears them
-/// each frame. chat_open: blank field; chat_cmd: field seeded with '/'.
 chat_open_pending: bool,
 chat_cmd_pending: bool,
 fly_tap_event: ?FlyTapEvent,
@@ -301,47 +225,26 @@ jump_tap_count: u8,
 jump_tap_elapsed: f32,
 
 prev_inputs: PrevInputs,
-/// True iff the gameplay ActionSet owned the top context last frame. Used
-/// to suppress a ghost rising edge on the frame gameplay reactivates with
-/// a binding still held (e.g. B held through an inventory close would
-/// otherwise re-fire inventory_toggle).
+// Suppresses held bindings when gameplay becomes the active context again.
 gameplay_was_active: bool,
 
-/// Virtual block for client-side collision prediction.  Placed by
-/// do_place so the player collides with the block before the server
-/// commits it to the world on its next tick.  Cleared automatically
-/// once the real block appears.
 pending_block: ?PendingBlock,
 
-/// Outbound packet sink, owned by the connection layer (FakeConn or
-/// real socket). Used by break/place callbacks to send SetBlockToServer.
 writer: *std.Io.Writer,
 
-/// Optional sink for break particles. GameState wires this after both the
-/// world renderer and player exist; null leaves on_break silently skipping
-/// the visual effect (useful for tests).
 particle_sink: ?*ParticleSystem,
 
-/// Optional held-block viewmodel. GameState wires this after the renderer
-/// exists. Used to trigger swing animations on place/break.
 held_renderer: ?*BlockHand,
 
-// View bobbing -- driven per tick from XZ travel + grounded state. All
-// three values are double-buffered for per-frame interpolation, the same
-// way prev_x/pos_x already are.
 walk_phase: f32,
 walk_phase_prev: f32,
 walk_swing: f32,
 walk_swing_prev: f32,
-bob_amount: f32, // smoothed 0..1, the spec's BobStrength
+bob_amount: f32,
 bob_amount_prev: f32,
 
-/// Initialise player state. `self` must have a stable address (module-level
-/// or arena-backed). `x`, `y`, `z` are world coordinates; `y` is eye-level
-/// from server. `writer` is the connection's outbound stream (used for
-/// SetBlockToServer). The caller owns the gameplay InputContext.
-pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
-    const feet_y = y - collision.EYE_HEIGHT;
+pub fn init(self: *Player, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
+    const feet_y = y - collision.EyeHeight;
     self.* = .{
         .camera = Camera.init(x, y, z),
         .pos_x = x,
@@ -368,7 +271,7 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
         .mouse_captured = true,
         .stick_look_speed = 3.0,
         .selected = null,
-        .hotbar = DEFAULT_HOTBAR,
+        .hotbar = DefaultHotbar,
         .selected_slot = 0,
         .inventory_toggle_pending = false,
         .shoulder_l_held = false,
@@ -404,22 +307,22 @@ pub fn init(self: *Self, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void {
     };
 }
 
-pub fn consume_fly_tap_event(self: *Self) ?FlyTapEvent {
+pub fn consume_fly_tap_event(self: *Player) ?FlyTapEvent {
     const event = self.fly_tap_event;
     self.fly_tap_event = null;
     return event;
 }
 
-pub fn clear_fly_tap_state(self: *Self) void {
+pub fn clear_fly_tap_state(self: *Player) void {
     self.fly_tap_event = null;
     self.reset_jump_taps();
 }
 
-pub fn toggle_fly(self: *Self) void {
+pub fn toggle_fly(self: *Player) void {
     self.set_fly(!self.fly);
 }
 
-pub fn set_fly(self: *Self, enabled: bool) void {
+pub fn set_fly(self: *Player, enabled: bool) void {
     if (self.fly == enabled) return;
 
     self.fly = enabled;
@@ -436,16 +339,14 @@ pub fn set_fly(self: *Self, enabled: bool) void {
     }
 }
 
-/// Apply one frame of player movement.
-pub fn update(self: *Self, sys: *input.InputSystem, dt: f32) void {
-    std.debug.assert(dt >= 0);
+pub fn update(self: *Player, sys: *input.InputSystem, dt: f32) void {
+    assert(dt >= 0);
 
     self.mouse_captured = sys.effective_cursor_mode() == .captured;
 
     self.poll_inputs(sys, dt);
 
-    // Process deferred gamepad shoulder actions. The one-frame delay lets
-    // a same-frame L+R chord cancel the pending break/place before it fires.
+    // Delay shoulder actions one frame so an L+R chord can cancel them.
     if (self.pending_shoulder_break) {
         self.pending_shoulder_break = false;
         if (!self.shoulder_l_held) {
@@ -461,15 +362,13 @@ pub fn update(self: *Self, sys: *input.InputSystem, dt: f32) void {
         }
     }
 
-    // Hold-to-repeat: tick timers while either the mouse/keyboard button
-    // or the corresponding gamepad shoulder button is held. The initial
-    // press already fired via the rising-edge poll; the timer handles repeats.
+    // Rising edges fire the first action; held inputs drive repeat timers.
     const break_any_held = self.break_held or (self.shoulder_r_held and !self.shoulder_l_held);
     const place_any_held = self.place_held or (self.shoulder_l_held and !self.shoulder_r_held);
     if (break_any_held) {
         self.break_repeat_timer += dt;
-        if (self.break_repeat_timer >= REPEAT_DELAY) {
-            self.break_repeat_timer -= REPEAT_INTERVAL;
+        if (self.break_repeat_timer >= RepeatDelay) {
+            self.break_repeat_timer -= RepeatInterval;
             self.do_break();
         }
     } else {
@@ -477,8 +376,8 @@ pub fn update(self: *Self, sys: *input.InputSystem, dt: f32) void {
     }
     if (place_any_held) {
         self.place_repeat_timer += dt;
-        if (self.place_repeat_timer >= REPEAT_DELAY) {
-            self.place_repeat_timer -= REPEAT_INTERVAL;
+        if (self.place_repeat_timer >= RepeatDelay) {
+            self.place_repeat_timer -= RepeatInterval;
             self.do_place();
         }
     } else {
@@ -496,22 +395,18 @@ pub fn update(self: *Self, sys: *input.InputSystem, dt: f32) void {
     }
 
     self.sync_camera();
-    self.selected = self.raycast_block(REACH);
+    self.selected = self.raycast_block(Reach);
 }
 
-// --- Look ---
-
-fn apply_look(self: *Self, dt: f32) void {
+fn apply_look(self: *Player, dt: f32) void {
     if (self.mouse_captured) {
         self.camera.yaw -= self.look_delta[0];
         self.camera.pitch += self.look_delta[1];
     }
     self.look_delta = .{ 0, 0 };
 
-    // Stick look honours the same gate as mouse look so analog input does
-    // not rotate the camera while the inventory overlay is up.
     if (self.mouse_captured) {
-        const look_rate = if (comptime ae.platform == .nintendo_3ds)
+        const look_rate = if (comptime caps.controls.linear_look)
             self.look_rate
         else
             apply_stick_curve(self.look_rate);
@@ -523,7 +418,6 @@ fn apply_look(self: *Self, dt: f32) void {
     self.camera.pitch = @max(-max_pitch, @min(max_pitch, self.camera.pitch));
 }
 
-/// Apply a power curve to the stick magnitude while preserving direction.
 fn apply_stick_curve(raw: [2]f32) [2]f32 {
     const exponent: f32 = 2.2;
     const mag_sq = raw[0] * raw[0] + raw[1] * raw[1];
@@ -533,43 +427,38 @@ fn apply_stick_curve(raw: [2]f32) [2]f32 {
     return .{ raw[0] * scale, raw[1] * scale };
 }
 
-// --- Noclip (freecam) ---
-
-fn update_noclip(self: *Self, dt: f32) void {
+fn update_noclip(self: *Player, dt: f32) void {
     const sin_yaw = @sin(self.camera.yaw);
     const cos_yaw = @cos(self.camera.yaw);
     const strafe = self.move_dir[0];
     const forward = self.move_dir[1];
 
-    self.pos_x += (strafe * cos_yaw - forward * sin_yaw) * NOCLIP_SPEED * dt;
-    self.pos_z += (-strafe * sin_yaw - forward * cos_yaw) * NOCLIP_SPEED * dt;
+    self.pos_x += (strafe * cos_yaw - forward * sin_yaw) * NoclipSpeed * dt;
+    self.pos_z += (-strafe * sin_yaw - forward * cos_yaw) * NoclipSpeed * dt;
 
     var dy: f32 = 0;
-    if (self.jumping) dy += NOCLIP_SPEED * dt;
-    if (self.sneaking) dy -= NOCLIP_SPEED * dt;
+    if (self.jumping) dy += NoclipSpeed * dt;
+    if (self.sneaking) dy -= NoclipSpeed * dt;
     self.pos_y += dy;
 
-    // No interpolation in noclip -- prev tracks current
     self.prev_x = self.pos_x;
     self.prev_y = self.pos_y;
     self.prev_z = self.pos_z;
 }
 
-// --- Fly (free movement with terrain collision) ---
-
-fn update_fly(self: *Self, dt: f32) void {
-    const clamped = @min(dt, MAX_FRAME_DT);
+fn update_fly(self: *Player, dt: f32) void {
+    const clamped = @min(dt, MaxFrameDt);
     const sin_yaw = @sin(self.camera.yaw);
     const cos_yaw = @cos(self.camera.yaw);
     const strafe = self.move_dir[0];
     const forward = self.move_dir[1];
 
-    const dx = (strafe * cos_yaw - forward * sin_yaw) * FLY_SPEED * clamped;
-    const dz = (-strafe * sin_yaw - forward * cos_yaw) * FLY_SPEED * clamped;
+    const dx = (strafe * cos_yaw - forward * sin_yaw) * FlySpeed * clamped;
+    const dz = (-strafe * sin_yaw - forward * cos_yaw) * FlySpeed * clamped;
 
     var dy: f32 = 0;
-    if (self.jumping) dy += FLY_SPEED * clamped;
-    if (self.sneaking) dy -= FLY_SPEED * clamped;
+    if (self.jumping) dy += FlySpeed * clamped;
+    if (self.sneaking) dy -= FlySpeed * clamped;
 
     const result = collision.move_and_collide(
         self.pos_x,
@@ -592,34 +481,29 @@ fn update_fly(self: *Self, dt: f32) void {
     self.vel_z = 0;
     self.vel_y_prev = 0;
 
-    // No interpolation in fly -- prev tracks current.
     self.prev_x = self.pos_x;
     self.prev_y = self.pos_y;
     self.prev_z = self.pos_z;
 }
 
-// --- Fixed-rate tick loop ---
-
-fn run_ticks(self: *Self, dt: f32) void {
-    const clamped = @min(dt, MAX_FRAME_DT);
+fn run_ticks(self: *Player, dt: f32) void {
+    const clamped = @min(dt, MaxFrameDt);
     self.tick_remainder += clamped;
 
-    while (self.tick_remainder >= TICK) {
-        self.tick_remainder -= TICK;
+    while (self.tick_remainder >= Tick) {
+        self.tick_remainder -= Tick;
         self.physics_tick();
     }
 }
 
 /// One Classic physics tick. Order matches the spec:
 /// input -> vertical state -> accel -> collide+integrate -> drag -> gravity -> friction
-fn physics_tick(self: *Self) void {
-    // Save for interpolation
+fn physics_tick(self: *Player) void {
     self.prev_x = self.pos_x;
     self.prev_y = self.pos_y;
     self.prev_z = self.pos_z;
     self.vel_y_prev = self.vel_y;
 
-    // 1. Input scaled by 0.98, rotated into world space
     const strafe = self.move_dir[0] * 0.98;
     const forward = self.move_dir[1] * 0.98;
     const sin_yaw = @sin(self.camera.yaw);
@@ -627,53 +511,42 @@ fn physics_tick(self: *Self) void {
     const head_x = strafe * cos_yaw - forward * sin_yaw;
     const head_z = -strafe * sin_yaw - forward * cos_yaw;
 
-    // Detect environment via two-zone liquid check
     const liq_feet = collision.liquid_feet(self.pos_x, self.pos_y, self.pos_z);
     const liq_body = collision.liquid_body(self.pos_x, self.pos_y, self.pos_z);
     const any_liquid: ?collision.Liquid = liq_feet orelse liq_body;
 
-    // 2. Vertical velocity state (uses hit_horizontal from previous tick)
     self.update_vertical_state(liq_feet, liq_body);
 
-    // 3. Horizontal acceleration
-    const accel: f32 = if (any_liquid != null) LIQUID_ACCEL else if (self.on_ground) GROUND_ACCEL else AIR_ACCEL;
+    const accel: f32 = if (any_liquid != null) LiquidAccel else if (self.on_ground) GroundAccel else AirAccel;
     var dist = @sqrt(head_x * head_x + head_z * head_z);
     if (dist < 1.0) dist = 1.0;
     self.vel_x += head_x * (accel / dist);
     self.vel_z += head_z * (accel / dist);
 
-    // 4+5. Collide and integrate (Position += Velocity with collision)
     self.collide_and_move(any_liquid);
 
-    // 6. Drag
     if (any_liquid) |liq| {
-        const d: f32 = if (liq == .water) WATER_DRAG else LAVA_DRAG;
+        const d: f32 = if (liq == .water) WaterDrag else LavaDrag;
         self.vel_x *= d;
         self.vel_y *= d;
         self.vel_z *= d;
     } else {
-        self.vel_x *= DRAG_X;
-        self.vel_y *= DRAG_Y;
-        self.vel_z *= DRAG_Z;
+        self.vel_x *= DragX;
+        self.vel_y *= DragY;
+        self.vel_z *= DragZ;
     }
 
-    // 7. Gravity
-    self.vel_y -= if (any_liquid != null) LIQUID_GRAVITY else GRAVITY;
+    self.vel_y -= if (any_liquid != null) LiquidGravity else Gravity;
 
-    // 8. Ground friction (only on ground, not in liquid)
     if (self.on_ground and any_liquid == null) {
-        self.vel_x *= GROUND_FRICTION_X;
-        self.vel_z *= GROUND_FRICTION_Z;
+        self.vel_x *= GroundFrictionX;
+        self.vel_z *= GroundFrictionZ;
     }
 
-    // 9. Advance view-bob state from this tick's actual XZ movement.
     self.advance_view_bob();
 }
 
-// --- View bob (advance per tick, compute per frame) ---
-
-fn advance_view_bob(self: *Self) void {
-    // Snapshot prev for sub-tick interpolation, then update.
+fn advance_view_bob(self: *Player) void {
     self.walk_phase_prev = self.walk_phase;
     self.walk_swing_prev = self.walk_swing;
     self.bob_amount_prev = self.bob_amount;
@@ -682,12 +555,11 @@ fn advance_view_bob(self: *Self) void {
     const dz = self.pos_z - self.prev_z;
     const dist = @sqrt(dx * dx + dz * dz);
 
-    if (dist > BOB_WALK_THRESHOLD) {
+    if (dist > BobWalkThreshold) {
         const phase_before = self.walk_phase;
-        self.walk_phase += dist * BOB_WALK_PHASE_RATE * TICK;
-        self.walk_swing += BOB_SWING_RATE * TICK;
+        self.walk_phase += dist * BobWalkPhaseRate * Tick;
+        self.walk_swing += BobSwingRate * Tick;
 
-        // Step sound: one footfall per half-bob-cycle (every pi radians).
         if (self.on_ground) {
             const prev_idx = @as(u32, @intFromFloat(@floor(phase_before / std.math.pi)));
             const curr_idx = @as(u32, @intFromFloat(@floor(self.walk_phase / std.math.pi)));
@@ -697,18 +569,16 @@ fn advance_view_bob(self: *Self) void {
             }
         }
     } else {
-        self.walk_swing -= BOB_SWING_RATE * TICK;
+        self.walk_swing -= BobSwingRate * Tick;
     }
     self.walk_swing = std.math.clamp(self.walk_swing, 0.0, 1.0);
 
-    // Three substeps to match the spec's 60 Hz design at 20 TPS. Strength
-    // grows toward 1 while grounded, decays toward 0 while airborne.
     var i: u32 = 0;
-    while (i < BOB_STRENGTH_SUBSTEPS) : (i += 1) {
+    while (i < BobStrengthSubsteps) : (i += 1) {
         if (self.on_ground) {
-            self.bob_amount += BOB_STRENGTH_GAIN;
+            self.bob_amount += BobStrengthGain;
         } else {
-            self.bob_amount *= BOB_STRENGTH_DECAY;
+            self.bob_amount *= BobStrengthDecay;
         }
         self.bob_amount = std.math.clamp(self.bob_amount, 0.0, 1.0);
     }
@@ -720,7 +590,7 @@ const ViewBob = struct {
     tilt: Math.Mat4,
 };
 
-fn compute_view_bob(self: *const Self, alpha: f32) ViewBob {
+fn compute_view_bob(self: *const Player, alpha: f32) ViewBob {
     const phase = self.walk_phase_prev + (self.walk_phase - self.walk_phase_prev) * alpha;
     const swing = self.walk_swing_prev + (self.walk_swing - self.walk_swing_prev) * alpha;
     const amount = self.bob_amount_prev + (self.bob_amount - self.bob_amount_prev) * alpha;
@@ -729,42 +599,35 @@ fn compute_view_bob(self: *const Self, alpha: f32) ViewBob {
     const sinw = @sin(phase);
     const abs_sin = @abs(sinw);
 
-    const hor_raw = cosw * swing * BOB_BASE_UNIT;
-    const ver_raw = abs_sin * swing * BOB_BASE_UNIT;
-    const hor = hor_raw * BOB_HOR_SCALE * amount;
-    const ver = ver_raw * BOB_VER_SCALE * amount;
+    const hor_raw = cosw * swing * BobBaseUnit;
+    const ver_raw = abs_sin * swing * BobBaseUnit;
+    const hor = hor_raw * BobHorScale * amount;
+    const ver = ver_raw * BobVerScale * amount;
 
-    const tilt_rad = BOB_TILT_DEG * std.math.pi / 180.0;
+    const tilt_rad = BobTiltDeg * std.math.pi / 180.0;
     const roll_z = -cosw * swing * tilt_rad * amount;
-    const pitch_x = @abs(sinw * swing * tilt_rad) * BOB_TILT_X_GAIN * amount;
+    const pitch_x = @abs(sinw * swing * tilt_rad) * BobTiltXGain * amount;
 
-    // Fall tilt: small extra X-pitch from vertical velocity, interpolated
-    // across the tick to match the position interpolation. Reading raw
-    // vel_y here makes the tilt snap at tick boundaries -- harmless on
-    // land, but very visible in water where vel_y oscillates each tick.
     const vy = self.vel_y_prev + (self.vel_y - self.vel_y_prev) * alpha;
-    const fall = -(vy + FALL_TILT_GRAVITY_OFFSET) * FALL_TILT_GAIN;
+    const fall = -(vy + FallTiltGravityOffset) * FallTiltGain;
 
-    const tilt = Math.Mat4.rotationZ(roll_z)
-        .mul(Math.Mat4.rotationX(pitch_x))
-        .mul(Math.Mat4.rotationX(fall));
+    const tilt = Math.Mat4.rotation_z(roll_z)
+        .mul(Math.Mat4.rotation_x(pitch_x))
+        .mul(Math.Mat4.rotation_x(fall));
 
     return .{ .hor = hor, .ver = ver, .tilt = tilt };
 }
 
-// --- Vertical state (3-phase water exit) ---
-
 fn update_vertical_state(
-    self: *Self,
+    self: *Player,
     liq_feet: ?collision.Liquid,
     liq_body: ?collision.Liquid,
 ) void {
     const any_liquid = liq_feet orelse liq_body;
 
     if (any_liquid == null) {
-        // Airborne or on ground -- normal jump
         if (self.jumping and self.on_ground) {
-            self.vel_y = JUMP_VEL;
+            self.vel_y = JumpVel;
             self.on_ground = false;
         }
         return;
@@ -772,46 +635,38 @@ fn update_vertical_state(
 
     if (!self.jumping) return;
 
-    // Check "past jump point": feet in liquid, body NOT in liquid,
-    // fractional Y >= 0.4
     const past_jump_point = liq_feet != null and liq_body == null and
         frac(self.pos_y) >= 0.4;
 
     if (!past_jump_point) {
-        // Phase 1: submerged or not yet past jump point -- swim upward
-        self.vel_y += LIQUID_SWIM_UP;
-        self.can_liquid_jump = true; // reset one-shot when re-entering phase 1
+        self.vel_y += LiquidSwimUp;
+        self.can_liquid_jump = true;
         return;
     }
 
-    // Phase 2: past jump point -- one-time exit boost
     if (!self.can_liquid_jump) return;
     self.can_liquid_jump = false;
 
     const is_water = (liq_feet.? == .water);
     if (self.hit_horizontal) {
-        // Case A: climbing onto a block (pressing into wall)
-        self.vel_y += if (is_water) WATER_WALL_BOOST else LAVA_WALL_BOOST;
+        self.vel_y += if (is_water) WaterWallBoost else LavaWallBoost;
     } else {
-        // Case B: open water bob
-        self.vel_y += if (is_water) WATER_BOB_BOOST else LAVA_BOB_BOOST;
+        self.vel_y += if (is_water) WaterBobBoost else LavaBobBoost;
     }
 }
 
-/// Fractional part of a float, always in [0, 1).
 fn frac(v: f32) f32 {
-    const r = v - @floor(v);
-    return if (r < 0) r + 1.0 else r;
+    return v - @floor(v);
 }
 
-/// Block the player is standing on (for step sounds).
-fn block_under_feet(self: *const Self) Block {
+fn block_under_feet(self: *const Player) Block {
     const by_f = @floor(self.pos_y - 0.01);
     const bx_f = @floor(self.pos_x);
     const bz_f = @floor(self.pos_z);
-    if (by_f < 0 or by_f >= @as(f32, @floatFromInt(c.WorldHeight))) return .{ .id = .air };
-    if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(c.WorldLength))) return .{ .id = .air };
-    if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(c.WorldDepth))) return .{ .id = .air };
+    const dims = World.data.dims;
+    if (by_f < 0 or by_f >= @as(f32, @floatFromInt(dims.height))) return .air;
+    if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(dims.length))) return .air;
+    if (bz_f < 0 or bz_f >= @as(f32, @floatFromInt(dims.depth))) return .air;
     return World.data.get_block(
         @intCast(@as(i32, @intFromFloat(bx_f))),
         @intCast(@as(i32, @intFromFloat(by_f))),
@@ -819,9 +674,7 @@ fn block_under_feet(self: *const Self) Block {
     );
 }
 
-// --- Collision + integration ---
-
-fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
+fn collide_and_move(self: *Player, liquid: ?collision.Liquid) void {
     const was_on_ground = self.on_ground;
 
     var result = collision.move_and_collide(
@@ -834,10 +687,6 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
         was_on_ground,
     );
 
-    // Track horizontal collision for the water-exit boost next tick.
-    // Grounded step-up now happens inside move_and_collide (ClassiCube
-    // DidSlide), so we only keep a post-hoc step-up for the water-to-land
-    // exit, which must fire even when airborne.
     self.hit_horizontal = result.hit_x or result.hit_z;
 
     if (self.hit_horizontal and liquid != null) {
@@ -853,21 +702,18 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
         }
     }
 
-    // Virtual block collision: clip against a block the client placed
-    // but the server has not yet committed to the world.
     if (self.pending_block) |pb| {
         if (!World.data.get_block(pb.x, pb.y, pb.z).is_air()) {
-            // Server has committed the block; real collision takes over.
             self.pending_block = null;
         } else {
-            const bh = collision.block_height(pb.block);
+            const bh = pb.block.collision_height();
             const block_top: f32 = @as(f32, @floatFromInt(pb.y)) + bh;
             const bx0: f32 = @floatFromInt(pb.x);
             const bz0: f32 = @floatFromInt(pb.z);
-            const xz_over = result.x + collision.HALF_W > bx0 and
-                result.x - collision.HALF_W < bx0 + 1.0 and
-                result.z + collision.HALF_W > bz0 and
-                result.z - collision.HALF_W < bz0 + 1.0;
+            const xz_over = result.x + collision.HalfW > bx0 and
+                result.x - collision.HalfW < bx0 + 1.0 and
+                result.z + collision.HalfW > bz0 and
+                result.z - collision.HalfW < bz0 + 1.0;
             if (xz_over and self.pos_y >= block_top and result.y < block_top) {
                 result.y = block_top;
                 result.on_ground = true;
@@ -879,7 +725,6 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
     self.pos_y = result.y;
     self.pos_z = result.z;
 
-    // Zero blocked velocity components
     if (result.hit_x) self.vel_x = 0;
     if (result.hit_z) self.vel_z = 0;
     if (result.on_ground and self.vel_y < 0) self.vel_y = 0;
@@ -888,29 +733,21 @@ fn collide_and_move(self: *Self, liquid: ?collision.Liquid) void {
     self.on_ground = result.on_ground;
 }
 
-// --- Camera sync (interpolation) ---
-
-fn sync_camera(self: *Self) void {
+fn sync_camera(self: *Player) void {
     if (self.noclip or self.fly) {
         self.camera.x = self.pos_x;
-        self.camera.y = self.pos_y + collision.EYE_HEIGHT;
+        self.camera.y = self.pos_y + collision.EyeHeight;
         self.camera.z = self.pos_z;
-        // Stale bob state would otherwise leak into the held block on
-        // re-enter. Reset to identity / zero while flying.
         self.camera.tilt = Math.Mat4.identity();
         self.camera.bob_hor = 0;
         self.camera.bob_ver = 0;
         return;
     }
-    // Interpolate between previous and current tick positions
-    const alpha = self.tick_remainder / TICK;
+    const alpha = self.tick_remainder / Tick;
     self.camera.x = self.prev_x + (self.pos_x - self.prev_x) * alpha;
-    self.camera.y = (self.prev_y + (self.pos_y - self.prev_y) * alpha) + collision.EYE_HEIGHT;
+    self.camera.y = (self.prev_y + (self.pos_y - self.prev_y) * alpha) + collision.EyeHeight;
     self.camera.z = self.prev_z + (self.pos_z - self.prev_z) * alpha;
 
-    // Apply view bob: positional offset is rotated into yaw so the head
-    // sways relative to facing direction (slight forward-back rocking
-    // when combined with the tilt rotations).
     const bob = self.compute_view_bob(alpha);
     const sin_yaw = @sin(self.camera.yaw);
     const cos_yaw = @cos(self.camera.yaw);
@@ -922,25 +759,19 @@ fn sync_camera(self: *Self) void {
     self.camera.bob_ver = bob.ver;
 }
 
-// --- Voxel raycast (Amanatides & Woo) ---
+/// Amanatides-Woo voxel traversal using fixed-point distances.
+pub fn raycast_block(self: *const Player, range: f32) ?RaycastHit {
+    assert(range >= 0.0);
+    assert(range <= 64.0);
 
-/// Walk voxels along the camera's forward ray and return the first non-air
-/// block within `range` blocks of the eye, or null if none. Used for the
-/// selection outline; iterative (no recursion), no allocation.
-pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
-    std.debug.assert(range >= 0.0);
-    std.debug.assert(range <= 64.0);
-
-    // Camera-forward in world space (unit vector). Only used to derive
-    // a fixed-point direction below - sin/cos are the only float ops.
     const cp = @cos(self.camera.pitch);
-    const dir_x = toFP(-@sin(self.camera.yaw) * cp);
-    const dir_y = toFP(-@sin(self.camera.pitch));
-    const dir_z = toFP(-@cos(self.camera.yaw) * cp);
+    const dir_x = to_fp(-@sin(self.camera.yaw) * cp);
+    const dir_y = to_fp(-@sin(self.camera.pitch));
+    const dir_z = to_fp(-@cos(self.camera.yaw) * cp);
 
-    const fp_ox = toFP(self.camera.x);
-    const fp_oy = toFP(self.camera.y);
-    const fp_oz = toFP(self.camera.z);
+    const fp_ox = to_fp(self.camera.x);
+    const fp_oy = to_fp(self.camera.y);
+    const fp_oz = to_fp(self.camera.z);
 
     const fx = @floor(self.camera.x);
     const fy = @floor(self.camera.y);
@@ -960,19 +791,16 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     const ady: i32 = @intCast(@abs(dir_y));
     const adz: i32 = @intCast(@abs(dir_z));
 
-    // Distance (FP8) from origin to the next grid boundary per axis.
-    // frac = fractional part of origin within the current cell.
-    const frac_x = fp_ox - (bx <<| FRAC);
-    const frac_y = fp_oy - (by <<| FRAC);
-    const frac_z = fp_oz - (bz <<| FRAC);
+    const frac_x = fp_ox - (bx <<| Frac);
+    const frac_y = fp_oy - (by <<| Frac);
+    const frac_z = fp_oz - (bz <<| Frac);
 
-    var dist_x: i32 = if (step_x > 0) ONE - frac_x else if (step_x < 0) frac_x else std.math.maxInt(i32);
-    var dist_y: i32 = if (step_y > 0) ONE - frac_y else if (step_y < 0) frac_y else std.math.maxInt(i32);
-    var dist_z: i32 = if (step_z > 0) ONE - frac_z else if (step_z < 0) frac_z else std.math.maxInt(i32);
+    var dist_x: i32 = if (step_x > 0) One - frac_x else if (step_x < 0) frac_x else std.math.maxInt(i32);
+    var dist_y: i32 = if (step_y > 0) One - frac_y else if (step_y < 0) frac_y else std.math.maxInt(i32);
+    var dist_z: i32 = if (step_z > 0) One - frac_z else if (step_z < 0) frac_z else std.math.maxInt(i32);
 
-    const range_fp: i32 = toFP(range);
+    const range_fp: i32 = to_fp(range);
 
-    // Check the voxel containing the eye first.
     if (in_world(bx, by, bz)) {
         if (is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) {
             const bounds = World.data.get_block(@intCast(bx), @intCast(by), @intCast(bz)).bounds();
@@ -993,30 +821,24 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     const max_iters: u32 = 64;
     var i: u32 = 0;
     while (i < max_iters) : (i += 1) {
-        // Range check on whichever axis is closest.
-        if (tExceedsRange(dist_x, adx, dist_y, ady, dist_z, adz, range_fp)) return null;
+        if (t_exceeds_range(dist_x, adx, dist_y, ady, dist_z, adz, range_fp)) return null;
 
         const prev_x = bx;
         const prev_y = by;
         const prev_z = bz;
 
-        // Step along the axis with the smallest t_max.
         // t_max_a <= t_max_b <-> dist_a * abs_b <= dist_b * abs_a (cross multiply).
-        if (tLE(dist_x, adx, dist_y, ady) and tLE(dist_x, adx, dist_z, adz)) {
+        if (t_le(dist_x, adx, dist_y, ady) and t_le(dist_x, adx, dist_z, adz)) {
             bx += step_x;
-            dist_x += ONE;
-        } else if (tLE(dist_y, ady, dist_z, adz)) {
+            dist_x += One;
+        } else if (t_le(dist_y, ady, dist_z, adz)) {
             by += step_y;
-            dist_y += ONE;
+            dist_y += One;
         } else {
             bz += step_z;
-            dist_z += ONE;
+            dist_z += One;
         }
 
-        // Treat out-of-world cells as empty while the ray is still in range.
-        // This lets a camera above the build limit trace back down into the
-        // world, while placement still rejects an out-of-bounds adjacent cell
-        // through has_place below.
         if (!in_world(bx, by, bz)) continue;
         if (!is_selectable(@intCast(bx), @intCast(by), @intCast(bz))) continue;
 
@@ -1036,7 +858,6 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
             };
         }
 
-        // Partial block: integer slab test against the subvoxel AABB.
         if (ray_sub_aabb_fp(fp_ox, fp_oy, fp_oz, dir_x, dir_y, dir_z, bx, by, bz, bounds, range_fp)) |face| {
             const off = face_normal(face);
             const px = bx + off[0];
@@ -1057,58 +878,48 @@ pub fn raycast_block(self: *const Self, range: f32) ?RaycastHit {
     return null;
 }
 
-// --- Fixed-point DDA helpers (no float division) ---
+const Frac: u5 = 8;
+const One: i32 = 1 << Frac;
 
-const FRAC: u5 = 8;
-const ONE: i32 = 1 << FRAC; // 256 = one block in FP8
-
-fn toFP(f: f32) i32 {
-    return @intFromFloat(f * @as(f32, @floatFromInt(ONE)));
+fn to_fp(f: f32) i32 {
+    return @intFromFloat(f * @as(f32, @floatFromInt(One)));
 }
 
-/// t_a <= t_b without division. t = dist / abs_dir.
-/// When abs_dir == 0 the axis is never stepped (t = infinity).
-fn tLE(dist_a: i32, abs_a: i32, dist_b: i32, abs_b: i32) bool {
-    if (abs_a == 0) return false; // t_a = infinity
-    if (abs_b == 0) return true; // t_b = infinity
+fn t_le(dist_a: i32, abs_a: i32, dist_b: i32, abs_b: i32) bool {
+    if (abs_a == 0) return false;
+    if (abs_b == 0) return true;
     return @as(i64, dist_a) * @as(i64, abs_b) <= @as(i64, dist_b) * @as(i64, abs_a);
 }
 
-/// True when the smallest t_max across all three axes exceeds range.
-fn tExceedsRange(dx: i32, adx: i32, dy: i32, ady: i32, dz: i32, adz: i32, range_fp: i32) bool {
-    // t_axis = dist / abs_dir > range  <->  dist * ONE > range_fp * abs_dir
-    // If abs_dir == 0 the axis is infinite and can't be the minimum.
-    const xv = adx != 0 and @as(i64, dx) * ONE <= @as(i64, range_fp) * @as(i64, adx);
-    const yv = ady != 0 and @as(i64, dy) * ONE <= @as(i64, range_fp) * @as(i64, ady);
-    const zv = adz != 0 and @as(i64, dz) * ONE <= @as(i64, range_fp) * @as(i64, adz);
+fn t_exceeds_range(dx: i32, adx: i32, dy: i32, ady: i32, dz: i32, adz: i32, range_fp: i32) bool {
+    const xv = adx != 0 and @as(i64, dx) * One <= @as(i64, range_fp) * @as(i64, adx);
+    const yv = ady != 0 and @as(i64, dy) * One <= @as(i64, range_fp) * @as(i64, ady);
+    const zv = adz != 0 and @as(i64, dz) * One <= @as(i64, range_fp) * @as(i64, adz);
     return !xv and !yv and !zv;
 }
 
 fn in_world(x: i32, y: i32, z: i32) bool {
+    const dims = World.data.dims;
     return x >= 0 and y >= 0 and z >= 0 and
-        x < c.WorldLength and y < c.WorldHeight and z < c.WorldDepth;
+        x < @as(i32, @intCast(dims.length)) and
+        y < @as(i32, @intCast(dims.height)) and
+        z < @as(i32, @intCast(dims.depth));
 }
 
 fn is_selectable(x: u16, y: u16, z: u16) bool {
     return World.data.get_block(x, y, z).is_selectable();
 }
 
-// --- Subvoxel helpers (all integer) ---
-
-/// Point-in-bounds test using FP8 local coordinates directly.
-fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: BlockRegistry.SubvoxelBounds) bool {
-    // Bounds are in 1/16th-block units. In FP8: 1/16 block = 16 units.
-    const STEP = ONE / 16;
-    return lx >= @as(i32, b.min_x) * STEP and
-        lx < @as(i32, b.max_x) * STEP and
-        ly >= @as(i32, b.min_y) * STEP and
-        ly < @as(i32, b.max_y) * STEP and
-        lz >= @as(i32, b.min_z) * STEP and
-        lz < @as(i32, b.max_z) * STEP;
+fn point_in_bounds_fp(lx: i32, ly: i32, lz: i32, b: blocks.SubvoxelBounds) bool {
+    const Step = One / 16;
+    return lx >= @as(i32, b.min_x) * Step and
+        lx < @as(i32, b.max_x) * Step and
+        ly >= @as(i32, b.min_y) * Step and
+        ly < @as(i32, b.max_y) * Step and
+        lz >= @as(i32, b.min_z) * Step and
+        lz < @as(i32, b.max_z) * Step;
 }
 
-/// Integer slab test - returns entry face or null on miss. All arithmetic
-/// is integer (i32/i64), so no FPU exceptions can fire.
 fn ray_sub_aabb_fp(
     ox: i32,
     oy: i32,
@@ -1119,32 +930,30 @@ fn ray_sub_aabb_fp(
     bx: i32,
     by: i32,
     bz: i32,
-    bounds: BlockRegistry.SubvoxelBounds,
+    bounds: blocks.SubvoxelBounds,
     max_t_fp: i32,
 ) ?Face {
-    const STEP = ONE / 16;
-    const bx_fp = bx <<| FRAC;
-    const by_fp = by <<| FRAC;
-    const bz_fp = bz <<| FRAC;
+    const Step = One / 16;
+    const bx_fp = bx <<| Frac;
+    const by_fp = by <<| Frac;
+    const bz_fp = bz <<| Frac;
 
-    const x0 = bx_fp + @as(i32, bounds.min_x) * STEP;
-    const y0 = by_fp + @as(i32, bounds.min_y) * STEP;
-    const z0 = bz_fp + @as(i32, bounds.min_z) * STEP;
-    const x1 = bx_fp + @as(i32, bounds.max_x) * STEP;
-    const y1 = by_fp + @as(i32, bounds.max_y) * STEP;
-    const z1 = bz_fp + @as(i32, bounds.max_z) * STEP;
+    const x0 = bx_fp + @as(i32, bounds.min_x) * Step;
+    const y0 = by_fp + @as(i32, bounds.min_y) * Step;
+    const z0 = bz_fp + @as(i32, bounds.min_z) * Step;
+    const x1 = bx_fp + @as(i32, bounds.max_x) * Step;
+    const y1 = by_fp + @as(i32, bounds.max_y) * Step;
+    const z1 = bz_fp + @as(i32, bounds.max_z) * Step;
 
-    // t = dist / dir, stored as FP8 via (dist << FRAC) / dir (i64 intermediate).
-    const MAX: i32 = std.math.maxInt(i32);
-    const MIN: i32 = std.math.minInt(i32);
-    var t_near: i32 = MIN;
-    var t_far: i32 = MAX;
+    const Max: i32 = std.math.maxInt(i32);
+    const Min: i32 = std.math.minInt(i32);
+    var t_near: i32 = Min;
+    var t_far: i32 = Max;
     var face: Face = .y_pos;
 
-    // X slab
     if (dx != 0) {
-        const t0 = fpDiv(x0 - ox, dx);
-        const t1 = fpDiv(x1 - ox, dx);
+        const t0 = fp_div(x0 - ox, dx);
+        const t1 = fp_div(x1 - ox, dx);
         const t_lo = @min(t0, t1);
         const t_hi = @max(t0, t1);
         if (t_lo > t_near) {
@@ -1156,10 +965,9 @@ fn ray_sub_aabb_fp(
         if (ox < x0 or ox >= x1) return null;
     }
 
-    // Y slab
     if (dy != 0) {
-        const t0 = fpDiv(y0 - oy, dy);
-        const t1 = fpDiv(y1 - oy, dy);
+        const t0 = fp_div(y0 - oy, dy);
+        const t1 = fp_div(y1 - oy, dy);
         const t_lo = @min(t0, t1);
         const t_hi = @max(t0, t1);
         if (t_lo > t_near) {
@@ -1171,10 +979,9 @@ fn ray_sub_aabb_fp(
         if (oy < y0 or oy >= y1) return null;
     }
 
-    // Z slab
     if (dz != 0) {
-        const t0 = fpDiv(z0 - oz, dz);
-        const t1 = fpDiv(z1 - oz, dz);
+        const t0 = fp_div(z0 - oz, dz);
+        const t1 = fp_div(z1 - oz, dz);
         const t_lo = @min(t0, t1);
         const t_hi = @max(t0, t1);
         if (t_lo > t_near) {
@@ -1193,11 +1000,9 @@ fn ray_sub_aabb_fp(
     return face;
 }
 
-/// Fixed-point division: (num << FRAC) / den, clamped to i32 range.
-/// den == 0 returns signed MAX/MIN. Uses i64 intermediate - no FPU.
-fn fpDiv(num: i32, den: i32) i32 {
+fn fp_div(num: i32, den: i32) i32 {
     if (den == 0) return if (num >= 0) std.math.maxInt(i32) else std.math.minInt(i32);
-    const wide = @divTrunc(@as(i64, num) <<| FRAC, @as(i64, den));
+    const wide = @divTrunc(@as(i64, num) <<| Frac, @as(i64, den));
     return @intCast(std.math.clamp(wide, std.math.minInt(i32), std.math.maxInt(i32)));
 }
 
@@ -1212,20 +1017,14 @@ fn face_normal(face: Face) [3]i32 {
     };
 }
 
-// --- UI / HUD ---
-
-/// HUD pass: emits the crosshair, hotbar background, selector frame, and
-/// hotbar block icons as commands into `list`. Sprites and iso blocks are
-/// routed to the SpriteBatcher / IsoBlockDrawer at flush time; the caller
-/// is responsible for the eventual `flush_into` and pass ordering.
 pub fn draw_ui_into(
-    self: *Self,
+    self: *Player,
     list: *UiDrawList,
     gui: *const Rendering.Texture,
     hide_crosshair: bool,
     hud_y_shift: i16,
 ) void {
-    std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
+    assert(self.selected_slot < HotbarSlots);
 
     if (!hide_crosshair) {
         list.add_sprite(&.{
@@ -1241,34 +1040,28 @@ pub fn draw_ui_into(
         });
     }
 
-    // Hotbar background. The 1 px upward nudge keeps the selector's bottom
-    // row (selector is 24 tall vs the hotbar's 22) from clipping off the
-    // bottom of the screen.  `hud_y_shift` lifts the whole hotbar to make
-    // room for the controller-tooltip strip.
     list.add_sprite(&.{
         .texture = gui,
         .pos_offset = .{ .x = 0, .y = -1 - hud_y_shift },
-        .pos_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
-        .tex_offset = .{ .x = HOTBAR_TEX_X, .y = HOTBAR_TEX_Y },
-        .tex_extent = .{ .x = HOTBAR_W, .y = HOTBAR_H },
+        .pos_extent = .{ .x = HotbarW, .y = HotbarH },
+        .tex_offset = .{ .x = HotbarTexX, .y = HotbarTexY },
+        .tex_extent = .{ .x = HotbarW, .y = HotbarH },
         .color = Colors.white_fg,
-        .layer = HOTBAR_BG_LAYER,
+        .layer = HotbarBgLayer,
         .reference = .bottom_center,
         .origin = .bottom_center,
     });
 
-    // Selector frame, centered over the active slot. Slot i center sits at
-    // 20*i - 80 from the hotbar's horizontal center.
     const slot_i: i16 = @intCast(self.selected_slot);
-    const sel_x: i16 = HOTBAR_SLOT_STRIDE * slot_i - 80;
+    const sel_x: i16 = HotbarSlotStride * slot_i - 80;
     list.add_sprite(&.{
         .texture = gui,
         .pos_offset = .{ .x = sel_x, .y = -hud_y_shift },
-        .pos_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
-        .tex_offset = .{ .x = SELECTOR_TEX_X, .y = SELECTOR_TEX_Y },
-        .tex_extent = .{ .x = SELECTOR_SIZE, .y = SELECTOR_SIZE },
+        .pos_extent = .{ .x = SelectorSize, .y = SelectorSize },
+        .tex_offset = .{ .x = SelectorTexX, .y = SelectorTexY },
+        .tex_extent = .{ .x = SelectorSize, .y = SelectorSize },
         .color = Colors.white_fg,
-        .layer = SELECTOR_LAYER,
+        .layer = SelectorLayer,
         .reference = .bottom_center,
         .origin = .bottom_center,
     });
@@ -1276,43 +1069,32 @@ pub fn draw_ui_into(
     self.draw_hotbar_blocks(list, hud_y_shift);
 }
 
-// Logical-pixel half-extent of each rendered iso block. The iso projection
-// makes the cube taller than wide (height ~= 2*cos30/cos45 * half_extent ~=
-// 2.45x); 6 px keeps the projected block ~12 wide x ~14 tall, leaving the
-// 16 px slot interior clear of the surrounding selector frame.
-const HOTBAR_BLOCK_HALF_EXTENT: f32 = 3.5;
+const HotbarBlockHalfExtent: f32 = 3.5;
 
-fn draw_hotbar_blocks(self: *const Self, list: *UiDrawList, hud_y_shift: i16) void {
+fn draw_hotbar_blocks(self: *const Player, list: *UiDrawList, hud_y_shift: i16) void {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const ui_scale = Scaling.compute(screen_w, screen_h);
     const max_lx: i32 = @intCast(layout.logical_width(screen_w, ui_scale));
     const max_ly: i32 = @intCast(layout.logical_height(screen_h, ui_scale));
 
-    // Hotbar bg sits at bottom-center with pos_offset y = -1 - hud_y_shift
-    // and origin bottom-center, so its bottom edge is at max_ly - 1 -
-    // hud_y_shift and its top edge at max_ly - 1 - hud_y_shift - HOTBAR_H.
-    // Slot centers are 11 px below the top of the bg (Classic uses centered
-    // 20 px slots inside a 22 px tall strip).
-    const hotbar_top: f32 = @floatFromInt(max_ly - 1 - @as(i32, hud_y_shift) - @as(i32, HOTBAR_H));
+    const hotbar_top: f32 = @floatFromInt(max_ly - 1 - @as(i32, hud_y_shift) - @as(i32, HotbarH));
     const slot_cy: f32 = hotbar_top + 11.0;
     const center_x: f32 = @floatFromInt(@divTrunc(max_lx, 2));
 
     var i: u8 = 0;
-    while (i < HOTBAR_SLOTS) : (i += 1) {
-        const slot_offset_x: f32 = @floatFromInt(@as(i32, HOTBAR_SLOT_STRIDE) * @as(i32, i) - 80);
+    while (i < HotbarSlots) : (i += 1) {
+        const slot_offset_x: f32 = @floatFromInt(@as(i32, HotbarSlotStride) * @as(i32, i) - 80);
         list.add_iso_block(&.{
             .block = self.hotbar[i],
             .cx = center_x + slot_offset_x,
             .cy = slot_cy,
-            .half_extent_px = HOTBAR_BLOCK_HALF_EXTENT,
+            .half_extent_px = HotbarBlockHalfExtent,
         });
     }
 }
 
-// --- Per-frame poll ---
-
-fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
+fn poll_inputs(self: *Player, sys: *input.InputSystem, dt: f32) void {
     const actions = bindings.actions();
     const active_now = is_gameplay_active(sys);
     const fresh_activation = active_now and !self.gameplay_was_active;
@@ -1322,7 +1104,7 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
     self.move_dir = sys.vector2(actions.move).current;
 
     const look_raw = sys.vector2(actions.look).current;
-    const sens = Options.current.sensitivity * LOOK_PIXEL_TO_RAD;
+    const sens = Options.current.sensitivity * LookPixelToRad;
     self.look_delta = .{ look_raw[0] * sens, look_raw[1] * sens };
 
     self.look_rate = sys.vector2(actions.look_stick).current;
@@ -1335,7 +1117,6 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
     self.break_held = br == .pressed;
     self.place_held = pl == .pressed;
     if (Options.uses_old_3ds_controls() and self.break_held and self.place_held) {
-        // L+R is the Old 3DS inventory chord, not two simultaneous actions.
         self.break_held = false;
         self.place_held = false;
     }
@@ -1344,10 +1125,8 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
     self.playerlist_held = sys.button(actions.playerlist).current == .pressed;
 
     if (fresh_activation) {
-        // Snap prev to current so next frame's edges are relative to
-        // today's state, not the masked .released values from the overlay.
         self.prev_inputs.inventory_toggle = sys.button(actions.inventory_toggle).current;
-        if (comptime builtin.mode == .Debug and ae.platform != .psp) {
+        if (comptime caps.controls.debug_noclip) {
             self.prev_inputs.noclip = sys.button(actions.noclip).current;
         }
         self.prev_inputs.jump = jump;
@@ -1357,7 +1136,7 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
         self.prev_inputs.shoulder_r = sys.button(actions.shoulder_r).current;
         self.prev_inputs.shoulder_l = sys.button(actions.shoulder_l).current;
         self.prev_inputs.playerlist = sys.button(actions.playerlist).current;
-        if (ae.platform != .psp) {
+        if (caps.controls.view_toggle_shortcuts) {
             self.prev_inputs.hud_toggle = sys.button(actions.hud_toggle).current;
             self.prev_inputs.rain_toggle = sys.button(actions.rain_toggle).current;
         }
@@ -1381,7 +1160,7 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
     }
     self.prev_inputs.inventory_toggle = inv;
 
-    if (comptime builtin.mode == .Debug and ae.platform != .psp) {
+    if (comptime caps.controls.debug_noclip) {
         const nc = sys.button(actions.noclip).current;
         if (rising_edge(self.prev_inputs.noclip, nc)) {
             self.noclip = !self.noclip;
@@ -1439,9 +1218,6 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
     }
     self.prev_inputs.pick_block = pb;
 
-    // PSP L+R chord = inventory toggle; otherwise rising edge defers a
-    // break/place that update() can cancel if the chord completes. Old 3DS
-    // handles its direct L/R bindings above.
     const sr = sys.button(actions.shoulder_r).current;
     self.shoulder_r_held = sr == .pressed;
     if (rising_edge(self.prev_inputs.shoulder_r, sr)) {
@@ -1476,7 +1252,7 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
     }
     self.prev_inputs.playerlist = pll;
 
-    if (ae.platform != .psp) {
+    if (caps.controls.view_toggle_shortcuts) {
         const hud = sys.button(actions.hud_toggle).current;
         if (rising_edge(self.prev_inputs.hud_toggle, hud)) self.hud_toggle_pending = true;
         self.prev_inputs.hud_toggle = hud;
@@ -1496,13 +1272,13 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
 
     const hl = sys.button(actions.hotbar_left).current;
     if (rising_edge(self.prev_inputs.hotbar_left, hl)) {
-        self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
+        self.selected_slot = if (self.selected_slot == 0) HotbarSlots - 1 else self.selected_slot - 1;
     }
     self.prev_inputs.hotbar_left = hl;
 
     const hr = sys.button(actions.hotbar_right).current;
     if (rising_edge(self.prev_inputs.hotbar_right, hr)) {
-        self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
+        self.selected_slot = if (self.selected_slot + 1 >= HotbarSlots) 0 else self.selected_slot + 1;
     }
     self.prev_inputs.hotbar_right = hr;
 
@@ -1515,20 +1291,20 @@ fn poll_inputs(self: *Self, sys: *input.InputSystem, dt: f32) void {
     }
 
     const scroll = sys.axis(actions.hotbar_scroll).current;
-    if (scroll > HOTBAR_SCROLL_DEADBAND) {
-        self.selected_slot = if (self.selected_slot == 0) HOTBAR_SLOTS - 1 else self.selected_slot - 1;
-    } else if (scroll < -HOTBAR_SCROLL_DEADBAND) {
-        self.selected_slot = if (self.selected_slot + 1 >= HOTBAR_SLOTS) 0 else self.selected_slot + 1;
+    if (scroll > HotbarScrollDeadband) {
+        self.selected_slot = if (self.selected_slot == 0) HotbarSlots - 1 else self.selected_slot - 1;
+    } else if (scroll < -HotbarScrollDeadband) {
+        self.selected_slot = if (self.selected_slot + 1 >= HotbarSlots) 0 else self.selected_slot + 1;
     }
 }
 
-fn age_jump_taps(self: *Self, dt: f32) void {
+fn age_jump_taps(self: *Player, dt: f32) void {
     if (self.jump_tap_count == 0) return;
     self.jump_tap_elapsed += dt;
-    if (self.jump_tap_elapsed > FLY_TAP_WINDOW) self.reset_jump_taps();
+    if (self.jump_tap_elapsed > FlyTapWindow) self.reset_jump_taps();
 }
 
-fn record_jump_tap(self: *Self) void {
+fn record_jump_tap(self: *Player) void {
     if (self.jump_tap_count == 0) {
         self.jump_tap_count = 1;
         self.jump_tap_elapsed = 0;
@@ -1545,7 +1321,7 @@ fn record_jump_tap(self: *Self) void {
     }
 }
 
-fn reset_jump_taps(self: *Self) void {
+fn reset_jump_taps(self: *Player) void {
     self.jump_tap_count = 0;
     self.jump_tap_elapsed = 0;
 }
@@ -1557,13 +1333,7 @@ fn is_gameplay_active(sys: *input.InputSystem) bool {
 }
 
 fn playerlist_controller_button() input.Button {
-    if (ae.platform == .psp) {
-        return switch (Options.current.psp_jump_mode) {
-            .up => .Back,
-            .select => .DpadUp,
-        };
-    }
-    if (Options.uses_old_3ds_controls()) {
+    if (Options.uses_single_stick_controls()) {
         return switch (Options.current.psp_jump_mode) {
             .up => .Back,
             .select => .DpadUp,
@@ -1583,55 +1353,33 @@ fn playerlist_controller_pressed_this_frame(sys: *input.InputSystem) bool {
     return false;
 }
 
-fn do_break(self: *Self) void {
+fn do_break(self: *Player) void {
     if (!self.mouse_captured) return;
-    // Swing on every click, regardless of whether we actually struck a block.
     if (self.held_renderer) |hr| hr.trigger_dig();
     const hit = self.selected orelse return;
     const block_id = World.data.get_block(hit.x, hit.y, hit.z);
     if (!block_id.is_breakable()) return;
     if (!block_id.is_air()) {
         if (self.particle_sink) |ps| {
-            ps.spawn_break(block_id, hit.x, hit.y, hit.z, derive_break_face(hit));
+            ps.spawn_break(block_id, hit.x, hit.y, hit.z);
         }
         SoundManager.play_dig(block_id, hit.x, hit.y, hit.z);
     }
-    send_block_change(self.writer, hit.x, hit.y, hit.z, 0, .{ .id = .air });
+    send_block_change(self.writer, hit.x, hit.y, hit.z, 0, .air);
 }
 
-/// Recover which face the player struck from the raycast result. The
-/// raycaster stores the empty cell just before the hit (`place_*`); the
-/// delta from there to the hit voxel points along the broken face's normal.
-///
-/// `raycast_block` advances exactly one axis per DDA iteration, so for a
-/// real hit (`has_place == true`) the place cell differs from the hit cell
-/// by exactly one component. The axis priority below is therefore just
-/// "first non-zero wins", not a tiebreaker - corners can't occur.
-fn derive_break_face(hit: RaycastHit) Face {
-    if (!hit.has_place) return .y_pos;
-    const dx: i32 = @as(i32, hit.place_x) - @as(i32, hit.x);
-    const dy: i32 = @as(i32, hit.place_y) - @as(i32, hit.y);
-    const dz: i32 = @as(i32, hit.place_z) - @as(i32, hit.z);
-    if (dy > 0) return .y_pos;
-    if (dy < 0) return .y_neg;
-    if (dx > 0) return .x_pos;
-    if (dx < 0) return .x_neg;
-    if (dz > 0) return .z_pos;
-    return .z_neg;
-}
-
-fn do_pick_block(self: *Self) void {
+fn do_pick_block(self: *Player) void {
     if (!self.mouse_captured) return;
     const hit = self.selected orelse return;
     const block = World.data.get_block(hit.x, hit.y, hit.z);
     if (!block.in_inventory()) return;
 
-    std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
-    if (self.hotbar[self.selected_slot].id == block.id) return;
+    assert(self.selected_slot < HotbarSlots);
+    if (self.hotbar[self.selected_slot] == block) return;
 
     var i: u8 = 0;
-    while (i < HOTBAR_SLOTS) : (i += 1) {
-        if (self.hotbar[i].id == block.id) {
+    while (i < HotbarSlots) : (i += 1) {
+        if (self.hotbar[i] == block) {
             self.selected_slot = i;
             return;
         }
@@ -1640,42 +1388,35 @@ fn do_pick_block(self: *Self) void {
     self.hotbar[self.selected_slot] = block;
 }
 
-fn do_place(self: *Self) void {
+fn do_place(self: *Player) void {
     if (!self.mouse_captured) return;
     const hit = self.selected orelse return;
     if (!hit.has_place) return;
-    std.debug.assert(self.selected_slot < HOTBAR_SLOTS);
+    assert(self.selected_slot < HotbarSlots);
     const block = self.hotbar[self.selected_slot];
     if (block.is_air()) return;
     const target = World.data.get_block(hit.place_x, hit.place_y, hit.place_z);
     const target_replaceable = target.is_place_replaceable();
-    const promotes_to_double_slab = block.id == .slab and
-        (target.id == .slab or (target_replaceable and hit.place_y > 0 and
-            World.data.get_block(hit.place_x, hit.place_y - 1, hit.place_z).id == .slab));
+    const promotes_to_double_slab = block == .slab and
+        (target == .slab or (target_replaceable and hit.place_y > 0 and
+            World.data.get_block(hit.place_x, hit.place_y - 1, hit.place_z) == .slab));
     if (!target_replaceable and !promotes_to_double_slab) return;
     const bx0: f32 = @floatFromInt(hit.place_x);
     const by0: f32 = @floatFromInt(hit.place_y);
     const bz0: f32 = @floatFromInt(hit.place_z);
-    const bh: f32 = if (target.id == .slab and promotes_to_double_slab) 1.0 else collision.block_height(block);
+    const bh: f32 = if (target == .slab and promotes_to_double_slab) 1.0 else block.collision_height();
     const overlaps = bh > 0 and
-        self.pos_x + collision.HALF_W > bx0 and
-        self.pos_x - collision.HALF_W < bx0 + 1.0 and
-        self.pos_y + collision.HEIGHT > by0 and
+        self.pos_x + collision.HalfW > bx0 and
+        self.pos_x - collision.HalfW < bx0 + 1.0 and
+        self.pos_y + collision.Height > by0 and
         self.pos_y < by0 + bh and
-        self.pos_z + collision.HALF_W > bz0 and
-        self.pos_z - collision.HALF_W < bz0 + 1.0;
+        self.pos_z + collision.HalfW > bz0 and
+        self.pos_z - collision.HalfW < bz0 + 1.0;
     if (overlaps) return;
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
-    // Register a "virtual block" for collision so the player cannot
-    // fall through before the server commits the placement to the
-    // world on its next tick.
-    //
-    // Exception: slab-on-slab. Depending on the ray path, the server promotes
-    // either the target slab or the slab below a replaceable target cell. The
-    // same-cell form already has real collision; the below-slab form leaves the
-    // place cell unchanged, so a pending half-slab there would become a ghost.
-    if (collision.block_height(block) > 0 and !promotes_to_double_slab) {
+    // Promoted slabs already have collision and may target a different cell.
+    if (block.collision_height() > 0 and !promotes_to_double_slab) {
         self.pending_block = .{
             .x = hit.place_x,
             .y = hit.place_y,
@@ -1685,9 +1426,6 @@ fn do_place(self: *Self) void {
     }
 }
 
-/// Send a SetBlockToServer packet and flush the writer so the embedded
-/// server picks it up on its next drain. Errors are logged-and-ignored;
-/// dropping a click is harmless and the alternative would crash the game.
 fn send_block_change(w: *std.Io.Writer, x: u16, y: u16, z: u16, mode: u8, block: Block) void {
     proto.send_set_block_to_server(w, x, y, z, mode, block) catch |err| {
         std.log.scoped(.player).err("send_set_block_to_server: {}", .{err});

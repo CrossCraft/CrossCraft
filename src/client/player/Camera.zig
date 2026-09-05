@@ -1,30 +1,29 @@
 const std = @import("std");
 const ae = @import("aether");
+const caps = @import("capabilities").ClientType(ae);
 const Math = ae.Math;
+const Aabb = Math.Aabb;
 const Rendering = ae.Rendering;
 
-const Self = @This();
+const Camera = @This();
 
-pub const near_plane: f32 = if (ae.platform == .psp) 0.3275 else 0.1;
-pub const far_plane: f32 = if (ae.platform == .psp) 132.0 else 256.0;
+pub const near_plane: f32 = caps.render.near_plane;
+pub const far_plane: f32 = caps.render.far_plane;
 
 x: f32,
 y: f32,
 z: f32,
 yaw: f32, // radians, 0 = looking -Z
-pitch: f32, // radians, positive = looking up
+pitch: f32, // radians, applied as a positive X rotation in the view matrix
 fov: f32, // vertical FOV in radians
 frustum: Math.Frustum,
 
-// View-bob state, written by Player.sync_camera and consumed by both
-// the world view matrix (tilt) and the held-block renderer (bob_hor/ver
-// for screen-space sway). Defaults are no-op so anything that doesn't
-// touch them stays unaffected.
+// Player.sync_camera supplies view tilt and held-block sway.
 tilt: Math.Mat4,
 bob_hor: f32,
 bob_ver: f32,
 
-pub fn init(x: f32, y: f32, z: f32) Self {
+pub fn init(x: f32, y: f32, z: f32) Camera {
     return .{
         .x = x,
         .y = y,
@@ -39,48 +38,81 @@ pub fn init(x: f32, y: f32, z: f32) Self {
     };
 }
 
-/// Build view + projection matrices, upload to GPU, extract frustum planes.
-pub fn apply(self: *Self) void {
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
+/// Adapts game-owned position, bob and tilt to Aether's explicit conventions.
+/// The pointer is borrowed only while the returned camera is used locally.
+fn engine_camera(self: *const Camera, position: *const Math.Vec3) Rendering.Camera {
+    return .{
+        .target = position,
+        .fov = self.fov,
+        .yaw = self.yaw,
+        .pitch = self.pitch,
+        .angle_unit = .radians,
+        .yaw_direction = .left,
+        .pitch_direction = .down,
+        .near_plane = near_plane,
+        .far_plane = far_plane,
+        .view_adjustment = self.tilt,
+    };
+}
 
-    const proj = Math.Mat4.perspectiveFovRh(self.fov, aspect, near_plane, far_plane);
-    Rendering.gfx.api.set_proj_matrix(&proj);
+pub fn matrices(self: *const Camera, aspect: f32) Rendering.Camera.Error!Rendering.Camera.Matrices {
+    const position = Math.Vec3.new(self.x, self.y, self.z);
+    const camera = self.engine_camera(&position);
+    return camera.matrices(aspect);
+}
 
-    const view = Math.Mat4.translation(-self.x, -self.y, -self.z)
-        .mul(Math.Mat4.rotationY(-self.yaw))
-        .mul(Math.Mat4.rotationX(self.pitch))
-        .mul(self.tilt);
-    Rendering.gfx.api.set_view_matrix(&view);
+/// Particles retain the existing yaw/pitch facing and omit view bob/tilt.
+pub fn billboard_basis(self: *const Camera) Rendering.BillboardBatcher.Basis {
+    const origin = Math.Vec3.zero();
+    var camera = self.engine_camera(&origin);
+    camera.view_adjustment = null;
+    return Rendering.BillboardBatcher.Basis.from_view(camera.get_view_matrix()) catch unreachable;
+}
 
-    // VP for frustum extraction (row-vector convention = V * P)
-    self.frustum = Math.Frustum.fromViewProjection(view.mul(proj));
+pub fn apply(self: *Camera) void {
+    const result = self.matrices(Rendering.aspect_ratio()) catch unreachable;
+    Rendering.gfx.api.set_proj_matrix(&result.projection);
+    Rendering.gfx.api.set_view_matrix(&result.view);
+    self.frustum = result.frustum;
 }
 
 /// Conservative AABB frustum test for a 16x16x16 section.
-pub fn section_visible(self: *const Self, cx: u32, sy: u32, cz: u32) bool {
+pub fn section_visible(self: *const Camera, cx: u32, sy: u32, cz: u32) bool {
     const wx: f32 = @floatFromInt(cx * 16);
     const wy: f32 = @floatFromInt(sy * 16);
     const wz: f32 = @floatFromInt(cz * 16);
-    const aabb = Math.AABB{
+    const aabb = Aabb{
         .min = Math.Vec3.new(wx, wy, wz),
         .max = Math.Vec3.new(wx + 16.0, wy + 16.0, wz + 16.0),
     };
-    return self.frustum.containsAABB(aabb);
+    return self.frustum.contains_aabb(aabb);
 }
 
-/// Squared horizontal distance (XZ plane) from camera to a world point.
-pub fn distance_sq_xz(self: *const Self, wx: f32, wz: f32) f32 {
-    const dx = wx - self.x;
-    const dz = wz - self.z;
-    return dx * dx + dz * dz;
-}
-
-/// Squared 3D distance from camera to a world point.
-pub fn distance_sq(self: *const Self, wx: f32, wy: f32, wz: f32) f32 {
+pub fn distance_sq(self: *const Camera, wx: f32, wy: f32, wz: f32) f32 {
     const dx = wx - self.x;
     const dy = wy - self.y;
     const dz = wz - self.z;
     return dx * dx + dy * dy + dz * dz;
+}
+
+test "Aether camera preserves Classic view projection and frustum conventions" {
+    var camera = Camera.init(302.5, 65.75, 401.25);
+    camera.yaw = 1.25;
+    camera.pitch = -0.35;
+    camera.tilt = Math.Mat4.rotation_z(0.12).mul(Math.Mat4.translation(0.03, -0.02, 0));
+    const result = try camera.matrices(16.0 / 9.0);
+    const expected_view = Math.Mat4.translation(-camera.x, -camera.y, -camera.z)
+        .mul(Math.Mat4.rotation_y(-camera.yaw))
+        .mul(Math.Mat4.rotation_x(camera.pitch))
+        .mul(camera.tilt);
+    const expected_projection = Math.Mat4.perspective_fov_rh(camera.fov, 16.0 / 9.0, near_plane, far_plane);
+    try std.testing.expectEqual(expected_view, result.view);
+    try std.testing.expectEqual(expected_projection, result.projection);
+    try std.testing.expectEqual(Math.Frustum.from_view_projection(expected_view.mul(expected_projection)), result.frustum);
+
+    const basis = camera.billboard_basis();
+    const expected_right = Math.Vec3.new(@cos(camera.yaw), 0, -@sin(camera.yaw));
+    const expected_up = Math.Vec3.new(-@sin(camera.yaw) * @sin(camera.pitch), @cos(camera.pitch), -@cos(camera.yaw) * @sin(camera.pitch));
+    try std.testing.expectApproxEqAbs(@as(f32, 0), basis.right.sub(expected_right).length(), 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), basis.up.sub(expected_up).length(), 0.000001);
 }

@@ -1,7 +1,4 @@
-//! Named action helpers returning `Prompt` values for common menu and
-//! HUD actions.  Each helper inspects the currently-resolved
-//! `Buttons.Style` so prompts update live when the user cycles the
-//! controller-tooltip style in Options.
+//! Common menu and HUD prompts for the active input style.
 
 const Buttons = @import("Buttons.zig");
 const Options = @import("../Options.zig");
@@ -9,48 +6,44 @@ const PromptStrip = @import("PromptStrip.zig");
 
 pub const Prompt = PromptStrip.Prompt;
 
-// --- menu actions ---
+fn confirm_prompt(label: []const u8) Prompt {
+    const button: Buttons.Button = switch (Buttons.resolve_style()) {
+        .kbm => .EnterKey,
+        .nintendo, .xbox, .playstation, .psp => .A,
+    };
+    return .{ .chord = .{ button, null }, .label = label };
+}
+
+fn cancel_prompt(label: []const u8) Prompt {
+    const button: Buttons.Button = switch (Buttons.resolve_style()) {
+        .kbm => .EscapeKey,
+        .nintendo, .xbox, .playstation, .psp => .B,
+    };
+    return .{ .chord = .{ button, null }, .label = label };
+}
 
 pub fn select() Prompt {
-    return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .EnterKey, null }, .label = "Select" },
-        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .A, null }, .label = "Select" },
-    };
+    return confirm_prompt("Select");
 }
 
 pub fn edit() Prompt {
-    return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .EnterKey, null }, .label = "Edit" },
-        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .A, null }, .label = "Edit" },
-    };
+    return confirm_prompt("Edit");
 }
 
 pub fn adjust() Prompt {
-    return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .EnterKey, null }, .label = "Adjust" },
-        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .A, null }, .label = "Adjust" },
-    };
+    return confirm_prompt("Adjust");
 }
 
 pub fn done() Prompt {
-    return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .EnterKey, null }, .label = "Done" },
-        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .A, null }, .label = "Done" },
-    };
+    return confirm_prompt("Done");
 }
 
 pub fn back() Prompt {
-    return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .EscapeKey, null }, .label = "Back" },
-        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .B, null }, .label = "Back" },
-    };
+    return cancel_prompt("Back");
 }
 
 pub fn exit_adjust() Prompt {
-    return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .EscapeKey, null }, .label = "Done" },
-        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .B, null }, .label = "Done" },
-    };
+    return cancel_prompt("Done");
 }
 
 pub fn left_right() Prompt {
@@ -59,8 +52,6 @@ pub fn left_right() Prompt {
         .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .DpadLeft, .DpadRight }, .label = "Adjust" },
     };
 }
-
-// --- in-game HUD actions ---
 
 pub fn inventory() Prompt {
     if (Options.uses_old_3ds_controls()) {
@@ -78,7 +69,7 @@ pub fn place() Prompt {
         return .{ .chord = .{ .LButton, null }, .label = "Place" };
     }
     return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .RMB, null }, .label = "Place" },
+        .kbm => .{ .chord = .{ .Rmb, null }, .label = "Place" },
         .nintendo, .xbox, .playstation => .{ .chord = .{ .RTrigger, null }, .label = "Place" },
         .psp => .{ .chord = .{ .LButton, null }, .label = "Place" },
     };
@@ -89,16 +80,12 @@ pub fn break_() Prompt {
         return .{ .chord = .{ .RButton, null }, .label = "Break" };
     }
     return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .LMB, null }, .label = "Break" },
+        .kbm => .{ .chord = .{ .Lmb, null }, .label = "Break" },
         .nintendo, .xbox, .playstation => .{ .chord = .{ .LTrigger, null }, .label = "Break" },
         .psp => .{ .chord = .{ .RButton, null }, .label = "Break" },
     };
 }
 
-// --- playerlist / chat overlays ---
-
-/// PSP social-mode hint.  No desktop equivalent since the list is shown
-/// while Tab is held.
 pub fn exit_list() Prompt {
     return switch (Buttons.resolve_style()) {
         .kbm => .{ .chord = .{ .EscapeKey, null }, .label = "Exit" },
@@ -114,15 +101,9 @@ pub fn chat() Prompt {
 }
 
 pub fn send() Prompt {
-    return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .EnterKey, null }, .label = "Send" },
-        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .A, null }, .label = "Send" },
-    };
+    return confirm_prompt("Send");
 }
 
 pub fn cancel() Prompt {
-    return switch (Buttons.resolve_style()) {
-        .kbm => .{ .chord = .{ .EscapeKey, null }, .label = "Cancel" },
-        .nintendo, .xbox, .playstation, .psp => .{ .chord = .{ .B, null }, .label = "Cancel" },
-    };
+    return cancel_prompt("Cancel");
 }

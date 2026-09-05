@@ -1,14 +1,9 @@
 //! Persisted user preferences.
-//!
-//! `Options.current` is the live singleton.  Call `load` on startup and
-//! `save` whenever settings change.  Both operate on `options.json` in the
-//! application data directory (`engine.dirs.data`).
 
 const std = @import("std");
-const builtin = @import("builtin");
+const caps = @import("capabilities").ClientType(ae);
 const ae = @import("aether");
 const Io = std.Io;
-const File = std.Io.File;
 const cfg = @import("config.zig");
 const input = ae.Core.input;
 
@@ -17,19 +12,14 @@ const log = std.log.scoped(.options);
 const options_file = "options.json";
 const json_format_version: u8 = 2;
 const max_pack_path: usize = 256;
-/// Generous upper bound for the JSON file (typical size ~300 bytes).
 const max_json_size: usize = 4096;
 
-pub const SENS_MIN: f32 = 0.1;
-pub const SENS_MAX: f32 = 10.0;
+pub const SensMin: f32 = 0.1;
+pub const SensMax: f32 = 10.0;
 
-/// Live singleton.  Any system may read `Options.current`; only `load` and
-/// the settings UI should write it.
 pub var current: Options = .{};
 
-/// In-game controller prompt style.  PSP and Nintendo consoles only support
-/// `auto` / `off`; the other layouts are desktop-only and are corrected to
-/// `auto` on load.
+/// Consoles accept only `auto` and `off`; unsupported styles reset on load.
 pub const ControllerTooltips = enum(u8) {
     auto = 0,
     xbox = 1,
@@ -64,82 +54,54 @@ pub const PspJumpMode = enum(u8) {
 };
 
 pub const Options = struct {
-    /// Path of the active texture pack (relative to the data dir).
-    /// Empty string means use the built-in default pack.
+    /// Relative to the data directory; empty selects the built-in pack.
     active_texturepack_buf: [max_pack_path]u8 = [_]u8{0} ** max_pack_path,
     active_texturepack_len: u8 = 0,
 
-    /// Chunk render radius. PSP defaults to 4; desktop defaults to 8.
-    /// Capped to the active runtime profile via `capped_render_distance`.
-    render_distance: u8 = if (@import("aether").platform == .psp)
-        4
-    else
-        8,
+    /// Consumers must use `capped_render_distance` to honor the runtime profile.
+    render_distance: u8 = caps.defaults.render_distance,
 
-    /// SFX volume multiplier (0.0 = silent, 1.0 = full).
     sound_volume: f32 = 1.0,
 
-    /// Music volume multiplier (0.0 = silent, 1.0 = full).
     music_volume: f32 = 0.5,
 
-    /// Vertical field of view in degrees.
     fov: f32 = 70.0,
 
-    /// True = full leaf transparency (fancy); false = opaque leaves (fast).
-    /// Defaults off on PSP to keep meshing within budget.  Profiles with
-    /// `lod_near_radius_blocks == 0` cannot render fancy leaves at all.
-    fancy_leaves: bool = @import("aether").platform != .psp,
+    /// Profiles with no near-LOD radius cannot render fancy leaves.
+    fancy_leaves: bool = caps.defaults.fancy_leaves,
 
-    /// Mouse / analogue-stick look sensitivity multiplier.
-    sensitivity: f32 = 3.0,
+    // Midpoint of the logarithmic 0.1-10.0 slider: 50%.
+    sensitivity: f32 = 1.0,
 
-    /// Smooth ambient occlusion on block faces.
     ambient_occlusion: bool = false,
 
-    /// Newly-meshed chunk sections rise from -16 blocks over 1 second.
-    /// Rebuilt sections are unaffected.
+    /// Animate only a section's first mesh build.
     bouncy_chunks: bool = false,
 
-    /// Cap frames to the display refresh rate.  Applied via
-    /// `engine.set_vsync` on load and whenever the options menu is dismissed.
-    /// PSP defaults to off; the 60 Hz cap costs more than it's worth given the
-    /// platform's frame-time budget.
-    vsync: bool = @import("aether").platform != .psp and @import("aether").platform != .nintendo_3ds,
+    vsync: bool = caps.defaults.vsync,
 
-    /// In-game controller prompt style.  `auto` picks glyphs from the
-    /// connected controller on desktop, or the fixed platform layout on
-    /// PSP / Nintendo consoles.
     controller_tooltips: ControllerTooltips = .auto,
 
-    /// Weather: rain on/off.  Defaults off on every platform.
     rain: bool = false,
 
-    /// Distance fog for world geometry.  The sky renderer keeps its own fog
-    /// enabled so the horizon retains the intended look when this is off.
+    /// The sky retains its own fog when world fog is disabled.
     fog: bool = true,
 
-    /// Desktop keyboard controls. Gamepad bindings remain fixed.
     key_forward: input.Key = .W,
     key_back: input.Key = .S,
     key_left: input.Key = .A,
     key_right: input.Key = .D,
     key_inventory: input.Key = .B,
 
-    /// PSP compact control swaps.
     psp_analog_mode: PspAnalogMode = .look,
     psp_jump_mode: PspJumpMode = .up,
 
-    /// Lets a New 3DS use the Old 3DS single-stick control layout when its
-    /// right-side input is unavailable. This preference has no effect on
-    /// other platforms.
     new_3ds_use_old_controls: bool = false,
 
-    /// Returns the active texture pack path as a slice (may be empty).
     pub fn active_texturepack(self: *const Options) []const u8 {
         return self.active_texturepack_buf[0..self.active_texturepack_len];
     }
 
-    /// Stores `path` in the fixed buffer, truncating silently if needed.
     pub fn set_active_texturepack(self: *Options, path: []const u8) void {
         const len: u8 = @intCast(@min(path.len, max_pack_path - 1));
         @memcpy(self.active_texturepack_buf[0..len], path[0..len]);
@@ -191,92 +153,35 @@ pub const Options = struct {
     }
 };
 
-/// Effective render distance, capped to the active runtime profile.
-/// Always use this instead of `current.render_distance` directly so we
-/// never ask the renderer to load more sections than its arrays can hold.
+/// Cap render distance to the renderer's allocated section capacity.
 pub fn capped_render_distance() u8 {
     const max: u8 = @intCast(@min(@as(u32, 255), cfg.current().chunk_radius));
     return @min(current.render_distance, max);
 }
 
-/// True when the build can render fancy (transparent) leaves at all.
-/// PSP-1000 forces opaque leaves via `lod_near_radius_blocks = 0`; this
-/// helper centralises the detection so the UI and load path agree.
+/// A zero near-LOD radius forces opaque leaves on constrained profiles.
 pub fn fancy_leaves_supported() bool {
     return cfg.current().lod_near_radius_blocks > 0;
 }
 
-/// True when VSync can be changed by the options UI.
-pub fn vsync_toggle_supported() bool {
-    return true;
-}
-
-pub fn effective_vsync(vsync: bool) bool {
-    return if (vsync_toggle_supported()) vsync else true;
-}
-
-/// True when the platform has one built-in controller glyph family.
-/// The options menu treats this as an on/off choice.
 pub fn fixed_controller_glyph_style() bool {
-    return ae.platform == .psp or ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
+    return caps.ui.fixed_controller_glyphs;
 }
 
-/// True when the active control layout is the Old 3DS single-stick scheme.
-/// New 3DS users can opt into this layout when their right-side input is
-/// unavailable; physical Old 3DS hardware always uses it.
 pub fn uses_old_3ds_controls() bool {
-    return uses_old_3ds_controls_for(ae.platform, cfg.current().hardware, current.new_3ds_use_old_controls);
+    return caps.controls.uses_single_stick_fallback(cfg.current().hardware, current.new_3ds_use_old_controls);
 }
 
-/// True when the controls screen has settings available on this platform.
-/// Both 3DS hardware classes expose their relevant control settings; Switch
-/// remains fixed.
+pub fn uses_single_stick_controls() bool {
+    return caps.controls.single_stick or uses_old_3ds_controls();
+}
+
 pub fn controls_rebinding_supported() bool {
-    return controls_rebinding_supported_for(ae.platform, cfg.current().hardware);
+    return caps.controls.supports_rebinding(cfg.current().hardware);
 }
 
-fn controls_rebinding_supported_for(platform: ae.Platform, hardware: cfg.HardwareClass) bool {
-    return switch (platform) {
-        .nintendo_3ds => hardware == .old_3ds or hardware == .new_3ds,
-        .nintendo_switch => false,
-        else => true,
-    };
-}
-
-/// True only on New 3DS hardware, where the user may select the Old 3DS
-/// fallback layout.
 pub fn new_3ds_old_controls_supported() bool {
-    return new_3ds_old_controls_supported_for(ae.platform, cfg.current().hardware);
-}
-
-fn new_3ds_old_controls_supported_for(platform: ae.Platform, hardware: cfg.HardwareClass) bool {
-    return platform == .nintendo_3ds and hardware == .new_3ds;
-}
-
-fn uses_old_3ds_controls_for(platform: ae.Platform, hardware: cfg.HardwareClass, new_3ds_use_old_controls: bool) bool {
-    return platform == .nintendo_3ds and (hardware == .old_3ds or (hardware == .new_3ds and new_3ds_use_old_controls));
-}
-
-test "Old 3DS controls follow the runtime hardware class and N3DS fallback" {
-    try std.testing.expect(!uses_old_3ds_controls_for(.psp, .psp_phat, false));
-    try std.testing.expect(!uses_old_3ds_controls_for(.psp, .psp_phat, true));
-    try std.testing.expect(uses_old_3ds_controls_for(.nintendo_3ds, .old_3ds, false));
-    try std.testing.expect(uses_old_3ds_controls_for(.nintendo_3ds, .old_3ds, true));
-    try std.testing.expect(!uses_old_3ds_controls_for(.nintendo_3ds, .new_3ds, false));
-    try std.testing.expect(uses_old_3ds_controls_for(.nintendo_3ds, .new_3ds, true));
-    try std.testing.expect(!uses_old_3ds_controls_for(.nintendo_switch, .nintendo_switch, true));
-    try std.testing.expect(!uses_old_3ds_controls_for(.linux, .desktop, true));
-
-    try std.testing.expect(!new_3ds_old_controls_supported_for(.psp, .psp_phat));
-    try std.testing.expect(!new_3ds_old_controls_supported_for(.nintendo_3ds, .old_3ds));
-    try std.testing.expect(new_3ds_old_controls_supported_for(.nintendo_3ds, .new_3ds));
-    try std.testing.expect(!new_3ds_old_controls_supported_for(.nintendo_switch, .nintendo_switch));
-
-    try std.testing.expect(controls_rebinding_supported_for(.psp, .psp_phat));
-    try std.testing.expect(controls_rebinding_supported_for(.nintendo_3ds, .old_3ds));
-    try std.testing.expect(controls_rebinding_supported_for(.nintendo_3ds, .new_3ds));
-    try std.testing.expect(!controls_rebinding_supported_for(.nintendo_switch, .nintendo_switch));
-    try std.testing.expect(controls_rebinding_supported_for(.linux, .desktop));
+    return caps.controls.supports_single_stick_fallback(cfg.current().hardware);
 }
 
 pub fn pc_key_assignable(key: input.Key) bool {
@@ -300,39 +205,21 @@ pub fn pc_key_assignable(key: input.Key) bool {
         else => {},
     }
 
-    if (ae.platform != .psp) {
+    if (caps.controls.view_toggle_shortcuts) {
         switch (key) {
             .F1,
             .F5,
             => return false,
             else => {},
         }
-        if (builtin.mode == .Debug and key == .X) return false;
+        if (caps.controls.debug_noclip and key == .X) return false;
     }
 
     return true;
 }
 
 pub fn pc_key_label(key: input.Key) []const u8 {
-    return switch (key) {
-        .Space => "Space",
-        .LeftShift => "Left Shift",
-        .RightShift => "Right Shift",
-        .LeftControl => "Left Ctrl",
-        .RightControl => "Right Ctrl",
-        .LeftAlt => "Left Alt",
-        .RightAlt => "Right Alt",
-        .LeftSuper => "Left Super",
-        .RightSuper => "Right Super",
-        .KpEnter => "Keypad Enter",
-        .KpDecimal => "Keypad Decimal",
-        .KpDivide => "Keypad Divide",
-        .KpMultiply => "Keypad Multiply",
-        .KpSubtract => "Keypad Minus",
-        .KpAdd => "Keypad Plus",
-        .KpEqual => "Keypad Equal",
-        else => @tagName(key),
-    };
+    return input.display.key_name(key, .readable);
 }
 
 pub fn pc_key_prompt_label(key: input.Key) []const u8 {
@@ -352,32 +239,29 @@ pub fn pc_key_prompt_label(key: input.Key) []const u8 {
 }
 
 pub fn sensitivity_percent(v: f32) u32 {
-    const cl = std.math.clamp(v, SENS_MIN, SENS_MAX);
-    const lmin = std.math.log10(SENS_MIN);
-    const lmax = std.math.log10(SENS_MAX);
+    const cl = std.math.clamp(v, SensMin, SensMax);
+    const lmin = std.math.log10(SensMin);
+    const lmax = std.math.log10(SensMax);
     return @intFromFloat(@round((std.math.log10(cl) - lmin) / (lmax - lmin) * 100));
 }
 
 pub fn sensitivity_from_percent(percent: u32) f32 {
     const pct = @as(f32, @floatFromInt(@min(percent, 100))) / 100.0;
-    const lmin = std.math.log10(SENS_MIN);
-    const lmax = std.math.log10(SENS_MAX);
+    const lmin = std.math.log10(SensMin);
+    const lmax = std.math.log10(SensMax);
     return std.math.pow(f32, 10.0, lmin + (lmax - lmin) * pct);
 }
-
-// --- JSON shadow types ---
-// Field names match the JSON keys.  `active_texturepack` is a `[]const u8`
-// so the JSON parser can allocate it into the per-call arena; the caller
-// copies the value into the fixed buffer before the arena is freed.
 
 const JsonNumber = struct {
     value: f64 = 0.0,
 
-    fn fromInt(value: i64) JsonNumber {
+    fn from_int(value: i64) JsonNumber {
         return .{ .value = @as(f64, @floatFromInt(value)) };
     }
 
-    pub fn jsonParse(
+    pub const jsonParse = json_parse;
+
+    fn json_parse(
         allocator: std.mem.Allocator,
         source: anytype,
         options: std.json.ParseOptions,
@@ -392,7 +276,9 @@ const JsonNumber = struct {
         return .{ .value = value };
     }
 
-    pub fn jsonParseFromValue(
+    pub const jsonParseFromValue = json_parse_from_value;
+
+    fn json_parse_from_value(
         allocator: std.mem.Allocator,
         source: std.json.Value,
         options: std.json.ParseOptions,
@@ -416,15 +302,15 @@ const LoadJsonOptions = struct {
     /// and FOV degrees.
     version: u8 = 1,
     active_texturepack: []const u8 = "",
-    render_distance: u8 = if (@import("aether").platform == .psp) 4 else 8,
+    render_distance: u8 = caps.defaults.render_distance,
     sound_volume: ?JsonNumber = null,
     music_volume: ?JsonNumber = null,
     fov: ?JsonNumber = null,
-    fancy_leaves: bool = @import("aether").platform != .psp,
+    fancy_leaves: bool = caps.defaults.fancy_leaves,
     sensitivity: ?JsonNumber = null,
     ambient_occlusion: bool = false,
     bouncy_chunks: bool = false,
-    vsync: bool = @import("aether").platform != .psp,
+    vsync: bool = caps.defaults.loaded_vsync,
     controller_tooltips: u8 = 0,
     rain: bool = false,
     fog: bool = true,
@@ -463,34 +349,15 @@ const SaveJsonOptions = struct {
     new_3ds_use_old_controls: bool,
 };
 
-// --- public API ---
-
-/// Load options from `options.json` in `dir`.  Falls back to defaults when
-/// the file does not exist or cannot be parsed.
+/// Invalid or missing files leave defaults intact.
 pub fn load(io: Io, dir: std.Io.Dir) void {
-    const file = dir.openFile(io, options_file, .{}) catch return;
-    defer file.close(io);
-
-    var json_buf: [max_json_size]u8 = undefined;
-    var reader_scratch: [512]u8 = undefined;
-    var file_reader = File.Reader.init(file, io, &reader_scratch);
-    const n = file_reader.interface.readSliceShort(&json_buf) catch |err| {
-        log.warn("read options.json failed: {}", .{err});
-        return;
-    };
-    if (n == 0) return;
-
-    // A tiny stack arena for the JSON parser.  The heap allocations it makes
-    // for JsonOptions are the small string fields.
-    var arena_buf: [4096]u8 = undefined;
+    var arena_buf: [16 * 1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&arena_buf);
-    const parsed = std.json.parseFromSlice(
-        LoadJsonOptions,
-        fba.allocator(),
-        json_buf[0..n],
-        .{ .ignore_unknown_fields = true },
-    ) catch |err| {
-        log.warn("parse options.json failed: {} -- using defaults", .{err});
+    const parsed = ae.Storage.load_json(LoadJsonOptions, fba.allocator(), io, dir, options_file, max_json_size) catch |err| {
+        switch (err) {
+            error.FileNotFound => {},
+            else => log.warn("load options.json failed: {} -- using defaults", .{err}),
+        }
         return;
     };
     defer parsed.deinit();
@@ -500,25 +367,28 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
     current.set_active_texturepack(j.active_texturepack);
     current.render_distance = j.render_distance;
     current.sound_volume = if (integer_json)
-        json_percent_to_unit(j.sound_volume orelse JsonNumber.fromInt(100))
+        json_percent_to_unit(j.sound_volume orelse JsonNumber.from_int(100))
     else
         json_float_f32(j.sound_volume orelse .{ .value = 1.0 }, 0.0, 1.0);
     current.music_volume = if (integer_json)
-        json_percent_to_unit(j.music_volume orelse JsonNumber.fromInt(50))
+        json_percent_to_unit(j.music_volume orelse JsonNumber.from_int(50))
     else
         json_float_f32(j.music_volume orelse .{ .value = 0.5 }, 0.0, 1.0);
     current.fov = if (integer_json)
-        json_rounded_f32(j.fov orelse JsonNumber.fromInt(70), 10.0, 170.0)
+        json_rounded_f32(j.fov orelse JsonNumber.from_int(70), 10.0, 170.0)
     else
         json_float_f32(j.fov orelse .{ .value = 70.0 }, 10.0, 170.0);
     current.fancy_leaves = j.fancy_leaves and fancy_leaves_supported();
-    current.sensitivity = if (integer_json)
-        sensitivity_from_percent(json_percent(j.sensitivity orelse JsonNumber.fromInt(sensitivity_percent(3.0))))
+    current.sensitivity = if (j.sensitivity) |sensitivity|
+        if (integer_json)
+            sensitivity_from_percent(json_percent(sensitivity))
+        else
+            json_float_f32(sensitivity, SensMin, 20.0)
     else
-        json_float_f32(j.sensitivity orelse .{ .value = 3.0 }, SENS_MIN, 20.0);
+        (Options{}).sensitivity;
     current.ambient_occlusion = j.ambient_occlusion;
     current.bouncy_chunks = j.bouncy_chunks;
-    current.vsync = effective_vsync(j.vsync);
+    current.vsync = j.vsync;
     current.controller_tooltips = blk: {
         const mode: ControllerTooltips = switch (j.controller_tooltips) {
             0 => .auto,
@@ -547,11 +417,7 @@ pub fn load(io: Io, dir: std.Io.Dir) void {
     current.new_3ds_use_old_controls = j.new_3ds_use_old_controls;
 }
 
-/// Write current options to `options.json` in `dir`.
-/// Uses a direct `createFile` on every platform.  Atomic temp-file replace
-/// is unimplemented on PSP and the partial-write risk is negligible here:
-/// options.json is ~300 bytes, and `load`'s parse-error fallback to
-/// defaults already covers a torn write.
+/// Serialize before replacement; Aether owns platform promotion and rollback.
 pub fn save(io: Io, dir: std.Io.Dir) void {
     const j = SaveJsonOptions{
         .active_texturepack = current.active_texturepack(),
@@ -563,7 +429,7 @@ pub fn save(io: Io, dir: std.Io.Dir) void {
         .sensitivity = @intCast(sensitivity_percent(current.sensitivity)),
         .ambient_occlusion = current.ambient_occlusion,
         .bouncy_chunks = current.bouncy_chunks,
-        .vsync = effective_vsync(current.vsync),
+        .vsync = current.vsync,
         .controller_tooltips = @intFromEnum(current.controller_tooltips),
         .rain = current.rain,
         .fog = current.fog,
@@ -578,21 +444,11 @@ pub fn save(io: Io, dir: std.Io.Dir) void {
     };
 
     var json_buf: [max_json_size]u8 = undefined;
-    var out = std.Io.Writer.fixed(&json_buf);
-    std.json.Stringify.value(j, .{ .whitespace = .indent_2 }, &out) catch |err| {
-        log.err("serialize options failed: {}", .{err});
+    const result = ae.Storage.save_json(io, dir, options_file, j, &json_buf, .{}) catch |err| {
+        log.err("save options.json failed: {}", .{err});
         return;
     };
-    const slice = out.buffered();
-
-    const file = dir.createFile(io, options_file, .{}) catch |err| {
-        log.err("create options.json failed: {}", .{err});
-        return;
-    };
-    defer file.close(io);
-    file.writeStreamingAll(io, slice) catch |err| {
-        log.err("write options.json failed: {}", .{err});
-    };
+    if (result.previous_retained) log.warn("options.json updated; previous backup needs cleanup", .{});
 }
 
 fn json_float_f32(n: JsonNumber, min: f32, max: f32) f32 {
@@ -621,38 +477,14 @@ fn float_to_json_int(v: f32) u16 {
 }
 
 fn load_pc_controls(j: LoadJsonOptions) void {
-    var invalid = false;
-    const forward = parse_key(j.key_forward) orelse blk: {
-        invalid = true;
-        break :blk input.Key.W;
-    };
-    const back = parse_key(j.key_back) orelse blk: {
-        invalid = true;
-        break :blk input.Key.S;
-    };
-    const left = parse_key(j.key_left) orelse blk: {
-        invalid = true;
-        break :blk input.Key.A;
-    };
-    const right = parse_key(j.key_right) orelse blk: {
-        invalid = true;
-        break :blk input.Key.D;
-    };
-    const inventory = parse_key(j.key_inventory) orelse blk: {
-        invalid = true;
-        break :blk input.Key.B;
-    };
-
-    current.key_forward = forward;
-    current.key_back = back;
-    current.key_left = left;
-    current.key_right = right;
-    current.key_inventory = inventory;
-    if (invalid or !pc_controls_valid(&current)) current.reset_pc_controls();
-}
-
-fn parse_key(name: []const u8) ?input.Key {
-    return std.meta.stringToEnum(input.Key, name);
+    inline for (std.meta.fields(PcControl)) |control| {
+        const field = "key_" ++ control.name;
+        @field(current, field) = std.meta.stringToEnum(input.Key, @field(j, field)) orelse {
+            current.reset_pc_controls();
+            return;
+        };
+    }
+    if (!pc_controls_valid(&current)) current.reset_pc_controls();
 }
 
 fn pc_controls_valid(opt: *const Options) bool {
@@ -672,6 +504,29 @@ fn pc_controls_valid(opt: *const Options) bool {
     return true;
 }
 
+test "invalid saved controls reset all bindings" {
+    const previous = current;
+    defer current = previous;
+
+    current = .{ .fov = 90 };
+    const valid: LoadJsonOptions = .{ .key_forward = "Up", .key_back = "Down", .key_inventory = "I" };
+    load_pc_controls(valid);
+    try std.testing.expectEqual(input.Key.Up, current.key_forward);
+    try std.testing.expectEqual(input.Key.Down, current.key_back);
+    try std.testing.expectEqual(input.Key.I, current.key_inventory);
+
+    for ([_][]const u8{ "Up", "Escape", "not-a-key" }) |invalid| {
+        var saved = valid;
+        saved.key_inventory = invalid;
+        load_pc_controls(saved);
+        inline for (std.meta.fields(PcControl)) |control| {
+            const field = "key_" ++ control.name;
+            try std.testing.expectEqual(@field(Options{}, field), @field(current, field));
+        }
+        try std.testing.expectEqual(@as(f32, 90), current.fov);
+    }
+}
+
 test "versioned options json accepts legacy floats and new integer values" {
     const legacy_json =
         \\{"sound_volume":1,"music_volume":0.5,"fov":70.5,"sensitivity":3}
@@ -683,11 +538,12 @@ test "versioned options json accepts legacy floats and new integer values" {
         .{ .ignore_unknown_fields = true },
     );
     defer legacy.deinit();
+
     try std.testing.expectEqual(@as(u8, 1), legacy.value.version);
     try std.testing.expectEqual(@as(f32, 1.0), json_float_f32(legacy.value.sound_volume.?, 0.0, 1.0));
     try std.testing.expectEqual(@as(f32, 0.5), json_float_f32(legacy.value.music_volume.?, 0.0, 1.0));
     try std.testing.expectEqual(@as(f32, 70.5), json_float_f32(legacy.value.fov.?, 10.0, 170.0));
-    try std.testing.expectEqual(@as(f32, 3.0), json_float_f32(legacy.value.sensitivity.?, SENS_MIN, 20.0));
+    try std.testing.expectEqual(@as(f32, 3.0), json_float_f32(legacy.value.sensitivity.?, SensMin, 20.0));
     try std.testing.expect(!legacy.value.new_3ds_use_old_controls);
 
     const integer_json =
@@ -700,6 +556,7 @@ test "versioned options json accepts legacy floats and new integer values" {
         .{ .ignore_unknown_fields = true },
     );
     defer integer.deinit();
+
     try std.testing.expectEqual(@as(u8, 2), integer.value.version);
     try std.testing.expectEqual(@as(f32, 1.0), json_percent_to_unit(integer.value.sound_volume.?));
     try std.testing.expectEqual(@as(f32, 0.5), json_percent_to_unit(integer.value.music_volume.?));
@@ -743,4 +600,67 @@ test "current options json writes menu numbers as integers" {
     try std.testing.expect(std.mem.indexOf(u8, written, "\"fov\":71") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, "\"new_3ds_use_old_controls\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, written, ".") == null);
+}
+
+test "options storage migration roundtrips preferences and rejects oversized files" {
+    const previous = current;
+    defer current = previous;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    current = .{ .fov = 70.5, .sound_volume = 0.75, .key_forward = .Up };
+    save(std.testing.io, tmp.dir);
+    current = .{};
+    load(std.testing.io, tmp.dir);
+    try std.testing.expectEqual(@as(f32, 71), current.fov);
+    try std.testing.expectEqual(@as(f32, 0.75), current.sound_volume);
+    try std.testing.expectEqual(input.Key.Up, current.key_forward);
+
+    var oversized: [max_json_size + 1]u8 = @splat(' ');
+    const changed = "{\"version\":2,\"fov\":120}";
+    @memcpy(oversized[0..changed.len], changed);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = options_file, .data = &oversized });
+    load(std.testing.io, tmp.dir);
+    try std.testing.expectEqual(@as(f32, 71), current.fov);
+    try std.testing.expectEqual(input.Key.Up, current.key_forward);
+}
+
+test "options sensitivity defaults to 50 percent and preserves saved choices" {
+    const previous = current;
+    defer current = previous;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    current = .{};
+    load(std.testing.io, tmp.dir);
+    try std.testing.expectEqual(@as(u32, 50), sensitivity_percent(current.sensitivity));
+
+    const cases = .{
+        .{ "{}", @as(u32, 50) },
+        .{ "{\"version\":1}", @as(u32, 50) },
+        .{ "{\"version\":2}", @as(u32, 50) },
+        .{ "{\"sensitivity\":3}", @as(u32, 74) },
+        .{ "{\"version\":2,\"sensitivity\":74}", @as(u32, 74) },
+        .{ "{\"version\":2,\"sensitivity\":50}", @as(u32, 50) },
+    };
+    inline for (cases) |case| {
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = options_file, .data = case[0] });
+        current.sensitivity = SensMax;
+        load(std.testing.io, tmp.dir);
+        try std.testing.expectEqual(case[1], sensitivity_percent(current.sensitivity));
+
+        save(std.testing.io, tmp.dir);
+        current.sensitivity = SensMin;
+        load(std.testing.io, tmp.dir);
+        try std.testing.expectEqual(case[1], sensitivity_percent(current.sensitivity));
+    }
+}
+
+test "options sensitivity percentages roundtrip without drift" {
+    for (0..101) |percent| {
+        const expected: u32 = @intCast(percent);
+        try std.testing.expectEqual(expected, sensitivity_percent(sensitivity_from_percent(expected)));
+    }
 }

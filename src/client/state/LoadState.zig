@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const Core = ae.Core;
 const Util = ae.Util;
@@ -6,100 +7,103 @@ const Engine = ae.Engine;
 const Rendering = ae.Rendering;
 const State = Core.State;
 
-const SpriteBatcher = ae.UI.SpriteBatcher;
-const FontBatcher = ae.UI.FontBatcher;
-const Scaling = ae.UI.Scaling;
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const Colors = @import("../graphics/Color.zig");
 const ResourcePack = @import("../ResourcePack.zig");
-const Server = @import("game").Server;
-const World = @import("game").World;
+const Screen = @import("../ui/Screen.zig");
+const core = @import("core");
+const Server = core.Server;
+const World = core.World;
 const GameState = @import("GameState.zig");
 const DisconnectState = @import("DisconnectState.zig");
 const Session = @import("Session.zig");
-const proto = @import("common").protocol;
-const common_time = @import("common").time;
+const proto = core.protocol;
 const flate = std.compress.flate;
 
-const pspsdk = if (ae.platform == .psp) @import("pspsdk") else void;
+const caps = @import("capabilities").ClientType(ae);
 
 const log = std.log.scoped(.game);
 
-// Module-level: only one LoadState instance may exist at a time.
+// Level dimensions arrive after the compressed stream, so the client must
+// buffer it whole. PSP and 3DS cannot hold the maximum level beside the world.
+const max_compressed_bytes: usize = core.world_dims.max_length *
+    core.world_dims.max_height * core.world_dims.max_depth + 64 * 1024;
+
 var server_ready: std.atomic.Value(bool) = .init(false);
 var session_error: ?anyerror = null;
 var mp_server_name: [64]u8 = @splat(' ');
 var mp_server_motd: [64]u8 = @splat(' ');
 
-// Do not capture std.Io in a PSP Util.Thread closure. The PSP thread
-// trampoline has historically lost this value when it is passed through the
-// argument tuple, leaving the copied vtable pointer null in the worker. Keep
-// it in module storage and publish it before spawning the one load task.
-var task_io: std.Io = undefined;
-
-/// Empty action set; exists only so push_context has a valid installed
-/// set during the loading screen.
 var loading_set: ?ae.Core.input.ActionSetHandle = null;
 
-const TaskHandle = union(enum) {
-    thread: Util.Thread,
-    none,
-
-    fn await(self: *TaskHandle) void {
-        switch (self.*) {
-            .thread => |t| t.join(),
-            .none => {},
-        }
-        self.* = .none;
-    }
-};
-
-fn start_server_task(
-    alloc: std.mem.Allocator,
+// Embedded in the static load state: both the job and its inputs stay at a
+// stable address until deinit joins the executor, even when server_ready is
+// observed before Aether has published the job's own completion.
+const LoadTask = struct {
+    allocator: std.mem.Allocator,
     scratch: std.mem.Allocator,
+    io: std.Io,
     seed: u64,
     data_dir: std.Io.Dir,
     save_location: []const u8,
-) TaskHandle {
-    if (comptime ae.platform == .wasm) {
-        serverTask(alloc, scratch, seed, data_dir, save_location);
-        return .none;
+    executor: ?*ae.Jobs.Executor = null,
+    job: ae.Jobs.Job = .{ .context = undefined, .run = undefined },
+
+    fn start(self: *LoadTask, callback: *const fn (*anyopaque) anyerror!void, options: ae.Jobs.Options) !void {
+        assert(self.executor == null);
+        self.job = .{ .context = self, .run = callback };
+        self.executor = try ae.Jobs.Executor.init(self.allocator, self.io, options);
+        errdefer self.join();
+
+        try self.executor.?.submit(&self.job);
     }
 
-    return .{ .thread = Util.Thread.spawn(.{
+    fn join(self: *LoadTask) void {
+        if (self.executor) |executor| executor.deinit();
+        self.executor = null;
+    }
+
+    fn run_server(context: *anyopaque) !void {
+        const self: *LoadTask = @ptrCast(@alignCast(context));
+        run_server_task(self.allocator, self.scratch, self.io, self.seed, self.data_dir, self.save_location);
+    }
+
+    fn run_connect(context: *anyopaque) !void {
+        const self: *LoadTask = @ptrCast(@alignCast(context));
+        connect_task(self.allocator, self.io, self.seed, self.data_dir);
+    }
+};
+
+fn start_server_task(task: *LoadTask) void {
+    // Auto runs synchronously on browser targets without background workers.
+    task.start(LoadTask.run_server, .{ .capacity = 1, .thread = .{
         .name = "load_server",
-        .stack_size = 512 * 1024,
+        .stack_size = 1024 * 1024,
         .priority = .normal,
-        .allocator = alloc,
-    }, serverTask, .{ alloc, scratch, seed, data_dir, save_location }) catch |err| {
-        log.err("server task thread unavailable: {}", .{err});
+    } }) catch |err| {
+        log.err("server task unavailable: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
-        return .none;
-    } };
+    };
 }
 
-fn start_connect_task(
-    alloc: std.mem.Allocator,
-    seed: u64,
-    data_dir: std.Io.Dir,
-) TaskHandle {
-    if (comptime ae.platform == .wasm) {
+fn start_connect_task(task: *LoadTask) void {
+    if (comptime !caps.networking.multiplayer) {
         session_error = error.UnsupportedPlatform;
         server_ready.store(true, .release);
-        return .none;
+        return;
     }
 
-    return .{ .thread = Util.Thread.spawn(.{
+    task.start(LoadTask.run_connect, .{ .capacity = 1, .thread = .{
         .name = "mp_connect",
         .stack_size = 512 * 1024,
         .priority = .normal,
-        .allocator = alloc,
-    }, connectTask, .{ alloc, seed, data_dir }) catch |err| {
-        log.err("connect task thread unavailable: {}", .{err});
+    } }) catch |err| {
+        log.err("connect task unavailable: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
-        return .none;
-    } };
+    };
 }
 
 fn ensure_loading_set(engine: *Engine) !ae.Core.input.ActionSetHandle {
@@ -110,35 +114,43 @@ fn ensure_loading_set(engine: *Engine) !ae.Core.input.ActionSetHandle {
     return set;
 }
 
-fn serverTask(
+fn run_server_task(
     alloc: std.mem.Allocator,
     scratch: std.mem.Allocator,
+    io: std.Io,
     seed: u64,
     data_dir: std.Io.Dir,
     save_location: []const u8,
 ) void {
-    // TODO: user pool (8 MiB) may need expansion once multiplayer clients join
+    // The embedded server allocates the world and worldgen scratch from the
+    // user pool under the init_user budget (sized in config.zig).
+    // TODO(world-streaming): PSP & 3DS hold that budget at 12 MiB, so
+    // geometries needing more fail here with OutOfMemory.
     const selected_save = if (save_location.len > 0) save_location else Server.default_save_location;
     const config: Server.GameConfig = .{
         .embedded = .{
-            .world = .{ .seed = seed, .save_location = selected_save },
+            .world = .{
+                .seed = seed,
+                .save_location = selected_save,
+                .size = Session.singleplayer_size orelse .normal,
+                .height = Session.singleplayer_height orelse .normal,
+            },
         },
     };
-    Server.init(alloc, scratch, task_io, data_dir, config) catch |err| {
+    Server.init(alloc, scratch, io, data_dir, config) catch |err| {
         log.err("server init failed: {}", .{err});
         session_error = err;
         server_ready.store(true, .release);
         return;
     };
-    World.saver.autosave_enabled = false;
     server_ready.store(true, .release);
 }
 
-fn connectTask(alloc: std.mem.Allocator, seed: u64, data_dir: std.Io.Dir) void {
-    connect_inner(alloc, seed, task_io, data_dir) catch |err| {
+fn connect_task(alloc: std.mem.Allocator, io: std.Io, seed: u64, data_dir: std.Io.Dir) void {
+    connect_inner(alloc, seed, io, data_dir) catch |err| {
         log.err("multiplayer connect failed: {}", .{err});
         session_error = err;
-        cleanup_failed_multiplayer_connect(task_io);
+        cleanup_failed_multiplayer_connect(io);
     };
     server_ready.store(true, .release);
 }
@@ -146,18 +158,9 @@ fn connectTask(alloc: std.mem.Allocator, seed: u64, data_dir: std.Io.Dir) void {
 fn cleanup_failed_multiplayer_connect(io: std.Io) void {
     Session.mp_connected.store(false, .release);
 
-    // Close any partially-opened socket so GameState never tries to use it.
     if (Session.mp_stream) |*s| {
         s.close(io);
         Session.mp_stream = null;
-    }
-
-    // On PSP, MenuState's net dialog initialises sceNet before LoadState runs.
-    // Normal disconnects unwind it in GameState.deinit; early load-screen
-    // failures never reach GameState, so release it here.
-    if (ae.platform == .psp) {
-        pspsdk.extra.net.disconnect();
-        pspsdk.extra.net.deinit();
     }
 }
 
@@ -178,10 +181,7 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
     const reader = &Session.mp_reader.interface;
 
     // PSP: disable Nagle so per-tick packets hit the wire immediately.
-    if (ae.platform == .psp) {
-        pspsdk.extra.net.disableNagle(@intCast(stream.socket.handle)) catch |err|
-            log.warn("TCP_NODELAY failed: {}", .{err});
-    }
+    caps.networking.configure_stream(stream);
 
     proto.send_player_id_to_server(&Session.mp_writer.interface, Session.username()) catch |err| {
         capture_disconnect_after_write_failed(reader);
@@ -192,20 +192,10 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
         return err;
     };
 
-    // Multiplayer never persists (owned_locally stays false), so the
-    // save filename is unused; pass the convention for symmetry.
-    try World.init_empty(alloc, io, data_dir, "world.dat", seed, World.default_format);
-    var world_owned_by_load = true;
-    errdefer if (world_owned_by_load) World.deinit();
+    var compressed: std.ArrayList(u8) = .empty;
+    defer compressed.deinit(alloc);
 
-    // Accumulate the gzipped LevelDataChunk payloads into a scratch buffer,
-    // then decompress once on LevelFinalize. A 2 MiB bound is comfortable
-    // for any reasonable 4 MiB Classic world (typical compression ratio is
-    // 4-8x) and keeps the peak the same size as `raw_blocks` itself.
-    const compressed_cap: usize = 2 * 1024 * 1024;
-    const compressed = try alloc.alloc(u8, compressed_cap);
-    defer alloc.free(compressed);
-    var compressed_end: usize = 0;
+    var announced: ?World.WorldDims = null;
 
     done: while (true) {
         const packet_id = try reader.peekByte();
@@ -224,13 +214,21 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
                 // LevelDataChunk: [id][u16 length BE][1024 bytes data][u8 percent]
                 const length = std.mem.readInt(u16, buf[1..3], .big);
                 if (length > 1024) return error.InvalidChunkLength;
-                if (compressed_end + length > compressed.len) return error.LevelDataOverflow;
-                @memcpy(compressed[compressed_end..][0..length], buf[3 .. 3 + @as(usize, length)]);
-                compressed_end += length;
+                if (compressed.items.len + length > max_compressed_bytes) return error.LevelDataOverflow;
+                try compressed.appendSlice(alloc, buf[3 .. 3 + @as(usize, length)]);
                 const percent = buf[1027];
                 World.set_load_status(.{ .downloading = percent });
             },
             0x04 => {
+                // LevelFinalize: [id][x][y][z], each u16 big-endian.
+                announced = World.WorldDims.from_array(.{
+                    std.mem.readInt(u16, buf[1..3], .big),
+                    std.mem.readInt(u16, buf[3..5], .big),
+                    std.mem.readInt(u16, buf[5..7], .big),
+                }) orelse {
+                    log.err("server offers a world size this build cannot represent", .{});
+                    return error.UnsupportedServerWorldSize;
+                };
                 reader.toss(len);
                 break :done;
             },
@@ -243,18 +241,37 @@ fn connect_inner(alloc: std.mem.Allocator, seed: u64, io: std.Io, data_dir: std.
         reader.toss(len);
     }
 
-    // Decompress the accumulated gzip stream. The server uses `.gzip` in
-    // game/client.zig:reset_compressor, so match here. Wire format is
-    // contiguous YZX (Java Classic compatible); scatter into chunk-aware layout.
-    var src = std.Io.Reader.fixed(compressed[0..compressed_end]);
+    const dims = announced orelse return error.MissingLevelFinalize;
+
+    // The server sends gzip-compressed, Java Classic-compatible YZX data.
+    var src = std.Io.Reader.fixed(compressed.items);
     const window_buf = try alloc.alloc(u8, flate.max_window_len);
     defer alloc.free(window_buf);
+
     var decompress = flate.Decompress.init(&src, .gzip, window_buf);
 
-    decompress.reader.readSliceAll(World.data.raw_blocks[0..4]) catch |err| {
+    // The stream opens with the raw level size. Trusting it only as a check:
+    // the announced geometry is what the world is sized from, and a mismatch
+    // means the level would not fit.
+    var wire_header: [4]u8 = undefined;
+    decompress.reader.readSliceAll(&wire_header) catch |err| {
         log.err("level decompress header failed: {}", .{err});
         return err;
     };
+    const raw_volume: usize = std.mem.readInt(u32, &wire_header, .big);
+    if (raw_volume != dims.volume()) {
+        log.err("server level is {d} blocks, which is not {}x{}x{}", .{
+            raw_volume, dims.length, dims.height, dims.depth,
+        });
+        return error.UnsupportedServerWorldSize;
+    }
+
+    // Multiplayer never persists (owned_locally stays false), so the
+    // save filename is unused; pass the convention for symmetry.
+    try World.init_empty(alloc, io, data_dir, "world.dat", dims, seed, World.default_format);
+    var world_owned_by_load = true;
+    errdefer if (world_owned_by_load) World.deinit();
+
     World.data.read_blocks_yzx(&decompress.reader) catch |err| {
         log.err("level decompress failed: {}", .{err});
         return err;
@@ -290,20 +307,15 @@ fn capture_disconnect_reason(packet: []const u8) void {
 batcher: SpriteBatcher,
 font_batcher: FontBatcher,
 time: f32,
-server_task: TaskHandle,
+server_task: LoadTask,
 server_notified: bool,
 render_alloc: std.mem.Allocator,
-/// True once `init` ran to completion. Guards `deinit` so a partially
-/// initialised state never frees undefined fields.
 inited: bool,
 
 var game_state: GameState = undefined;
 var state_inst: State = undefined;
 
-// Keep the LoadState instance itself out of MenuState so the root app state
-// stays small on PSP and other memory-constrained targets. Both the
-// singleplayer and multiplayer entry points call `transition_here` to land
-// in this state.
+// Keep the large state outside MenuState for memory-constrained targets.
 var load_state: @This() = undefined;
 var load_state_inst: State = undefined;
 
@@ -329,33 +341,33 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try ResourcePack.apply_tex_set(&.{ .dirt, .font });
 
     self.batcher = try SpriteBatcher.init(render_alloc);
-    self.font_batcher = try FontBatcher.init(render_alloc, ResourcePack.get_tex(.font));
+    self.font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
     self.time = 0;
     self.server_notified = false;
 
-    task_io = engine.io;
-    const io = task_io;
+    const io = engine.io;
     const random_seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(io, .boot).raw.nanoseconds)));
-    const singleplayer_seed = Session.singleplayer_seed(random_seed);
+    const singleplayer_seed = Session.singleplayer_seed_override orelse random_seed;
     server_ready.store(false, .monotonic);
     session_error = null;
     Session.clear_disconnect_reason();
     const data_dir = engine.dirs.data;
-    const server_scratch = if (comptime ae.platform == .wasm)
+    const server_scratch = if (comptime caps.memory.separate_worldgen_scratch)
         std.heap.wasm_allocator
     else
         engine.allocator(.user);
-    // TODO: allocator pool budget may need tuning for server + client coexistence
-    self.server_task = switch (Session.mode) {
-        .singleplayer => start_server_task(
-            engine.allocator(.user),
-            server_scratch,
-            singleplayer_seed,
-            data_dir,
-            Session.singleplayer_save(),
-        ),
-        .multiplayer => start_connect_task(engine.allocator(.user), random_seed, data_dir),
+    self.server_task = .{
+        .allocator = engine.allocator(.user),
+        .scratch = server_scratch,
+        .io = io,
+        .seed = if (Session.mode == .singleplayer) singleplayer_seed else random_seed,
+        .data_dir = data_dir,
+        .save_location = Session.singleplayer_save(),
     };
+    switch (Session.mode) {
+        .singleplayer => start_server_task(&self.server_task),
+        .multiplayer => start_connect_task(&self.server_task),
+    }
 
     self.inited = true;
     engine.report();
@@ -364,7 +376,8 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 fn deinit(ctx: *anyopaque, engine: *Engine) void {
     var self = Util.ctx_to_self(@This(), ctx);
     if (!self.inited) return;
-    self.server_task.await();
+    self.server_task.join();
+    if (Session.mode == .multiplayer and session_error != null) caps.networking.release();
     self.font_batcher.deinit();
     self.batcher.deinit();
 
@@ -400,31 +413,16 @@ fn update(ctx: *anyopaque, _: *Engine, dt: f32, _: *const Util.BudgetContext) an
 }
 
 fn prepare_batches(self: *@This()) !void {
-    const screen_w = Rendering.gfx.surface.get_width();
-    const screen_h = Rendering.gfx.surface.get_height();
-    const scale = Scaling.compute(screen_w, screen_h);
-    const extent_x: i16 = @intCast((screen_w + scale - 1) / scale);
-    const extent_y: i16 = @intCast((screen_h + scale - 1) / scale);
-
     self.batcher.clear();
-    var y: i16 = 0;
-    const tile_size = 32;
-    while (y < extent_y) : (y += tile_size) {
-        var x: i16 = 0;
-        while (x < extent_x) : (x += tile_size) {
-            const dirt = ResourcePack.get_tex(.dirt);
-            add_dirt_tile(self, dirt, x, y, tile_size);
-        }
-    }
+    Screen.add_dirt_background(&self.batcher, ResourcePack.get_tex(.dirt));
 
-    // Loading bar
     const bar_width: i16 = 100;
     const bar_height: i16 = 2;
     const bar_y: i16 = 16;
     const load_status = World.get_load_status();
     const progress: f32 = switch (load_status) {
         .loading => @min(self.time / 3.0, 1.0),
-        .generating => |phase| @as(f32, @floatFromInt(@intFromEnum(phase))) / 10.0,
+        .generating => @min(self.time / 3.0, 1.0),
         .downloading => |pct| @as(f32, @floatFromInt(pct)) / 100.0,
         .complete => 1.0,
     };
@@ -493,18 +491,7 @@ fn prepare_batches(self: *@This()) !void {
         }
         break :blk switch (load_status) {
             .loading => "Loading...",
-            .generating => |phase| switch (phase) {
-                .raising => "Raising...",
-                .erosion => "Eroding...",
-                .strata => "Layering...",
-                .caves => "Carving...",
-                .ores => "Placing ores...",
-                .merge => "Merging...",
-                .water => "Flooding water...",
-                .lava => "Flooding lava...",
-                .surface => "Surfacing...",
-                .plants => "Planting...",
-            },
+            .generating => "Generating level...",
             .downloading => "Receiving chunks...",
             .complete => "Done!",
         };
@@ -535,21 +522,9 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     // 3DS already blocks on vblank after draw; sleeping here delays the
     // present itself and can let the worker finish before any phase frame
     // reaches the screen.
-    if (ae.platform != .nintendo_3ds and ae.platform != .nintendo_switch) {
-        try std.Io.sleep(engine.io, common_time.ms(50), .real);
+    if (!caps.render.present_paces_loading) {
+        try std.Io.sleep(engine.io, .fromMilliseconds(50), .real);
     }
-}
-
-fn add_dirt_tile(self: *@This(), dirt: *const Rendering.Texture, x: i16, y: i16, tile_size: i16) void {
-    self.batcher.add_sprite(&.{
-        .texture = dirt,
-        .pos_offset = .{ .x = x, .y = y },
-        .pos_extent = .{ .x = tile_size, .y = tile_size },
-        .tex_offset = .{ .x = 0, .y = 0 },
-        .tex_extent = .{ .x = @intCast(dirt.width), .y = @intCast(dirt.height) },
-        .color = Colors.menu_tiles,
-        .layer = 0,
-    });
 }
 
 pub fn state(self: *@This()) State {
@@ -560,4 +535,81 @@ pub fn state(self: *@This()) State {
         .update = update,
         .draw = draw,
     } };
+}
+
+test "load job runs inline and releases allocations on admission failure" {
+    const Probe = struct {
+        fn run(context: *anyopaque) !void {
+            const task: *LoadTask = @ptrCast(@alignCast(context));
+            task.seed += 1;
+        }
+
+        fn check(allocator: std.mem.Allocator) !void {
+            var task: LoadTask = .{
+                .allocator = allocator,
+                .scratch = allocator,
+                .io = std.testing.io,
+                .seed = 7,
+                .data_dir = .cwd(),
+                .save_location = "",
+            };
+            defer task.join();
+
+            try task.start(run, .{ .capacity = 1, .mode = .inline_execution });
+            try task.job.result();
+            try std.testing.expectEqual(@as(u64, 8), task.seed);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.check, .{});
+}
+
+test "load job joins after session readiness before releasing task context" {
+    if (!ae.System.info().background_workers) return error.SkipZigTest;
+    const Probe = struct {
+        task: LoadTask,
+        gate: std.Io.Mutex = .init,
+
+        fn run(context: *anyopaque) !void {
+            const task: *LoadTask = @ptrCast(@alignCast(context));
+            const self: *@This() = @fieldParentPtr("task", task);
+            session_error = error.ForcedFailure;
+            server_ready.store(true, .release);
+            // The state can see readiness while Aether still borrows the job.
+            self.gate.lockUncancelable(task.io);
+            defer self.gate.unlock(task.io);
+
+            task.seed = 42;
+        }
+    };
+    var probe: Probe = .{ .task = .{
+        .allocator = std.testing.allocator,
+        .scratch = std.testing.allocator,
+        .io = std.testing.io,
+        .seed = 7,
+        .data_dir = .cwd(),
+        .save_location = "",
+    } };
+    server_ready.store(false, .monotonic);
+    session_error = null;
+    defer {
+        server_ready.store(false, .monotonic);
+        session_error = null;
+    }
+
+    probe.gate.lockUncancelable(std.testing.io);
+    var gate_locked = true;
+    defer {
+        if (gate_locked) probe.gate.unlock(std.testing.io);
+        probe.task.join();
+    }
+
+    try probe.task.start(Probe.run, .{ .capacity = 1, .mode = .threaded });
+    while (!server_ready.load(.acquire)) try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .real);
+    try std.testing.expectEqual(error.ForcedFailure, session_error.?);
+    try std.testing.expect(!probe.task.job.is_done());
+    probe.gate.unlock(std.testing.io);
+    gate_locked = false;
+    probe.task.join();
+    try probe.task.job.result();
+    try std.testing.expectEqual(@as(u64, 42), probe.task.seed);
 }

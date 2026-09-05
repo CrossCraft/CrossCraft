@@ -1,0 +1,60 @@
+{
+  "min_assertion_density": 2.0,
+  "exclude_paths": ["src/capabilities.zig"],
+  "banned": [
+    {
+      "banned": "@import(\"builtin\")",
+      "replacement": "capabilities defined in src/capabilities.zig"
+    },
+    {
+      "banned": "@import(\"aether\").platform",
+      "replacement": "capabilities defined in src/capabilities.zig"
+    },
+    {
+      "banned": "@import(\"aether\").gfx",
+      "replacement": "capabilities defined in src/capabilities.zig"
+    }
+  ],
+  "symbol_bans": [
+    {
+      "kind": "qualified_symbol",
+      "symbol": "ae.platform",
+      "replacement": "capabilities defined in src/capabilities.zig"
+    },
+    {
+      "kind": "qualified_symbol",
+      "symbol": "ae.gfx",
+      "replacement": "capabilities defined in src/capabilities.zig"
+    },
+    {
+      "kind": "qualified_symbol",
+      "symbol": "config.platform",
+      "replacement": "build_policy in src/capabilities.zig"
+    }
+  ],
+  "rules": {
+    "control_characters": true,
+    "ascii_only": true,
+    "error_comparison": true,
+    "debug_assert": true,
+    "self_type": true,
+    "comptime_not": true,
+    "configured_text_bans": true,
+    "leftover_reminders": true,
+    "symbol_bans": true,
+    "packed_fields": true,
+    "line_length": false,
+    "trailing_whitespace": true,
+    "type_function_names": true,
+    "function_names": true,
+    "dead_declarations": true,
+    "function_length": false,
+    "operator_precedence": true,
+    "defer_newline": true,
+    "deinit_undefined": true,
+    "dead_files": true,
+    "file_size": true,
+    "assertion_density": true,
+    "shouty_case": true
+  }
+}
