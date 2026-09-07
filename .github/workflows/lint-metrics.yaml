@@ -40,7 +40,7 @@ jobs:
       # first-write race with the main CI workflow after a manifest change.
       - name: Fetch Zig packages
         if: steps.zig-pkg-cache.outputs.cache-hit != 'true'
-        run: zig build --fetch=all
+        run: bash .github/scripts/fetch-zig-packages.sh
 
       - name: Collect lint metrics
         env:
