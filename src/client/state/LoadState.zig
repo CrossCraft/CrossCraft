@@ -4,6 +4,7 @@ const core = @import("core");
 const capabilities = @import("capabilities");
 const Colors = @import("../graphics/Color.zig");
 const ResourcePack = @import("../ResourcePack.zig");
+const SoundManager = @import("../SoundManager.zig");
 const Screen = @import("../ui/Screen.zig");
 const GameState = @import("GameState.zig");
 const DisconnectState = @import("DisconnectState.zig");
@@ -330,6 +331,7 @@ pub fn transition_here(engine: *Engine) void {
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
+    SoundManager.begin_world_load();
 
     const set = try ensure_loading_set(engine);
     try engine.input.push_context(&.{

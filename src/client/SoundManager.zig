@@ -134,6 +134,18 @@ pub fn deinit() void {
     music_entries = .{SoundEntry{}} ** music_count;
 }
 
+/// Cancel menu audio before loading and give the world a fresh music delay.
+/// LoadState does not call update, so the countdown starts in gameplay.
+pub fn begin_world_load() void {
+    if (!initialised) return;
+
+    for (&voices) |*v| {
+        if (v.active) release_voice(v);
+    }
+    music_state = .delay;
+    music_delay_timer = min_music_delay + rand_f32() * (max_music_delay - min_music_delay);
+}
+
 fn scan_entries(
     pack: *Zip,
     kind: []const u8,
