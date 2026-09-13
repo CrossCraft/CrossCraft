@@ -6,33 +6,34 @@
 //
 // Ported to Zig for CrossCraft (GPLv2; uses separate Aether-Engine).
 // Modifications Copyright (c) 2026 CrossCraft
-
 const std = @import("std");
-const assert = std.debug.assert;
-const caps = @import("capabilities").ClientType(ae);
 const ae = @import("aether");
-const Math = ae.Math;
-const Rendering = ae.Rendering;
-const input = ae.Core.input;
-
 const core = @import("core");
-const World = core.World;
-const Block = core.blocks.Block;
-const proto = core.protocol;
-
+const capabilities = @import("capabilities");
 const Camera = @import("Camera.zig");
 const bindings = @import("bindings.zig");
 const collision = @import("collision.zig");
 const UiDrawList = @import("../ui/UiDrawList.zig");
-const Scaling = ae.Ui.Scaling;
-const layout = ae.Ui.layout;
 const Colors = @import("../graphics/Color.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
-const blocks = core.blocks;
 const SoundManager = @import("../SoundManager.zig");
 const Face = @import("../world/chunk/face.zig").Face;
 const Options = @import("../Options.zig");
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
+const Math = ae.Math;
+const Rendering = ae.Rendering;
+const input = ae.Core.input;
+
+const World = core.World;
+const Block = core.blocks.Block;
+const proto = core.protocol;
+
+const Scaling = ae.Ui.Scaling;
+const layout = ae.Ui.layout;
+const blocks = core.blocks;
 
 const PrevInputs = struct {
     inventory_toggle: input.ButtonState = .released,

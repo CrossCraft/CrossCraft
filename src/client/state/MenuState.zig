@@ -1,14 +1,9 @@
 const std = @import("std");
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
-const Core = ae.Core;
-const Util = ae.Util;
-const Engine = ae.Engine;
-const Rendering = ae.Rendering;
-const State = Core.State;
-
-const SpriteBatcher = ae.Ui.SpriteBatcher;
-const FontBatcher = ae.Ui.FontBatcher;
+const core = @import("core");
+const build_options = @import("build_options");
+const capabilities = @import("capabilities");
+const engine_services = @import("engine_services");
 const UiDrawList = @import("../ui/UiDrawList.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
@@ -29,13 +24,22 @@ const ControlsScreen = @import("../ui/screens/Controls.zig");
 const GameplayBindings = @import("../player/bindings.zig");
 const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
-const core = @import("core");
+const game_config = @import("../config.zig");
+const TextFormat = @import("../ui/TextFormat.zig");
+
+const caps = capabilities.ClientType(ae);
+const Core = ae.Core;
+const Util = ae.Util;
+const Engine = ae.Engine;
+const Rendering = ae.Rendering;
+const State = Core.State;
+
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 const Server = core.Server;
 const World = core.World;
 const wd = core.world_dims;
 const CompressWorker = core.CompressWorker;
-
-const build_options = @import("build_options");
 
 const log = std.log.scoped(.menu);
 const default_create_world_name = "world";
@@ -100,11 +104,11 @@ render_alloc: std.mem.Allocator,
 inited: bool,
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
-    @import("engine_services").install();
+    engine_services.install();
     var self = Util.ctx_to_self(@This(), ctx);
     self.inited = false;
     self.prepared_ui = null;
-    @import("../config.zig").apply_init_budgets(engine);
+    game_config.apply_init_budgets(engine);
 
     const render_alloc = engine.allocator(.render);
     self.render_alloc = render_alloc;
@@ -150,7 +154,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     self.batcher = SpriteBatcher.init(render_alloc) catch |err|
         return menu_init_error("sprite_batcher", err);
-    self.font_batcher = @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font)) catch |err|
+    self.font_batcher = TextFormat.init_font(render_alloc, ResourcePack.get_tex(.font)) catch |err|
         return menu_init_error("font_batcher", err);
     self.splash_mesh = self.font_batcher.build_mesh("Classic!", Colors.splash_front, Colors.splash_back, 0, 1) catch |err|
         return menu_init_error("splash_mesh", err);

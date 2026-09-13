@@ -1,12 +1,14 @@
 const std = @import("std");
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const capabilities = @import("capabilities");
+const Options = @import("../Options.zig");
+const Buttons = @import("Buttons.zig");
+
+const caps = capabilities.ClientType(ae);
 const Rendering = ae.Rendering;
 const input = ae.Core.input;
 
-const Options = @import("../Options.zig");
 const Scaling = ae.Ui.Scaling;
-const Buttons = @import("Buttons.zig");
 
 pub const NavDir = enum(u8) { none, up, down, left, right };
 pub const InputProfile = enum {

@@ -1,16 +1,16 @@
 //! Section meshes: opaque blocks and buried leaves, transparent blocks, and fluids.
-
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
-const Math = ae.Math;
-const Rendering = ae.Rendering;
-
 const Vertex = @import("aether").Rendering.Vertex;
+const World = @import("core").World;
+const capabilities = @import("capabilities");
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const mesher = @import("mesher.zig");
-const World = @import("core").World;
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
+const Math = ae.Math;
+const Rendering = ae.Rendering;
 
 pub const BatchMesh = Rendering.MeshType(Vertex);
 pub const BatchMeshData = Rendering.MeshDataType(Vertex);

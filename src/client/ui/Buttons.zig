@@ -1,10 +1,12 @@
 //! Physical controller / keyboard-and-mouse button to sprite-rect lookup.
 //! `pc.png` uses paired 32px rows for Xbox, Nintendo, PlayStation, and KBM.
 //! `psp.png` uses 8px face buttons and 16x8 wide buttons.
-
+const std = @import("std");
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const capabilities = @import("capabilities");
 const Options = @import("../Options.zig");
+
+const caps = capabilities.ClientType(ae);
 const input = ae.Core.input;
 
 pub const Rect = struct {
@@ -184,7 +186,6 @@ fn lookup_psp(button: Button) Rect {
 }
 
 test "glyph sheets map platform-specific controls" {
-    const std = @import("std");
     const r = lookup(.A, .xbox);
     try std.testing.expect(r.render_w > 0 and r.render_h > 0);
     try std.testing.expect(lookup(.A, .nintendo).tex_x == PcTile);

@@ -1,8 +1,16 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const caps = @import("capabilities");
 const ae = @import("aether");
 const core = @import("core");
+const engine_services = @import("engine_services");
+const ServerConfig = @import("Config.zig");
+const Heartbeat = @import("Heartbeat.zig");
+const Backup = @import("Backup.zig");
+const PlayersDb = @import("PlayersDb.zig");
+const AccessControl = @import("AccessControl.zig");
+const Commands = @import("Commands.zig");
+
+const assert = std.debug.assert;
 
 const Util = ae.Util;
 const Engine = ae.Engine;
@@ -10,12 +18,6 @@ const State = ae.Core.State;
 
 const Server = core.Server;
 const CompressWorker = core.CompressWorker;
-const ServerConfig = @import("Config.zig");
-const Heartbeat = @import("Heartbeat.zig");
-const Backup = @import("Backup.zig");
-const PlayersDb = @import("PlayersDb.zig");
-const AccessControl = @import("AccessControl.zig");
-const Commands = @import("Commands.zig");
 const outbound_queue = core.OutboundQueue;
 
 const log = std.log.scoped(.server);
@@ -87,7 +89,7 @@ pub fn state(self: *ServerState) State {
 }
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
-    @import("engine_services").install();
+    engine_services.install();
     var self = Util.ctx_to_self(ServerState, ctx);
     self.inited = false;
 

@@ -1,6 +1,16 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
+const core = @import("core");
+const capabilities = @import("capabilities");
+const Colors = @import("../graphics/Color.zig");
+const ResourcePack = @import("../ResourcePack.zig");
+const Screen = @import("../ui/Screen.zig");
+const GameState = @import("GameState.zig");
+const DisconnectState = @import("DisconnectState.zig");
+const Session = @import("Session.zig");
+const TextFormat = @import("../ui/TextFormat.zig");
+
+const assert = std.debug.assert;
 const Core = ae.Core;
 const Util = ae.Util;
 const Engine = ae.Engine;
@@ -9,19 +19,12 @@ const State = Core.State;
 
 const SpriteBatcher = ae.Ui.SpriteBatcher;
 const FontBatcher = ae.Ui.FontBatcher;
-const Colors = @import("../graphics/Color.zig");
-const ResourcePack = @import("../ResourcePack.zig");
-const Screen = @import("../ui/Screen.zig");
-const core = @import("core");
 const Server = core.Server;
 const World = core.World;
-const GameState = @import("GameState.zig");
-const DisconnectState = @import("DisconnectState.zig");
-const Session = @import("Session.zig");
 const proto = core.protocol;
 const flate = std.compress.flate;
 
-const caps = @import("capabilities").ClientType(ae);
+const caps = capabilities.ClientType(ae);
 
 const log = std.log.scoped(.game);
 
@@ -341,7 +344,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try ResourcePack.apply_tex_set(&.{ .dirt, .font });
 
     self.batcher = try SpriteBatcher.init(render_alloc);
-    self.font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
+    self.font_batcher = try TextFormat.init_font(render_alloc, ResourcePack.get_tex(.font));
     self.time = 0;
     self.server_notified = false;
 

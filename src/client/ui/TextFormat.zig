@@ -1,6 +1,8 @@
 //! Classic protocol color codes and the game's font configuration.
 const std = @import("std");
 const ae = @import("aether");
+const capabilities = @import("capabilities");
+
 const FontBatcher = ae.Ui.FontBatcher;
 const Color = ae.Ui.Color;
 
@@ -98,7 +100,7 @@ test "Classic text formatting preserves width fitting and screen geometry colors
 }
 
 test "Classic text formatting is installed on game fonts and exported meshes" {
-    if (!@import("capabilities").ClientType(ae).render.headless) return error.SkipZigTest;
+    if (!capabilities.ClientType(ae).render.headless) return error.SkipZigTest;
     const pixels: [128 * 128 * 4]u8 = @splat(255);
     var texture = try ae.Rendering.Texture.load_from_data(std.testing.allocator, 128, 128, &pixels, &.{ .cpu_access = .read });
     defer texture.deinit(std.testing.allocator);

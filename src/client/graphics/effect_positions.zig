@@ -1,12 +1,14 @@
 //! Legacy particle/rain meshes use 128 packed units per block and a 256x
 //! model scale on every target. Selecting the 32768 divisor explicitly keeps
 //! that existing convention, including its small desktop SNORM scale bias.
+const std = @import("std");
 const Rendering = @import("aether").Rendering;
+const Math = @import("aether").Math;
+const Camera = @import("../player/Camera.zig");
 
 pub const encoding = Rendering.vertex.PositionEncoding.init(128, .psp_ge) catch unreachable;
 
 test "effect positions preserve the existing 128 unit and 256 model scales" {
-    const std = @import("std");
     try std.testing.expectEqual(@as(f32, 256), encoding.model_scale());
     try std.testing.expectEqual(@as(i16, 128), try encoding.encode_component(1));
     try std.testing.expectEqual(@as(i16, -32768), try encoding.encode_component(-256));
@@ -14,9 +16,6 @@ test "effect positions preserve the existing 128 unit and 256 model scales" {
 }
 
 test "effect billboards preserve Classic packed corners UVs winding and scale" {
-    const std = @import("std");
-    const Math = @import("aether").Math;
-    const Camera = @import("../player/Camera.zig");
     var batch = try Rendering.BillboardBatcher.init(std.testing.allocator, .{
         .capacity = 1,
         .units_per_world_unit = encoding.units_per_world_unit,

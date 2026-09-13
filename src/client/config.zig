@@ -1,13 +1,15 @@
 const std = @import("std");
 const ae = @import("aether");
+const core = @import("core");
+const capabilities = @import("capabilities");
+
 const Util = ae.Util;
 const Engine = ae.Engine;
-const core = @import("core");
 
 const log = std.log.scoped(.client);
 
-const caps = @import("capabilities").ClientType(ae);
-const Profile = @import("capabilities").MemoryProfile;
+const caps = capabilities.ClientType(ae);
+const Profile = capabilities.MemoryProfile;
 
 const Mb: u32 = 1024 * 1024;
 

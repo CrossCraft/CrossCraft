@@ -1,10 +1,11 @@
 //! Persisted user preferences.
-
 const std = @import("std");
-const caps = @import("capabilities").ClientType(ae);
 const ae = @import("aether");
-const Io = std.Io;
+const capabilities = @import("capabilities");
 const cfg = @import("config.zig");
+
+const caps = capabilities.ClientType(ae);
+const Io = std.Io;
 const input = ae.Core.input;
 
 const log = std.log.scoped(.options);

@@ -1,13 +1,15 @@
 /// Game asset names and animation policy over Aether's staged resource store.
-const SoundManager = @import("SoundManager.zig");
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const capabilities = @import("capabilities");
+const SoundManager = @import("SoundManager.zig");
+const TextureAtlas = @import("graphics/TextureAtlas.zig").TextureAtlas;
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
 const Rendering = ae.Rendering;
 const Image = ae.Util.Image;
 const Zip = ae.Util.Zip;
-const TextureAtlas = @import("graphics/TextureAtlas.zig").TextureAtlas;
 
 pub const Tex = enum(u8) {
     dirt,

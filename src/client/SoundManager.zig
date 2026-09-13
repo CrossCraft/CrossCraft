@@ -1,14 +1,16 @@
 /// Game sound policy over Aether-owned streaming WAV voices. The active pack
 /// remains borrowed until every voice is stopped during deinit.
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const blocks = @import("core").blocks;
+const capabilities = @import("capabilities");
+const Options = @import("Options.zig");
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
 const Audio = ae.Audio;
 const Math = ae.Math;
-const blocks = @import("core").blocks;
 const Block = blocks.Block;
-const Options = @import("Options.zig");
 const Zip = ae.Util.Zip;
 
 const log = std.log.scoped(.audio);

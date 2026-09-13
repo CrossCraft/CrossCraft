@@ -9,8 +9,10 @@
 
 //! Swept-AABB collisions resolved nearest-first, with grounded step-up.
 const std = @import("std");
-const assert = std.debug.assert;
 const WorldData = @import("world/WorldData.zig");
+const world_dims = @import("world_dims.zig");
+
+const assert = std.debug.assert;
 
 /// Gap left after clipping to keep repeated collision checks stable.
 pub const Epsilon: f32 = 0.001;
@@ -508,7 +510,7 @@ fn floor_i32(v: f32) i32 {
 
 test "movement clips against blocks, slabs, ceilings, and world edges" {
     var data: WorldData = undefined;
-    try data.init_in_place(std.testing.allocator, @import("world_dims.zig").default, 1);
+    try data.init_in_place(std.testing.allocator, world_dims.default, 1);
     defer data.deinit();
 
     data.blocks[data.get_index(10, 0, 10)] = .stone;
@@ -538,7 +540,7 @@ test "movement clips against blocks, slabs, ceilings, and world edges" {
 
 test "grounded movement steps onto a clear reachable slab" {
     var data: WorldData = undefined;
-    try data.init_in_place(std.testing.allocator, @import("world_dims.zig").default, 1);
+    try data.init_in_place(std.testing.allocator, world_dims.default, 1);
     defer data.deinit();
 
     data.blocks[data.get_index(11, 1, 10)] = .slab;
@@ -568,7 +570,7 @@ test "grounded movement steps onto a clear reachable slab" {
 
 test "try_step_up lands on a reachable slab and rejects blocked probes" {
     var data: WorldData = undefined;
-    try data.init_in_place(std.testing.allocator, @import("world_dims.zig").default, 1);
+    try data.init_in_place(std.testing.allocator, world_dims.default, 1);
     defer data.deinit();
 
     data.blocks[data.get_index(51, 1, 10)] = .slab;
@@ -592,7 +594,7 @@ test "try_step_up lands on a reachable slab and rejects blocked probes" {
 
 test "broadphase holds a maximum-speed dense sweep" {
     var data: WorldData = undefined;
-    try data.init_in_place(std.testing.allocator, @import("world_dims.zig").default, 1);
+    try data.init_in_place(std.testing.allocator, world_dims.default, 1);
     defer data.deinit();
 
     for (10..18) |y| {
