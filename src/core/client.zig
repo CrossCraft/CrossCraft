@@ -662,15 +662,12 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     const old_block = world.data.get_block(event.x, event.y, event.z);
 
     if (mode == .destroy) {
-        world.set_block(event.x, event.y, event.z, .air);
-        Server.broadcast_block_change(event.x, event.y, event.z, .air);
+        world.set_block(Server.block_change_sink, event.x, event.y, event.z, .air);
     } else {
         // Partial blocks can be targeted through their empty subvolume. Only
         // air and fluids are replaceable, except slab + slab promotes in-place.
         if (old_block == .slab and block == .slab) {
-            world.set_block(event.x, event.y, event.z, .double_slab);
-            Server.broadcast_block_change(event.x, event.y, event.z, .double_slab);
-            world.enqueue_neighbors_of(event.x, event.y, event.z);
+            world.set_block(Server.block_change_sink, event.x, event.y, event.z, .double_slab);
             return;
         }
         if (!old_block.is_place_replaceable()) {
@@ -684,16 +681,12 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
             const below = world.data.get_block(event.x, event.y - 1, event.z);
             if (below == .slab) {
                 Server.broadcast_block_change(event.x, event.y, event.z, old_block);
-                world.set_block(event.x, event.y - 1, event.z, .double_slab);
-                Server.broadcast_block_change(event.x, event.y - 1, event.z, .double_slab);
-                world.enqueue_neighbors_of(event.x, event.y - 1, event.z);
+                world.set_block(Server.block_change_sink, event.x, event.y - 1, event.z, .double_slab);
                 return;
             }
         }
-        world.set_block(event.x, event.y, event.z, block);
-        Server.broadcast_block_change(event.x, event.y, event.z, block);
+        world.set_block(Server.block_change_sink, event.x, event.y, event.z, block);
     }
-    world.enqueue_neighbors_of(event.x, event.y, event.z);
 
     if (mode == .create and block == .sponge) {
         world.sponge_absorb(Server.block_change_sink, event.x, event.y, event.z);

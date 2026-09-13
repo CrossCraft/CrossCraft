@@ -198,6 +198,10 @@ pub const Block = enum(u8) {
         return self.is_air() or self.is_fluid();
     }
 
+    pub inline fn has_gravity(self: Block) bool {
+        return self == .sand or self == .gravel;
+    }
+
     pub inline fn mesh_props(self: Block) MeshProps {
         return global.mesh_props[@intFromEnum(self)];
     }

@@ -1417,7 +1417,7 @@ fn do_place(self: *Player) void {
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
     // Promoted slabs already have collision and may target a different cell.
-    if (block.collision_height() > 0 and !promotes_to_double_slab) {
+    if (block.collision_height() > 0 and !promotes_to_double_slab and !block.has_gravity()) {
         self.pending_block = .{
             .x = hit.place_x,
             .y = hit.place_y,
