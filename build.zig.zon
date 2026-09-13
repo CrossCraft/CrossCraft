@@ -12,8 +12,8 @@
             .path = "resources",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#780f6721fa3d6bfc289ddc669222053d1261d6b2",
-            .hash = "Aether-0.0.0-cjG28uKRHQBQOl4weQ2DIbrtbxJaeYOlxGwAMTlBx4mO",
+            .url = "git+https://github.com/AetherEngine/Aether#b7eaf1d4d194085baa6689808c7dba00502e48bc",
+            .hash = "Aether-0.0.0-cjG28hmTHQATh7SmgVU_Dq3UHUaysNBzugjVbFCJv5ZH",
         },
         .zitrus = .{
             .url = "git+https://codeberg.org/GasInfinity/zitrus#4482d4988b368385aefbe4dffec56feee5b3488a",
