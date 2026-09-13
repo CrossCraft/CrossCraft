@@ -1,6 +1,6 @@
 const std = @import("std");
-const players_db = @import("PlayersDb.zig");
-const access_control = @import("AccessControl.zig");
+const Accounts = @import("Accounts.zig");
+const Authentication = @import("Authentication.zig");
 const Server = @import("core").Server;
 
 pub const Sink = struct {
@@ -10,166 +10,215 @@ pub const Sink = struct {
     pub fn write(self: Sink, line: []const u8) void {
         self.write_fn(self.ctx, line);
     }
-
-    fn print(self: Sink, comptime fmt: []const u8, args: anytype, fallback: []const u8) void {
-        var buf: [128]u8 = undefined;
-        self.write(std.fmt.bufPrint(&buf, fmt, args) catch fallback);
-    }
 };
 
-const Command = struct {
-    name: []const u8,
-    usage: []const u8,
-    arguments: enum { none, single, with_reason } = .single,
-    run: *const fn (Sink, []const u8, []const u8) void,
-};
-
+pub const Caller = union(enum) { console, player: *Server.Client };
+const Kind = enum { help, register, login, passwd, resetpassword, ban, unban, op, deop, whitelist, unwhitelist, kick };
+const Command = struct { kind: Kind, usage: []const u8 };
 const commands = [_]Command{
-    .{ .name = "help", .usage = "&e/help -- list commands", .arguments = .none, .run = cmd_help },
-    .{ .name = "ipban", .usage = "&e/ipban <username> [reason] -- ban the IP of the connected username", .arguments = .with_reason, .run = cmd_ipban },
-    .{ .name = "kick", .usage = "&e/kick <username> [reason] -- kick the connected username", .arguments = .with_reason, .run = cmd_kick },
-    .{ .name = "ipop", .usage = "&e/ipop <username> -- grant op to the IP of the connected username", .run = cmd_ipop },
-    .{ .name = "ipwhitelist", .usage = "&e/ipwhitelist <ip> -- add an IP to the whitelist", .run = cmd_ipwhitelist },
+    .{ .kind = .help, .usage = "&e/help -- list commands" },
+    .{ .kind = .register, .usage = "&e/register <pass> <pass>" },
+    .{ .kind = .login, .usage = "&e/login <pass>" },
+    .{ .kind = .passwd, .usage = "&e/passwd <old> <new>" },
+    .{ .kind = .resetpassword, .usage = "&e/resetpassword <username> <new> -- console only" },
+    .{ .kind = .ban, .usage = "&e/ban <username> [reason]" },
+    .{ .kind = .unban, .usage = "&e/unban <username>" },
+    .{ .kind = .op, .usage = "&e/op <username>" },
+    .{ .kind = .deop, .usage = "&e/deop <username>" },
+    .{ .kind = .whitelist, .usage = "&e/whitelist <username>" },
+    .{ .kind = .unwhitelist, .usage = "&e/unwhitelist <username>" },
+    .{ .kind = .kick, .usage = "&e/kick <username> [reason]" },
 };
 
-/// Dispatch text after the leading '/', gated by console/player privileges.
-pub fn dispatch(sink: Sink, line: []const u8, is_op: bool) void {
-    if (!is_op) {
-        sink.write("&cFailed to process command: Insufficient permission");
-        return;
-    }
+fn can_moderate(caller: Caller) bool {
+    return switch (caller) {
+        .console => true,
+        .player => |client| client.session_open() and client.authenticated.load(.acquire) and client.is_op.load(.acquire),
+    };
+}
 
-    var tok = std.mem.tokenizeAny(u8, line, " \t");
-    const cmd = tok.next() orelse {
+fn allowed(caller: Caller, kind: Kind) bool {
+    return switch (kind) {
+        .help => true,
+        .register, .login => Authentication.mode == .local and caller == .player,
+        .passwd => Authentication.mode == .local and caller == .player and caller.player.authenticated.load(.acquire),
+        .resetpassword => Authentication.mode == .local and caller == .console,
+        else => can_moderate(caller),
+    };
+}
+
+/// Never log command text: it may contain a password, even on syntax errors.
+pub fn dispatch(sink: Sink, line: []const u8, caller: Caller) void {
+    var tokens = std.mem.tokenizeAny(u8, line, " \t");
+    const name = tokens.next() orelse {
         sink.write("Unknown command, use /help");
         return;
     };
-
-    for (commands) |command| {
-        if (std.mem.eql(u8, cmd, command.name)) {
-            const argument = tok.next();
-            const reason = std.mem.trimEnd(u8, tok.rest(), " \t");
-            if (command.arguments != .none and
-                (argument == null or (command.arguments == .single and reason.len != 0)))
-            {
-                sink.write(command.usage);
-                return;
-            }
-            command.run(sink, argument orelse "", reason);
-            return;
-        }
-    }
-    sink.write("Unknown command, use /help");
-}
-
-fn cmd_help(sink: Sink, _: []const u8, _: []const u8) void {
-    for (commands) |command| sink.write(command.usage);
-}
-
-fn cmd_ipban(sink: Sink, username: []const u8, reason: []const u8) void {
-    const target = find_client(sink, username) orelse return;
-
-    const ip = target.ip_slice();
-    if (ip.len == 0) {
-        sink.write("Client has no recorded IP (local connection?)");
+    const command = for (commands) |command| {
+        if (std.mem.eql(u8, name, @tagName(command.kind))) break command;
+    } else {
+        sink.write("Unknown command, use /help");
+        return;
+    };
+    if (!allowed(caller, command.kind)) {
+        sink.write("&cCommand unavailable or insufficient permission");
         return;
     }
-
-    access_control.set_banned(ip, true, if (reason.len > 0) reason else "Banned") catch |err| {
-        report_policy_error(sink, err);
-        return;
+    const first = tokens.next();
+    const second = if (command.kind == .ban or command.kind == .kick)
+        std.mem.trimEnd(u8, tokens.rest(), " \t")
+    else
+        tokens.next();
+    const argument_count: u8 = switch (command.kind) {
+        .help => 0,
+        .register, .passwd, .resetpassword => 2,
+        else => 1,
     };
-    const dc_reason = if (reason.len > 0) reason else "You have been banned";
-    _ = Server.disconnect_handle(target.handle, dc_reason);
-
-    sink.print("Banned {s} ({s})", .{ username, ip }, "Banned");
-}
-
-fn cmd_kick(sink: Sink, username: []const u8, reason: []const u8) void {
-    const target = find_client(sink, username) orelse return;
-
-    const dc_reason = if (reason.len > 0) reason else "Kicked";
-    _ = Server.disconnect_handle(target.handle, dc_reason);
-
-    sink.print("Kicked {s}", .{username}, "Kicked");
-}
-
-fn cmd_ipop(sink: Sink, username: []const u8, _: []const u8) void {
-    const target = find_client(sink, username) orelse return;
-
-    const ip = target.ip_slice();
-    if (ip.len == 0) {
-        sink.write("Client has no recorded IP (local connection?)");
+    const with_reason = command.kind == .ban or command.kind == .kick;
+    if ((argument_count == 0 and first != null) or
+        (argument_count > 0 and first == null) or
+        (argument_count == 2 and second == null) or
+        (!with_reason and ((argument_count < 2 and second != null) or tokens.next() != null)))
+    {
+        sink.write(command.usage);
         return;
     }
-
-    access_control.set_flag(ip, .op, true) catch |err| {
-        report_policy_error(sink, err);
-        return;
-    };
-    _ = Server.grant_op_handle(target.handle);
-
-    sink.print("Granted op to {s} ({s})", .{ username, ip }, "Granted op");
+    run(sink, caller, command.kind, first orelse "", second orelse "") catch |err| report_error(sink, err);
 }
 
-fn cmd_ipwhitelist(sink: Sink, ip_text: []const u8, _: []const u8) void {
-    var canon_buf: [players_db.ip_str_len]u8 = undefined;
-    const address = std.Io.net.IpAddress.parseIp4(ip_text, 0) catch {
-        sink.print("Invalid IP literal: {s}", .{ip_text}, "Invalid IP");
-        return;
-    };
-    const canon = players_db.format_ip(address, &canon_buf).?;
-
-    access_control.set_flag(canon, .whitelisted, true) catch |err| {
-        report_policy_error(sink, err);
-        return;
-    };
-
-    sink.print("Whitelisted {s}", .{canon}, "Whitelisted");
-}
-
-fn find_client(sink: Sink, username: []const u8) ?Server.ClientSnapshot {
-    return Server.find_client_by_name(username) orelse {
-        sink.print("User '{s}' is not connected", .{username}, "User not connected");
-        return null;
-    };
-}
-
-fn report_policy_error(sink: Sink, err: anyerror) void {
-    switch (err) {
-        error.PolicyStoreFull => sink.write("&cAccess-control store is full; raise max-policy-records and restart the server"),
-        else => sink.write("&cFailed to persist access-control policy"),
+fn run(sink: Sink, caller: Caller, kind: Kind, first: []const u8, second: []const u8) !void {
+    switch (kind) {
+        .help => for (commands) |command| {
+            if (!allowed(caller, command.kind)) continue;
+            if (caller == .player and caller.player.authenticated.load(.acquire) and
+                (command.kind == .register or command.kind == .login)) continue;
+            sink.write(command.usage);
+        },
+        .register => try Authentication.execute(caller.player, .register, first, second),
+        .login => try Authentication.execute(caller.player, .login, first, second),
+        .passwd => try Authentication.execute(caller.player, .passwd, first, second),
+        .resetpassword => {
+            try Authentication.reset_password(first, second);
+            sink.write("Password reset");
+        },
+        else => try moderate(sink, caller, kind, first, second),
     }
 }
 
-test "commands require privileges before changing persistent policy" {
-    const io = std.testing.io;
+fn moderate(sink: Sink, caller: Caller, kind: Kind, username: []const u8, reason: []const u8) !void {
+    if (!Server.Client.valid_username(username)) return error.InvalidUsername;
+    Authentication.lock_actions();
+    defer Authentication.unlock_actions();
+
+    if (!can_moderate(caller)) return error.InsufficientPermission;
+    switch (kind) {
+        .ban => try Accounts.set_policy(username, .banned, true, if (reason.len > 0) reason else "You have been banned"),
+        .unban => try Accounts.set_policy(username, .banned, false, ""),
+        .op, .deop => try Accounts.set_policy(username, .op, kind == .op, ""),
+        .whitelist, .unwhitelist => try Accounts.set_policy(username, .whitelisted, kind == .whitelist, ""),
+        .kick => {},
+        else => unreachable,
+    }
+    const target = Server.find_client_by_name(username);
+    if (kind == .kick and target == null) {
+        sink.write("User is not connected");
+        return;
+    }
+    if (target) |connected| switch (kind) {
+        .ban, .kick => {
+            _ = Server.disconnect_handle(connected.handle, if (reason.len > 0) reason else @tagName(kind));
+        },
+        .op, .deop => {
+            _ = Server.set_op_handle(connected.handle, kind == .op);
+        },
+        else => {},
+    };
+    sink.write("Command completed");
+}
+
+fn report_error(sink: Sink, err: anyerror) void {
+    sink.write(switch (err) {
+        error.InvalidUsername => "&cUsernames must be 1-16 letters, digits or underscores",
+        error.InvalidPassword => "&cPasswords must be 8-26 printable characters without spaces",
+        error.PasswordsDoNotMatch => "&cPasswords do not match",
+        error.WrongPassword => "&cIncorrect password",
+        error.AlreadyRegistered => "&cAlready registered; use /login <pass>",
+        error.NotRegistered => "&cUsername is not registered",
+        error.AlreadyAuthenticated => "&cAlready logged in; use /passwd <old> <new>",
+        error.LoginRequired => "&cLog in first",
+        error.AuthenticationBusy => "&eAuthentication is busy; try again shortly",
+        error.AuthenticationThrottled => "&eWait one second between password checks",
+        error.AuthenticationDisabled => "&cPassword authentication is disabled",
+        error.CredentialsChanged => "&cCredentials changed; try again",
+        error.AccountStoreFull => "&cAccount store full; raise max-accounts and restart",
+        error.SessionClosed => "&cAuthentication session ended",
+        error.InsufficientPermission => "&cInsufficient permission",
+        else => "&cCould not complete the account operation",
+    });
+}
+
+test "auth commands enforce caller permissions and exact arguments" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try access_control.init(std.testing.allocator, io, tmp.dir, 1);
-    defer access_control.deinit();
+    Server.io = std.testing.io;
+    Server.players = .{};
+    defer Server.players = .{};
 
-    var output: [256]u8 = undefined;
+    try Accounts.init(std.testing.allocator, Server.io, tmp.dir, 4);
+    defer Accounts.deinit();
+
+    try Authentication.init(std.testing.allocator, .none, 30, false);
+    defer Authentication.deinit();
+
+    var output: [1024]u8 = undefined;
     var writer = std.Io.Writer.fixed(&output);
     const sink: Sink = .{ .ctx = &writer, .write_fn = struct {
         fn write(ctx: *anyopaque, line: []const u8) void {
-            const out: *std.Io.Writer = @ptrCast(@alignCast(ctx));
-            out.writeAll(line) catch unreachable;
+            const target: *std.Io.Writer = @ptrCast(@alignCast(ctx));
+            target.writeAll(line) catch unreachable;
         }
     }.write };
-
-    dispatch(sink, "ipwhitelist 203.0.113.10", false);
-    try std.testing.expectEqualStrings("&cFailed to process command: Insufficient permission", writer.buffered());
-    try std.testing.expect(!access_control.lookup("203.0.113.10").whitelisted);
-
+    var reader = std.Io.Reader.fixed(&.{});
+    var connected = true;
+    var client: Server.Client = .{
+        .reader = &reader,
+        .writer = &writer,
+        .connected = &connected,
+        .phase = .init(.active),
+        .authenticated = .init(false),
+        .is_op = .init(true),
+    };
+    dispatch(sink, "op Alice", .{ .player = &client });
+    try std.testing.expect(!Accounts.lookup("Alice").op);
     writer.end = 0;
-    dispatch(sink, "ipwhitelist 203.0.113.10 extra", true);
-    try std.testing.expectEqualStrings("&e/ipwhitelist <ip> -- add an IP to the whitelist", writer.buffered());
-    try std.testing.expect(!access_control.lookup("203.0.113.10").whitelisted);
-
+    dispatch(sink, "op Alice extra", .console);
+    try std.testing.expectEqualStrings("&e/op <username>", writer.buffered());
+    try std.testing.expect(!Accounts.lookup("Alice").op);
     writer.end = 0;
-    dispatch(sink, "ipwhitelist 203.0.113.10", true);
-    try std.testing.expectEqualStrings("Whitelisted 203.0.113.10", writer.buffered());
-    try std.testing.expect(access_control.lookup("203.0.113.10").whitelisted);
+    dispatch(sink, "op Alice", .console);
+    try std.testing.expect(Accounts.lookup("Alice").op);
+    dispatch(sink, "ban alice a complete reason", .console);
+    try std.testing.expectEqualStrings("a complete reason", Accounts.lookup("alice").ban_reason());
+    try std.testing.expect(!Accounts.lookup("Alice").banned);
+    dispatch(sink, "unban alice", .console);
+    try std.testing.expect(!Accounts.lookup("alice").banned);
+    dispatch(sink, "deop Alice", .console);
+    try std.testing.expect(!Accounts.lookup("Alice").op);
+    dispatch(sink, "whitelist Alice", .console);
+    try std.testing.expect(Accounts.lookup("Alice").whitelisted);
+    dispatch(sink, "unwhitelist Alice", .console);
+    try std.testing.expect(!Accounts.lookup("Alice").whitelisted);
+    writer.end = 0;
+    dispatch(sink, "ipop Alice", .console);
+    try std.testing.expectEqualStrings("Unknown command, use /help", writer.buffered());
+    writer.end = 0;
+    Authentication.mode = .local;
+    dispatch(sink, "resetpassword Alice private-password", .{ .player = &client });
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "private-password") == null);
+    try std.testing.expect(Accounts.lookup("Alice").credential == null);
+    writer.end = 0;
+    dispatch(sink, "register private-password private-password", .console);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "private-password") == null);
+    try std.testing.expect(Accounts.lookup("Alice").credential == null);
 }

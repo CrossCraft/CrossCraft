@@ -308,6 +308,30 @@ pub fn init(self: *Player, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void
     };
 }
 
+/// Called by the game thread, never the network reader.
+pub fn apply_server_position(self: *Player, pose: core.Server.Client.PlayerPose) void {
+    self.pos_x = @as(f32, @floatFromInt(pose.x)) / 32.0;
+    self.pos_y = @as(f32, @floatFromInt(pose.y)) / 32.0 - collision.EyeHeight;
+    self.pos_z = @as(f32, @floatFromInt(pose.z)) / 32.0;
+    self.prev_x = self.pos_x;
+    self.prev_y = self.pos_y;
+    self.prev_z = self.pos_z;
+    self.vel_x = 0;
+    self.vel_y = 0;
+    self.vel_z = 0;
+    self.vel_y_prev = 0;
+    self.tick_remainder = 0;
+    self.camera.x = self.pos_x;
+    self.camera.y = self.pos_y + collision.EyeHeight;
+    self.camera.z = self.pos_z;
+    const turn = 2.0 * std.math.pi / 256.0;
+    self.camera.yaw = -@as(f32, @floatFromInt(pose.yaw)) * turn;
+    self.camera.pitch = @as(f32, @floatFromInt(@as(i8, @bitCast(pose.pitch)))) * turn;
+    self.hit_horizontal = false;
+    self.can_liquid_jump = false;
+    self.on_ground = collision.on_ground(self.pos_x, self.pos_y, self.pos_z);
+}
+
 pub fn consume_fly_tap_event(self: *Player) ?FlyTapEvent {
     const event = self.fly_tap_event;
     self.fly_tap_event = null;

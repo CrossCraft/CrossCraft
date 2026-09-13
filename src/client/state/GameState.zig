@@ -177,13 +177,14 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         .singleplayer => &self.fake_conn.client_writer,
         .multiplayer => &Session.mp_writer.interface,
     };
-    if (self.conn.handshake_complete) {
+    if (self.conn.take_position()) |pose| {
         try self.player.init(
-            @as(f32, @floatFromInt(self.conn.spawn_x)) / 32.0,
-            @as(f32, @floatFromInt(self.conn.spawn_y)) / 32.0,
-            @as(f32, @floatFromInt(self.conn.spawn_z)) / 32.0,
+            @as(f32, @floatFromInt(pose.x)) / 32.0,
+            @as(f32, @floatFromInt(pose.y)) / 32.0,
+            @as(f32, @floatFromInt(pose.z)) / 32.0,
             player_writer,
         );
+        self.player.apply_server_position(pose);
     } else {
         // Handshake has not landed yet. Fall back to the world center at
         // eye-level-ish rather than a fixed position, so tiny worlds do not
@@ -701,6 +702,8 @@ fn begin_pause_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *co
 
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
+
+    if (self.conn.take_position()) |pose| self.player.apply_server_position(pose);
 
     // Controller Select/Back toggles the social overlay (player list + chat
     // cursor). Keyboard Tab still uses the Classic hold-to-show player list.

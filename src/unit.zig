@@ -19,8 +19,9 @@ const TextWrap = @import("client/ui/TextWrap.zig");
 const ServerState = @import("server/ServerState.zig");
 const Heartbeat = @import("server/Heartbeat.zig");
 const ServerConfig = @import("server/Config.zig");
-const AccessControl = @import("server/AccessControl.zig");
-const PlayersDb = @import("server/PlayersDb.zig");
+const Accounts = @import("server/Accounts.zig");
+const Authentication = @import("server/Authentication.zig");
+const Passwords = @import("server/Passwords.zig");
 const Commands = @import("server/Commands.zig");
 
 comptime {
@@ -45,7 +46,8 @@ comptime {
     _ = ServerState;
     _ = Heartbeat;
     _ = ServerConfig;
-    _ = AccessControl;
-    _ = PlayersDb;
+    _ = Accounts;
+    _ = Authentication;
+    _ = Passwords;
     _ = Commands;
 }

@@ -57,6 +57,7 @@ pub var server_motd: [64]u8 = protocol.padded_string(default_server_motd);
 
 /// Optional host callback for mirroring broadcast chat.
 pub var on_broadcast_chat: ?*const fn ([]const u8) void = null;
+pub var on_client_ready: ?*const fn (*Client) anyerror!void = null;
 pub var on_command: ?*const fn (*Client, []const u8) void = null;
 
 pub var players: PlayerSlots = .{};
@@ -322,10 +323,9 @@ pub fn parse_login_frame(frame: []const u8) !LoginRequest {
     const packet = try zb.PlayerIDToServer.read(&reader);
     if (packet.protocol_version != 0x07) return error.UnsupportedProtocolVersion;
 
-    return .{
-        .protocol_version = packet.protocol_version,
-        .username = packet.username,
-    };
+    const request: LoginRequest = .{ .protocol_version = packet.protocol_version, .username = packet.username };
+    _ = try Client.login_name(request);
+    return request;
 }
 
 /// Reserve a real player only after `parse_login_frame` has completed. This
@@ -339,6 +339,7 @@ pub fn admit_login(
     stream: *std.Io.net.Stream,
     ip: []const u8,
     is_op: bool,
+    requires_auth: bool,
     request: LoginRequest,
 ) LoginAdmission {
     if (request.protocol_version != 0x07) return .{ .rejected = "Unsupported protocol version!" };
@@ -346,7 +347,7 @@ pub fn admit_login(
     lock_roster();
     defer unlock_roster();
 
-    const name = Client.login_name(request);
+    const name = Client.login_name(request) catch return .{ .rejected = "Invalid username" };
     for (0..MaxPlayers) |i| {
         const existing = &(players.items[i] orelse continue);
         // `name_len` is zero only before a local client sends its own login.
@@ -363,7 +364,8 @@ pub fn admit_login(
         .out = out,
         .stream = stream,
         .phase = .init(.handshaking),
-        .is_op = .init(is_op),
+        .is_op = .init(if (requires_auth) false else is_op),
+        .authenticated = .init(!requires_auth),
         .name = name.value,
         .name_len = name.len,
     };
@@ -416,11 +418,6 @@ test "pending login frame must be complete and use the Classic protocol version"
 
 pub const ClientSnapshot = struct {
     handle: PlayerHandle,
-    ip: [Client.ip_str_len:0]u8,
-
-    pub fn ip_slice(self: *const ClientSnapshot) []const u8 {
-        return std.mem.sliceTo(self.ip[0..], 0);
-    }
 };
 
 /// Resolve a command target without returning a pointer whose roster slot can
@@ -431,10 +428,8 @@ pub fn find_client_by_name(name: []const u8) ?ClientSnapshot {
 
     for (0..MaxPlayers) |i| {
         const client = &(players.items[i] orelse continue);
-        if (!client.initialized) continue;
         if (std.mem.eql(u8, client.name[0..client.name_len], name)) return .{
             .handle = .{ .id = @intCast(i), .generation = client.generation },
-            .ip = client.ip,
         };
     }
     return null;
@@ -457,13 +452,14 @@ pub fn disconnect_handle(handle: PlayerHandle, reason: []const u8) bool {
     return true;
 }
 
-pub fn grant_op_handle(handle: PlayerHandle) bool {
+pub fn set_op_handle(handle: PlayerHandle, enabled: bool) bool {
     lock_roster();
     defer unlock_roster();
 
     const client = client_from_handle_locked(handle) orelse return false;
-    client.is_op.store(true, .release);
-    client.send_update_player_type(true) catch {};
+    if (!client.authenticated.load(.acquire)) return false;
+    client.is_op.store(enabled, .release);
+    if (client.initialized) client.send_update_player_type(enabled) catch {};
     return true;
 }
 
@@ -479,7 +475,7 @@ pub fn remove_client(handle: PlayerHandle) void {
         return;
     };
     const id = client.id;
-    const initialized = client.initialized;
+    const initialized = client.initialized and client.authenticated.load(.acquire);
     const name = client.name;
     const name_len = client.name_len;
     players.items[handle.id] = null;
@@ -562,7 +558,7 @@ pub fn broadcast_player_positions() void {
         for (0..MaxPlayers) |j| {
             if (i == j) continue;
             const player = &(players.items[j] orelse continue);
-            if (!player.initialized) continue;
+            if (!player.initialized or !player.authenticated.load(.acquire)) continue;
             const pose = player.pose.load();
             recipient.send_player_position(player.id, pose.x, pose.y, pose.z, pose.yaw, pose.pitch) catch continue;
         }
