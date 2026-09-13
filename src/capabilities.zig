@@ -52,14 +52,14 @@ pub const MemoryProfile = struct {
 
 const desktop_profile: MemoryProfile = .{
     .hardware = .desktop,
-    .total_memory_mb = 480,
+    .total_memory_mb = 512,
     .chunk_radius = 16,
     .lod_near_radius_blocks = 96,
     .init_render = 8 * MB,
     .init_audio = 2 * MB,
     .init_game = 2 * MB,
     .init_user = 72 * MB,
-    .rt_render = 384 * MB,
+    .rt_render = 416 * MB,
     .rt_audio = 512 * KB,
     .rt_game = 512 * KB,
     .rt_user = 4 * MB + 512 * KB,
