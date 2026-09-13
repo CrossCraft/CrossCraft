@@ -1,15 +1,15 @@
 //! Remote player positions and names populated by multiplayer packets.
-
 const std = @import("std");
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const core = @import("core");
+const capabilities = @import("capabilities");
+const UiDrawList = @import("UiDrawList.zig");
+const Colors = @import("../graphics/Color.zig");
+
+const caps = capabilities.ClientType(ae);
 const Rendering = ae.Rendering;
 
-const core = @import("core");
-
-const UiDrawList = @import("UiDrawList.zig");
 const Scaling = ae.Ui.Scaling;
-const Colors = @import("../graphics/Color.zig");
 const Color = Colors.Color;
 
 const PlayerList = @This();

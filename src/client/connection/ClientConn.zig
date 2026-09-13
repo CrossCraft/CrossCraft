@@ -10,6 +10,7 @@ const WorldRenderer = @import("../world/world.zig");
 const PlayerList = @import("../ui/PlayerList.zig");
 const Chat = @import("../ui/Chat.zig");
 const Session = @import("../state/Session.zig");
+const Pose = core.Server.Client.PlayerPose;
 
 const log = std.log.scoped(.client_conn);
 
@@ -19,10 +20,10 @@ reader: *std.Io.Reader,
 writer: *std.Io.Writer,
 protocol: zb.Protocol,
 
-spawn_x: u16,
-spawn_y: u16,
-spawn_z: u16,
-handshake_complete: bool,
+// Network thread publishes whole poses; only the game thread consumes them.
+correction: core.Server.Client.AtomicPlayerPose,
+correction_serial: std.atomic.Value(u32),
+consumed_serial: u32,
 quit_requested: bool,
 
 world_renderer: ?*WorldRenderer,
@@ -34,10 +35,9 @@ buffer: [1028]u8,
 pub fn init(self: *ClientConn, reader: *std.Io.Reader, writer: *std.Io.Writer) void {
     self.reader = reader;
     self.writer = writer;
-    self.spawn_x = 0;
-    self.spawn_y = 0;
-    self.spawn_z = 0;
-    self.handshake_complete = false;
+    self.correction = .init(@bitCast(@as(u64, 0)));
+    self.correction_serial = .init(0);
+    self.consumed_serial = 0;
     self.quit_requested = false;
     self.world_renderer = null;
     self.player_list = null;
@@ -117,10 +117,7 @@ fn on_spawn(ctx: *anyopaque, event: zb.SpawnPlayer) !void {
     const self: *ClientConn = @ptrCast(@alignCast(ctx));
     log.info("SpawnPlayer: pid={d} pos=({d},{d},{d})", .{ event.pid, event.x, event.y, event.z });
     if (event.pid == -1) {
-        self.spawn_x = event.x;
-        self.spawn_y = event.y;
-        self.spawn_z = event.z;
-        self.handshake_complete = true;
+        self.publish_position(.{ .x = event.x, .y = event.y, .z = event.z, .yaw = event.yaw, .pitch = event.pitch });
         return;
     }
     if (self.player_list) |pl| pl.spawn(event.pid, &event.name, event.x, event.y, event.z, event.yaw, event.pitch);
@@ -128,7 +125,23 @@ fn on_spawn(ctx: *anyopaque, event: zb.SpawnPlayer) !void {
 
 fn on_position(ctx: *anyopaque, event: zb.SetPositionOrientation) !void {
     const self: *ClientConn = @ptrCast(@alignCast(ctx));
+    if (event.pid == -1) {
+        self.publish_position(.{ .x = event.x, .y = event.y, .z = event.z, .yaw = event.yaw, .pitch = event.pitch });
+        return;
+    }
     if (self.player_list) |pl| pl.update_position(event.pid, event.x, event.y, event.z, event.yaw, event.pitch);
+}
+
+fn publish_position(self: *ClientConn, pose: Pose) void {
+    self.correction.store(pose);
+    _ = self.correction_serial.fetchAdd(1, .release);
+}
+
+pub fn take_position(self: *ClientConn) ?Pose {
+    const serial = self.correction_serial.load(.acquire);
+    if (serial == self.consumed_serial) return null;
+    self.consumed_serial = serial;
+    return self.correction.load();
 }
 
 fn on_message(ctx: *anyopaque, event: zb.Message) !void {

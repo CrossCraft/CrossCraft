@@ -1,6 +1,8 @@
 //! Classic chat color continuation over Aether's generic bounded wrapper.
+const std = @import("std");
 const ae = @import("aether");
 const TextFormat = @import("TextFormat.zig");
+
 pub fn wrap(comptime max_lines: usize, comptime max_line_bytes: usize, font: anytype, text: []const u8, width: i16, output: *[max_lines][max_line_bytes]u8, lengths: *[max_lines]u8) u8 {
     if (width <= 0) return 0;
     var storage: [max_lines * max_line_bytes]u8 = undefined;
@@ -31,7 +33,6 @@ pub fn wrap(comptime max_lines: usize, comptime max_line_bytes: usize, font: any
 }
 
 test "Aether chat wrapping preserves colors in fixed line buffers" {
-    const std = @import("std");
     var fonts: ae.Ui.FontBatcher = undefined;
     fonts.glyph_widths = @splat(1);
     fonts.style_parser = TextFormat.parse;
@@ -44,7 +45,6 @@ test "Aether chat wrapping preserves colors in fixed line buffers" {
 }
 
 test "Classic chat wrapping carries trailing controls through empty lines" {
-    const std = @import("std");
     var fonts: ae.Ui.FontBatcher = undefined;
     fonts.glyph_widths = @splat(1);
     fonts.style_parser = TextFormat.parse;

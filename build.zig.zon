@@ -12,16 +12,20 @@
             .path = "resources",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#a0d3f26e554767f5076548a38f063f683c9a51d7",
-            .hash = "Aether-0.0.0-cjG28jSQHQCycJKb11XrQ4gwiO18rFQh1dXh6pb1v5Iy",
+            .url = "git+https://github.com/AetherEngine/Aether#b7eaf1d4d194085baa6689808c7dba00502e48bc",
+            .hash = "Aether-0.0.0-cjG28hmTHQATh7SmgVU_Dq3UHUaysNBzugjVbFCJv5ZH",
         },
         .zitrus = .{
             .url = "git+https://codeberg.org/GasInfinity/zitrus#4482d4988b368385aefbe4dffec56feee5b3488a",
             .hash = "zitrus-0.0.0-Ewix9DbxHABJbXBbOueD9Y15rNb-9HCuYq_-TL0FAJiT",
         },
         .lint = .{
-            .url = "git+https://gitlab.com/hanabi_dev/tiger_lint#562dbd73243798d7a6ebb119b7f7288b399b69fe",
-            .hash = "tiger_lint-0.0.0-bKhmM6VMAwA7achtADlIgOzjD891WKzCfoUeYKtbi_N8",
+            .url = "git+https://gitlab.com/hanabi_dev/tiger_lint#87ec426b183c71ae0d12a11faead6c00cb2c9778",
+            .hash = "tiger_lint-0.0.0-bKhmM1h-AwB_cGQluD-yzE_t7oy4bjY5-nAv6I2X-7zk",
+        },
+        .luaz = .{
+            .url = "git+https://github.com/mxpv/luaz.git#05f4d1f0ad91d6f22bcd271837000f9d42995f63",
+            .hash = "luaz-0.6.0-w-BJfN6fBQAR5qTc0K5XHxk53gbI8ijgx0kSL_8T04U5",
         },
     },
     .paths = .{

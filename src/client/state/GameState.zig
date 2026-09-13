@@ -1,17 +1,7 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const Core = ae.Core;
-const Util = ae.Util;
-const Engine = ae.Engine;
-const Rendering = ae.Rendering;
-const State = Core.State;
-
 const core = @import("core");
-const Server = core.Server;
-const World = core.World;
-const CompressWorker = core.CompressWorker;
-const proto = core.protocol;
+const capabilities = @import("capabilities");
 const collision = @import("../player/collision.zig");
 const FakeConn = @import("../connection/FakeConn.zig").FakeConn;
 const ClientConn = @import("../connection/ClientConn.zig");
@@ -19,7 +9,6 @@ const Session = @import("Session.zig");
 const DisconnectState = @import("DisconnectState.zig");
 const MenuState = @import("MenuState.zig");
 const Options = @import("../Options.zig");
-
 const ResourcePack = @import("../ResourcePack.zig");
 const SoundManager = @import("../SoundManager.zig");
 const WorldRenderer = @import("../world/world.zig");
@@ -27,10 +16,7 @@ const SelectionOutline = @import("../world/SelectionOutline.zig");
 const SteveModel = @import("../world/SteveModel.zig");
 const Player = @import("../player/Player.zig");
 const BlockHand = @import("../player/BlockHand.zig");
-const SpriteBatcher = ae.Ui.SpriteBatcher;
-const FontBatcher = ae.Ui.FontBatcher;
 const IsoBlockDrawer = @import("../ui/IsoBlockDrawer.zig");
-const blocks = core.blocks;
 const PlayerList = @import("../ui/PlayerList.zig");
 const Chat = @import("../ui/Chat.zig");
 const Buttons = @import("../ui/Buttons.zig");
@@ -41,7 +27,6 @@ const UiState = @import("../ui/UiState.zig");
 const UiDrawList = @import("../ui/UiDrawList.zig");
 const Screen = @import("../ui/Screen.zig");
 const Colors = @import("../graphics/Color.zig");
-const Color = Colors.Color;
 const ui_input = @import("../ui/input.zig");
 const InventoryUi = @import("../ui/screens/Inventory.zig");
 const PauseMenu = @import("../ui/screens/PauseMenu.zig");
@@ -49,11 +34,30 @@ const OptionsScreen = @import("../ui/screens/Options.zig");
 const ControlsScreen = @import("../ui/screens/Controls.zig");
 const DumpWorldScreen = @import("../ui/screens/DumpWorld.zig");
 const bindings = @import("../player/bindings.zig");
+const game_config = @import("../config.zig");
+const TextFormat = @import("../ui/TextFormat.zig");
+
+const assert = std.debug.assert;
+const Core = ae.Core;
+const Util = ae.Util;
+const Engine = ae.Engine;
+const Rendering = ae.Rendering;
+const State = Core.State;
+
+const Server = core.Server;
+const World = core.World;
+const CompressWorker = core.CompressWorker;
+const proto = core.protocol;
+
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
+const blocks = core.blocks;
+const Color = Colors.Color;
 const ae_input = ae.Core.input;
 
 const log = std.log.scoped(.game);
 
-const caps = @import("capabilities").ClientType(ae);
+const caps = capabilities.ClientType(ae);
 
 const selection_depth_nudge: f32 = 1.0 / 320.0;
 const MpReadStackSize = 512 * 1024;
@@ -167,19 +171,20 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         },
     }
 
-    @import("../config.zig").apply_runtime_budgets(engine);
+    game_config.apply_runtime_budgets(engine);
 
     const player_writer: *std.Io.Writer = switch (Session.mode) {
         .singleplayer => &self.fake_conn.client_writer,
         .multiplayer => &Session.mp_writer.interface,
     };
-    if (self.conn.handshake_complete) {
+    if (self.conn.take_position()) |pose| {
         try self.player.init(
-            @as(f32, @floatFromInt(self.conn.spawn_x)) / 32.0,
-            @as(f32, @floatFromInt(self.conn.spawn_y)) / 32.0,
-            @as(f32, @floatFromInt(self.conn.spawn_z)) / 32.0,
+            @as(f32, @floatFromInt(pose.x)) / 32.0,
+            @as(f32, @floatFromInt(pose.y)) / 32.0,
+            @as(f32, @floatFromInt(pose.z)) / 32.0,
             player_writer,
         );
+        self.player.apply_server_position(pose);
     } else {
         // Handshake has not landed yet. Fall back to the world center at
         // eye-level-ish rather than a fixed position, so tiny worlds do not
@@ -216,7 +221,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     self.ui_batcher = try SpriteBatcher.init(render_alloc);
 
-    self.font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
+    self.font_batcher = try TextFormat.init_font(render_alloc, ResourcePack.get_tex(.font));
 
     self.iso_blocks = try IsoBlockDrawer.init(
         render_alloc,
@@ -249,7 +254,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 
     // Separate batchers guarantee the pause overlay flushes after gameplay UI.
     self.pause_batcher = try SpriteBatcher.init(render_alloc);
-    self.pause_font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
+    self.pause_font_batcher = try TextFormat.init_font(render_alloc, ResourcePack.get_tex(.font));
     self.paused = false;
     self.pause_screen = .main;
     self.pause_ui_repeat = .{};
@@ -697,6 +702,8 @@ fn begin_pause_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *co
 
 fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
+
+    if (self.conn.take_position()) |pose| self.player.apply_server_position(pose);
 
     // Controller Select/Back toggles the social overlay (player list + chat
     // cursor). Keyboard Tab still uses the Classic hold-to-show player list.

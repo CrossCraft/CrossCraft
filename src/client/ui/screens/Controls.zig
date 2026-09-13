@@ -1,12 +1,13 @@
 const std = @import("std");
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
-const input = ae.Core.input;
-
+const capabilities = @import("capabilities");
 const Ui = @import("../Ui.zig");
 const Options = @import("../../Options.zig");
 const Prompts = @import("../Prompts.zig");
 const widget_id = @import("../widget_id.zig");
+
+const caps = capabilities.ClientType(ae);
+const input = ae.Core.input;
 
 pub const Widget = enum(u16) {
     reset = 1,

@@ -3,8 +3,8 @@ const assert = std.debug.assert;
 const core = @import("core");
 
 const Server = core.Server;
-const PlayersDb = @import("PlayersDb.zig");
-const AccessControl = @import("AccessControl.zig");
+const Accounts = @import("Accounts.zig");
+const Authentication = @import("Authentication.zig");
 const log = std.log.scoped(.server_config);
 
 const properties_file_name = "server.properties";
@@ -48,31 +48,32 @@ login_timeout_ms: u32 = 15_000,
 max_pending_logins: u32 = 16,
 max_connections_per_ip: u32 = 8,
 whitelist_enabled: bool = false,
-max_players_saved: u32 = 1024,
-max_policy_records: u32 = 4096,
+auth: Authentication.Mode = .local,
+auth_grace_period_seconds: u32 = 30,
+max_accounts: u32 = 4096,
 autosave_seconds: u32 = autosave_default_seconds,
 heartbeat: Heartbeat = .{},
 
-pub fn load(io: std.Io, data_dir: std.Io.Dir, seed: u64) Config {
-    const file = data_dir.openFile(io, properties_file_name, .{}) catch {
-        const config = defaults(seed);
-        write_default(io, data_dir, &config);
-        return config;
+pub fn load(io: std.Io, data_dir: std.Io.Dir, seed: u64) !Config {
+    const file = data_dir.openFile(io, properties_file_name, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            const config = defaults(seed);
+            write_default(io, data_dir, &config);
+            return config;
+        },
+        else => return err,
     };
     defer file.close(io);
 
     var buf: [max_config_len]u8 = undefined;
-    const len = file.readPositionalAll(io, &buf, 0) catch |err| {
-        log.warn("Failed to read {s}: {}; using defaults", .{ properties_file_name, err });
-        return defaults(seed);
-    };
-    if (len == buf.len) log.warn("{s} may exceed {d} bytes; ignoring the remainder", .{ properties_file_name, max_config_len });
+    const len = try file.readPositionalAll(io, &buf, 0);
+    if (len == buf.len) return error.ConfigurationTooLong;
 
     log.info("Loaded {s}", .{properties_file_name});
     return parse(buf[0..len], seed);
 }
 
-pub fn parse(content: []const u8, seed: u64) Config {
+pub fn parse(content: []const u8, seed: u64) !Config {
     var config = defaults(seed);
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |raw_line| {
@@ -121,10 +122,14 @@ pub fn parse(content: []const u8, seed: u64) Config {
             config.max_connections_per_ip = parse_clamped(value, config.max_connections_per_ip, 1, Server.MaxPlayers, key);
         } else if (std.mem.eql(u8, key, "whitelist")) {
             config.whitelist_enabled = std.mem.eql(u8, value, "true");
-        } else if (std.mem.eql(u8, key, "max-players-saved")) {
-            config.max_players_saved = parse_clamped(value, config.max_players_saved, 1, PlayersDb.max_capacity, key);
-        } else if (std.mem.eql(u8, key, "max-policy-records")) {
-            config.max_policy_records = parse_clamped(value, config.max_policy_records, 1, AccessControl.max_capacity, key);
+        } else if (std.mem.eql(u8, key, "auth")) {
+            config.auth = std.meta.stringToEnum(Authentication.Mode, value) orelse return error.InvalidAuthenticationMode;
+        } else if (std.mem.eql(u8, key, "auth-grace-period-seconds")) {
+            config.auth_grace_period_seconds = std.fmt.parseInt(u32, value, 10) catch return error.InvalidAuthenticationGrace;
+            if (config.auth_grace_period_seconds == 0 or config.auth_grace_period_seconds > 3600)
+                return error.InvalidAuthenticationGrace;
+        } else if (std.mem.eql(u8, key, "max-accounts")) {
+            config.max_accounts = parse_clamped(value, config.max_accounts, 1, Accounts.max_capacity, key);
         } else if (std.mem.eql(u8, key, "backup-autosave-seconds")) {
             config.autosave_seconds = parse_clamped(
                 value,
@@ -140,6 +145,7 @@ pub fn parse(content: []const u8, seed: u64) Config {
     if (std.mem.eql(u8, config.save_location_slice(), Server.root_default_save_file_name)) {
         store(config.save_location[0..], &config.save_location_len, Server.default_save_location);
     }
+    if (config.auth == .online) return error.OnlineAuthenticationUnavailable;
     return config;
 }
 
@@ -227,7 +233,7 @@ fn write_default(io: std.Io, data_dir: std.Io.Dir, config: *const Config) void {
     var buf: [1024]u8 = undefined;
     const contents = std.fmt.bufPrint(
         &buf,
-        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nworld-size:{s}\nworld-height:{s}\nsave-format:{s}\nlogin-timeout-ms:{d}\nmax-pending-logins:{d}\nmax-connections-per-ip:{d}\nwhitelist:false\nmax-players-saved:{d}\nmax-policy-records:{d}\nbackup-autosave-seconds:{d}\nheartbeat-url:\n",
+        "server-name:{s}\nmotd:{s}\nseed:{d}\nsave-location:{s}\nworld-size:{s}\nworld-height:{s}\nsave-format:{s}\nlogin-timeout-ms:{d}\nmax-pending-logins:{d}\nmax-connections-per-ip:{d}\nwhitelist:false\nauth:{s}\nauth-grace-period-seconds:{d}\nmax-accounts:{d}\nbackup-autosave-seconds:{d}\nheartbeat-url:\n",
         .{
             config.server_name[0..config.server_name_len],
             config.motd[0..config.motd_len],
@@ -239,8 +245,9 @@ fn write_default(io: std.Io, data_dir: std.Io.Dir, config: *const Config) void {
             config.login_timeout_ms,
             config.max_pending_logins,
             config.max_connections_per_ip,
-            config.max_players_saved,
-            config.max_policy_records,
+            @tagName(config.auth),
+            config.auth_grace_period_seconds,
+            config.max_accounts,
             config.autosave_seconds,
         },
     ) catch |err| {
@@ -256,7 +263,7 @@ fn write_default(io: std.Io, data_dir: std.Io.Dir, config: *const Config) void {
 }
 
 test "server properties populate all standalone settings" {
-    const config = parse(
+    const config = try parse(
         " server-name: Test Server \r\n" ++
             "motd: Hello World\r\n" ++
             "seed:42\r\n" ++
@@ -268,8 +275,9 @@ test "server properties populate all standalone settings" {
             "max-pending-logins:12\r\n" ++
             "max-connections-per-ip:3\r\n" ++
             "whitelist:true\r\n" ++
-            "max-players-saved:200\r\n" ++
-            "max-policy-records:300\r\n" ++
+            "auth:none\r\n" ++
+            "auth-grace-period-seconds:45\r\n" ++
+            "max-accounts:300\r\n" ++
             "backup-autosave-seconds:120\r\n" ++
             "heartbeat-url: http://localhost/a, http://example.test/b \r\n",
         1,
@@ -287,8 +295,9 @@ test "server properties populate all standalone settings" {
     try std.testing.expectEqual(@as(u32, 12), config.max_pending_logins);
     try std.testing.expectEqual(@as(u32, 3), config.max_connections_per_ip);
     try std.testing.expect(config.whitelist_enabled);
-    try std.testing.expectEqual(@as(u32, 200), config.max_players_saved);
-    try std.testing.expectEqual(@as(u32, 300), config.max_policy_records);
+    try std.testing.expectEqual(Authentication.Mode.none, config.auth);
+    try std.testing.expectEqual(@as(u32, 45), config.auth_grace_period_seconds);
+    try std.testing.expectEqual(@as(u32, 300), config.max_accounts);
     try std.testing.expectEqual(@as(u32, 120), config.autosave_seconds);
     try std.testing.expectEqual(@as(usize, 2), config.heartbeat.count);
     try std.testing.expectEqualStrings("http://localhost/a", config.heartbeat.url(0));
@@ -296,12 +305,11 @@ test "server properties populate all standalone settings" {
 }
 
 test "server properties retain defaults and clamp bounded values" {
-    const config = parse(
+    const config = try parse(
         "login-timeout-ms:1\n" ++
             "max-pending-logins:999\n" ++
             "max-connections-per-ip:0\n" ++
-            "max-players-saved:999999\n" ++
-            "max-policy-records:999999\n" ++
+            "max-accounts:999999\n" ++
             "backup-autosave-seconds:9999\n",
         77,
     );
@@ -315,12 +323,11 @@ test "server properties retain defaults and clamp bounded values" {
     try std.testing.expectEqual(@as(u32, 1_000), config.login_timeout_ms);
     try std.testing.expectEqual(@as(u32, Server.MaxPlayers), config.max_pending_logins);
     try std.testing.expectEqual(@as(u32, 1), config.max_connections_per_ip);
-    try std.testing.expectEqual(PlayersDb.max_capacity, config.max_players_saved);
-    try std.testing.expectEqual(AccessControl.max_capacity, config.max_policy_records);
+    try std.testing.expectEqual(Accounts.max_capacity, config.max_accounts);
     try std.testing.expectEqual(autosave_max_seconds, config.autosave_seconds);
     try std.testing.expectEqual(@as(usize, 0), config.heartbeat.count);
 
-    const legacy_location = parse("save-location:world.cw\r\n", 0);
+    const legacy_location = try parse("save-location:world.cw\r\n", 0);
     try std.testing.expectEqualStrings(Server.default_save_location, legacy_location.save_location_slice());
 }
 
@@ -329,7 +336,7 @@ test "missing server properties writes the effective defaults" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const config = load(io, tmp.dir, 1234);
+    const config = try load(io, tmp.dir, 1234);
     const game = config.core_config();
     try std.testing.expectEqual(@as(u64, 1234), game.world.seed);
     try std.testing.expectEqualStrings(Server.default_save_location, game.world.save_location);
@@ -342,4 +349,16 @@ test "missing server properties writes the effective defaults" {
     try std.testing.expect(std.mem.indexOf(u8, buf[0..len], "seed:1234\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf[0..len], "save-location:saves/world.cw\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf[0..len], "backup-autosave-seconds:300\n") != null);
+}
+
+test "auth configuration rejects unsupported modes and invalid grace periods" {
+    try std.testing.expectEqual(Authentication.Mode.local, (try parse("", 0)).auth);
+    try std.testing.expectEqual(@as(u32, 30), (try parse("", 0)).auth_grace_period_seconds);
+    try std.testing.expectError(error.OnlineAuthenticationUnavailable, parse("auth:online", 0));
+    try std.testing.expectError(error.InvalidAuthenticationMode, parse("auth:invalid", 0));
+    for ([_][]const u8{ "0", "3601", "-1", "abc" }) |value| {
+        var text: [64]u8 = undefined;
+        const config = try std.fmt.bufPrint(&text, "auth-grace-period-seconds:{s}", .{value});
+        try std.testing.expectError(error.InvalidAuthenticationGrace, parse(config, 0));
+    }
 }

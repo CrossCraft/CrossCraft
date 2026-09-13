@@ -1,6 +1,8 @@
 const std = @import("std");
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const capabilities = @import("capabilities");
+
+const caps = capabilities.ClientType(ae);
 const Math = ae.Math;
 const Aabb = Math.Aabb;
 const Rendering = ae.Rendering;

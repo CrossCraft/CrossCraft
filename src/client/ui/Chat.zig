@@ -270,6 +270,8 @@ fn send_session(sys: *input.InputSystem, player: *Player) void {
     const body = session.buffer.items;
     if (body.len == 0) return;
 
+    defer std.crypto.secureZero(u8, @constCast(body));
+
     proto.send_message(player.writer, -1, body) catch {};
     player.writer.flush() catch {};
 }

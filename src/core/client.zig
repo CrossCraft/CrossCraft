@@ -131,6 +131,11 @@ initialized: bool = false,
 phase: std.atomic.Value(ConnectionPhase) = .init(.awaiting_login),
 local: bool = false,
 is_op: std.atomic.Value(bool) = .init(false),
+authenticated: std.atomic.Value(bool) = .init(true),
+needs_registration: bool = false,
+auth_deadline_ms: i64 = 0,
+auth_next_attempt_ms: i64 = 0,
+auth_failures: u8 = 0,
 catchup_mode: std.atomic.Value(CatchupMode) = .init(.none),
 ip: [ip_str_len:0]u8 = @splat(0),
 protocol: Protocol = undefined,
@@ -222,21 +227,69 @@ pub fn mark_closed(self: *Client) void {
     }
 }
 
-pub fn login_name(request: LoginRequest) LoginName {
-    var result: LoginName = .{
-        .value = @splat(' '),
-        .len = 16,
-    };
+pub fn valid_username(name: []const u8) bool {
+    if (name.len == 0 or name.len > 16) return false;
+    for (name) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '_') return false;
+    return true;
+}
 
-    for (0..result.value.len) |i| {
-        if (request.username[i] == ' ') {
-            result.len = @intCast(i);
-            break;
-        }
-        result.value[i] = request.username[i];
-    }
-
+pub fn login_name(request: LoginRequest) !LoginName {
+    const name = std.mem.trimEnd(u8, &request.username, " \x00");
+    if (!valid_username(name)) return error.InvalidUsername;
+    var result: LoginName = .{ .value = @splat(0), .len = @intCast(name.len) };
+    @memcpy(result.value[0..name.len], name);
     return result;
+}
+
+pub fn now_ms() i64 {
+    return @intCast(std.Io.Clock.Timestamp.now(Server.io, .boot).raw.toMilliseconds());
+}
+
+pub fn session_open(self: *const Client) bool {
+    return self.phase.load(.acquire) == .active and self.accepts_packets();
+}
+
+pub fn check_auth_deadline(self: *Client) bool {
+    if (!self.session_open()) return false;
+    if (!self.authenticated.load(.acquire) and self.auth_deadline_ms != 0 and now_ms() >= self.auth_deadline_ms) {
+        self.send_disconnect("Authentication timed out") catch self.mark_closed();
+        return false;
+    }
+    return true;
+}
+
+pub fn start_authentication(self: *Client, registration: bool, grace_seconds: u32) void {
+    assert(!self.authenticated.load(.acquire));
+    self.needs_registration = registration;
+    self.auth_prompt();
+    var message: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&message, "&eAuthenticate within {d}s; passwords: 8-26 characters", .{grace_seconds}) catch unreachable;
+    self.send_message(self.id, text) catch {};
+    self.drain_outbound();
+    self.auth_deadline_ms = now_ms() + @as(i64, grace_seconds) * 1000;
+}
+
+pub fn auth_prompt(self: *Client) void {
+    self.send_message(self.id, if (self.needs_registration)
+        "&eRegister with /register <pass> <pass>"
+    else
+        "&eLog in with /login <pass>") catch {};
+}
+
+/// Caller serializes account changes before publishing authenticated access.
+pub fn authenticate(self: *Client, is_op: bool) bool {
+    Server.lock_roster();
+    if (!self.check_auth_deadline()) {
+        Server.unlock_roster();
+        return false;
+    }
+    self.is_op.store(is_op, .release);
+    self.authenticated.store(true, .release);
+    self.send_update_player_type(is_op) catch {};
+    Server.unlock_roster();
+    self.send_message(self.id, "&aAuthentication successful") catch {};
+    self.announce_join() catch {};
+    return true;
 }
 
 fn packet_allowed(phase: ConnectionPhase, packet_id: u8) bool {
@@ -270,10 +323,13 @@ fn process_packet(self: *Client, reader: *std.Io.Reader) !bool {
         return false;
     }
 
+    if (!self.check_auth_deadline() and self.phase.load(.acquire) == .closing) return false;
     const len = try proto.packet_length_to_server(packet_id);
     assert(len > 0 and len <= self.buffer.len);
     @memcpy(self.buffer[0..len], try reader.peek(len));
     reader.toss(len);
+    defer if (packet_id == 0x0D) std.crypto.secureZero(u8, self.buffer[0..len]);
+
     try self.protocol.handle_packet(self.buffer[1..len], packet_id);
     return true;
 }
@@ -502,7 +558,7 @@ pub fn handshake(self: *Client) !void {
 
         for (0..Server.players.items.len) |i| {
             const player = &(Server.players.items[i] orelse continue);
-            if (player.id == self.id or !player.initialized) continue;
+            if (player.id == self.id or !player.initialized or !player.authenticated.load(.acquire)) continue;
 
             const pose = player.pose.load();
             var player_spawn = zb.SpawnPlayer{
@@ -519,23 +575,29 @@ pub fn handshake(self: *Client) !void {
         }
     }
 
-    initial_spawn.pid = self.id;
-
-    Server.broadcast_spawn_player(self.id, &initial_spawn);
-
     const own_pose = self.pose.load();
     try self.send_packet(proto.send_position_to_client, .{ -1, own_pose.x, own_pose.y, own_pose.z, 0, 0 });
     self.drain_outbound();
+}
 
+fn announce_join(self: *Client) !void {
+    assert(self.authenticated.load(.acquire));
+    const pose = self.pose.load();
+    var spawn: zb.SpawnPlayer = .{
+        .pid = self.id,
+        .name = proto.padded_string(self.name[0..self.name_len]),
+        .x = pose.x,
+        .y = pose.y,
+        .z = pose.z,
+        .yaw = pose.yaw,
+        .pitch = pose.pitch,
+    };
+    Server.broadcast_spawn_player(self.id, &spawn);
     if (!Server.internal_use) {
         try self.send_message(self.id, "&eWelcome to the world!");
-        self.drain_outbound();
-
-        var msg_buf: Message = @splat(' ');
-        _ = std.fmt.bufPrint(&msg_buf, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
-
-        Server.broadcast_chat_message(self.id, &msg_buf);
-        self.drain_outbound();
+        var msg: Message = @splat(' ');
+        _ = std.fmt.bufPrint(&msg, "&e{s} joined the game", .{self.name[0..self.name_len]}) catch unreachable;
+        Server.broadcast_chat_message(self.id, &msg);
     }
 }
 
@@ -555,7 +617,10 @@ pub fn prepare_login(self: *Client, request: LoginRequest) bool {
         return false;
     }
 
-    const name = login_name(request);
+    const name = login_name(request) catch {
+        self.reject_protocol("Invalid username");
+        return false;
+    };
     for (0..Server.players.items.len) |i| {
         const player = &(Server.players.items[i] orelse continue);
         // Handshaking clients reserve their name; awaiting/closing clients do not.
@@ -587,6 +652,9 @@ pub fn finish_login(self: *Client) !void {
     self.initialized = true;
     self.phase.store(.active, .release);
     Server.unlock_roster();
+    if (Server.on_client_ready) |ready| try ready(self);
+    if (self.authenticated.load(.acquire) and self.session_open()) try self.announce_join();
+    self.drain_outbound();
 }
 
 fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
@@ -604,6 +672,14 @@ fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void 
     const self = ctx_to_client(ctx);
     if (!require_active(self)) return;
 
+    if (!self.authenticated.load(.acquire)) {
+        var pose = self.pose.load();
+        pose.yaw = e.yaw;
+        pose.pitch = e.pitch;
+        self.pose.store(pose);
+        try self.send_player_position(-1, pose.x, pose.y, pose.z, pose.yaw, pose.pitch);
+        return;
+    }
     self.pose.store(.{ .x = e.x, .y = e.y, .z = e.z, .yaw = e.yaw, .pitch = e.pitch });
 }
 
@@ -611,7 +687,7 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
     const self = ctx_to_client(ctx);
     if (!require_active(self)) return;
 
-    const trimmed = std.mem.trimEnd(u8, &event.message, " \x00");
+    const trimmed = std.mem.trim(u8, &event.message, " \x00");
     if (trimmed.len > 0 and trimmed[0] == '/') {
         if (Server.on_command) |dispatch| {
             dispatch(self, trimmed[1..]);
@@ -621,6 +697,10 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
         return;
     }
 
+    if (!self.authenticated.load(.acquire)) {
+        self.auth_prompt();
+        return;
+    }
     var dup_buf: Message = @splat(' ');
     const prefix = std.fmt.bufPrint(&dup_buf, "&f{s}: ", .{self.name[0..self.name_len]}) catch unreachable;
     const len = @min(trimmed.len, dup_buf.len - prefix.len);
@@ -650,11 +730,13 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     if (event.x >= dims.length or event.y >= dims.height or event.z >= dims.depth)
         return;
 
+    if (!self.authenticated.load(.acquire)) {
+        try self.send_block_change(event.x, event.y, event.z, world.data.get_block(event.x, event.y, event.z));
+        return;
+    }
+
     // Validate untrusted mode bytes before converting to an enum.
     const mode = std.enums.fromInt(zb.ClickMode, event.mode) orelse return;
-
-    if (mode == .destroy and event.y == 0)
-        return;
 
     const block: blocks.Block = @enumFromInt(event.block);
 
@@ -665,15 +747,12 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     const old_block = world.data.get_block(event.x, event.y, event.z);
 
     if (mode == .destroy) {
-        world.set_block(event.x, event.y, event.z, .air);
-        Server.broadcast_block_change(event.x, event.y, event.z, .air);
+        world.set_block(Server.block_change_sink, event.x, event.y, event.z, .air);
     } else {
         // Partial blocks can be targeted through their empty subvolume. Only
         // air and fluids are replaceable, except slab + slab promotes in-place.
         if (old_block == .slab and block == .slab) {
-            world.set_block(event.x, event.y, event.z, .double_slab);
-            Server.broadcast_block_change(event.x, event.y, event.z, .double_slab);
-            world.enqueue_neighbors_of(event.x, event.y, event.z);
+            world.set_block(Server.block_change_sink, event.x, event.y, event.z, .double_slab);
             return;
         }
         if (!old_block.is_place_replaceable()) {
@@ -687,16 +766,12 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
             const below = world.data.get_block(event.x, event.y - 1, event.z);
             if (below == .slab) {
                 Server.broadcast_block_change(event.x, event.y, event.z, old_block);
-                world.set_block(event.x, event.y - 1, event.z, .double_slab);
-                Server.broadcast_block_change(event.x, event.y - 1, event.z, .double_slab);
-                world.enqueue_neighbors_of(event.x, event.y - 1, event.z);
+                world.set_block(Server.block_change_sink, event.x, event.y - 1, event.z, .double_slab);
                 return;
             }
         }
-        world.set_block(event.x, event.y, event.z, block);
-        Server.broadcast_block_change(event.x, event.y, event.z, block);
+        world.set_block(Server.block_change_sink, event.x, event.y, event.z, block);
     }
-    world.enqueue_neighbors_of(event.x, event.y, event.z);
 
     if (mode == .create and block == .sponge) {
         world.sponge_absorb(Server.block_change_sink, event.x, event.y, event.z);
@@ -740,36 +815,24 @@ pub fn read_loop(self: *Client) void {
     };
 
     var inbuf: [in_buf_bytes]u8 = undefined;
+    defer std.crypto.secureZero(u8, &inbuf);
 
     // Salvage bytes the pending-login phase prefetched past the login frame
     // into the Stream.Reader buffer; that reader is not used afterwards.
     const prefetched = self.reader.buffered();
     const prefetched_len = @min(prefetched.len, inbuf.len);
     @memcpy(inbuf[0..prefetched_len], prefetched[0..prefetched_len]);
+    std.crypto.secureZero(u8, @constCast(prefetched));
     var in_len: usize = prefetched_len;
 
     while (self.is_connected()) {
+        _ = self.check_auth_deadline();
         self.drain_outbound();
         if (self.transport.?.load(.acquire) == .closing) {
             self.mark_closed();
             stream.shutdown(Server.io, .both) catch {};
             return;
         }
-
-        assert(in_len < inbuf.len);
-        const msg = stream.socket.receiveTimeout(Server.io, inbuf[in_len..], recv_poll_timeout) catch |err| switch (err) {
-            error.Timeout => continue,
-            error.Canceled => return,
-            else => {
-                self.mark_closed();
-                return;
-            },
-        };
-        if (msg.data.len == 0) {
-            self.mark_closed();
-            return;
-        }
-        in_len += msg.data.len;
 
         var fixed = std.Io.Reader.fixed(inbuf[0..in_len]);
         while (self.accepts_packets()) {
@@ -793,7 +856,22 @@ pub fn read_loop(self: *Client) void {
 
         const remaining = fixed.bufferedLen();
         std.mem.copyForwards(u8, inbuf[0..remaining], inbuf[in_len - remaining .. in_len]);
+        std.crypto.secureZero(u8, inbuf[remaining..in_len]);
         in_len = remaining;
+        assert(in_len < inbuf.len);
+        const msg = stream.socket.receiveTimeout(Server.io, inbuf[in_len..], recv_poll_timeout) catch |err| switch (err) {
+            error.Timeout => continue,
+            error.Canceled => return,
+            else => {
+                self.mark_closed();
+                return;
+            },
+        };
+        if (msg.data.len == 0) {
+            self.mark_closed();
+            return;
+        }
+        in_len += msg.data.len;
     }
 }
 
@@ -831,4 +909,43 @@ test "atomic player pose round trips packed fields" {
     try std.testing.expectEqual(initial, pose.load());
     pose.store(updated);
     try std.testing.expectEqual(updated, pose.load());
+}
+
+test "auth usernames reject truncation ambiguity and preserve capitalization" {
+    for ([_][]const u8{ "", "Alice Smith", "Alice\x00Bob", "abcdefghijklmnopq", "Alice&f", "../Alice" }) |name| {
+        try std.testing.expectError(error.InvalidUsername, login_name(.{ .protocol_version = 7, .username = proto.padded_string(name) }));
+    }
+    for ([_][]const u8{ "Alice", "alice", "1234567890123456", "Player_1" }) |name| {
+        const parsed = try login_name(.{ .protocol_version = 7, .username = proto.padded_string(name) });
+        try std.testing.expectEqualStrings(name, parsed.value[0..parsed.len]);
+    }
+}
+
+test "auth pending players cannot change position or broadcast public chat" {
+    Server.io = std.testing.io;
+    var reader = std.Io.Reader.fixed(&.{});
+    var bytes: [512]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    var connected = true;
+    var client: Client = .{
+        .id = 0,
+        .reader = &reader,
+        .writer = &writer,
+        .connected = &connected,
+        .phase = .init(.active),
+        .authenticated = .init(false),
+        .pose = .init(.{ .x = 100, .y = 200, .z = 300, .yaw = 0, .pitch = 0 }),
+    };
+    try handle_position(&client, .{ .pid = -1, .x = 500, .y = 600, .z = 700, .yaw = 4, .pitch = 5 });
+    try std.testing.expectEqual(@as(u16, 100), client.pose.load().x);
+    try std.testing.expectEqual(@as(u8, 4), client.pose.load().yaw);
+    try std.testing.expectEqual(@as(u8, 0x08), writer.buffered()[0]);
+    try std.testing.expectEqual(@as(u8, 0xff), writer.buffered()[1]);
+    writer.end = 0;
+    try handle_message(&client, .{ .pid = -1, .message = proto.padded_string("do not broadcast this") });
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "do not broadcast this") == null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "/login") != null);
+    client.authenticated.store(true, .release);
+    try handle_position(&client, .{ .pid = -1, .x = 500, .y = 600, .z = 700, .yaw = 4, .pitch = 5 });
+    try std.testing.expectEqual(@as(u16, 500), client.pose.load().x);
 }

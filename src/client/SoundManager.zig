@@ -1,14 +1,16 @@
 /// Game sound policy over Aether-owned streaming WAV voices. The active pack
 /// remains borrowed until every voice is stopped during deinit.
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const blocks = @import("core").blocks;
+const capabilities = @import("capabilities");
+const Options = @import("Options.zig");
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
 const Audio = ae.Audio;
 const Math = ae.Math;
-const blocks = @import("core").blocks;
 const Block = blocks.Block;
-const Options = @import("Options.zig");
 const Zip = ae.Util.Zip;
 
 const log = std.log.scoped(.audio);
@@ -130,6 +132,18 @@ pub fn deinit() void {
     step_entries = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
     step_counts = .{0} ** material_count;
     music_entries = .{SoundEntry{}} ** music_count;
+}
+
+/// Cancel menu audio before loading and give the world a fresh music delay.
+/// LoadState does not call update, so the countdown starts in gameplay.
+pub fn begin_world_load() void {
+    if (!initialised) return;
+
+    for (&voices) |*v| {
+        if (v.active) release_voice(v);
+    }
+    music_state = .delay;
+    music_delay_timer = min_music_delay + rand_f32() * (max_music_delay - min_music_delay);
 }
 
 fn scan_entries(

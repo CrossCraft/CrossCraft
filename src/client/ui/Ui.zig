@@ -1,21 +1,23 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
-const Rendering = ae.Rendering;
-
 const core = @import("core");
-const layout_mod = ae.Ui.layout;
-const texture_region = ae.Ui.texture_region;
+const capabilities = @import("capabilities");
 const widget_style = @import("WidgetStyle.zig");
 const prompt_strip = @import("PromptStrip.zig");
 const prompts_mod = @import("Prompts.zig");
 const ui_input = @import("input.zig");
 const widget_id = @import("widget_id.zig");
-const FontBatcher = ae.Ui.FontBatcher;
 const UiDrawList = @import("UiDrawList.zig");
 const UiState = @import("UiState.zig");
 const Colors = @import("../graphics/Color.zig");
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
+const Rendering = ae.Rendering;
+
+const layout_mod = ae.Ui.layout;
+const texture_region = ae.Ui.texture_region;
+const FontBatcher = ae.Ui.FontBatcher;
 
 pub const LogicalRect = layout_mod.LogicalRect;
 pub const Point = layout_mod.Point;

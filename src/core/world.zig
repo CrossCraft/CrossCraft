@@ -198,14 +198,9 @@ pub fn tick(sink: BlockChangeSink) u32 {
     return sim.?.tick(&data, sink);
 }
 
-pub fn set_block(x: u16, y: u16, z: u16, block: Block) void {
+pub fn set_block(sink: BlockChangeSink, x: u16, y: u16, z: u16, block: Block) void {
     assert(saver.owned_locally);
-    sim.?.set_block(&data, x, y, z, block);
-}
-
-pub fn enqueue_neighbors_of(x: u16, y: u16, z: u16) void {
-    assert(saver.owned_locally);
-    sim.?.enqueue_neighbors_of(&data, x, y, z);
+    _ = sim.?.set_block(&data, sink, x, y, z, block);
 }
 
 pub fn sponge_absorb(sink: BlockChangeSink, cx: u16, cy: u16, cz: u16) void {
