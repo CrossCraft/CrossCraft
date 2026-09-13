@@ -653,9 +653,6 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     // Validate untrusted mode bytes before converting to an enum.
     const mode = std.enums.fromInt(zb.ClickMode, event.mode) orelse return;
 
-    if (mode == .destroy and event.y == 0)
-        return;
-
     const block: blocks.Block = @enumFromInt(event.block);
 
     if (mode == .create and block.is_fluid()) {
