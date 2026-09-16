@@ -37,6 +37,8 @@ const load_status_downloading_base: u16 = 128;
 pub const default_format: SaveFormat = .{ .classic_cw = .{} };
 
 pub var data: WorldData = undefined;
+/// True between init_empty and deinit; guards host spawn recovery reads.
+pub var active: bool = false;
 var sim: ?WorldSimulation = null;
 pub var saver: WorldSaver = undefined;
 var load_status_atomic: std.atomic.Value(u16) = .init(load_status_loading);
@@ -88,6 +90,7 @@ pub fn init_empty(
     format: SaveFormat,
 ) !void {
     assert(sim == null);
+    active = true;
     try data.init_in_place(allocator, geometry, seed);
     saver = WorldSaver.init(io, save_dir, save_file_name, format);
     set_load_status(.loading);
@@ -170,6 +173,7 @@ pub fn deinit_after_init_error() void {
 }
 
 fn deinit_components() void {
+    active = false;
     if (sim) |*simulation| simulation.deinit(data.backing_allocator);
     sim = null;
     saver.deinit();

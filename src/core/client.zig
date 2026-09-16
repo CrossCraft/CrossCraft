@@ -113,6 +113,10 @@ pub const LoginName = struct {
 id: i8 = -1,
 generation: u32 = 0,
 pose: AtomicPlayerPose = .init(@bitCast(@as(u64, 0))),
+/// Bumped on every teleport. Queued position reports carry the serial they
+/// were captured with; the ordered context drops reports that predate the
+/// latest teleport instead of trusting an acknowledgement packet.
+teleport_serial: std.atomic.Value(u32) = .init(0),
 
 reader: *std.Io.Reader,
 writer: *std.Io.Writer,
@@ -289,6 +293,9 @@ pub fn authenticate(self: *Client, is_op: bool) bool {
     Server.unlock_roster();
     self.send_message(self.id, "&aAuthentication successful") catch {};
     self.announce_join() catch {};
+    if (Server.on_player_join) |join| {
+        join(.{ .id = @intCast(self.id), .generation = self.generation }, self.name[0..self.name_len]);
+    }
     return true;
 }
 
@@ -653,7 +660,12 @@ pub fn finish_login(self: *Client) !void {
     self.phase.store(.active, .release);
     Server.unlock_roster();
     if (Server.on_client_ready) |ready| try ready(self);
-    if (self.authenticated.load(.acquire) and self.session_open()) try self.announce_join();
+    if (self.authenticated.load(.acquire) and self.session_open()) {
+        try self.announce_join();
+        if (Server.on_player_join) |join| {
+            join(.{ .id = @intCast(self.id), .generation = self.generation }, self.name[0..self.name_len]);
+        }
+    }
     self.drain_outbound();
 }
 
@@ -673,11 +685,40 @@ fn handle_position(ctx: *anyopaque, e: zb.PositionAndOrientationToServer) !void 
     if (!require_active(self)) return;
 
     if (!self.authenticated.load(.acquire)) {
-        var pose = self.pose.load();
-        pose.yaw = e.yaw;
-        pose.pitch = e.pitch;
-        self.pose.store(pose);
-        try self.send_player_position(-1, pose.x, pose.y, pose.z, pose.yaw, pose.pitch);
+        self.apply_position_unauthenticated(e);
+        return;
+    }
+    // Authenticated movement is owned by the ordered host context when one is
+    // installed; otherwise the connection thread applies it directly.
+    if (Server.on_gameplay_action) |hook| {
+        hook(.{ .position = .{
+            .client = self,
+            .x = e.x,
+            .y = e.y,
+            .z = e.z,
+            .yaw = e.yaw,
+            .pitch = e.pitch,
+            .teleport_serial = self.teleport_serial.load(.acquire),
+        } });
+        return;
+    }
+    self.pose.store(.{ .x = e.x, .y = e.y, .z = e.z, .yaw = e.yaw, .pitch = e.pitch });
+}
+
+/// Unauthenticated clients keep their authoritative pose and only get
+/// orientation corrections; the connection thread remains the sole writer.
+fn apply_position_unauthenticated(self: *Client, e: zb.PositionAndOrientationToServer) void {
+    var pose = self.pose.load();
+    pose.yaw = e.yaw;
+    pose.pitch = e.pitch;
+    self.pose.store(pose);
+    self.send_player_position(-1, pose.x, pose.y, pose.z, pose.yaw, pose.pitch) catch {};
+}
+
+/// Apply an authenticated position report on the ordered gameplay context.
+pub fn apply_position(self: *Client, e: zb.PositionAndOrientationToServer) void {
+    if (!self.authenticated.load(.acquire)) {
+        self.apply_position_unauthenticated(e);
         return;
     }
     self.pose.store(.{ .x = e.x, .y = e.y, .z = e.z, .yaw = e.yaw, .pitch = e.pitch });
@@ -721,19 +762,45 @@ fn handle_set_block(ctx: *anyopaque, event: zb.SetBlockToServer) !void {
     const self = ctx_to_client(ctx);
     if (!require_active(self)) return;
 
-    world.lock_world();
-    defer world.unlock_world();
-
-    if (!require_active(self)) return;
-
     const dims = world.data.dims;
     if (event.x >= dims.length or event.y >= dims.height or event.z >= dims.depth)
         return;
 
     if (!self.authenticated.load(.acquire)) {
+        world.lock_world();
+        defer world.unlock_world();
+
         try self.send_block_change(event.x, event.y, event.z, world.data.get_block(event.x, event.y, event.z));
         return;
     }
+
+    if (Server.on_gameplay_action) |hook| {
+        hook(.{ .set_block = .{
+            .client = self,
+            .x = event.x,
+            .y = event.y,
+            .z = event.z,
+            .mode = event.mode,
+            .block = event.block,
+        } });
+        return;
+    }
+    apply_set_block(self, event);
+}
+
+/// Apply an authenticated block edit under the exclusive world lock. Runs on
+/// the connection thread when no host context is installed, and on the
+/// ordered gameplay context after host interception otherwise.
+pub fn apply_set_block(self: *Client, event: zb.SetBlockToServer) void {
+    world.lock_world();
+    defer world.unlock_world();
+
+    if (!self.session_open()) {
+        self.send_block_change(event.x, event.y, event.z, world.data.get_block(event.x, event.y, event.z)) catch {};
+        return;
+    }
+    const dims = world.data.dims;
+    if (event.x >= dims.length or event.y >= dims.height or event.z >= dims.depth) return;
 
     // Validate untrusted mode bytes before converting to an enum.
     const mode = std.enums.fromInt(zb.ClickMode, event.mode) orelse return;

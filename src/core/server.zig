@@ -60,6 +60,148 @@ pub var on_broadcast_chat: ?*const fn ([]const u8) void = null;
 pub var on_client_ready: ?*const fn (*Client) anyerror!void = null;
 pub var on_command: ?*const fn (*Client, []const u8) void = null;
 
+/// Gameplay requests forwarded to the ordered host context. When installed,
+/// authenticated movement, edits, and the join/leave lifecycle bypass the
+/// inline connection-thread path; the host revalidates handles before acting.
+pub const GameplayAction = union(enum) {
+    position: struct {
+        client: *Client,
+        x: u16,
+        y: u16,
+        z: u16,
+        yaw: u8,
+        pitch: u8,
+        teleport_serial: u32,
+    },
+    set_block: struct {
+        client: *Client,
+        x: u16,
+        y: u16,
+        z: u16,
+        mode: u8,
+        block: u8,
+    },
+};
+
+pub var on_gameplay_action: ?*const fn (GameplayAction) void = null;
+pub var on_player_join: ?*const fn (PlayerHandle, []const u8) void = null;
+pub var on_player_leave: ?*const fn (PlayerHandle, []const u8) void = null;
+
+pub const PlayerInfo = struct {
+    handle: PlayerHandle,
+    name_buf: [16]u8 = @splat(0),
+    name_len: u8 = 0,
+    x: u16 = 0,
+    y: u16 = 0,
+    z: u16 = 0,
+    yaw: u8 = 0,
+    pitch: u8 = 0,
+    op: bool = false,
+    authenticated: bool = false,
+
+    pub fn name(self: *const PlayerInfo) []const u8 {
+        return self.name_buf[0..self.name_len];
+    }
+};
+
+/// Snapshot connected players without exposing roster pointers. Callers must
+/// not hold the world lock: pose reads take the roster lock briefly.
+pub fn snapshot_players(out: *[MaxPlayers]PlayerInfo) usize {
+    lock_roster_shared();
+    defer unlock_roster_shared();
+
+    var count: usize = 0;
+    for (0..MaxPlayers) |i| {
+        const client = &(players.items[i] orelse continue);
+        if (!client.initialized) continue;
+        const pose = client.pose.load();
+        out[count] = .{
+            .handle = .{ .id = @intCast(i), .generation = client.generation },
+            .name_len = client.name_len,
+            .x = pose.x,
+            .y = pose.y,
+            .z = pose.z,
+            .yaw = pose.yaw,
+            .pitch = pose.pitch,
+            .op = client.is_op.load(.acquire),
+            .authenticated = client.authenticated.load(.acquire),
+        };
+        @memcpy(out[count].name_buf[0..client.name_len], client.name[0..client.name_len]);
+        count += 1;
+    }
+    return count;
+}
+
+/// Resolve a player snapshot by exact, case-sensitive name.
+pub fn snapshot_player_by_name(name: []const u8, out: *PlayerInfo) bool {
+    lock_roster_shared();
+    defer unlock_roster_shared();
+
+    for (0..MaxPlayers) |i| {
+        const client = &(players.items[i] orelse continue);
+        if (!client.initialized) continue;
+        if (client.name_len != name.len or !std.mem.eql(u8, client.name[0..client.name_len], name)) continue;
+        const pose = client.pose.load();
+        out.* = .{
+            .handle = .{ .id = @intCast(i), .generation = client.generation },
+            .name_len = client.name_len,
+            .x = pose.x,
+            .y = pose.y,
+            .z = pose.z,
+            .yaw = pose.yaw,
+            .pitch = pose.pitch,
+            .op = client.is_op.load(.acquire),
+            .authenticated = client.authenticated.load(.acquire),
+        };
+        @memcpy(out.name_buf[0..client.name_len], client.name[0..client.name_len]);
+        return true;
+    }
+    return false;
+}
+
+pub const TeleportError = error{ UnknownPlayer, Unauthenticated, UnsafeDestination };
+
+/// Feet position in block units of a valid teleport destination, checked
+/// against world bounds and non-solid feet/head cells.
+pub fn safe_destination(x: u16, y: u16, z: u16) bool {
+    const dims = world.data.dims;
+    if (x >= dims.length or y + 1 >= dims.height or z >= dims.depth) return false;
+    if (world.data.get_block(x, y, z).is_solid()) return false;
+    if (world.data.get_block(x, y + 1, z).is_solid()) return false;
+    return true;
+}
+
+/// Teleport a player by generation-checked handle. Protocol pose scaling and
+/// the feet offset are applied here; callers pass block-unit feet positions.
+/// The pose write happens on the caller's thread; teleports are only issued
+/// from the ordered gameplay context, which is the single authenticated pose
+/// writer.
+pub fn teleport_handle_block(handle: PlayerHandle, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) TeleportError!void {
+    lock_roster();
+    defer unlock_roster();
+
+    const client = client_from_handle_locked(handle) orelse return error.UnknownPlayer;
+    if (!client.initialized or !client.authenticated.load(.acquire)) return error.Unauthenticated;
+
+    world.lock_world_shared();
+    defer world.unlock_world_shared();
+
+    if (!safe_destination(x, y, z)) return error.UnsafeDestination;
+
+    const proto_x: u16 = @intCast(@as(u32, x) * 32 + 16);
+    const proto_y: u16 = @intCast(@as(u32, y) * 32 + 51);
+    const proto_z: u16 = @intCast(@as(u32, z) * 32 + 16);
+    client.pose.store(.{ .x = proto_x, .y = proto_y, .z = proto_z, .yaw = yaw, .pitch = pitch });
+    _ = client.teleport_serial.fetchAdd(1, .release);
+
+    for (0..MaxPlayers) |i| {
+        const recipient = &(players.items[i] orelse continue);
+        if (!recipient.initialized) continue;
+        const pid: i8 = if (recipient.id == client.id) -1 else client.id;
+        recipient.send_player_position(pid, proto_x, proto_y, proto_z, yaw, pitch) catch continue;
+    }
+}
+
 pub var players: PlayerSlots = .{};
 var player_generations: [MaxPlayers]u32 = @splat(0);
 
@@ -481,6 +623,7 @@ pub fn remove_client(handle: PlayerHandle) void {
     players.items[handle.id] = null;
 
     if (initialized) {
+        if (on_player_leave) |hook| hook(handle, name[0..name_len]);
         for (0..MaxPlayers) |i| {
             const recipient = &(players.items[i] orelse continue);
             if (!recipient.initialized) continue;

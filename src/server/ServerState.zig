@@ -9,6 +9,8 @@ const Backup = @import("Backup.zig");
 const Accounts = @import("Accounts.zig");
 const Authentication = @import("Authentication.zig");
 const Commands = @import("Commands.zig");
+const plugins = @import("plugins/Plugins.zig");
+const Host = @import("plugins/Host.zig");
 
 const assert = std.debug.assert;
 
@@ -76,6 +78,11 @@ server_config: ServerConfig,
 heartbeat_salt: [16]u8,
 heartbeat_users: std.atomic.Value(u32),
 backup: Backup,
+host: Host = .{},
+plugin_manager: ?*plugins.Plugins = null,
+
+/// Ordered gameplay slice per tick; queued traffic cannot extend it.
+const drain_budget_ms: i64 = 10;
 
 pub fn state(self: *ServerState) State {
     return .{ .ptr = self, .tab = &.{
@@ -126,6 +133,30 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     errdefer Accounts.deinit();
     try Authentication.init(alloc, self.server_config.auth, self.server_config.auth_grace_period_seconds, self.server_config.whitelist_enabled);
     errdefer Authentication.deinit();
+
+    Commands.reset_registry();
+    self.host = .{};
+    self.host.player_write = player_command_write;
+    self.host.console_sink = .{ .ctx = self, .write_fn = stdout_console_write };
+    self.plugin_manager = plugins.init(alloc, engine.dirs.data, &self.host) catch |err| blk: {
+        log.warn("Plugin host disabled: {}", .{err});
+        break :blk null;
+    };
+    self.host.plugins = self.plugin_manager;
+    Host.instance = &self.host;
+    Server.on_gameplay_action = route_gameplay;
+    Server.on_command = route_player_command;
+    Server.on_player_join = route_player_join;
+    Server.on_player_leave = route_player_leave;
+    errdefer {
+        Server.on_gameplay_action = null;
+        Server.on_command = null;
+        Server.on_player_join = null;
+        Server.on_player_leave = null;
+        Host.instance = null;
+        if (self.plugin_manager) |manager| manager.deinit();
+        self.plugin_manager = null;
+    }
 
     const pending_len: usize = @intCast(self.server_config.max_pending_logins);
     self.connection_pool = try alloc.alloc(ConnectionSlot, Server.MaxPlayers + pending_len);
@@ -189,6 +220,82 @@ fn dispatch_player_command(client: *Server.Client, line: []const u8) void {
     Commands.dispatch(.{ .ctx = client, .write_fn = player_command_write }, line, .{ .player = client });
 }
 
+/// Route player commands: native entries keep their synchronous connection
+/// path (password work never touches the gameplay loop); plugin commands are
+/// ordered through the host queue.
+fn route_player_command(client: *Server.Client, line: []const u8) void {
+    const sink: Commands.Sink = .{ .ctx = client, .write_fn = player_command_write };
+    var tokens = std.mem.tokenizeAny(u8, line, " \t");
+    const name = tokens.next() orelse {
+        Commands.dispatch(sink, line, .{ .player = client });
+        return;
+    };
+    if (Commands.is_script(name)) {
+        self_host().enqueue_command(
+            .{ .id = @intCast(client.id), .generation = client.generation },
+            line,
+        );
+    } else {
+        Commands.dispatch(sink, line, .{ .player = client });
+    }
+}
+
+fn route_console_command(self: *ServerState, line: []const u8) void {
+    const sink: Commands.Sink = .{ .ctx = self, .write_fn = stdout_console_write };
+    var tokens = std.mem.tokenizeAny(u8, line, " \t");
+    const name = tokens.next() orelse return;
+    if (Commands.is_script(name)) {
+        self.host.enqueue_command(null, line);
+    } else {
+        Commands.dispatch(sink, line, .console);
+    }
+}
+
+fn self_host() *Host.Host {
+    return Host.instance.?;
+}
+
+fn route_gameplay(action: Server.GameplayAction) void {
+    const host = Host.instance orelse return;
+    switch (action) {
+        .position => |p| host.enqueue(.{ .position = .{
+            .handle = .{ .id = @intCast(p.client.id), .generation = p.client.generation },
+            .x = p.x,
+            .y = p.y,
+            .z = p.z,
+            .yaw = p.yaw,
+            .pitch = p.pitch,
+            .teleport_serial = p.teleport_serial,
+        } }),
+        .set_block => |b| host.enqueue(.{ .set_block = .{
+            .handle = .{ .id = @intCast(b.client.id), .generation = b.client.generation },
+            .x = b.x,
+            .y = b.y,
+            .z = b.z,
+            .mode = b.mode,
+            .block = b.block,
+        } }),
+    }
+}
+
+fn route_player_join(handle: Server.PlayerHandle, name: []const u8) void {
+    const host = Host.instance orelse return;
+    var identity: Host.Identity = .{ .handle = handle };
+    const len = @min(name.len, identity.name_buf.len);
+    @memcpy(identity.name_buf[0..len], name[0..len]);
+    identity.name_len = @intCast(len);
+    host.enqueue(.{ .join = identity });
+}
+
+fn route_player_leave(handle: Server.PlayerHandle, name: []const u8) void {
+    const host = Host.instance orelse return;
+    var identity: Host.Identity = .{ .handle = handle };
+    const len = @min(name.len, identity.name_buf.len);
+    @memcpy(identity.name_buf[0..len], name[0..len]);
+    identity.name_len = @intCast(len);
+    host.enqueue(.{ .leave = identity });
+}
+
 fn player_command_write(ctx: *anyopaque, line: []const u8) void {
     const client: *Server.Client = @ptrCast(@alignCast(ctx));
     client.send_message(client.id, line) catch {};
@@ -229,6 +336,9 @@ fn write_without_color_codes(writer: *std.Io.Writer, line: []const u8) std.Io.Wr
 fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(ServerState, ctx);
 
+    self.host.deadline_ms = Server.Client.now_ms() + drain_budget_ms;
+    self.host.drain();
+    if (self.plugin_manager) |manager| manager.tick();
     Server.tick();
     self.reap_finished_connections(engine);
     self.promote_ready_logins(engine);
@@ -583,6 +693,14 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     global_listener = null;
     self.listener.deinit(engine.io);
 
+    if (self.plugin_manager) |manager| manager.deinit();
+    self.plugin_manager = null;
+    Host.instance = null;
+    Server.on_gameplay_action = null;
+    Server.on_command = null;
+    Server.on_player_join = null;
+    Server.on_player_leave = null;
+
     Authentication.deinit();
     Accounts.deinit();
     // The compressor must finish the final world save before it shuts down.
@@ -671,8 +789,7 @@ fn console_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
         if (line.len == 0) continue;
 
         if (line[0] == '/') {
-            const sink: Commands.Sink = .{ .ctx = self, .write_fn = stdout_console_write };
-            Commands.dispatch(sink, line[1..], .console);
+            self.route_console_command(line[1..]);
             std.crypto.secureZero(u8, @constCast(raw));
         } else {
             var msg_buf: core.protocol.Message = @splat(' ');

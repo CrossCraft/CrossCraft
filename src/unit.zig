@@ -23,6 +23,7 @@ const Accounts = @import("server/Accounts.zig");
 const Authentication = @import("server/Authentication.zig");
 const Passwords = @import("server/Passwords.zig");
 const Commands = @import("server/Commands.zig");
+const plugins_tests = @import("server/tests.zig");
 
 comptime {
     _ = engine_services;
@@ -50,4 +51,5 @@ comptime {
     _ = Authentication;
     _ = Passwords;
     _ = Commands;
+    _ = plugins_tests;
 }

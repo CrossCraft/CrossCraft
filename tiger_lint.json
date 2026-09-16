@@ -30,6 +30,11 @@
       "kind": "qualified_symbol",
       "symbol": "config.platform",
       "replacement": "build_policy in src/capabilities.zig"
+    },
+    {
+      "kind": "qualified_symbol",
+      "symbol": "std.heap.page_allocator",
+      "replacement": "accept an allocator passed into this function"
     }
   ],
   "rules": {

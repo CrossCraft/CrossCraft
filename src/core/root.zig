@@ -1,6 +1,7 @@
 pub const world_dims = @import("world_dims.zig");
 pub const blocks = @import("blocks.zig");
 pub const protocol = @import("protocol.zig");
+pub const zb = @import("protocol");
 pub const physics = @import("physics.zig");
 
 pub const Server = @import("server.zig");

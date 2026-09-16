@@ -89,6 +89,11 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Luaz is linked only into the standalone server and its host tests;
+    // client, core, and console targets never import it.
+    const luaz_dep = b.dependency("luaz", .{ .target = target, .optimize = optimize });
+    const luaz_module = luaz_dep.module("luaz");
+
     const console_client_dir = policy.client_dir;
 
     const ae_dep = b.dependency("engine", .{
@@ -202,6 +207,8 @@ pub fn build(b: *std.Build) void {
         const server_root = Aether.modules.user_root_module(server_exe);
         server_root.addImport("core", core);
         server_root.addImport("capabilities", capabilities);
+        server_root.addImport("luaz", luaz_module);
+        server_root.link_libcpp = true;
         add_engine_services(b, server_root, core);
 
         const build_server_step = b.step("server", "Build the server");
@@ -333,11 +340,13 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path("src/unit.zig"),
                 .target = target,
                 .optimize = optimize,
+                .link_libcpp = true,
             });
             root.addImport("aether", client_root.import_table.get("aether").?);
             root.addImport("protocol", protocol);
             root.addImport("capabilities", capabilities);
             root.addImport("core", core);
+            root.addImport("luaz", luaz_module);
             root.addImport("engine_services", client_root.import_table.get("engine_services").?);
             break :unit_tests_root root;
         },
@@ -385,6 +394,28 @@ pub fn build(b: *std.Build) void {
     const run_core_tests = b.addRunArtifact(core_tests);
     test_step.dependOn(&run_core_tests.step);
     b.step("test-core", "Run core tests").dependOn(&run_core_tests.step);
+
+    const plugins_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/server/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libcpp = true,
+            .imports = &.{
+                .{ .name = "core", .module = core },
+                .{ .name = "protocol", .module = protocol },
+                .{ .name = "luaz", .module = luaz_module },
+            },
+        }),
+        .filters = test_filters,
+    });
+    if (policy.use_llvm_linker) {
+        plugins_tests.use_llvm = true;
+        plugins_tests.use_lld = true;
+    }
+    const run_plugins_tests = b.addRunArtifact(plugins_tests);
+    test_step.dependOn(&run_plugins_tests.step);
+    b.step("test-plugins", "Run server plugin runtime tests").dependOn(&run_plugins_tests.step);
 
     const worldgen_tests = b.addTest(.{
         .name = "worldgen_tests",

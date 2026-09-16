@@ -1,3 +1,7 @@
+//! Shared native/plugin command registry. Native authentication and
+//! moderation commands keep their original synchronous routing and sensitive
+//! text handling; plugin commands dispatch through the host's ordered gameplay
+//! context.
 const std = @import("std");
 const Accounts = @import("Accounts.zig");
 const Authentication = @import("Authentication.zig");
@@ -13,9 +17,84 @@ pub const Sink = struct {
 };
 
 pub const Caller = union(enum) { console, player: *Server.Client };
+pub const Permission = enum { anyone, op };
+pub const Restriction = enum { any, player_only, console_only };
+
+/// Plugin commands resolve through a host-owned dispatch shim so the registry
+/// stays independent of the Luau runtime.
+pub const ScriptDispatch = struct {
+    ctx: *anyopaque,
+    call: *const fn (ctx: *anyopaque, caller: Caller, args: []const []const u8) void,
+};
+
+const Handler = union(enum) { native: Kind, script: ScriptDispatch };
+
+const NameBuf = struct {
+    buf: [16]u8 = @splat(0),
+    len: u8 = 0,
+
+    fn set(self: *NameBuf, text: []const u8) bool {
+        if (text.len == 0 or text.len > self.buf.len) return false;
+        for (text) |c| {
+            if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
+        }
+        @memcpy(self.buf[0..text.len], text);
+        self.len = @intCast(text.len);
+        return true;
+    }
+
+    fn slice(self: *const NameBuf) []const u8 {
+        return self.buf[0..self.len];
+    }
+};
+
+const UsageBuf = struct {
+    buf: [96]u8 = @splat(0),
+    len: u8 = 0,
+
+    fn set(self: *UsageBuf, text: []const u8) bool {
+        if (text.len == 0 or text.len > self.buf.len) return false;
+        @memcpy(self.buf[0..text.len], text);
+        self.len = @intCast(text.len);
+        return true;
+    }
+
+    fn slice(self: *const UsageBuf) []const u8 {
+        return self.buf[0..self.len];
+    }
+};
+
+pub const Registration = struct {
+    name: []const u8,
+    aliases: []const []const u8 = &.{},
+    usage: []const u8,
+    permission: Permission = .anyone,
+    restriction: Restriction = .any,
+    script: ?ScriptDispatch = null,
+};
+
 const Kind = enum { help, register, login, passwd, resetpassword, ban, unban, op, deop, whitelist, unwhitelist, kick };
-const Command = struct { kind: Kind, usage: []const u8 };
-const commands = [_]Command{
+const max_entries = 64;
+const max_aliases = 4;
+
+const Entry = struct {
+    name: NameBuf = .{},
+    aliases: [max_aliases]NameBuf = @splat(.{}),
+    alias_count: u8 = 0,
+    usage: UsageBuf = .{},
+    permission: Permission = .anyone,
+    restriction: Restriction = .any,
+    handler: Handler = .{ .native = .help },
+    owner: ?*const anyopaque = null,
+    enabled: bool = true,
+};
+
+var registry_lock: std.Io.RwLock = .init;
+var entries: [max_entries]Entry = @splat(.{});
+var entry_count: usize = 0;
+var native_registered = false;
+
+const native_usages = [_]struct { kind: Kind, usage: []const u8 }{
     .{ .kind = .help, .usage = "&e/help -- list commands" },
     .{ .kind = .register, .usage = "&e/register <pass> <pass>" },
     .{ .kind = .login, .usage = "&e/login <pass>" },
@@ -30,6 +109,128 @@ const commands = [_]Command{
     .{ .kind = .kick, .usage = "&e/kick <username> [reason]" },
 };
 
+fn native_restriction(kind: Kind) Restriction {
+    return switch (kind) {
+        .resetpassword => .console_only,
+        .register, .login, .passwd, .help => .player_only,
+        else => .any,
+    };
+}
+
+fn native_permission(kind: Kind) Permission {
+    return switch (kind) {
+        .help, .register, .login, .passwd, .resetpassword => .anyone,
+        else => .op,
+    };
+}
+
+/// Install the reserved native command set. Safe to call again; it rebuilds
+/// the registry and drops any previously registered plugin commands.
+pub fn reset_registry() void {
+    registry_lock.lockUncancelable(Server.io);
+    defer registry_lock.unlock(Server.io);
+
+    entry_count = 0;
+    native_registered = true;
+    for (native_usages) |item| {
+        var entry = Entry{
+            .permission = native_permission(item.kind),
+            .restriction = native_restriction(item.kind),
+            .handler = .{ .native = item.kind },
+        };
+        if (!entry.name.set(@tagName(item.kind)) or !entry.usage.set(item.usage)) continue;
+        entries[entry_count] = entry;
+        entry_count += 1;
+    }
+}
+
+fn ensure_native() void {
+    if (native_registered) return;
+    reset_registry();
+}
+
+fn find_entry_locked(name: []const u8) ?*Entry {
+    for (entries[0..entry_count]) |*entry| {
+        if (std.ascii.eqlIgnoreCase(entry.name.slice(), name)) return entry;
+        for (entry.aliases[0..entry.alias_count]) |alias| {
+            if (std.ascii.eqlIgnoreCase(alias.slice(), name)) return entry;
+        }
+    }
+    return null;
+}
+
+/// Register a command, rejecting name and alias collisions explicitly. Script
+/// registrations never override reserved native entries.
+pub fn register(registration: Registration, owner: ?*const anyopaque) bool {
+    ensure_native();
+
+    registry_lock.lockUncancelable(Server.io);
+    defer registry_lock.unlock(Server.io);
+
+    if (entry_count == max_entries) return false;
+    if (find_entry_locked(registration.name) != null) return false;
+
+    var entry = Entry{ .owner = owner, .enabled = true };
+    if (!entry.name.set(registration.name)) return false;
+    if (!entry.usage.set(registration.usage)) return false;
+    entry.permission = registration.permission;
+    entry.restriction = registration.restriction;
+    if (registration.script) |script| {
+        entry.handler = .{ .script = script };
+    } else {
+        return false;
+    }
+    if (registration.aliases.len > max_aliases) return false;
+    for (registration.aliases) |alias| {
+        if (find_entry_locked(alias) != null) return false;
+        if (!entry.aliases[entry.alias_count].set(alias)) return false;
+        entry.alias_count += 1;
+    }
+
+    entries[entry_count] = entry;
+    entry_count += 1;
+    return true;
+}
+
+/// Revoke every registration owned by `owner` when a plugin fails or shuts
+/// down; host cleanup does not rely on script cleanup succeeding.
+pub fn unregister_owner(owner: *const anyopaque) void {
+    registry_lock.lockUncancelable(Server.io);
+    defer registry_lock.unlock(Server.io);
+
+    var i: usize = 0;
+    while (i < entry_count) {
+        if (entries[i].owner == owner) {
+            entries[i] = entries[entry_count - 1];
+            entries[entry_count - 1] = .{};
+            entry_count -= 1;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// True when the first token names a plugin command; those dispatch on the
+/// ordered host context instead of the calling thread.
+pub fn is_script(name: []const u8) bool {
+    ensure_native();
+
+    registry_lock.lockSharedUncancelable(Server.io);
+    defer registry_lock.unlockShared(Server.io);
+
+    const entry = find_entry_locked(name) orelse return false;
+    return entry.handler == .script;
+}
+
+pub fn set_enabled(owner: *const anyopaque, enabled: bool) void {
+    registry_lock.lockUncancelable(Server.io);
+    defer registry_lock.unlock(Server.io);
+
+    for (entries[0..entry_count]) |*entry| {
+        if (entry.owner == owner) entry.enabled = enabled;
+    }
+}
+
 fn can_moderate(caller: Caller) bool {
     return switch (caller) {
         .console => true,
@@ -37,62 +238,107 @@ fn can_moderate(caller: Caller) bool {
     };
 }
 
-fn allowed(caller: Caller, kind: Kind) bool {
-    return switch (kind) {
-        .help => true,
-        .register, .login => Authentication.mode == .local and caller == .player,
-        .passwd => Authentication.mode == .local and caller == .player and caller.player.authenticated.load(.acquire),
-        .resetpassword => Authentication.mode == .local and caller == .console,
-        else => can_moderate(caller),
-    };
+fn allowed(caller: Caller, entry: *const Entry) bool {
+    switch (entry.restriction) {
+        .player_only => if (caller != .player) return false,
+        .console_only => if (caller != .console) return false,
+        .any => {},
+    }
+    switch (entry.handler) {
+        .native => |kind| {
+            if (kind == .help) return true;
+            if (kind == .register or kind == .login) return Authentication.mode == .local and caller == .player;
+            if (kind == .passwd) return Authentication.mode == .local and caller == .player and caller.player.authenticated.load(.acquire);
+            if (kind == .resetpassword) return Authentication.mode == .local and caller == .console;
+            return can_moderate(caller);
+        },
+        .script => {
+            const base = switch (caller) {
+                .console => true,
+                .player => |client| client.session_open() and client.authenticated.load(.acquire),
+            };
+            if (!base) return false;
+            if (entry.permission == .op) return can_moderate(caller);
+            return true;
+        },
+    }
 }
 
 /// Never log command text: it may contain a password, even on syntax errors.
 pub fn dispatch(sink: Sink, line: []const u8, caller: Caller) void {
+    ensure_native();
+
     var tokens = std.mem.tokenizeAny(u8, line, " \t");
     const name = tokens.next() orelse {
         sink.write("Unknown command, use /help");
         return;
     };
-    const command = for (commands) |command| {
-        if (std.mem.eql(u8, name, @tagName(command.kind))) break command;
-    } else {
+
+    registry_lock.lockSharedUncancelable(Server.io);
+    const entry = find_entry_locked(name) orelse {
+        registry_lock.unlockShared(Server.io);
         sink.write("Unknown command, use /help");
         return;
     };
-    if (!allowed(caller, command.kind)) {
+    if (!entry.enabled or !allowed(caller, entry)) {
+        registry_lock.unlockShared(Server.io);
         sink.write("&cCommand unavailable or insufficient permission");
         return;
     }
+    switch (entry.handler) {
+        .native => |kind| {
+            registry_lock.unlockShared(Server.io);
+            dispatch_native(sink, caller, kind, tokens.rest());
+        },
+        .script => |script| {
+            var args: [16][]const u8 = undefined;
+            var arg_count: usize = 0;
+            while (tokens.next()) |arg| {
+                if (arg_count == args.len) break;
+                args[arg_count] = arg;
+                arg_count += 1;
+            }
+            registry_lock.unlockShared(Server.io);
+            script.call(script.ctx, caller, args[0..arg_count]);
+        },
+    }
+}
+
+fn dispatch_native(sink: Sink, caller: Caller, kind: Kind, rest: []const u8) void {
+    var tokens = std.mem.tokenizeAny(u8, rest, " \t");
     const first = tokens.next();
-    const second = if (command.kind == .ban or command.kind == .kick)
+    const second = if (kind == .ban or kind == .kick)
         std.mem.trimEnd(u8, tokens.rest(), " \t")
     else
         tokens.next();
-    const argument_count: u8 = switch (command.kind) {
+    const argument_count: u8 = switch (kind) {
         .help => 0,
         .register, .passwd, .resetpassword => 2,
         else => 1,
     };
-    const with_reason = command.kind == .ban or command.kind == .kick;
+    const with_reason = kind == .ban or kind == .kick;
     if ((argument_count == 0 and first != null) or
         (argument_count > 0 and first == null) or
         (argument_count == 2 and second == null) or
         (!with_reason and ((argument_count < 2 and second != null) or tokens.next() != null)))
     {
-        sink.write(command.usage);
+        sink.write(usage_for(kind));
         return;
     }
-    run(sink, caller, command.kind, first orelse "", second orelse "") catch |err| report_error(sink, err);
+    run_native(sink, caller, kind, first orelse "", second orelse "") catch |err| report_error(sink, err);
 }
 
-fn run(sink: Sink, caller: Caller, kind: Kind, first: []const u8, second: []const u8) !void {
+fn usage_for(kind: Kind) []const u8 {
+    for (native_usages) |item| {
+        if (item.kind == kind) return item.usage;
+    }
+    return "";
+}
+
+fn run_native(sink: Sink, caller: Caller, kind: Kind, first: []const u8, second: []const u8) !void {
     switch (kind) {
-        .help => for (commands) |command| {
-            if (!allowed(caller, command.kind)) continue;
-            if (caller == .player and caller.player.authenticated.load(.acquire) and
-                (command.kind == .register or command.kind == .login)) continue;
-            sink.write(command.usage);
+        .help => {
+            write_help(sink, caller);
         },
         .register => try Authentication.execute(caller.player, .register, first, second),
         .login => try Authentication.execute(caller.player, .login, first, second),
@@ -102,6 +348,31 @@ fn run(sink: Sink, caller: Caller, kind: Kind, first: []const u8, second: []cons
             sink.write("Password reset");
         },
         else => try moderate(sink, caller, kind, first, second),
+    }
+}
+
+pub fn write_help(sink: Sink, caller: Caller) void {
+    ensure_native();
+
+    registry_lock.lockSharedUncancelable(Server.io);
+    defer registry_lock.unlockShared(Server.io);
+
+    for (entries[0..entry_count]) |*entry| {
+        if (!entry.enabled or !allowed(caller, entry)) continue;
+        if (caller == .player and caller.player.authenticated.load(.acquire) and entry.handler == .native) {
+            const kind = entry.handler.native;
+            if (kind == .register or kind == .login) continue;
+        }
+        sink.write(entry.usage.slice());
+        if (entry.alias_count > 0) {
+            var line_buf: [160]u8 = undefined;
+            var fbs = std.Io.Writer.fixed(&line_buf);
+            fbs.print("  aliases: /{s}", .{entry.aliases[0].slice()}) catch {};
+            for (entry.aliases[1..entry.alias_count]) |alias| {
+                fbs.print(", /{s}", .{alias.slice()}) catch {};
+            }
+            sink.write(fbs.buffered());
+        }
     }
 }
 
@@ -221,4 +492,51 @@ test "auth commands enforce caller permissions and exact arguments" {
     dispatch(sink, "register private-password private-password", .console);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "private-password") == null);
     try std.testing.expect(Accounts.lookup("Alice").credential == null);
+}
+
+test "registry rejects collisions and groups aliases in help" {
+    Server.io = std.testing.io;
+    var output: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output);
+    const sink: Sink = .{ .ctx = &writer, .write_fn = struct {
+        fn write(ctx: *anyopaque, line: []const u8) void {
+            const target: *std.Io.Writer = @ptrCast(@alignCast(ctx));
+            target.writeAll(line) catch unreachable;
+        }
+    }.write };
+
+    var calls: usize = 0;
+    const script = ScriptDispatch{
+        .ctx = &calls,
+        .call = struct {
+            fn call(ctx: *anyopaque, caller: Caller, args: []const []const u8) void {
+                _ = caller;
+                _ = args;
+                const counter: *usize = @ptrCast(@alignCast(ctx));
+                counter.* += 1;
+            }
+        }.call,
+    };
+    reset_registry();
+    defer reset_registry();
+
+    try std.testing.expect(register(.{
+        .name = "shrug",
+        .aliases = &.{"shrugy"},
+        .usage = "&e/shrug -- shrug",
+        .script = script,
+    }, @ptrFromInt(0x1000)));
+    try std.testing.expect(!register(.{ .name = "shrug", .usage = "x", .script = script }, @ptrFromInt(0x2000)));
+    try std.testing.expect(!register(.{ .name = "shrugy", .usage = "x", .script = script }, @ptrFromInt(0x2000)));
+    try std.testing.expect(!register(.{ .name = "op", .usage = "x", .script = script }, @ptrFromInt(0x2000)));
+    try std.testing.expect(!register(.{ .name = "bad name!", .usage = "x", .script = script }, @ptrFromInt(0x2000)));
+
+    dispatch(sink, "shrugy", .console);
+    try std.testing.expectEqual(@as(usize, 1), calls);
+
+    const owner: *const anyopaque = @ptrFromInt(0x1000);
+    unregister_owner(owner);
+    dispatch(sink, "shrug", .console);
+    try std.testing.expectEqual(@as(usize, 1), calls);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "Unknown command") != null);
 }
