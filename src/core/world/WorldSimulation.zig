@@ -38,6 +38,12 @@ pub const BlockChange = struct {
     block: Block,
 };
 
+/// Optional host policy consulted before any logical mutation commits. A
+/// false answer skips the whole source/landing operation (and a tree skips
+/// growth entirely) so protected cells never lose or duplicate blocks. The
+/// host installs this only in the standalone server; vanilla stays unguarded.
+pub var mutation_guard: ?*const fn (x: u16, y: u16, z: u16) bool = null;
+
 /// Receives each committed simulation change without buffering or allocating.
 pub const BlockChangeSink = struct {
     ctx: ?*anyopaque = null,
@@ -161,6 +167,11 @@ pub fn set_block(self: *WorldSimulation, data: *WorldData, sink: BlockChangeSink
             while (landing_y > 0 and data.get_block(x, landing_y - 1, z).is_place_replaceable()) {
                 landing_y -= 1;
             }
+        }
+        if (mutation_guard) |guard| {
+            // Source removal and landing placement stay one logical operation.
+            if (!guard(x, source_y, z)) break;
+            if (landing_y != source_y and !guard(x, landing_y, z)) break;
         }
         self.commit_block_change(data, sink, &emitted, x, source_y, z, if (landing_y == source_y) source_block else .air);
         if (landing_y != source_y) {
@@ -600,6 +611,28 @@ fn grow_tree(
     while (check_y <= base_y + height + 2) : (check_y += 1) {
         if (check_y >= data.dims.height) return;
         if (!data.get_block(x, @intCast(check_y), z).is_air()) return;
+    }
+
+    if (mutation_guard) |guard| {
+        // A denied tree skips growth entirely rather than committing a partial one.
+        var gy: u32 = base_y + 1;
+        while (gy <= base_y + height) : (gy += 1) {
+            if (!guard(x, @intCast(gy), z)) return;
+        }
+        var layer: u32 = 0;
+        while (layer < 4) : (layer += 1) {
+            const ly: u32 = base_y + height - 2 + layer;
+            var dx: i32 = -2;
+            while (dx <= 2) : (dx += 1) {
+                var dz: i32 = -2;
+                while (dz <= 2) : (dz += 1) {
+                    const lx = @as(i32, @intCast(x)) + dx;
+                    const lz = @as(i32, @intCast(z)) + dz;
+                    if (lx < 0 or lx >= data.dims.length or lz < 0 or lz >= data.dims.depth) continue;
+                    if (!guard(@intCast(lx), @intCast(ly), @intCast(lz))) return;
+                }
+            }
+        }
     }
 
     for (0..height) |i| {

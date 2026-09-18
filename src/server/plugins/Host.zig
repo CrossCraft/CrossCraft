@@ -208,6 +208,7 @@ fn dispatch(self: *Host, action: Action) void {
             // Position reports already in flight when a teleport committed
             // are dropped; no acknowledgement packet is required.
             if (client.teleport_serial.load(.acquire) != p.teleport_serial) return;
+            const before = client.pose.load();
             client.apply_position(.{
                 .pid = -1,
                 .x = p.x,
@@ -216,6 +217,9 @@ fn dispatch(self: *Host, action: Action) void {
                 .yaw = p.yaw,
                 .pitch = p.pitch,
             });
+            if (self.plugins) |plugins| {
+                plugins.dispatch_position(p.handle, p.teleport_serial, before, client.pose.load());
+            }
         },
         .set_block => |b| self.dispatch_set_block(b),
         .command => |c| {
@@ -248,24 +252,38 @@ fn dispatch_set_block(self: *Host, b: @FieldType(Action, "set_block")) void {
     world.unlock_world_shared();
 
     var decision: Decision = .allow;
-    if (self.plugins) |plugins| decision = plugins.decide_block_attempt(client, &attempt);
-
-    switch (decision) {
-        .allow => client.apply_set_block(.{
+    if (self.plugins) |plugins| {
+        decision = plugins.decide_block_attempt(client, &attempt);
+        if (decision == .allow) {
+            plugins.begin_edit(.{ .id = @intCast(client.id), .generation = client.generation });
+            client.apply_set_block(.{
+                .x = b.x,
+                .y = b.y,
+                .z = b.z,
+                .mode = b.mode,
+                .block = b.block,
+            });
+            plugins.end_edit();
+            return;
+        }
+    } else {
+        client.apply_set_block(.{
             .x = b.x,
             .y = b.y,
             .z = b.z,
             .mode = b.mode,
             .block = b.block,
-        }),
-        .deny, .consume => {
-            // Correct the client-predicted block state for denied or
-            // consumed edits.
-            world.lock_world_shared();
-            const current = world.get_block(b.x, b.y, b.z);
-            world.unlock_world_shared();
-            client.send_block_change(b.x, b.y, b.z, current) catch {};
-        },
+        });
+        return;
+    }
+
+    {
+        // Correct the client-predicted block state for denied or
+        // consumed edits.
+        world.lock_world_shared();
+        const current = world.get_block(b.x, b.y, b.z);
+        world.unlock_world_shared();
+        client.send_block_change(b.x, b.y, b.z, current) catch {};
     }
 }
 

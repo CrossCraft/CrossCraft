@@ -813,13 +813,14 @@ pub fn apply_set_block(self: *Client, event: zb.SetBlockToServer) void {
 
     const old_block = world.data.get_block(event.x, event.y, event.z);
 
+    var emitted: u32 = 0;
     if (mode == .destroy) {
-        world.set_block(Server.block_change_sink, event.x, event.y, event.z, .air);
+        emitted = world.set_block(Server.block_change_sink, event.x, event.y, event.z, .air);
     } else {
         // Partial blocks can be targeted through their empty subvolume. Only
         // air and fluids are replaceable, except slab + slab promotes in-place.
         if (old_block == .slab and block == .slab) {
-            world.set_block(Server.block_change_sink, event.x, event.y, event.z, .double_slab);
+            _ = world.set_block(Server.block_change_sink, event.x, event.y, event.z, .double_slab);
             return;
         }
         if (!old_block.is_place_replaceable()) {
@@ -833,11 +834,11 @@ pub fn apply_set_block(self: *Client, event: zb.SetBlockToServer) void {
             const below = world.data.get_block(event.x, event.y - 1, event.z);
             if (below == .slab) {
                 Server.broadcast_block_change(event.x, event.y, event.z, old_block);
-                world.set_block(Server.block_change_sink, event.x, event.y - 1, event.z, .double_slab);
+                _ = world.set_block(Server.block_change_sink, event.x, event.y - 1, event.z, .double_slab);
                 return;
             }
         }
-        world.set_block(Server.block_change_sink, event.x, event.y, event.z, block);
+        emitted = world.set_block(Server.block_change_sink, event.x, event.y, event.z, block);
     }
 
     if (mode == .create and block == .sponge) {
@@ -845,6 +846,17 @@ pub fn apply_set_block(self: *Client, event: zb.SetBlockToServer) void {
     }
     if (mode == .destroy and old_block == .sponge) {
         world.sponge_release(event.x, event.y, event.z);
+    }
+
+    // A host policy guard may have denied the whole logical operation (for
+    // example a gravity landing cell inside a protected claim); reassert the
+    // settled cell so the client's predicted state cannot drift. Committed
+    // operations already corrected clients through the change sink.
+    if (emitted == 0) {
+        const settled = world.data.get_block(event.x, event.y, event.z);
+        if (settled != if (mode == .destroy) blocks.Block.air else block) {
+            Server.broadcast_block_change(event.x, event.y, event.z, settled);
+        }
     }
 }
 

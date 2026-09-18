@@ -58,6 +58,7 @@ pub const Capability = enum {
     @"player.kick",
     @"player.ban",
     @"world.edit",
+    @"session.host",
 
     pub fn parse(text: []const u8) ?Capability {
         inline for (@typeInfo(Capability).@"enum".fields) |field| {

@@ -10,6 +10,9 @@ const luaz = @import("luaz");
 const Manifest = @import("Manifest.zig");
 const RuntimeMod = @import("Runtime.zig");
 const HostMod = @import("Host.zig");
+const Regions = @import("Regions.zig");
+const Sessions = @import("Sessions.zig");
+const Arena = @import("Arena.zig");
 const Commands = @import("../Commands.zig");
 
 const log = std.log.scoped(.plugins);
@@ -57,6 +60,10 @@ pub const Plugin = struct {
     block_count: usize = 0,
     command_bindings: [max_commands]CommandBinding = undefined,
     command_count: usize = 0,
+    move_refs: [max_handlers]i32 = @splat(0),
+    move_count: usize = 0,
+    violation_refs: [max_handlers]i32 = @splat(0),
+    violation_count: usize = 0,
     store_ref: i32 = 0,
     ops_this_tick: u32 = 0,
     disabled: bool = false,
@@ -87,6 +94,101 @@ host: *HostMod.Host,
 items: [max_plugins]*Plugin = undefined,
 count: usize = 0,
 spawn: SpawnState = .{},
+regions: Regions.Registry = .{},
+sessions: Sessions.Registry = .{},
+jobs: Arena.Registry = .{},
+traces: [Server.MaxPlayers]MoveTrace = @splat(.{}),
+edit_handle: ?Server.PlayerHandle = null,
+shutting_down: bool = false,
+
+/// Movement-policy evidence: unsupported hovering and implausible ascent
+/// reported as violations, never as an authoritative isFlying flag.
+pub const MoveViolation = enum { hover, ascend };
+
+pub const MoveTrace = struct {
+    serial: u32 = 0,
+    last_ms: i64 = 0,
+    last_x: u16 = 0,
+    last_y: u16 = 0,
+    last_z: u16 = 0,
+    hover_ms: i32 = 0,
+    ascent_ms: i32 = 0,
+    ascent_dy: i32 = 0,
+};
+
+pub const hover_evidence_ms: i32 = 5000;
+pub const ascent_window_ms: i32 = 1500;
+pub const ascent_evidence_blocks: i32 = 5;
+const sample_gap_ms: i64 = 2000;
+
+pub fn movement_policy_sample(
+    trace: *MoveTrace,
+    now: i64,
+    serial: u32,
+    x: u16,
+    y: u16,
+    z: u16,
+    supported: bool,
+) ?MoveViolation {
+    if (trace.serial != serial) {
+        trace.* = .{ .serial = serial, .last_ms = now, .last_x = x, .last_y = y, .last_z = z };
+        return null;
+    }
+    const dt = now - trace.last_ms;
+    trace.last_ms = now;
+    const dy = @as(i32, y) - @as(i32, trace.last_y);
+    const moved = x != trace.last_x or z != trace.last_z;
+    trace.last_x = x;
+    trace.last_y = y;
+    trace.last_z = z;
+    if (dt <= 0 or dt > sample_gap_ms) {
+        trace.hover_ms = 0;
+        trace.ascent_ms = 0;
+        trace.ascent_dy = 0;
+        return null;
+    }
+
+    var violation: ?MoveViolation = null;
+    if (!supported and dy == 0 and !moved) {
+        trace.hover_ms += @intCast(dt);
+        if (trace.hover_ms >= hover_evidence_ms) {
+            trace.hover_ms = 0;
+            violation = .hover;
+        }
+    } else {
+        trace.hover_ms = 0;
+    }
+    if (!supported and dy > 0) {
+        trace.ascent_ms += @intCast(dt);
+        trace.ascent_dy += dy;
+        if (trace.ascent_dy >= ascent_evidence_blocks and trace.ascent_ms <= ascent_window_ms) {
+            trace.ascent_ms = 0;
+            trace.ascent_dy = 0;
+            violation = .ascend;
+        } else if (trace.ascent_ms > ascent_window_ms) {
+            trace.ascent_ms = 0;
+            trace.ascent_dy = 0;
+        }
+    } else {
+        trace.ascent_ms = 0;
+        trace.ascent_dy = 0;
+    }
+    return violation;
+}
+
+/// The mutation guard runs under the world lock on the ordered context; it
+/// consults only native region/session state, never scripts.
+var guard_manager: ?*Plugins = null;
+
+fn mutation_allowed(x: u16, y: u16, z: u16) bool {
+    const manager = guard_manager orelse return true;
+    if (Arena.bypass_cells) return true;
+    const region = manager.regions.find(x, y, z) orelse return true;
+    if (manager.edit_handle) |handle| {
+        return manager.sessions.plugin_contains(region.owner, handle);
+    }
+    return !region.frozen;
+}
 
 const SpawnState = struct {
     x: u16 = 0,
@@ -113,18 +215,27 @@ const spawn_file_name = "spawn.json";
 const plugin_data_dir_name = "plugin-data";
 const empty_spawn = SpawnFile{};
 
-// The shipped Essentials package. It materializes into `plugins/essentials/`
-// on first boot so every fresh server starts with the baseline commands; an
-// existing plugins directory stays operator-managed and is never modified.
-const essentials_dir_name = "essentials";
-const shipped_essentials = [_]struct { name: []const u8, contents: []const u8 }{
-    .{ .name = "manifest.json", .contents = @embedFile("essentials/manifest.json") },
-    .{ .name = "essentials.luau", .contents = @embedFile("essentials/essentials.luau") },
-    .{ .name = "config.json", .contents = @embedFile("essentials/config.json") },
+// The shipped plugin packages. They materialize into `plugins/<dir>/` on
+// first boot so every fresh server starts with them; an existing plugins
+// directory stays operator-managed and is never modified.
+const ShippedFile = struct { name: []const u8, contents: []const u8 };
+const ShippedPackage = struct { dir: []const u8, files: []const ShippedFile };
+const shipped_packages = [_]ShippedPackage{
+    .{ .dir = "essentials", .files = &.{
+        .{ .name = "manifest.json", .contents = @embedFile("essentials/manifest.json") },
+        .{ .name = "essentials.luau", .contents = @embedFile("essentials/essentials.luau") },
+        .{ .name = "config.json", .contents = @embedFile("essentials/config.json") },
+    } },
+    .{ .dir = "spleef", .files = &.{
+        .{ .name = "manifest.json", .contents = @embedFile("spleef/manifest.json") },
+        .{ .name = "spleef.luau", .contents = @embedFile("spleef/spleef.luau") },
+        .{ .name = "config.json", .contents = @embedFile("spleef/config.json") },
+    } },
 };
 
-/// Factory state: a server without a plugins directory ships with Essentials.
-/// Operators opt out by keeping a plugins directory (even empty) present.
+/// Factory state: a server without a plugins directory ships with the
+/// bundled packages. Operators opt out by keeping a plugins directory (even
+/// empty) present.
 fn prepare_plugins_dir(self: *Plugins) void {
     const exists = if (self.data_dir.openDir(Server.io, "plugins", .{})) |_| true else |err| switch (err) {
         error.FileNotFound => false,
@@ -132,25 +243,33 @@ fn prepare_plugins_dir(self: *Plugins) void {
     };
     if (exists) return;
 
-    self.data_dir.createDirPath(Server.io, "plugins/" ++ essentials_dir_name) catch |err| {
-        log.warn("Could not create the plugins directory: {}", .{err});
-        return;
-    };
-    for (shipped_essentials) |file| {
-        var path_buf: [96]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buf, "plugins/" ++ essentials_dir_name ++ "/{s}", .{file.name}) catch continue;
-        self.data_dir.writeFile(Server.io, .{ .sub_path = path, .data = file.contents }) catch |err| {
-            log.warn("Could not write '{s}': {}", .{ path, err });
+    for (shipped_packages) |package| {
+        var dir_buf: [64]u8 = undefined;
+        const dir_path = std.fmt.bufPrint(&dir_buf, "plugins/{s}", .{package.dir}) catch continue;
+        self.data_dir.createDirPath(Server.io, dir_path) catch |err| {
+            log.warn("Could not create '{s}': {}", .{ dir_path, err });
+            continue;
         };
+        for (package.files) |file| {
+            var path_buf: [96]u8 = undefined;
+            const path = std.fmt.bufPrint(&path_buf, "plugins/{s}/{s}", .{ package.dir, file.name }) catch continue;
+            self.data_dir.writeFile(Server.io, .{ .sub_path = path, .data = file.contents }) catch |err| {
+                log.warn("Could not write '{s}': {}", .{ path, err });
+            };
+        }
     }
-    log.info("Installed the shipped Essentials plugin", .{});
+    log.info("Installed the shipped plugin packages", .{});
 }
 
 pub fn init(alloc: std.mem.Allocator, data_dir: std.Io.Dir, host: *HostMod.Host) !*Plugins {
     const self = try alloc.create(Plugins);
     self.* = .{ .alloc = alloc, .data_dir = data_dir, .host = host };
     host.plugins = self;
+    guard_manager = self;
+    core.World.WorldSimulation.mutation_guard = &mutation_allowed;
     errdefer {
+        core.World.WorldSimulation.mutation_guard = null;
+        guard_manager = null;
         host.plugins = null;
         alloc.destroy(self);
     }
@@ -205,6 +324,9 @@ pub fn init(alloc: std.mem.Allocator, data_dir: std.Io.Dir, host: *HostMod.Host)
         self.count += 1;
     }
 
+    // Recover dirty arenas before any plugin starts so games never admit
+    // players onto an unrestored arena, even when their plugin is missing.
+    Arena.recover(alloc, data_dir);
     self.resolve_and_start();
     self.init_spawn();
     return self;
@@ -348,11 +470,20 @@ fn start(self: *Plugins, plugin: *Plugin) void {
 }
 
 pub fn deinit(self: *Plugins) void {
-    // Reverse start order; host cleanup revokes registrations and cancels
-    // work without relying on script cleanup succeeding.
+    // Reverse start order; host cleanup revokes registrations, ends sessions,
+    // and cancels work without relying on script cleanup succeeding. Players
+    // are on their way out during shutdown, so no return teleports run.
     const alloc = self.alloc;
     const count = self.count;
     const items = self.items;
+    self.shutting_down = true;
+    for (items[0..count]) |plugin| {
+        self.sessions.end_for_owner(plugin, .{}, false);
+        self.regions.release_owner(plugin);
+        self.jobs.cancel_owner(self, plugin);
+    }
+    core.World.WorldSimulation.mutation_guard = null;
+    guard_manager = null;
     self.* = undefined;
 
     var i = count;
@@ -374,11 +505,18 @@ fn disable(self: *Plugins, plugin: *Plugin, reason: []const u8) void {
     log.warn("Disabling plugin '{s}' ({s}): {s}", .{
         plugin.manifest.name(), plugin.uuid_text(&uuid_buf), reason,
     });
+    // Host-owned cleanup: end sessions (returning members), drop claims and
+    // jobs, and revoke registrations before the VM goes away.
+    self.sessions.end_for_owner(plugin, self.return_spot(), !self.shutting_down);
+    self.regions.release_owner(plugin);
+    self.jobs.cancel_owner(self, plugin);
     Commands.unregister_owner(plugin);
     plugin.timer_count = 0;
     plugin.join_count = 0;
     plugin.leave_count = 0;
     plugin.block_count = 0;
+    plugin.move_count = 0;
+    plugin.violation_count = 0;
     plugin.command_count = 0;
     plugin.active = false;
     if (plugin.runtime) |runtime| {
@@ -399,7 +537,7 @@ fn disable(self: *Plugins, plugin: *Plugin, reason: []const u8) void {
     }
 }
 
-fn script_failed(self: *Plugins, plugin: *Plugin, message: []const u8) void {
+pub fn script_failed(self: *Plugins, plugin: *Plugin, message: []const u8) void {
     var uuid_buf: [36]u8 = undefined;
     log.err("Plugin '{s}' ({s}) script error: {s}", .{
         plugin.manifest.name(), plugin.uuid_text(&uuid_buf), message,
@@ -443,6 +581,7 @@ pub fn tick(self: *Plugins) void {
         }
         plugin.timer_count = write;
     }
+    self.jobs.tick(self);
 }
 
 // -------------------------------------------------------- event dispatch
@@ -500,6 +639,10 @@ pub fn dispatch_join(self: *Plugins, handle: Server.PlayerHandle, name: []const 
 }
 
 pub fn dispatch_leave(self: *Plugins, handle: Server.PlayerHandle, name: []const u8) void {
+    // Host-owned membership cleanup runs before script notifications so a
+    // disconnect never leaves stale session membership behind.
+    self.sessions.purge_player(handle);
+
     var info = Server.PlayerInfo{ .handle = handle };
     const len = @min(name.len, info.name_buf.len);
     @memcpy(info.name_buf[0..len], name[0..len]);
@@ -522,9 +665,12 @@ pub fn dispatch_leave(self: *Plugins, handle: Server.PlayerHandle, name: []const
 }
 
 /// Collect decisions for a block attempt before mutation. Decision callbacks
-/// cannot yield; a denial wins over a consume result.
+/// cannot yield; a denial wins over a consume result. Claims are enforced
+/// natively first: a player outside the owning plugin's session never reaches
+/// any handler, and Op status does not bypass that rule.
 pub fn decide_block_attempt(self: *Plugins, client: *Server.Client, attempt: *HostMod.BlockAttempt) HostMod.Decision {
     attempt.player = snapshot_client(client);
+    if (self.entry_denied(attempt.player.handle, attempt.x, attempt.y, attempt.z)) return .deny;
     var decision: HostMod.Decision = .allow;
 
     for (self.items[0..self.count]) |plugin| {
@@ -546,6 +692,11 @@ pub fn decide_block_attempt(self: *Plugins, client: *Server.Client, attempt: *Ho
     return decision;
 }
 
+fn entry_denied(self: *Plugins, handle: Server.PlayerHandle, x: u16, y: u16, z: u16) bool {
+    const region = self.regions.find(x, y, z) orelse return false;
+    return !self.sessions.plugin_contains(region.owner, handle);
+}
+
 fn classify_decision(runtime: *RuntimeMod.Runtime) HostMod.Decision {
     const state = runtime.state;
     defer state.pop(1);
@@ -564,6 +715,105 @@ fn combine(current: HostMod.Decision, proposed: HostMod.Decision) HostMod.Decisi
         .consume => if (proposed == .deny) .deny else .consume,
         .allow => proposed,
     };
+}
+
+/// Authorize a committed player edit for the mutation guard. The attempt has
+/// already passed the decision path; the guard revalidates every affected
+/// cell (gravity landing cells, released stacks) against claim ownership.
+pub fn begin_edit(self: *Plugins, handle: Server.PlayerHandle) void {
+    self.edit_handle = handle;
+}
+
+pub fn end_edit(self: *Plugins) void {
+    self.edit_handle = null;
+}
+
+fn feet_blocks(pose: Client.PlayerPose) [3]u16 {
+    return .{
+        pose.x / 32,
+        if (pose.y >= 51) (pose.y - 51) / 32 else 0,
+        pose.z / 32,
+    };
+}
+
+fn has_support(feet: [3]u16) bool {
+    world.lock_world_shared();
+    defer world.unlock_world_shared();
+
+    const dims = world.data.dims;
+    if (feet[1] == 0) return true;
+    assert(feet[1] >= 1);
+    const below = world.get_block(feet[0], feet[1] - 1, feet[2]);
+    const at = world.get_block(feet[0], feet[1], feet[2]);
+    if (below.is_solid() or at.is_solid() or below.is_fluid() or at.is_fluid()) return true;
+    if (feet[1] + 1 < dims.height and world.get_block(feet[0], feet[1] + 1, feet[2]).is_fluid()) return true;
+    return false;
+}
+
+/// Evaluate an accepted position report: movement-policy evidence plus
+/// accepted-movement events (feet block changes and claim crossings).
+pub fn dispatch_position(
+    self: *Plugins,
+    handle: Server.PlayerHandle,
+    teleport_serial: u32,
+    before_pose: Client.PlayerPose,
+    after_pose: Client.PlayerPose,
+) void {
+    assert(handle.id < Server.MaxPlayers);
+    const before = feet_blocks(before_pose);
+    const after = feet_blocks(after_pose);
+    assert(after[1] <= (65535 - 51) / 32);
+    const supported = has_support(after);
+    const violation = movement_policy_sample(
+        &self.traces[handle.id],
+        Client.now_ms(),
+        teleport_serial,
+        after[0],
+        after[1],
+        after[2],
+        supported,
+    );
+    const crossed = before[1] != after[1] or
+        self.regions.find(before[0], before[1], before[2]) != self.regions.find(after[0], after[1], after[2]);
+    if (violation == null and !crossed) return;
+    const info = resolve_info(handle) orelse return;
+
+    if (violation) |kind| {
+        for (self.items[0..self.count]) |plugin| {
+            assert(plugin.violation_count <= max_handlers);
+            if (!plugin.active or plugin.violation_count == 0) continue;
+            const runtime = plugin.runtime orelse continue;
+            for (plugin.violation_refs[0..plugin.violation_count]) |ref| {
+                runtime.deadline_ms = Client.now_ms() + callback_budget_ms;
+                runtime.push_function(ref);
+                push_player_info(runtime, info);
+                runtime.state.pushLString(@tagName(kind));
+                if (!runtime.protect_call(2, 0)) {
+                    script_failed(self, plugin, runtime.last_error());
+                    return;
+                }
+            }
+        }
+    }
+    if (crossed) {
+        for (self.items[0..self.count]) |plugin| {
+            assert(plugin.move_count <= max_handlers);
+            if (!plugin.active or plugin.move_count == 0) continue;
+            const runtime = plugin.runtime orelse continue;
+            for (plugin.move_refs[0..plugin.move_count]) |ref| {
+                runtime.deadline_ms = Client.now_ms() + callback_budget_ms;
+                runtime.push_function(ref);
+                push_player_info(runtime, info);
+                runtime.state.pushInteger(after[0]);
+                runtime.state.pushInteger(after[1]);
+                runtime.state.pushInteger(after[2]);
+                if (!runtime.protect_call(4, 0)) {
+                    script_failed(self, plugin, runtime.last_error());
+                    return;
+                }
+            }
+        }
+    }
 }
 
 // ------------------------------------------------------- Lua value helpers
@@ -688,6 +938,17 @@ fn set_spawn(self: *Plugins, x: u16, y: u16, z: u16) bool {
     self.persist_spawn(x, y, z, 0, 0);
     log.info("Stable spawn set to ({d}, {d}, {d})", .{ x, y, z });
     return true;
+}
+
+fn return_spot(self: *Plugins) Sessions.ReturnSpot {
+    return .{
+        .x = self.spawn.x,
+        .y = self.spawn.y,
+        .z = self.spawn.z,
+        .yaw = self.spawn.yaw,
+        .pitch = self.spawn.pitch,
+        .valid = self.spawn.valid,
+    };
 }
 
 fn persist_spawn(self: *Plugins, x: u16, y: u16, z: u16, yaw: u8, pitch: u8) void {
@@ -886,6 +1147,15 @@ fn install_bindings(self: *Plugins, plugin: *Plugin) void {
     bind(plugin, "on_player_join", api_on_player_join);
     bind(plugin, "on_player_leave", api_on_player_leave);
     bind(plugin, "on_block_attempt", api_on_block_attempt);
+    bind(plugin, "on_player_move", api_on_player_move);
+    bind(plugin, "on_movement_violation", api_on_movement_violation);
+    bind(plugin, "create_session", api_create_session);
+    bind(plugin, "claim", api_claim);
+    bind(plugin, "fill", api_fill);
+    bind(plugin, "restore", api_restore);
+    bind(plugin, "capture", api_capture);
+    bind(plugin, "mark_dirty", api_mark_dirty);
+    bind(plugin, "clear_dirty", api_clear_dirty);
     bind(plugin, "store_get", api_store_get);
     bind(plugin, "store_set", api_store_set);
 
@@ -1157,6 +1427,12 @@ fn api_teleport(L: ?*luaz.c.lua_State) callconv(.c) c_int {
         runtime.state.pushBoolean(false);
         return 1;
     };
+    // Voluntary travel into an active, locked session's members is denied
+    // here so every caller of this host action obeys match rules.
+    if (plugin.owner.sessions.travel_locked_for(handle)) {
+        runtime.state.pushBoolean(false);
+        return 1;
+    }
     const x = clamp_block(runtime.state.checkInteger(2));
     const y = clamp_block(runtime.state.checkInteger(3));
     const z = clamp_block(runtime.state.checkInteger(4));
@@ -1309,7 +1585,15 @@ fn api_on_block_attempt(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     return add_handler(L, .block);
 }
 
-const HandlerKind = enum { join, leave, block };
+fn api_on_player_move(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    return add_handler(L, .move);
+}
+
+fn api_on_movement_violation(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    return add_handler(L, .violation);
+}
+
+const HandlerKind = enum { join, leave, block, move, violation };
 
 fn add_handler(L: ?*luaz.c.lua_State, kind: HandlerKind) c_int {
     const plugin = plugin_from(L);
@@ -1322,11 +1606,15 @@ fn add_handler(L: ?*luaz.c.lua_State, kind: HandlerKind) c_int {
         .join => &plugin.join_refs,
         .leave => &plugin.leave_refs,
         .block => &plugin.block_refs,
+        .move => &plugin.move_refs,
+        .violation => &plugin.violation_refs,
     };
     const count = switch (kind) {
         .join => &plugin.join_count,
         .leave => &plugin.leave_count,
         .block => &plugin.block_count,
+        .move => &plugin.move_count,
+        .violation => &plugin.violation_count,
     };
     if (count.* >= max_handlers) {
         state.pushLString("event handler limit reached");
@@ -1374,4 +1662,467 @@ fn api_store_set(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     state.pop(1);
     plugin.owner.save_store(plugin);
     return 0;
+}
+
+// ------------------------------------------------------------ sessions
+
+fn session_from(L: ?*luaz.c.lua_State) ?*Sessions.Session {
+    const state = luaz.State{ .lua = L.? };
+    const session: *Sessions.Session = @ptrCast(@alignCast(state.toLightUserdata(luaz.State.upvalueIndex(1)).?));
+    const generation = state.toIntegerX(luaz.State.upvalueIndex(2)) orelse return null;
+    if (!session.active or session.generation != generation) return null;
+    return session;
+}
+
+fn bind_session_method(runtime: *RuntimeMod.Runtime, session: *Sessions.Session, name: [:0]const u8, func: luaz.State.CFunction) void {
+    const state = runtime.state;
+    state.pushLightUserdata(session);
+    state.pushInteger(@intCast(session.generation));
+    state.pushCClosureK(func, name.ptr, 2, null);
+    state.setField(-2, name);
+}
+
+fn push_session_object(runtime: *RuntimeMod.Runtime, session: *Sessions.Session) void {
+    const state = runtime.state;
+    state.createTable(0, 8);
+    bind_session_method(runtime, session, "admit", api_session_admit);
+    bind_session_method(runtime, session, "remove", api_session_remove);
+    bind_session_method(runtime, session, "contains", api_session_contains);
+    bind_session_method(runtime, session, "members", api_session_members);
+    bind_session_method(runtime, session, "announce", api_session_announce);
+    bind_session_method(runtime, session, "travel", api_session_travel);
+    bind_session_method(runtime, session, "lock_travel", api_session_lock_travel);
+    bind_session_method(runtime, session, "finish", api_session_finish);
+}
+
+fn api_create_session(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const plugin = plugin_from(L);
+    const runtime = plugin.runtime.?;
+    const state = runtime.state;
+    if (!require_capability(plugin, .@"session.host")) {
+        state.pushNil();
+        return 1;
+    }
+    if (!plugin.take_op_budget()) return 0;
+    var capacity: usize = Sessions.max_members;
+    if (state.getTop() >= 1 and state.getType(1) == .table) {
+        _ = state.getField(1, "capacity");
+        defer state.pop(1);
+
+        if (state.toIntegerX(-1)) |n| capacity = @intCast(@max(n, 1));
+    }
+    const session = plugin.owner.sessions.create(plugin, capacity) orelse {
+        state.pushNil();
+        return 1;
+    };
+    push_session_object(runtime, session);
+    return 1;
+}
+
+fn api_session_admit(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const state = luaz.State{ .lua = L.? };
+    const session = session_from(L) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    const plugin = session.owner;
+    const runtime = plugin.runtime.?;
+    if (!require_capability(plugin, .@"session.host")) {
+        state.pushBoolean(false);
+        return 1;
+    }
+    if (!plugin.take_op_budget()) return 0;
+    const handle = resolve_player_arg(runtime, 1) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    // Only gameplay-ready players join sessions, and membership is exclusive
+    // server-wide so one player can never sit in two minigames.
+    const info = resolve_info(handle) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    if (!info.authenticated) {
+        state.pushBoolean(false);
+        return 1;
+    }
+    var role: []const u8 = "participant";
+    if (state.getTop() >= 2) {
+        if (state.toString(2)) |text| role = text[0..@min(text.len, 12)];
+    }
+    const spot: Sessions.ReturnSpot = .{
+        .x = info.x,
+        .y = info.y,
+        .z = info.z,
+        .yaw = info.yaw,
+        .pitch = info.pitch,
+        .valid = true,
+    };
+    state.pushBoolean(plugin.owner.sessions.admit(session, handle, spot, role));
+    return 1;
+}
+
+fn api_session_remove(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const state = luaz.State{ .lua = L.? };
+    const session = session_from(L) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    const plugin = session.owner;
+    if (!require_capability(plugin, .@"session.host")) {
+        state.pushBoolean(false);
+        return 1;
+    }
+    if (!plugin.take_op_budget()) return 0;
+    const runtime = plugin.runtime.?;
+    const handle = resolve_player_arg(runtime, 1) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    state.pushBoolean(session.remove(handle));
+    return 1;
+}
+
+fn api_session_contains(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const state = luaz.State{ .lua = L.? };
+    const session = session_from(L) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    const plugin = session.owner;
+    if (!require_capability(plugin, .@"session.host")) {
+        state.pushBoolean(false);
+        return 1;
+    }
+    const runtime = plugin.runtime.?;
+    const handle = resolve_player_arg(runtime, 1) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    state.pushBoolean(session.contains(handle));
+    return 1;
+}
+
+fn api_session_members(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const state = luaz.State{ .lua = L.? };
+    const session = session_from(L) orelse {
+        state.createTable(0, 0);
+        return 1;
+    };
+    const plugin = session.owner;
+    if (!require_capability(plugin, .@"session.host")) {
+        state.createTable(0, 0);
+        return 1;
+    }
+    const runtime = plugin.runtime.?;
+    if (!plugin.take_op_budget()) return 0;
+    state.createTable(@intCast(session.member_count), 0);
+    var count: i32 = 0;
+    for (session.members[0..session.member_count]) |*member| {
+        const info = resolve_info(member.handle) orelse continue;
+        push_player_info(runtime, info);
+        state.pushLString(member.role());
+        state.setField(-2, "role");
+        count += 1;
+        state.rawSetI(-2, count);
+    }
+    return 1;
+}
+
+fn api_session_announce(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const state = luaz.State{ .lua = L.? };
+    const session = session_from(L) orelse return 0;
+    const plugin = session.owner;
+    if (!require_capability(plugin, .@"session.host")) return 0;
+    if (!plugin.take_op_budget()) return 0;
+    const text = state.checkString(1);
+    const bounded = text[0..@min(text.len, max_message_bytes)];
+    for (session.members[0..session.member_count]) |*member| {
+        _ = message_handle(member.handle, bounded);
+    }
+    return 0;
+}
+
+fn api_session_travel(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const state = luaz.State{ .lua = L.? };
+    const session = session_from(L) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    const plugin = session.owner;
+    const runtime = plugin.runtime.?;
+    if (!require_capability(plugin, .@"session.host")) {
+        state.pushBoolean(false);
+        return 1;
+    }
+    if (!plugin.take_op_budget()) return 0;
+    const handle = resolve_player_arg(runtime, 1) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    // Session-authorized travel covers only this session's own members.
+    if (session.find_member(handle) == null) {
+        state.pushBoolean(false);
+        return 1;
+    }
+    const x = clamp_block(runtime.state.checkInteger(2));
+    const y = clamp_block(runtime.state.checkInteger(3));
+    const z = clamp_block(runtime.state.checkInteger(4));
+    var yaw: u8 = 0;
+    var pitch: u8 = 0;
+    if (runtime.state.getTop() >= 6) {
+        yaw = @bitCast(@as(i8, @truncate(runtime.state.checkInteger(5))));
+        pitch = @bitCast(@as(i8, @truncate(runtime.state.checkInteger(6))));
+    }
+    Server.teleport_handle_block(handle, x, y, z, yaw, pitch) catch {
+        state.pushBoolean(false);
+        return 1;
+    };
+    state.pushBoolean(true);
+    return 1;
+}
+
+fn api_session_lock_travel(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const state = luaz.State{ .lua = L.? };
+    const session = session_from(L) orelse return 0;
+    const plugin = session.owner;
+    if (!require_capability(plugin, .@"session.host")) return 0;
+    session.travel_locked = state.optBoolean(1, true);
+    return 0;
+}
+
+fn api_session_finish(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const state = luaz.State{ .lua = L.? };
+    const session = session_from(L) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    const plugin = session.owner;
+    if (!require_capability(plugin, .@"session.host")) {
+        state.pushBoolean(false);
+        return 1;
+    }
+    session.end(plugin.owner.return_spot(), true);
+    state.pushBoolean(true);
+    return 1;
+}
+
+// -------------------------------------------------------------- regions
+
+fn region_from(L: ?*luaz.c.lua_State) ?*Regions.Region {
+    const state = luaz.State{ .lua = L.? };
+    const region: *Regions.Region = @ptrCast(@alignCast(state.toLightUserdata(luaz.State.upvalueIndex(1)).?));
+    const generation = state.toIntegerX(luaz.State.upvalueIndex(2)) orelse return null;
+    if (!region.active or region.generation != generation) return null;
+    return region;
+}
+
+fn read_box(state: luaz.State, index: i32) ?Regions.Box {
+    if (state.getType(index) != .table) return null;
+    var raw: [6]i64 = undefined;
+    const names = [_][:0]const u8{ "x0", "y0", "z0", "x1", "y1", "z1" };
+    for (names, 0..) |name, i| {
+        _ = state.getField(index, name);
+        defer state.pop(1);
+
+        const value = state.toIntegerX(-1) orelse return null;
+        if (value < 0 or value > 65535) return null;
+        raw[i] = value;
+    }
+    return .{
+        .x0 = @intCast(@min(raw[0], raw[3])),
+        .y0 = @intCast(@min(raw[1], raw[4])),
+        .z0 = @intCast(@min(raw[2], raw[5])),
+        .x1 = @intCast(@max(raw[0], raw[3])),
+        .y1 = @intCast(@max(raw[1], raw[4])),
+        .z1 = @intCast(@max(raw[2], raw[5])),
+    };
+}
+
+fn push_region_object(runtime: *RuntimeMod.Runtime, region: *Regions.Region) void {
+    const state = runtime.state;
+    state.createTable(0, 2);
+    state.pushLightUserdata(region);
+    state.pushInteger(@intCast(region.generation));
+    state.pushCClosureK(api_region_release, "release", 2, null);
+    state.setField(-2, "release");
+    state.pushLightUserdata(region);
+    state.pushInteger(@intCast(region.generation));
+    state.pushCClosureK(api_region_contains, "contains", 2, null);
+    state.setField(-2, "contains");
+}
+
+fn api_claim(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const plugin = plugin_from(L);
+    const runtime = plugin.runtime.?;
+    const state = runtime.state;
+    if (!require_capability(plugin, .@"world.edit")) {
+        state.pushNil();
+        return 1;
+    }
+    if (!plugin.take_op_budget()) return 0;
+    const box = read_box(state, 1) orelse {
+        state.pushNil();
+        return 1;
+    };
+    if (!world.active or !box_in_world_bounds(box)) {
+        state.pushNil();
+        return 1;
+    }
+    var frozen = true;
+    if (state.getTop() >= 2 and state.getType(2) == .table) {
+        _ = state.getField(2, "frozen");
+        defer state.pop(1);
+
+        if (!state.isNil(-1)) frozen = state.toBoolean(-1);
+    }
+    const region = plugin.owner.regions.claim(plugin, box, frozen) orelse {
+        state.pushNil();
+        return 1;
+    };
+    push_region_object(runtime, region);
+    return 1;
+}
+
+fn box_in_world_bounds(box: Regions.Box) bool {
+    const dims = world.data.dims;
+    return box.x1 < dims.length and box.y1 < dims.height and box.z1 < dims.depth;
+}
+
+fn api_region_release(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const region = region_from(L) orelse return 0;
+    Regions.Region.release(region);
+    return 0;
+}
+
+fn api_region_contains(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const state = luaz.State{ .lua = L.? };
+    const region = region_from(L) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    const plugin = region.owner;
+    const runtime = plugin.runtime.?;
+    const handle = resolve_player_arg(runtime, 1) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    const info = resolve_info(handle) orelse {
+        state.pushBoolean(false);
+        return 1;
+    };
+    state.pushBoolean(region.box.contains(info.x, info.y, info.z));
+    return 1;
+}
+
+// ----------------------------------------------------------- arena jobs
+
+fn api_fill(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const plugin = plugin_from(L);
+    const runtime = plugin.runtime.?;
+    const state = runtime.state;
+    if (!require_capability(plugin, .@"world.edit")) {
+        state.pushBoolean(false);
+        return 1;
+    }
+    if (!plugin.take_op_budget()) return 0;
+    const box = read_box(state, 1) orelse {
+        state.pushLString("fill expects a box table with x0..z1");
+        state.raiseError();
+    };
+    const block_name = state.checkString(2);
+    const block: core.blocks.Block = blk: {
+        inline for (@typeInfo(core.blocks.Block).@"enum".fields) |field| {
+            if (std.mem.eql(u8, field.name, block_name)) break :blk @enumFromInt(field.value);
+        }
+        state.pushLString("unknown block name");
+        state.raiseError();
+    };
+    if (!state.isFunction(3)) {
+        state.pushLString("fill expects a completion callback");
+        state.raiseError();
+    }
+    const done_ref = state.ref(3);
+    if (plugin.owner.jobs.enqueue_fill(plugin, box, block, done_ref) == null) {
+        state.unref(done_ref);
+        state.pushLString("fill rejected: the box must lie inside one of your claims within the world bounds");
+        state.raiseError();
+    }
+    state.pushBoolean(true);
+    return 1;
+}
+
+fn api_restore(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const plugin = plugin_from(L);
+    const runtime = plugin.runtime.?;
+    const state = runtime.state;
+    if (!require_capability(plugin, .@"world.edit")) {
+        state.pushBoolean(false);
+        return 1;
+    }
+    if (!plugin.take_op_budget()) return 0;
+    const box = read_box(state, 1) orelse {
+        state.pushLString("restore expects a box table with x0..z1");
+        state.raiseError();
+    };
+    const key = state.checkString(2);
+    if (!state.isFunction(3)) {
+        state.pushLString("restore expects a completion callback");
+        state.raiseError();
+    }
+    const done_ref = state.ref(3);
+    if (plugin.owner.jobs.enqueue_restore(plugin, box, key, done_ref) == null) {
+        state.unref(done_ref);
+        state.pushLString("restore rejected: no matching captured template inside your claims");
+        state.raiseError();
+    }
+    state.pushBoolean(true);
+    return 1;
+}
+
+fn api_capture(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const plugin = plugin_from(L);
+    const runtime = plugin.runtime.?;
+    if (!require_capability(plugin, .@"world.edit")) {
+        runtime.state.pushBoolean(false);
+        return 1;
+    }
+    if (!plugin.take_op_budget()) return 0;
+    const box = read_box(runtime.state, 1) orelse {
+        runtime.state.pushBoolean(false);
+        return 1;
+    };
+    const key = runtime.state.checkString(2);
+    runtime.state.pushBoolean(plugin.owner.jobs.capture(plugin, box, key));
+    return 1;
+}
+
+fn api_mark_dirty(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const plugin = plugin_from(L);
+    const runtime = plugin.runtime.?;
+    if (!require_capability(plugin, .@"world.edit")) {
+        runtime.state.pushBoolean(false);
+        return 1;
+    }
+    if (!plugin.take_op_budget()) return 0;
+    const box = read_box(runtime.state, 1) orelse {
+        runtime.state.pushBoolean(false);
+        return 1;
+    };
+    const key = runtime.state.checkString(2);
+    runtime.state.pushBoolean(plugin.owner.jobs.mark_dirty(plugin, box, key));
+    return 1;
+}
+
+fn api_clear_dirty(L: ?*luaz.c.lua_State) callconv(.c) c_int {
+    const plugin = plugin_from(L);
+    const runtime = plugin.runtime.?;
+    if (!require_capability(plugin, .@"world.edit")) {
+        runtime.state.pushBoolean(false);
+        return 1;
+    }
+    if (!plugin.take_op_budget()) return 0;
+    const key = runtime.state.checkString(1);
+    runtime.state.pushBoolean(plugin.owner.jobs.clear_dirty(plugin, key));
+    return 1;
 }

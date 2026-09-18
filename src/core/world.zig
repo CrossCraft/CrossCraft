@@ -202,9 +202,12 @@ pub fn tick(sink: BlockChangeSink) u32 {
     return sim.?.tick(&data, sink);
 }
 
-pub fn set_block(sink: BlockChangeSink, x: u16, y: u16, z: u16, block: Block) void {
+/// Commit an edit and its gravity changes before returning. Returns the
+/// number of committed changes; zero means a host guard denied the whole
+/// logical operation.
+pub fn set_block(sink: BlockChangeSink, x: u16, y: u16, z: u16, block: Block) u32 {
     assert(saver.owned_locally);
-    _ = sim.?.set_block(&data, sink, x, y, z, block);
+    return sim.?.set_block(&data, sink, x, y, z, block);
 }
 
 pub fn sponge_absorb(sink: BlockChangeSink, cx: u16, cy: u16, cz: u16) void {

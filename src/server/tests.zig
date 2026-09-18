@@ -10,6 +10,9 @@ const Manifest = @import("plugins/Manifest.zig");
 const RuntimeMod = @import("plugins/Runtime.zig");
 const HostMod = @import("plugins/Host.zig");
 const PluginsMod = @import("plugins/Plugins.zig");
+const RegionsMod = @import("plugins/Regions.zig");
+const SessionsMod = @import("plugins/Sessions.zig");
+const ArenaMod = @import("plugins/Arena.zig");
 const Commands = @import("Commands.zig");
 
 const allocator = std.testing.allocator;
@@ -469,8 +472,14 @@ test "fresh servers materialize the shipped essentials package" {
         Commands.reset_registry();
     }
 
-    try std.testing.expectEqual(@as(usize, 1), manager.count);
-    const essentials = manager.items[0];
+    try std.testing.expectEqual(@as(usize, 2), manager.count);
+    // UUID order: 7d3a (Spleef) sorts before 8c4f (Essentials).
+    const spleef = manager.items[0];
+    try std.testing.expect(spleef.active);
+    try std.testing.expectEqualStrings("Spleef", spleef.manifest.name());
+    try std.testing.expect(Commands.is_script("spleef"));
+    try std.testing.expect(Commands.is_script("spleefop"));
+    const essentials = manager.items[1];
     try std.testing.expect(essentials.active);
     try std.testing.expectEqualStrings("Essentials", essentials.manifest.name());
     try std.testing.expect(Commands.is_script("msg"));
@@ -482,4 +491,196 @@ test "fresh servers materialize the shipped essentials package" {
     defer allocator.free(written);
 
     try std.testing.expect(std.mem.indexOf(u8, written, "Essentials") != null);
+}
+
+test "claims reject foreign overlaps and permit owner nesting" {
+    set_server_io();
+    var owner_a: PluginsMod.Plugin = undefined;
+    var owner_b: PluginsMod.Plugin = undefined;
+    var regions = RegionsMod.Registry{};
+
+    const box = RegionsMod.Box{ .x0 = 0, .y0 = 0, .z0 = 0, .x1 = 9, .y1 = 9, .z1 = 9 };
+    const first = regions.claim(&owner_a, box, true) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(regions.claim(&owner_b, box, false) == null);
+    try std.testing.expect(regions.claim(&owner_b, .{ .x0 = 5, .y0 = 5, .z0 = 5, .x1 = 14, .y1 = 14, .z1 = 14 }, false) == null);
+    _ = regions.claim(&owner_a, .{ .x0 = 1, .y0 = 1, .z0 = 1, .x1 = 2, .y1 = 2, .z1 = 2 }, false) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(regions.find(1, 1, 1) != null);
+
+    first.release();
+    try std.testing.expect(regions.find(0, 0, 0) == null);
+    regions.release_owner(&owner_a);
+    try std.testing.expect(regions.find(1, 1, 1) == null);
+}
+
+test "sessions are exclusive, lock voluntary travel, and return members on cleanup" {
+    set_server_io();
+    Server.players = .{};
+    defer Server.players = .{};
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try world.init_empty(allocator, io, tmp.dir, "unused.cw", core.world_dims.WorldDims.init(128, 64, 128), 0, world.default_format);
+    world.finalize_loaded();
+    defer world.deinit();
+
+    var owner_a: PluginsMod.Plugin = undefined;
+    var owner_b: PluginsMod.Plugin = undefined;
+    var registry = SessionsMod.Registry{};
+    const session = registry.create(&owner_a, 4) orelse return error.TestUnexpectedResult;
+    const session_b = registry.create(&owner_b, 4) orelse return error.TestUnexpectedResult;
+
+    var out_buf: [4096]u8 = undefined;
+    var client_session = Session{};
+    const client = client_session.open(&out_buf, true, 0);
+
+    const handle = Server.PlayerHandle{ .id = 0, .generation = 1 };
+    const spot = SessionsMod.ReturnSpot{ .x = 3, .y = 1, .z = 3, .valid = true };
+    try std.testing.expect(registry.admit(session, handle, spot, "participant"));
+    try std.testing.expect(session.contains(handle));
+    try std.testing.expect(!registry.admit(session, handle, spot, "participant"));
+    try std.testing.expect(!registry.admit(session_b, handle, spot, "participant"));
+
+    session.travel_locked = true;
+    try std.testing.expect(registry.travel_locked_for(handle));
+
+    registry.purge_player(handle);
+    try std.testing.expect(!session.contains(handle));
+    try std.testing.expect(!registry.travel_locked_for(handle));
+
+    try std.testing.expect(registry.admit(session, handle, spot, "spectator"));
+    registry.end_for_owner(&owner_a, .{}, true);
+    try std.testing.expect(!session.active);
+    try std.testing.expect(registry.find_present(handle) == null);
+    const pose = client.pose.load();
+    try std.testing.expectEqual(@as(u16, 3 * 32 + 16), pose.x);
+    try std.testing.expectEqual(@as(u16, 1 * 32 + 51), pose.y);
+}
+
+test "frozen claims contain simulation but allow authorized and bypassed owner writes" {
+    var harness = try Harness.init();
+    defer harness.deinit();
+
+    try harness.write_package("manifest.json", test_manifest);
+    try harness.write_package("main.luau", "return true");
+    harness.load();
+    const manager = harness.manager orelse return error.TestUnexpectedResult;
+    const plugin = manager.items[0];
+
+    var data: core.World.WorldData = undefined;
+    try data.init_in_place(allocator, core.world_dims.WorldDims.init(128, 64, 128), 0x1234);
+    defer data.deinit();
+
+    data.compute_chunk_counts();
+
+    var sim = try core.World.WorldSimulation.init(allocator, 0x5678);
+    defer sim.deinit(allocator);
+
+    var recorder = Recorder{};
+    const sink: core.World.WorldSimulation.BlockChangeSink = .{ .ctx = &recorder, .emit_fn = Recorder.emit };
+
+    const box = RegionsMod.Box{ .x0 = 8, .y0 = 0, .z0 = 8, .x1 = 15, .y1 = 15, .z1 = 15 };
+    _ = manager.regions.claim(plugin, box, true) orelse return error.TestUnexpectedResult;
+
+    // Simulation cannot pull a gravity block into the frozen claim.
+    data.apply_block(10, 12, 10, .sand);
+    sim.enqueue_neighbors_of(&data, 10, 12, 10);
+    _ = sim.tick(&data, sink);
+    try std.testing.expectEqual(core.blocks.Block.sand, data.get_block(10, 12, 10));
+
+    // Owner jobs bypass the guard for their own claims.
+    ArenaMod.bypass_cells = true;
+    _ = sim.set_block(&data, sink, 10, 12, 10, .stone);
+    ArenaMod.bypass_cells = false;
+    try std.testing.expectEqual(core.blocks.Block.stone, data.get_block(10, 12, 10));
+
+    // A session member's edit is authorized for the claim owner.
+    const handle = Server.PlayerHandle{ .id = 0, .generation = 1 };
+    const member_session = manager.sessions.create(plugin, 4) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(manager.sessions.admit(member_session, handle, .{}, "participant"));
+    manager.begin_edit(handle);
+    _ = sim.set_block(&data, sink, 10, 12, 10, .air);
+    manager.end_edit();
+    try std.testing.expectEqual(core.blocks.Block.air, data.get_block(10, 12, 10));
+
+    // Without authorization the same edit is denied by the guard.
+    _ = sim.set_block(&data, sink, 10, 12, 10, .stone);
+    try std.testing.expectEqual(core.blocks.Block.air, data.get_block(10, 12, 10));
+}
+
+test "movement policy reports sustained hovering and implausible ascent only" {
+    set_server_io();
+    var trace = PluginsMod.MoveTrace{};
+
+    // A single unsupported sample is not evidence.
+    try std.testing.expectEqual(@as(?PluginsMod.MoveViolation, null), PluginsMod.movement_policy_sample(&trace, 1000, 1, 5, 10, 5, false));
+
+    // Sustained hovering in place is.
+    var found: ?PluginsMod.MoveViolation = null;
+    var t: i64 = 1250;
+    while (t <= 7000) : (t += 250) {
+        if (PluginsMod.movement_policy_sample(&trace, t, 1, 5, 10, 5, false)) |v| found = v;
+    }
+    try std.testing.expectEqual(PluginsMod.MoveViolation.hover, found.?);
+
+    // Falling and teleport serials reset the evidence windows.
+    trace = .{};
+    try std.testing.expectEqual(@as(?PluginsMod.MoveViolation, null), PluginsMod.movement_policy_sample(&trace, 1000, 1, 5, 10, 5, false));
+    try std.testing.expectEqual(@as(?PluginsMod.MoveViolation, null), PluginsMod.movement_policy_sample(&trace, 1250, 1, 5, 9, 5, false));
+    try std.testing.expectEqual(@as(?PluginsMod.MoveViolation, null), PluginsMod.movement_policy_sample(&trace, 1500, 2, 5, 30, 5, false));
+    try std.testing.expectEqual(@as(?PluginsMod.MoveViolation, null), PluginsMod.movement_policy_sample(&trace, 1750, 2, 5, 29, 5, false));
+
+    // Rising five blocks inside the ascent window is implausible ascent.
+    trace = .{};
+    _ = PluginsMod.movement_policy_sample(&trace, 1000, 1, 5, 10, 5, false);
+    try std.testing.expectEqual(@as(?PluginsMod.MoveViolation, null), PluginsMod.movement_policy_sample(&trace, 1400, 1, 5, 13, 5, false));
+    try std.testing.expectEqual(PluginsMod.MoveViolation.ascend, PluginsMod.movement_policy_sample(&trace, 1800, 1, 5, 16, 5, false).?);
+
+    // Ordinary jump arcs and sampling gaps stay clean.
+    trace = .{};
+    _ = PluginsMod.movement_policy_sample(&trace, 1000, 1, 5, 10, 5, true);
+    try std.testing.expectEqual(@as(?PluginsMod.MoveViolation, null), PluginsMod.movement_policy_sample(&trace, 1300, 1, 5, 11, 5, false));
+    try std.testing.expectEqual(@as(?PluginsMod.MoveViolation, null), PluginsMod.movement_policy_sample(&trace, 1600, 1, 5, 12, 5, false));
+    try std.testing.expectEqual(@as(?PluginsMod.MoveViolation, null), PluginsMod.movement_policy_sample(&trace, 4000, 1, 5, 12, 5, true));
+}
+
+const Recorder = struct {
+    count: u32 = 0,
+
+    fn emit(ctx: ?*anyopaque, change: core.World.WorldSimulation.BlockChange) void {
+        _ = change;
+        const self: *Recorder = @ptrCast(@alignCast(ctx.?));
+        self.count += 1;
+    }
+};
+
+test "captured arena templates drive dirty-arena recovery" {
+    var harness = try Harness.init();
+    defer harness.deinit();
+
+    try harness.write_package("manifest.json", test_manifest);
+    try harness.write_package("main.luau", "return true");
+    harness.load();
+    const manager = harness.manager orelse return error.TestUnexpectedResult;
+    const plugin = manager.items[0];
+
+    try world.init_empty(allocator, io, harness.tmp.dir, "unused.cw", core.world_dims.WorldDims.init(128, 64, 128), 0, world.default_format);
+    world.finalize_loaded();
+    defer world.deinit();
+
+    const box = RegionsMod.Box{ .x0 = 0, .y0 = 0, .z0 = 0, .x1 = 7, .y1 = 3, .z1 = 7 };
+    _ = manager.regions.claim(plugin, box, true) orelse return error.TestUnexpectedResult;
+    world.data.apply_block(3, 1, 3, .stone);
+    try std.testing.expect(manager.jobs.capture(plugin, box, "arena"));
+    try std.testing.expect(manager.jobs.mark_dirty(plugin, box, "arena"));
+
+    // The match destroys part of the captured arena before "crashing".
+    world.data.apply_block(3, 1, 3, .air);
+    try std.testing.expectEqual(core.blocks.Block.air, world.get_block(3, 1, 3));
+
+    ArenaMod.recover(allocator, harness.data_dir);
+    try std.testing.expectEqual(core.blocks.Block.stone, world.get_block(3, 1, 3));
+
+    const record_exists = if (harness.data_dir.openFile(io, "plugin-data/" ++ plugin_uuid ++ ".arena.dirty.json", .{})) |_| true else |_| false;
+    try std.testing.expect(!record_exists);
 }
