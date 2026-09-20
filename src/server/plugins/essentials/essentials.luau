@@ -4,13 +4,13 @@
 
 local last_reply = {}
 
-local function usage(caller, text)
+local function notify(caller, text)
 	server.send_message(caller, text)
 end
 
 local function deliver(sender, target, text)
 	if not server.send_message(target, "&7[from " .. sender.name .. "] " .. text) then
-		server.send_message(sender, "Player is no longer connected")
+		notify(sender, "Player is no longer connected")
 		return false
 	end
 	-- Both sides can reply; targets are generation-checked handles that the
@@ -22,48 +22,42 @@ end
 
 server.register_command{
 	name = "msg",
-	usage = "&e/msg <player> <message>",
+	description = "Send a private message.",
+	arguments = {
+		{ name = "player", type = "string", description = "Player to message" },
+		{ name = "message", type = "string", variadic = true, description = "Message text" },
+	},
 	caller = "player",
 	handler = function(caller, args)
-		local target_name = args[1]
-		if not target_name then
-			usage(caller, "Usage: /msg <player> <message>")
-			return
-		end
-		local text = table.concat(args, " ", 2)
-		if text == "" then
-			usage(caller, "Usage: /msg <player> <message>")
-			return
-		end
-		local target = server.find_player(target_name)
+		local target = server.find_player(args.player)
 		if not target then
-			usage(caller, "Player not found: " .. target_name)
+			notify(caller, "Player not found: " .. args.player)
 			return
 		end
-		deliver(caller, target, text)
+		deliver(caller, target, args.message)
 	end,
 }
 
 server.register_command{
 	name = "reply",
 	aliases = {"r"},
-	usage = "&e/reply <message> (alias: /r)",
+	description = "Reply to the last private message.",
+	arguments = {
+		{ name = "message", type = "string", variadic = true, description = "Message text" },
+	},
 	caller = "player",
 	handler = function(caller, args)
 		local target = last_reply[caller.id]
 		if not target then
-			usage(caller, "Nobody to reply to")
+			notify(caller, "Nobody to reply to")
 			return
 		end
-		local text = table.concat(args, " ")
-		if text == "" then
-			usage(caller, "Usage: /reply <message>")
-			return
-		end
-		deliver(caller, target, text)
+		deliver(caller, target, args.message)
 	end,
 }
 
+-- Overloaded signatures (/tp <player> vs /tp <x> <y> <z>) do not fit the
+-- single-form argument table, so this one keeps a raw usage string.
 server.register_command{
 	name = "tp",
 	usage = "&e/tp <player> -- or -- /tp <x> <y> <z>",
@@ -73,11 +67,11 @@ server.register_command{
 		if args[1] and not tonumber(args[1]) then
 			local target = server.find_player(args[1])
 			if not target then
-				usage(caller, "Player not found: " .. args[1])
+				notify(caller, "Player not found: " .. args[1])
 				return
 			end
 			if not server.teleport(caller, target.x, target.y, target.z) then
-				usage(caller, "Teleport failed; destination may be unsafe")
+				notify(caller, "Teleport failed; destination may be unsafe")
 			end
 			return
 		end
@@ -85,11 +79,11 @@ server.register_command{
 		local y = tonumber(args[2])
 		local z = tonumber(args[3])
 		if not x or not y or not z then
-			usage(caller, "Usage: /tp <player> -- or -- /tp <x> <y> <z>")
+			notify(caller, "Usage: /tp <player> -- or -- /tp <x> <y> <z>")
 			return
 		end
 		if not server.teleport(caller, x, y, z) then
-			usage(caller, "Teleport failed; destination may be unsafe")
+			notify(caller, "Teleport failed; destination may be unsafe")
 		end
 	end,
 }
@@ -102,12 +96,12 @@ end
 if spawn_enabled then
 	server.register_command{
 		name = "spawn",
-		usage = "&e/spawn -- return to the stable spawn",
+		description = "Return to the stable spawn.",
 		caller = "player",
 		handler = function(caller)
 			local x, y, z = server.get_spawn()
 			if not server.teleport(caller, x, y, z) then
-				usage(caller, "Spawn is currently unsafe")
+				notify(caller, "Spawn is currently unsafe")
 			end
 		end,
 	}
@@ -115,15 +109,32 @@ end
 
 server.register_command{
 	name = "setspawn",
-	usage = "&e/setspawn -- set the stable spawn to your position",
+	description = "Set spawn to current position.",
+	arguments = {
+		{
+			name = "p",
+			optional = true,
+			type = "string",
+			description = "Player to target (default: yourself)",
+		},
+	},
 	caller = "player",
 	permission = "op",
-	handler = function(caller)
-		if not server.set_spawn(caller.x, caller.y, caller.z) then
-			usage(caller, "That position is not a safe spawn")
+	handler = function(caller, args)
+		local x, y, z = caller.x, caller.y, caller.z
+		if args.p then
+			local target = server.find_player(args.p)
+			if not target then
+				notify(caller, "Player not found: " .. args.p)
+				return
+			end
+			x, y, z = target.x, target.y, target.z
+		end
+		if not server.set_spawn(x, y, z) then
+			notify(caller, "That position is not a safe spawn")
 			return
 		end
-		usage(caller, "Stable spawn updated")
+		notify(caller, "Stable spawn updated")
 	end,
 }
 

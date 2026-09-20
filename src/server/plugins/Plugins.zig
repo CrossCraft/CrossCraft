@@ -1252,6 +1252,9 @@ fn api_register_command(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     _ = state.getField(def, "usage");
     const usage = state.toString(-1) orelse "";
     state.pop(1);
+    _ = state.getField(def, "description");
+    const description = state.toString(-1) orelse "";
+    state.pop(1);
     _ = state.getField(def, "handler");
     if (!state.isFunction(-1)) {
         state.pop(1);
@@ -1295,6 +1298,74 @@ fn api_register_command(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     }
     state.pop(1);
 
+    // Argument forms are declared as an array of specs; the array order is the
+    // positional order used for usage lines, validation, and named dispatch.
+    // (Name-keyed maps cannot express order: Luau hash traversal is unordered.)
+    var arg_specs: [Commands.max_command_args]Commands.ArgumentSpec = undefined;
+    var arg_count: usize = 0;
+    _ = state.getField(def, "arguments");
+    switch (state.getType(-1)) {
+        .nil => {},
+        .table => {
+            state.pushNil();
+            while (state.next(-2)) {
+                if (state.getType(-1) != .table) {
+                    state.pushLString("arguments must be a list of argument tables");
+                    state.raiseError();
+                }
+                if (arg_count == arg_specs.len) {
+                    state.pushLString("too many arguments");
+                    state.raiseError();
+                }
+                _ = state.getField(-1, "name");
+                const arg_name = state.toString(-1) orelse {
+                    state.pop(1);
+                    state.pushLString("argument is missing a name");
+                    state.raiseError();
+                };
+                state.pop(1);
+                var arg_type: Commands.ArgType = .string;
+                _ = state.getField(-1, "type");
+                if (state.toString(-1)) |t| {
+                    if (std.mem.eql(u8, t, "number")) {
+                        arg_type = .number;
+                    } else if (!std.mem.eql(u8, t, "string")) {
+                        var msg_buf: [48]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "unknown argument type: {s}", .{t[0..@min(t.len, 24)]}) catch "unknown argument type";
+                        state.pop(2);
+                        state.pushLString(msg);
+                        state.raiseError();
+                    }
+                }
+                state.pop(1);
+                _ = state.getField(-1, "optional");
+                const optional = state.toBoolean(-1);
+                state.pop(1);
+                _ = state.getField(-1, "variadic");
+                const variadic = state.toBoolean(-1);
+                state.pop(1);
+                _ = state.getField(-1, "description");
+                const arg_description = state.toString(-1) orelse "";
+                state.pop(1);
+                arg_specs[arg_count] = .{
+                    .name = arg_name,
+                    .type = arg_type,
+                    .optional = optional,
+                    .variadic = variadic,
+                    .description = arg_description,
+                };
+                arg_count += 1;
+                state.pop(1);
+            }
+        },
+        else => {
+            state.pushLString("arguments must be a table");
+            state.raiseError();
+        },
+    }
+    state.pop(1);
+    assert(arg_count <= Commands.max_command_args);
+
     var alias_slices: [4][]const u8 = undefined;
     for (0..alias_count) |i| alias_slices[i] = aliases[i][0..alias_lens[i]];
 
@@ -1304,7 +1375,9 @@ fn api_register_command(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     const registered = Commands.register(.{
         .name = name,
         .aliases = alias_slices[0..alias_count],
-        .usage = usage,
+        .usage = if (usage.len > 0) usage else null,
+        .description = description,
+        .arguments = arg_specs[0..arg_count],
         .permission = permission,
         .restriction = restriction,
         .script = .{ .ctx = binding, .call = call_command_shim },
@@ -1314,7 +1387,7 @@ fn api_register_command(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     return 1;
 }
 
-fn call_command_shim(ctx: *anyopaque, caller: Commands.Caller, args: []const []const u8) void {
+fn call_command_shim(ctx: *anyopaque, caller: Commands.Caller, args: []const []const u8, spec: ?[]const Commands.Argument) void {
     const binding: *CommandBinding = @ptrCast(@alignCast(ctx));
     const plugin = binding.plugin;
     const runtime = plugin.runtime orelse return;
@@ -1326,13 +1399,49 @@ fn call_command_shim(ctx: *anyopaque, caller: Commands.Caller, args: []const []c
         .console => state.pushNil(),
         .player => |client| push_player_info(runtime, snapshot_client(client)),
     }
-    state.createTable(@intCast(args.len), 0);
-    for (args, 0..) |arg, i| {
-        state.pushLString(arg);
-        state.rawSetI(-2, @intCast(i + 1));
+    if (spec) |specs| {
+        // Declared arguments arrive as a named table; the host validated and
+        // typed them, so the handler never parses raw tokens.
+        state.createTable(@intCast(specs.len), 0);
+        for (specs, 0..) |s, i| {
+            assert(i <= args.len);
+            if (i == args.len) break;
+            state.pushLString(s.name.slice());
+            if (s.variadic) {
+                var joined: [192]u8 = undefined;
+                var len: usize = 0;
+                for (args[i..]) |token| {
+                    if (len + 1 + token.len > joined.len) break;
+                    if (len > 0) {
+                        joined[len] = ' ';
+                        len += 1;
+                    }
+                    @memcpy(joined[len..][0..token.len], token);
+                    len += token.len;
+                }
+                push_arg_value(state, s.type, joined[0..len]);
+            } else {
+                push_arg_value(state, s.type, args[i]);
+            }
+            state.rawSet(-3);
+        }
+    } else {
+        state.createTable(@intCast(args.len), 0);
+        for (args, 0..) |arg, i| {
+            state.pushLString(arg);
+            state.rawSetI(-2, @intCast(i + 1));
+        }
     }
     if (!runtime.protect_call(2, 0)) {
         plugin.owner.script_failed(plugin, runtime.last_error());
+    }
+}
+
+fn push_arg_value(state: luaz.State, arg_type: Commands.ArgType, raw: []const u8) void {
+    if (arg_type == .number) {
+        state.pushNumber(std.fmt.parseFloat(f64, raw) catch 0);
+    } else {
+        state.pushLString(raw);
     }
 }
 

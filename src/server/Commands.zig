@@ -3,6 +3,7 @@
 //! text handling; plugin commands dispatch through the host's ordered gameplay
 //! context.
 const std = @import("std");
+const assert = std.debug.assert;
 const Accounts = @import("Accounts.zig");
 const Authentication = @import("Authentication.zig");
 const Server = @import("core").Server;
@@ -21,19 +22,45 @@ pub const Permission = enum { anyone, op };
 pub const Restriction = enum { any, player_only, console_only };
 
 /// Plugin commands resolve through a host-owned dispatch shim so the registry
-/// stays independent of the Luau runtime.
+/// stays independent of the Luau runtime. `spec` carries the declared argument
+/// forms so the shim can hand the handler a named, typed argument table.
 pub const ScriptDispatch = struct {
     ctx: *anyopaque,
-    call: *const fn (ctx: *anyopaque, caller: Caller, args: []const []const u8) void,
+    call: *const fn (ctx: *anyopaque, caller: Caller, args: []const []const u8, spec: ?[]const Argument) void,
 };
 
 const Handler = union(enum) { native: Kind, script: ScriptDispatch };
+
+pub fn BufType(comptime n: usize) type {
+    return struct {
+        buf: [n]u8 = @splat(0),
+        len: u8 = 0,
+
+        pub fn set(self: *@This(), text: []const u8) bool {
+            if (text.len == 0 or text.len > self.buf.len) return false;
+            @memcpy(self.buf[0..text.len], text);
+            self.len = @intCast(text.len);
+            return true;
+        }
+
+        pub fn set_or_empty(self: *@This(), text: []const u8) bool {
+            if (text.len > self.buf.len) return false;
+            @memcpy(self.buf[0..text.len], text);
+            self.len = @intCast(text.len);
+            return true;
+        }
+
+        pub fn slice(self: *const @This()) []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+}
 
 const NameBuf = struct {
     buf: [16]u8 = @splat(0),
     len: u8 = 0,
 
-    fn set(self: *NameBuf, text: []const u8) bool {
+    pub fn set(self: *NameBuf, text: []const u8) bool {
         if (text.len == 0 or text.len > self.buf.len) return false;
         for (text) |c| {
             if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
@@ -43,31 +70,41 @@ const NameBuf = struct {
         return true;
     }
 
-    fn slice(self: *const NameBuf) []const u8 {
+    pub fn slice(self: *const NameBuf) []const u8 {
         return self.buf[0..self.len];
     }
 };
 
-const UsageBuf = struct {
-    buf: [96]u8 = @splat(0),
-    len: u8 = 0,
+const UsageBuf = BufType(96);
+const DescriptionBuf = BufType(72);
 
-    fn set(self: *UsageBuf, text: []const u8) bool {
-        if (text.len == 0 or text.len > self.buf.len) return false;
-        @memcpy(self.buf[0..text.len], text);
-        self.len = @intCast(text.len);
-        return true;
-    }
+pub const ArgType = enum { string, number };
+pub const max_command_args = 6;
 
-    fn slice(self: *const UsageBuf) []const u8 {
-        return self.buf[0..self.len];
-    }
+/// Declared argument form, as submitted by a plugin.
+pub const ArgumentSpec = struct {
+    name: []const u8,
+    type: ArgType = .string,
+    optional: bool = false,
+    variadic: bool = false,
+    description: []const u8 = "",
+};
+
+/// Stored argument form backing help output and dispatch-time validation.
+pub const Argument = struct {
+    name: NameBuf = .{},
+    type: ArgType = .string,
+    optional: bool = false,
+    variadic: bool = false,
+    description: DescriptionBuf = .{},
 };
 
 pub const Registration = struct {
     name: []const u8,
     aliases: []const []const u8 = &.{},
-    usage: []const u8,
+    usage: ?[]const u8 = null,
+    description: []const u8 = "",
+    arguments: []const ArgumentSpec = &.{},
     permission: Permission = .anyone,
     restriction: Restriction = .any,
     script: ?ScriptDispatch = null,
@@ -82,6 +119,9 @@ const Entry = struct {
     aliases: [max_aliases]NameBuf = @splat(.{}),
     alias_count: u8 = 0,
     usage: UsageBuf = .{},
+    description: DescriptionBuf = .{},
+    args: [max_command_args]Argument = @splat(.{}),
+    arg_count: u8 = 0,
     permission: Permission = .anyone,
     restriction: Restriction = .any,
     handler: Handler = .{ .native = .help },
@@ -95,7 +135,7 @@ var entry_count: usize = 0;
 var native_registered = false;
 
 const native_usages = [_]struct { kind: Kind, usage: []const u8 }{
-    .{ .kind = .help, .usage = "&e/help -- list commands" },
+    .{ .kind = .help, .usage = "&e/help [cmd] -- list commands or show detail" },
     .{ .kind = .register, .usage = "&e/register <pass> <pass>" },
     .{ .kind = .login, .usage = "&e/login <pass>" },
     .{ .kind = .passwd, .usage = "&e/passwd <old> <new>" },
@@ -172,7 +212,32 @@ pub fn register(registration: Registration, owner: ?*const anyopaque) bool {
 
     var entry = Entry{ .owner = owner, .enabled = true };
     if (!entry.name.set(registration.name)) return false;
-    if (!entry.usage.set(registration.usage)) return false;
+    if (registration.arguments.len > max_command_args) return false;
+    var saw_optional = false;
+    for (registration.arguments, 0..) |spec, i| {
+        // Positional mapping breaks when a required argument follows an
+        // optional one, and a variadic argument consumes every token left.
+        if (!spec.optional and saw_optional) return false;
+        if (spec.variadic and (i + 1 != registration.arguments.len or spec.type != .string)) return false;
+        var arg = Argument{ .type = spec.type, .optional = spec.optional, .variadic = spec.variadic };
+        if (!arg.name.set(spec.name)) return false;
+        if (!arg.description.set_or_empty(spec.description)) return false;
+        entry.args[entry.arg_count] = arg;
+        entry.arg_count += 1;
+        saw_optional = saw_optional or spec.optional;
+    }
+    assert(entry.arg_count == registration.arguments.len);
+    if (registration.description.len > 0 or registration.arguments.len > 0) {
+        var line: [96]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&line);
+        writer.print("&e/{s}", .{registration.name}) catch return false;
+        if (registration.description.len > 0) writer.print(" &7{s}", .{registration.description}) catch return false;
+        if (!entry.usage.set(writer.buffered())) return false;
+        if (!entry.description.set_or_empty(registration.description)) return false;
+    } else {
+        const usage = registration.usage orelse return false;
+        if (!entry.usage.set(usage)) return false;
+    }
     entry.permission = registration.permission;
     entry.restriction = registration.restriction;
     if (registration.script) |script| {
@@ -298,8 +363,14 @@ pub fn dispatch(sink: Sink, line: []const u8, caller: Caller) void {
                 args[arg_count] = arg;
                 arg_count += 1;
             }
+            const specs: ?[]const Argument = if (entry.arg_count > 0) entry.args[0..entry.arg_count] else null;
+            if (specs != null and !syntax_matches(entry, args[0..arg_count])) {
+                write_detail_locked(sink, entry);
+                registry_lock.unlockShared(Server.io);
+                return;
+            }
             registry_lock.unlockShared(Server.io);
-            script.call(script.ctx, caller, args[0..arg_count]);
+            script.call(script.ctx, caller, args[0..arg_count], specs);
         },
     }
 }
@@ -317,7 +388,7 @@ fn dispatch_native(sink: Sink, caller: Caller, kind: Kind, rest: []const u8) voi
         else => 1,
     };
     const with_reason = kind == .ban or kind == .kick;
-    if ((argument_count == 0 and first != null) or
+    if ((argument_count == 0 and first != null and kind != .help) or
         (argument_count > 0 and first == null) or
         (argument_count == 2 and second == null) or
         (!with_reason and ((argument_count < 2 and second != null) or tokens.next() != null)))
@@ -338,7 +409,7 @@ fn usage_for(kind: Kind) []const u8 {
 fn run_native(sink: Sink, caller: Caller, kind: Kind, first: []const u8, second: []const u8) !void {
     switch (kind) {
         .help => {
-            write_help(sink, caller);
+            if (first.len > 0) write_help_detail(sink, caller, first) else write_help(sink, caller);
         },
         .register => try Authentication.execute(caller.player, .register, first, second),
         .login => try Authentication.execute(caller.player, .login, first, second),
@@ -374,6 +445,69 @@ pub fn write_help(sink: Sink, caller: Caller) void {
             sink.write(fbs.buffered());
         }
     }
+}
+
+/// True when `args` satisfies the declared argument forms: required arguments
+/// present, no trailing tokens unless the last argument is variadic, and
+/// number-typed arguments parse as numbers.
+fn syntax_matches(entry: *const Entry, args: []const []const u8) bool {
+    var required: usize = 0;
+    for (entry.args[0..entry.arg_count]) |spec| {
+        if (!spec.optional) required += 1;
+    }
+    if (args.len < required) return false;
+    if (args.len > entry.arg_count and !entry.args[entry.arg_count - 1].variadic) return false;
+    for (entry.args[0..@min(entry.arg_count, args.len)], 0..) |spec, i| {
+        if (spec.type != .number) continue;
+        const end = if (spec.variadic) args.len else i + 1;
+        for (args[i..end]) |token| {
+            _ = std.fmt.parseFloat(f64, token) catch return false;
+        }
+    }
+    return true;
+}
+
+/// Detailed single-command help; caller must hold the registry lock.
+fn write_detail_locked(sink: Sink, entry: *const Entry) void {
+    if (entry.arg_count == 0) {
+        sink.write(entry.usage.slice());
+        return;
+    }
+    var line: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&line);
+    writer.print("&e/{s}", .{entry.name.slice()}) catch {};
+    for (entry.args[0..entry.arg_count]) |spec| {
+        const open: []const u8 = if (spec.optional) "[" else "<";
+        const close: []const u8 = if (spec.optional) "]" else ">";
+        writer.print(" &b{s}{s}{s}", .{ open, spec.name.slice(), close }) catch {};
+        if (spec.variadic) writer.writeAll("...") catch {};
+    }
+    if (entry.description.len > 0) writer.print(" &7{s}", .{entry.description.slice()}) catch {};
+    sink.write(writer.buffered());
+    for (entry.args[0..entry.arg_count]) |spec| {
+        writer.end = 0;
+        const optional: []const u8 = if (spec.optional) "optional " else "";
+        const kind: []const u8 = if (spec.type == .number) "num" else "str";
+        writer.print("{s} ({s}{s}): {s}", .{ spec.name.slice(), optional, kind, spec.description.slice() }) catch {};
+        sink.write(writer.buffered());
+    }
+}
+
+pub fn write_help_detail(sink: Sink, caller: Caller, name: []const u8) void {
+    ensure_native();
+
+    registry_lock.lockSharedUncancelable(Server.io);
+    defer registry_lock.unlockShared(Server.io);
+
+    const entry = find_entry_locked(name) orelse {
+        sink.write("Unknown command, use /help");
+        return;
+    };
+    if (!entry.enabled or !allowed(caller, entry)) {
+        sink.write("&cCommand unavailable or insufficient permission");
+        return;
+    }
+    write_detail_locked(sink, entry);
 }
 
 fn moderate(sink: Sink, caller: Caller, kind: Kind, username: []const u8, reason: []const u8) !void {
@@ -509,9 +643,10 @@ test "registry rejects collisions and groups aliases in help" {
     const script = ScriptDispatch{
         .ctx = &calls,
         .call = struct {
-            fn call(ctx: *anyopaque, caller: Caller, args: []const []const u8) void {
+            fn call(ctx: *anyopaque, caller: Caller, args: []const []const u8, spec: ?[]const Argument) void {
                 _ = caller;
                 _ = args;
+                _ = spec;
                 const counter: *usize = @ptrCast(@alignCast(ctx));
                 counter.* += 1;
             }
@@ -539,4 +674,90 @@ test "registry rejects collisions and groups aliases in help" {
     dispatch(sink, "shrug", .console);
     try std.testing.expectEqual(@as(usize, 1), calls);
     try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "Unknown command") != null);
+}
+
+test "script arguments validate syntax and drive detailed help" {
+    Server.io = std.testing.io;
+    var output: [2048]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&output);
+    const sink: Sink = .{ .ctx = &writer, .write_fn = struct {
+        fn write(ctx: *anyopaque, line: []const u8) void {
+            const target: *std.Io.Writer = @ptrCast(@alignCast(ctx));
+            target.writeAll(line) catch unreachable;
+        }
+    }.write };
+
+    const Capture = struct { calls: usize = 0, spec_len: usize = 0 };
+    var capture = Capture{};
+    const script = ScriptDispatch{
+        .ctx = &capture,
+        .call = struct {
+            fn call(ctx: *anyopaque, caller: Caller, args: []const []const u8, spec: ?[]const Argument) void {
+                _ = caller;
+                _ = args;
+                const cap: *Capture = @ptrCast(@alignCast(ctx));
+                cap.calls += 1;
+                cap.spec_len = if (spec) |s| s.len else 0;
+            }
+        }.call,
+    };
+    reset_registry();
+    defer reset_registry();
+
+    try std.testing.expect(register(.{
+        .name = "give",
+        .description = "Give items.",
+        .arguments = &.{
+            .{ .name = "player", .description = "Target player" },
+            .{ .name = "amount", .type = .number, .optional = true, .description = "How many" },
+        },
+        .script = script,
+    }, @ptrFromInt(0x1000)));
+    // Required arguments may not follow optional ones.
+    try std.testing.expect(!register(.{
+        .name = "bad",
+        .description = "Bad.",
+        .arguments = &.{
+            .{ .name = "a", .optional = true },
+            .{ .name = "b" },
+        },
+        .script = script,
+    }, @ptrFromInt(0x1000)));
+
+    var reader = std.Io.Reader.fixed(&.{});
+    var connected = true;
+    var client: Server.Client = .{
+        .reader = &reader,
+        .writer = &writer,
+        .connected = &connected,
+        .phase = .init(.active),
+        .authenticated = .init(true),
+        .is_op = .init(false),
+    };
+
+    writer.end = 0;
+    dispatch(sink, "give", .{ .player = &client });
+    try std.testing.expectEqual(@as(usize, 0), capture.calls);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "&e/give &b<player> &b[amount] &7Give items.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "player (str): Target player") != null);
+
+    writer.end = 0;
+    dispatch(sink, "give alice abc", .{ .player = &client });
+    try std.testing.expectEqual(@as(usize, 0), capture.calls);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "amount (optional num): How many") != null);
+
+    writer.end = 0;
+    dispatch(sink, "give alice 3", .{ .player = &client });
+    try std.testing.expectEqual(@as(usize, 1), capture.calls);
+    try std.testing.expectEqual(@as(usize, 2), capture.spec_len);
+
+    writer.end = 0;
+    dispatch(sink, "give alice 3 extra", .{ .player = &client });
+    try std.testing.expectEqual(@as(usize, 1), capture.calls);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "<player>") != null);
+
+    writer.end = 0;
+    dispatch(sink, "help give", .{ .player = &client });
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "&b<player>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, writer.buffered(), "amount (optional num): How many") != null);
 }

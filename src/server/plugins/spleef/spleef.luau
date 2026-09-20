@@ -269,7 +269,7 @@ end
 
 server.register_command{
 	name = "spleef",
-	usage = "&e/spleef -- join or leave the spleef match",
+	description = "Join or leave the spleef match.",
 	caller = "player",
 	handler = function(caller)
 		if not box then
@@ -299,38 +299,41 @@ server.register_command{
 
 server.register_command{
 	name = "spleefop",
-	usage = "&e/spleefop <pos1|pos2|entry|spectate|height|capture|unclaim|end>",
+	description = "Configure and run the spleef arena.",
+	arguments = {
+		{ name = "action", type = "string", description = "pos1, pos2, entry, spectate, height, capture, unclaim, or end" },
+		{ name = "y", type = "number", optional = true, description = "Elimination height (height only)" },
+	},
 	caller = "player",
 	permission = "op",
 	handler = function(caller, args)
-		local sub = args[1]
-		if sub == "pos1" then
+		local action = args.action
+		if action == "pos1" then
 			pos1 = { x = caller.x, y = caller.y, z = caller.z }
 			server.send_message(caller, "Spleef corner 1 set")
-		elseif sub == "pos2" then
+		elseif action == "pos2" then
 			pos2 = { x = caller.x, y = caller.y, z = caller.z }
 			server.send_message(caller, "Spleef corner 2 set")
-		elseif sub == "entry" then
+		elseif action == "entry" then
 			entry = { x = caller.x, y = caller.y, z = caller.z }
 			server.send_message(caller, "Spleef entry spot set")
-		elseif sub == "spectate" then
+		elseif action == "spectate" then
 			spectator = { x = caller.x, y = caller.y, z = caller.z }
 			server.send_message(caller, "Spleef spectator spot set")
-		elseif sub == "height" then
-			local h = tonumber(args[2])
-			if not h then
+		elseif action == "height" then
+			if not args.y then
 				server.send_message(caller, "Usage: /spleefop height <y>")
 				return
 			end
-			elim_override = math.floor(h)
+			elim_override = math.floor(args.y)
 			server.send_message(caller, "Elimination height set to " .. elim_override)
-		elseif sub == "unclaim" then
+		elseif action == "unclaim" then
 			if region then region:release() region = nil end
 			state = "unconfigured"
 			server.send_message(caller, "Spleef arena released; edit the world, then capture again")
-		elseif sub == "capture" then
+		elseif action == "capture" then
 			capture_arena(caller)
-		elseif sub == "end" then
+		elseif action == "end" then
 			if state == "active" or state == "countdown" or state == "results" then
 				begin_reset()
 				server.send_message(caller, "Spleef match ended")
