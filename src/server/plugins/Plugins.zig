@@ -231,6 +231,11 @@ const shipped_packages = [_]ShippedPackage{
         .{ .name = "spleef.luau", .contents = @embedFile("spleef/spleef.luau") },
         .{ .name = "config.json", .contents = @embedFile("spleef/config.json") },
     } },
+    .{ .dir = "buildbattle", .files = &.{
+        .{ .name = "manifest.json", .contents = @embedFile("buildbattle/manifest.json") },
+        .{ .name = "buildbattle.luau", .contents = @embedFile("buildbattle/buildbattle.luau") },
+        .{ .name = "config.json", .contents = @embedFile("buildbattle/config.json") },
+    } },
 };
 
 /// Factory state: a server without a plugins directory ships with the
@@ -244,6 +249,10 @@ fn prepare_plugins_dir(self: *Plugins) void {
     if (exists) return;
 
     for (shipped_packages) |package| {
+        // Materialized packages are discovered like installed ones, so every
+        // shipped package must carry its manifest.
+        assert(package.files.len > 0);
+        assert(std.mem.eql(u8, package.files[0].name, "manifest.json"));
         var dir_buf: [64]u8 = undefined;
         const dir_path = std.fmt.bufPrint(&dir_buf, "plugins/{s}", .{package.dir}) catch continue;
         self.data_dir.createDirPath(Server.io, dir_path) catch |err| {
@@ -313,6 +322,7 @@ pub fn init(alloc: std.mem.Allocator, data_dir: std.Io.Dir, host: *HostMod.Host)
         discovered += 1;
     }
 
+    assert(discovered <= max_plugins);
     sort_discovered(manifests[0..discovered], dirs[0..discovered], lens[0..discovered]);
 
     for (0..discovered) |i| {
@@ -323,6 +333,7 @@ pub fn init(alloc: std.mem.Allocator, data_dir: std.Io.Dir, host: *HostMod.Host)
         self.items[self.count] = plugin;
         self.count += 1;
     }
+    assert(self.count == discovered);
 
     // Recover dirty arenas before any plugin starts so games never admit
     // players onto an unrestored arena, even when their plugin is missing.
@@ -1784,6 +1795,8 @@ fn session_from(L: ?*luaz.c.lua_State) ?*Sessions.Session {
 }
 
 fn bind_session_method(runtime: *RuntimeMod.Runtime, session: *Sessions.Session, name: [:0]const u8, func: luaz.State.CFunction) void {
+    // Bound closures receive the session through upvalues; scripts call them
+    // with colon syntax, so each method's own arguments start at stack index 2.
     const state = runtime.state;
     state.pushLightUserdata(session);
     state.pushInteger(@intCast(session.generation));
@@ -1841,7 +1854,9 @@ fn api_session_admit(L: ?*luaz.c.lua_State) callconv(.c) c_int {
         return 1;
     }
     if (!plugin.take_op_budget()) return 0;
-    const handle = resolve_player_arg(runtime, 1) orelse {
+    // Session methods are called with colon syntax (`s:admit(player)`), so
+    // the session object itself occupies argument index 1.
+    const handle = resolve_player_arg(runtime, 2) orelse {
         state.pushBoolean(false);
         return 1;
     };
@@ -1856,8 +1871,8 @@ fn api_session_admit(L: ?*luaz.c.lua_State) callconv(.c) c_int {
         return 1;
     }
     var role: []const u8 = "participant";
-    if (state.getTop() >= 2) {
-        if (state.toString(2)) |text| role = text[0..@min(text.len, 12)];
+    if (state.getTop() >= 3) {
+        if (state.toString(3)) |text| role = text[0..@min(text.len, 12)];
     }
     const spot: Sessions.ReturnSpot = .{
         .x = info.x,
@@ -1884,7 +1899,7 @@ fn api_session_remove(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     }
     if (!plugin.take_op_budget()) return 0;
     const runtime = plugin.runtime.?;
-    const handle = resolve_player_arg(runtime, 1) orelse {
+    const handle = resolve_player_arg(runtime, 2) orelse {
         state.pushBoolean(false);
         return 1;
     };
@@ -1904,7 +1919,7 @@ fn api_session_contains(L: ?*luaz.c.lua_State) callconv(.c) c_int {
         return 1;
     }
     const runtime = plugin.runtime.?;
-    const handle = resolve_player_arg(runtime, 1) orelse {
+    const handle = resolve_player_arg(runtime, 2) orelse {
         state.pushBoolean(false);
         return 1;
     };
@@ -1944,7 +1959,7 @@ fn api_session_announce(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     const plugin = session.owner;
     if (!require_capability(plugin, .@"session.host")) return 0;
     if (!plugin.take_op_budget()) return 0;
-    const text = state.checkString(1);
+    const text = state.checkString(2);
     const bounded = text[0..@min(text.len, max_message_bytes)];
     for (session.members[0..session.member_count]) |*member| {
         _ = message_handle(member.handle, bounded);
@@ -1965,7 +1980,7 @@ fn api_session_travel(L: ?*luaz.c.lua_State) callconv(.c) c_int {
         return 1;
     }
     if (!plugin.take_op_budget()) return 0;
-    const handle = resolve_player_arg(runtime, 1) orelse {
+    const handle = resolve_player_arg(runtime, 2) orelse {
         state.pushBoolean(false);
         return 1;
     };
@@ -1974,14 +1989,14 @@ fn api_session_travel(L: ?*luaz.c.lua_State) callconv(.c) c_int {
         state.pushBoolean(false);
         return 1;
     }
-    const x = clamp_block(runtime.state.checkInteger(2));
-    const y = clamp_block(runtime.state.checkInteger(3));
-    const z = clamp_block(runtime.state.checkInteger(4));
+    const x = clamp_block(runtime.state.checkInteger(3));
+    const y = clamp_block(runtime.state.checkInteger(4));
+    const z = clamp_block(runtime.state.checkInteger(5));
     var yaw: u8 = 0;
     var pitch: u8 = 0;
-    if (runtime.state.getTop() >= 6) {
-        yaw = @bitCast(@as(i8, @truncate(runtime.state.checkInteger(5))));
-        pitch = @bitCast(@as(i8, @truncate(runtime.state.checkInteger(6))));
+    if (runtime.state.getTop() >= 7) {
+        yaw = @bitCast(@as(i8, @truncate(runtime.state.checkInteger(6))));
+        pitch = @bitCast(@as(i8, @truncate(runtime.state.checkInteger(7))));
     }
     Server.teleport_handle_block(handle, x, y, z, yaw, pitch) catch {
         state.pushBoolean(false);
@@ -1996,7 +2011,7 @@ fn api_session_lock_travel(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     const session = session_from(L) orelse return 0;
     const plugin = session.owner;
     if (!require_capability(plugin, .@"session.host")) return 0;
-    session.travel_locked = state.optBoolean(1, true);
+    session.travel_locked = state.optBoolean(2, true);
     return 0;
 }
 
@@ -2112,7 +2127,7 @@ fn api_region_contains(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     };
     const plugin = region.owner;
     const runtime = plugin.runtime.?;
-    const handle = resolve_player_arg(runtime, 1) orelse {
+    const handle = resolve_player_arg(runtime, 2) orelse {
         state.pushBoolean(false);
         return 1;
     };

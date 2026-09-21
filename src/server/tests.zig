@@ -28,6 +28,40 @@ fn set_server_io() void {
     Server.io = io;
 }
 
+/// Durable file replacement for tests that save the world (the engine's
+/// atomic-write adapter is not linked into this module).
+fn test_replace_file(save_io: std.Io, dir: std.Io.Dir, path: []const u8, body: core.Host.WriteBody) !core.Host.ReplaceResult {
+    var temp_buf: [160]u8 = undefined;
+    const temp = try std.fmt.bufPrint(&temp_buf, "{s}.tmp", .{path});
+    const file = try dir.createFile(save_io, temp, .{});
+    defer file.close(save_io);
+
+    var buffer: [4096]u8 = undefined;
+    var writer = file.writer(save_io, &buffer);
+    try body.write(&writer.interface);
+    try writer.interface.flush();
+    try dir.rename(temp, dir, path, save_io);
+    return .{ .bytes = 0, .previous_retained = false };
+}
+
+fn install_test_replace_file() void {
+    core.Host.replace_file = test_replace_file;
+}
+
+/// Durable world saves need the engine's file-replacement adapter and the
+/// compression worker; tests that trigger `world.save` install std-only
+/// stand-ins.
+fn install_test_save_services() !void {
+    install_test_replace_file();
+    errdefer core.Host.replace_file = null;
+    try core.CompressWorker.init(allocator, io);
+}
+
+fn uninstall_test_save_services() void {
+    core.CompressWorker.deinit();
+    core.Host.replace_file = null;
+}
+
 /// Stack session keeping reader/writer addresses alive for fake clients.
 const Session = struct {
     output: []u8 = &.{},
@@ -472,8 +506,9 @@ test "fresh servers materialize the shipped essentials package" {
         Commands.reset_registry();
     }
 
-    try std.testing.expectEqual(@as(usize, 2), manager.count);
-    // UUID order: 7d3a (Spleef) sorts before 8c4f (Essentials).
+    try std.testing.expectEqual(@as(usize, 3), manager.count);
+    // UUID order: 7d3a (Spleef) sorts before 8c4f (Essentials) and b4e2
+    // (Build Battle).
     const spleef = manager.items[0];
     try std.testing.expect(spleef.active);
     try std.testing.expectEqualStrings("Spleef", spleef.manifest.name());
@@ -486,6 +521,12 @@ test "fresh servers materialize the shipped essentials package" {
     try std.testing.expect(Commands.is_script("reply"));
     try std.testing.expect(Commands.is_script("spawn"));
     try std.testing.expect(Commands.is_script("setspawn"));
+    const build_battle = manager.items[2];
+    try std.testing.expect(build_battle.active);
+    try std.testing.expectEqualStrings("Build Battle", build_battle.manifest.name());
+    try std.testing.expect(Commands.is_script("buildbattle"));
+    try std.testing.expect(Commands.is_script("bbop"));
+    try std.testing.expect(Commands.is_script("vote"));
 
     const written = try tmp.dir.readFileAlloc(io, "plugins/essentials/manifest.json", allocator, .limited(4096));
     defer allocator.free(written);
@@ -683,4 +724,346 @@ test "captured arena templates drive dirty-arena recovery" {
 
     const record_exists = if (harness.data_dir.openFile(io, "plugin-data/" ++ plugin_uuid ++ ".arena.dirty.json", .{})) |_| true else |_| false;
     try std.testing.expect(!record_exists);
+}
+
+// ----------------------------------------------------- build battle rounds
+
+const bb_uuid = "b4e2f8a1-6c93-4d07-9e55-2c1a9f3d7b60";
+const bb_manifest =
+    \\{"uuid":"b4e2f8a1-6c93-4d07-9e55-2c1a9f3d7b60","name":"Build Battle","version":"1.0.0",
+    \\ "api_version":"1.x","entrypoint":"main.luau",
+    \\ "capabilities":["player.message","player.teleport","world.edit","session.host"]}
+;
+const bb_source = @embedFile("plugins/buildbattle/buildbattle.luau");
+
+/// A captured Build Battle arena seeded through the store: the box must fit
+/// the plot grid (rows of up to four 15x15x15 volumes plus margins).
+fn seed_build_battle_arena(harness: *Harness, plot_count: u32) !void {
+    try harness.data_dir.createDirPath(io, "plugin-data");
+    try harness.write_package("manifest.json", bb_manifest);
+    try harness.write_package("main.luau", bb_source);
+    var cfg_buf: [160]u8 = undefined;
+    try harness.write_package("config.json", try std.fmt.bufPrint(&cfg_buf,
+        \\{{"build_seconds":1,"judge_seconds":1,"gather_seconds":1,"tick_ms":50,"themes":["Castle"]}}
+    , .{}));
+
+    const cols: u32 = @min(plot_count, 4);
+    const rows: u32 = (plot_count + 3) / 4;
+    const width = 4 + cols * 15 + (cols - 1) * 4;
+    const depth = 5 + rows * 15 + (rows - 1) * 4;
+    const volume: usize = @intCast(width * 17 * depth);
+    var store_buf: [192]u8 = undefined;
+    var path_buf: [96]u8 = undefined;
+    try harness.data_dir.writeFile(io, .{
+        .sub_path = try std.fmt.bufPrint(&path_buf, "plugin-data/{s}.json", .{bb_uuid}),
+        .data = try std.fmt.bufPrint(&store_buf,
+            \\{{"ready":1,"x0":10,"y0":10,"z0":10,"x1":{d},"y1":26,"z1":{d},"plots":{d}}}
+        , .{ 9 + width, 9 + depth, plot_count }),
+    });
+    // A captured template of air cells, as /bbop capture would have written.
+    const cells = try allocator.alloc(u8, volume);
+    defer allocator.free(cells);
+
+    @memset(cells, 0);
+    try harness.data_dir.writeFile(io, .{
+        .sub_path = try std.fmt.bufPrint(&path_buf, "plugin-data/{s}.arena.bin", .{bb_uuid}),
+        .data = cells,
+    });
+}
+
+fn count_in(buf: []const u8, needle: []const u8) usize {
+    var total: usize = 0;
+    var offset: usize = 0;
+    while (std.mem.indexOf(u8, buf[offset..], needle)) |at| {
+        total += 1;
+        offset += at + needle.len;
+    }
+    return total;
+}
+
+/// Drive the plugin's interval, the ordered queue, and the arena jobs until
+/// `needle` appears `min_count` times in the member's chat log. Phases advance
+/// on real monotonic time, so the packaged config uses one-second windows.
+fn wait_for_chat(harness: *Harness, session: *Session, needle: []const u8, min_count: usize) !void {
+    const manager = harness.manager orelse return error.TestUnexpectedResult;
+    const deadline = Client.now_ms() + 10_000;
+    while (count_in(session.output[0..session.writer.end], needle) < min_count) {
+        if (Client.now_ms() >= deadline) return error.TestUnexpectedResult;
+        harness.host.deadline_ms = Client.now_ms() + 1000;
+        harness.host.drain();
+        manager.tick();
+        io.sleep(.fromMilliseconds(20), .real) catch {};
+    }
+}
+
+test "build battle round: plot edits, replacement votes, and spawn returns" {
+    var harness = try Harness.init();
+    defer harness.deinit();
+
+    try seed_build_battle_arena(&harness, 2);
+
+    try install_test_save_services();
+    defer uninstall_test_save_services();
+
+    // The plugin claims its arena during load, so the world must exist first.
+    try world.init_empty(allocator, io, harness.tmp.dir, "unused.cw", core.world_dims.WorldDims.init(128, 64, 128), 0, world.default_format);
+    world.finalize_loaded();
+    // Round edits commit through world.set_block, which the ordered tick
+    // context owns in production.
+    try world.install_local_simulation(allocator, 0);
+    defer world.deinit();
+
+    harness.load();
+    const manager = harness.manager orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), manager.count);
+    try std.testing.expect(manager.items[0].active);
+
+    Server.players = .{};
+    defer Server.players = .{};
+
+    var buf_a: [16384]u8 = undefined;
+    var buf_b: [16384]u8 = undefined;
+    var buf_o: [4096]u8 = undefined;
+    var session_a = Session{};
+    var session_b = Session{};
+    var session_o = Session{};
+    const alice = session_a.open(&buf_a, true, 0);
+    const bob = session_b.open(&buf_b, true, 1);
+    _ = session_o.open(&buf_o, true, 2);
+    alice.name_len = 5;
+    @memcpy(alice.name[0..5], "Alice");
+    bob.name_len = 3;
+    @memcpy(bob.name[0..3], "Bob");
+
+    const handle_a = Server.PlayerHandle{ .id = 0, .generation = 1 };
+    const handle_b = Server.PlayerHandle{ .id = 1, .generation = 1 };
+    const handle_o = Server.PlayerHandle{ .id = 2, .generation = 1 };
+
+    harness.host.deadline_ms = Client.now_ms() + 1000;
+    harness.host.enqueue_command(handle_a, "buildbattle");
+    harness.host.enqueue_command(handle_b, "buildbattle");
+    harness.host.drain();
+
+    // Join travel puts each builder at the front walkway of their own plot.
+    const plot_view_x = [_]u16{ 19, 38 };
+    for (plot_view_x, 0..) |vx, slot| {
+        const client = if (slot == 0) alice else bob;
+        const pose = client.pose.load();
+        try std.testing.expectEqual(@as(u16, vx * 32 + 16), pose.x);
+        try std.testing.expectEqual(@as(u16, 11 * 32 + 51), pose.y);
+        try std.testing.expectEqual(@as(u16, 11 * 32 + 16), pose.z);
+    }
+
+    try wait_for_chat(&harness, &session_a, "Theme:", 1);
+
+    // Building: own-plot edits commit, foreign and outsider edits are denied
+    // with corrective packets.
+    harness.host.deadline_ms = Client.now_ms() + 1000;
+    harness.host.enqueue(.{ .set_block = .{
+        .handle = handle_a,
+        .x = 19,
+        .y = 15,
+        .z = 20,
+        .mode = @intFromEnum(core.zb.ClickMode.create),
+        .block = @intFromEnum(core.blocks.Block.stone),
+    } });
+    harness.host.enqueue(.{ .set_block = .{
+        .handle = handle_b,
+        .x = 19,
+        .y = 14,
+        .z = 20,
+        .mode = @intFromEnum(core.zb.ClickMode.create),
+        .block = @intFromEnum(core.blocks.Block.stone),
+    } });
+    harness.host.enqueue(.{ .set_block = .{
+        .handle = handle_o,
+        .x = 19,
+        .y = 13,
+        .z = 20,
+        .mode = @intFromEnum(core.zb.ClickMode.create),
+        .block = @intFromEnum(core.blocks.Block.stone),
+    } });
+    harness.host.drain();
+    try std.testing.expectEqual(core.blocks.Block.stone, world.get_block(19, 15, 20));
+    try std.testing.expectEqual(core.blocks.Block.air, world.get_block(19, 14, 20));
+    try std.testing.expectEqual(core.blocks.Block.air, world.get_block(19, 13, 20));
+    const denial = [_]u8{ 0x06, 0x00, 19, 0x00, 14, 0x00, 20 };
+    try std.testing.expect(std.mem.indexOf(u8, buf_b[0..session_b.writer.end], &denial) != null);
+
+    // Judging window 1 (Alice's build): Bob replaces his vote, Alice cannot
+    // vote for herself.
+    try wait_for_chat(&harness, &session_a, "Now judging", 1);
+    harness.host.deadline_ms = Client.now_ms() + 1000;
+    harness.host.enqueue_command(handle_b, "vote 8");
+    harness.host.enqueue_command(handle_b, "vote 3");
+    harness.host.enqueue_command(handle_a, "vote 9");
+    harness.host.drain();
+    try std.testing.expect(std.mem.indexOf(u8, buf_a[0..session_a.writer.end], "You cannot vote for your own build") != null);
+
+    // Judging window 2 (Bob's build): Alice scores 7, so Bob wins 7.0 to 3.0.
+    try wait_for_chat(&harness, &session_a, "Now judging", 2);
+    harness.host.deadline_ms = Client.now_ms() + 1000;
+    harness.host.enqueue_command(handle_a, "vote 7");
+    harness.host.drain();
+
+    try wait_for_chat(&harness, &session_a, "won build battle", 1);
+    try std.testing.expect(std.mem.indexOf(u8, buf_a[0..session_a.writer.end], "Winner (7.0): Bob") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf_a[0..session_a.writer.end], "2nd place (3.0): Alice") != null);
+    // The gather teleports everyone to the winning plot's viewing spot.
+    for ([_]*Client{ alice, bob }) |client| {
+        const pose = client.pose.load();
+        try std.testing.expectEqual(@as(u16, 38 * 32 + 16), pose.x);
+        try std.testing.expectEqual(@as(u16, 11 * 32 + 51), pose.y);
+    }
+
+    // After the gather, players return to the stable spawn and the restore
+    // undoes the round's edits.
+    try wait_for_chat(&harness, &session_a, "open again", 1);
+    for ([_]*Client{ alice, bob }) |client| {
+        const pose = client.pose.load();
+        try std.testing.expectEqual(@as(u16, 64 * 32 + 16), pose.x);
+        try std.testing.expectEqual(@as(u16, 83), pose.y);
+        try std.testing.expectEqual(@as(u16, 64 * 32 + 16), pose.z);
+    }
+    try std.testing.expectEqual(core.blocks.Block.air, world.get_block(19, 15, 20));
+    const record_exists = if (harness.data_dir.openFile(io, "plugin-data/" ++ bb_uuid ++ ".arena.dirty.json", .{})) |_| true else |_| false;
+    try std.testing.expect(!record_exists);
+
+    // Editing closed at the build deadline: a queued own-plot edit is denied.
+    harness.host.deadline_ms = Client.now_ms() + 1000;
+    harness.host.enqueue(.{ .set_block = .{
+        .handle = handle_a,
+        .x = 19,
+        .y = 15,
+        .z = 20,
+        .mode = @intFromEnum(core.zb.ClickMode.create),
+        .block = @intFromEnum(core.blocks.Block.stone),
+    } });
+    harness.host.drain();
+    try std.testing.expectEqual(core.blocks.Block.air, world.get_block(19, 15, 20));
+}
+
+test "build battle voting: ties share first place and zero-vote builds rank nowhere" {
+    var harness = try Harness.init();
+    defer harness.deinit();
+
+    try seed_build_battle_arena(&harness, 3);
+
+    try world.init_empty(allocator, io, harness.tmp.dir, "unused.cw", core.world_dims.WorldDims.init(128, 64, 128), 0, world.default_format);
+    world.finalize_loaded();
+    defer world.deinit();
+
+    harness.load();
+
+    Server.players = .{};
+    defer Server.players = .{};
+
+    var buf_a: [16384]u8 = undefined;
+    var buf_b: [16384]u8 = undefined;
+    var buf_c: [16384]u8 = undefined;
+    var session_a = Session{};
+    var session_b = Session{};
+    var session_c = Session{};
+    const alice = session_a.open(&buf_a, true, 0);
+    const bob = session_b.open(&buf_b, true, 1);
+    const carol = session_c.open(&buf_c, true, 2);
+    alice.name_len = 5;
+    @memcpy(alice.name[0..5], "Alice");
+    bob.name_len = 3;
+    @memcpy(bob.name[0..3], "Bob");
+    carol.name_len = 5;
+    @memcpy(carol.name[0..5], "Carol");
+
+    const handle_a = Server.PlayerHandle{ .id = 0, .generation = 1 };
+    const handle_b = Server.PlayerHandle{ .id = 1, .generation = 1 };
+    const handle_c = Server.PlayerHandle{ .id = 2, .generation = 1 };
+
+    harness.host.deadline_ms = Client.now_ms() + 1000;
+    for ([_]Server.PlayerHandle{ handle_a, handle_b, handle_c }) |handle| {
+        harness.host.enqueue_command(handle, "buildbattle");
+    }
+    harness.host.drain();
+
+    try wait_for_chat(&harness, &session_a, "Now judging", 1);
+    // Window 1 (Alice): Bob and Carol both score 5.
+    harness.host.deadline_ms = Client.now_ms() + 1000;
+    harness.host.enqueue_command(handle_b, "vote 5");
+    harness.host.enqueue_command(handle_c, "vote 5");
+    harness.host.drain();
+
+    try wait_for_chat(&harness, &session_a, "Now judging", 2);
+    // Window 2 (Bob): only Alice votes; Carol's silence is an abstention.
+    harness.host.deadline_ms = Client.now_ms() + 1000;
+    harness.host.enqueue_command(handle_a, "vote 5");
+    harness.host.drain();
+
+    // Window 3 (Carol): nobody votes, so her build is unranked.
+    try wait_for_chat(&harness, &session_a, "Now judging", 3);
+
+    try wait_for_chat(&harness, &session_a, "won build battle", 1);
+    try std.testing.expect(std.mem.indexOf(u8, buf_a[0..session_a.writer.end], "Winner (5.0): Alice, Bob") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf_a[0..session_a.writer.end], "3rd place") == null);
+    // Shared first place gathers at the first winning plot in judging order.
+    for ([_]*Client{ alice, bob, carol }) |client| {
+        const pose = client.pose.load();
+        try std.testing.expectEqual(@as(u16, 19 * 32 + 16), pose.x);
+        try std.testing.expectEqual(@as(u16, 11 * 32 + 51), pose.y);
+    }
+    try wait_for_chat(&harness, &session_a, "open again", 1);
+}
+
+test "build battle departure during building cancels the round and returns players" {
+    var harness = try Harness.init();
+    defer harness.deinit();
+
+    try seed_build_battle_arena(&harness, 2);
+
+    try world.init_empty(allocator, io, harness.tmp.dir, "unused.cw", core.world_dims.WorldDims.init(128, 64, 128), 0, world.default_format);
+    world.finalize_loaded();
+    defer world.deinit();
+
+    harness.load();
+
+    Server.players = .{};
+    defer Server.players = .{};
+
+    var buf_a: [16384]u8 = undefined;
+    var buf_b: [16384]u8 = undefined;
+    var session_a = Session{};
+    var session_b = Session{};
+    const alice = session_a.open(&buf_a, true, 0);
+    const bob = session_b.open(&buf_b, true, 1);
+    alice.name_len = 5;
+    @memcpy(alice.name[0..5], "Alice");
+    bob.name_len = 3;
+    @memcpy(bob.name[0..3], "Bob");
+
+    const handle_a = Server.PlayerHandle{ .id = 0, .generation = 1 };
+    const handle_b = Server.PlayerHandle{ .id = 1, .generation = 1 };
+
+    harness.host.deadline_ms = Client.now_ms() + 1000;
+    harness.host.enqueue_command(handle_a, "buildbattle");
+    harness.host.enqueue_command(handle_b, "buildbattle");
+    harness.host.drain();
+
+    try wait_for_chat(&harness, &session_a, "Theme:", 1);
+
+    // Alice departs during building: her build is withdrawn and the round
+    // cancels because fewer than two participants remain before results.
+    harness.host.deadline_ms = Client.now_ms() + 1000;
+    harness.host.enqueue_command(handle_a, "buildbattle");
+    harness.host.drain();
+    try std.testing.expect(std.mem.indexOf(u8, buf_a[0..session_a.writer.end], "You left the round") != null);
+
+    try wait_for_chat(&harness, &session_b, "was canceled", 1);
+    try wait_for_chat(&harness, &session_b, "open again", 1);
+
+    // Bob is returned to the stable spawn; Alice left the session, so she
+    // keeps her last position.
+    const pose_b = bob.pose.load();
+    try std.testing.expectEqual(@as(u16, 64 * 32 + 16), pose_b.x);
+    try std.testing.expectEqual(@as(u16, 83), pose_b.y);
+    const pose_a = alice.pose.load();
+    try std.testing.expectEqual(@as(u16, 19 * 32 + 16), pose_a.x);
+    try std.testing.expectEqual(@as(u16, 11 * 32 + 51), pose_a.y);
 }

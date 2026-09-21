@@ -96,6 +96,15 @@ pub fn init_empty(
     set_load_status(.loading);
 }
 
+/// Install the simulation that owns authoritative edits and gravity. Local
+/// worlds do this during `init`; tests of ordered gameplay edits use it
+/// directly, while client-side empty worlds stay simulation-free.
+pub fn install_local_simulation(allocator: std.mem.Allocator, seed: u64) !void {
+    assert(sim == null);
+    sim = try WorldSimulation.init(allocator, seed);
+    saver.owned_locally = true;
+}
+
 /// Load a local world or generate and save it when no valid save exists.
 pub fn init(
     allocator: std.mem.Allocator,
@@ -121,8 +130,7 @@ pub fn init(
 
     try init_empty(allocator, io, save_dir, save_file_name, load_geometry, seed, format);
     errdefer deinit_components();
-    sim = try WorldSimulation.init(allocator, seed);
-    saver.owned_locally = true;
+    try install_local_simulation(allocator, seed);
 
     try io.sleep(.fromMilliseconds(250), .real);
 

@@ -1,0 +1,14 @@
+{
+  "uuid": "b4e2f8a1-6c93-4d07-9e55-2c1a9f3d7b60",
+  "name": "Build Battle",
+  "version": "1.0.0",
+  "author": "CrossCraft",
+  "api_version": "1.x",
+  "entrypoint": "buildbattle.luau",
+  "capabilities": [
+    "player.message",
+    "player.teleport",
+    "world.edit",
+    "session.host"
+  ]
+}
