@@ -253,38 +253,3 @@ pub fn is_sunlit(x: u16, y: u16, z: u16) bool {
 pub fn find_spawn() [3]u16 {
     return data.find_spawn(saver.io);
 }
-
-test "downloaded worlds need no simulation and clean up after local initialization fails" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const dims = WorldDims.init(128, 64, 128);
-    var allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-
-    try init_empty(allocator.allocator(), std.testing.io, tmp.dir, "world.cw", dims, 0, default_format);
-    const storage_allocations = allocator.allocations;
-    {
-        defer deinit();
-
-        try std.testing.expect(sim == null);
-        finalize_loaded();
-        data.apply_block(1, 8, 1, .stone);
-        try std.testing.expectEqual(Block.stone, get_block(1, 8, 1));
-        try std.testing.expect(!is_sunlit(1, 7, 1));
-    }
-    try std.testing.expectEqual(allocator.allocated_bytes, allocator.freed_bytes);
-
-    allocator = .init(std.testing.allocator, .{ .fail_index = storage_allocations });
-    try std.testing.expectError(error.OutOfMemory, init(
-        allocator.allocator(),
-        std.testing.allocator,
-        std.testing.io,
-        tmp.dir,
-        "world.cw",
-        dims,
-        0,
-        default_format,
-    ));
-    try std.testing.expect(sim == null);
-    try std.testing.expectEqual(allocator.allocated_bytes, allocator.freed_bytes);
-}

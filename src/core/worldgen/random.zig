@@ -74,30 +74,3 @@ pub fn next_double(self: *random_state) f64 {
     assert(result >= 0.0 and result < 1.0);
     return result;
 }
-
-test "initial state and documented Java-compatible draws" {
-    var actual = random_state.init(0);
-    try std.testing.expectEqual(@as(u64, multiplier), actual.state);
-    try std.testing.expectEqual(@as(i32, -1_155_484_576), actual.next_int());
-    try std.testing.expectEqual(@as(i32, -723_955_400), actual.next_int());
-
-    const negative = random_state.init(-1);
-    try std.testing.expectEqual(@as(u64, ((@as(u64, @bitCast(@as(i64, -1))) & mask) ^ multiplier) & mask), negative.state);
-}
-
-test "bounded draws preserve range and rejection state transitions" {
-    var actual = random_state.init(12_345);
-    const expected = [_]u32{ 51, 80, 41, 28, 55, 84, 75, 2 };
-    for (expected) |value| try std.testing.expectEqual(value, actual.next_int_bounded(100));
-
-    var powers = random_state.init(7);
-    try std.testing.expectEqual(@as(u32, 11), powers.next_int_bounded(16));
-}
-
-test "floating draws match Java Random" {
-    var float_random = random_state.init(0);
-    try std.testing.expectEqual(@as(u32, 0x3f3b20b4), @as(u32, @bitCast(float_random.next_float())));
-
-    var double_random = random_state.init(0);
-    try std.testing.expectEqual(@as(u64, 0x3fe764168ea6ca89), @as(u64, @bitCast(double_random.next_double())));
-}

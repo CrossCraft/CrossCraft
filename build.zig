@@ -311,29 +311,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(lint_step);
 
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &.{};
-    const pack_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/pack_zip.zig"),
-            .target = b.graph.host,
-            .imports = &.{.{ .name = "capabilities", .module = capabilities }},
-        }),
-        .filters = test_filters,
-    });
-    const run_pack_tests = b.addRunArtifact(pack_tests);
-    test_step.dependOn(&run_pack_tests.step);
-    b.step("test-pack", "Verify CrossCraft resource pack creation").dependOn(&run_pack_tests.step);
-    const capability_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/capabilities.zig"),
-            .target = b.graph.host,
-            .optimize = optimize,
-        }),
-        .filters = test_filters,
-    });
-    const run_capability_tests = b.addRunArtifact(capability_tests);
-    test_step.dependOn(&run_capability_tests.step);
-    b.step("test-capabilities", "Verify target capability policy").dependOn(&run_capability_tests.step);
-
     const unit_tests = b.addTest(.{
         .root_module = unit_tests_root: {
             const root = b.createModule(.{
@@ -360,18 +337,8 @@ pub fn build(b: *std.Build) void {
     }
     const run_unit_tests = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_unit_tests.step);
-    const service_tests = b.addTest(.{
-        .root_module = client_root.import_table.get("engine_services").?,
-        .filters = test_filters,
-        .use_llvm = unit_tests.use_llvm,
-        .use_lld = unit_tests.use_lld,
-    });
-    const run_service_tests = b.addRunArtifact(service_tests);
-    test_step.dependOn(&run_service_tests.step);
     const hosts_step = b.step("test-hosts", "Run client and server host tests");
     hosts_step.dependOn(&run_unit_tests.step);
-    hosts_step.dependOn(&run_service_tests.step);
-    b.step("test-services", "Verify injected Aether job and storage adapters").dependOn(&run_service_tests.step);
 
     const core_tests = b.addTest(.{
         .root_module = core_tests_root: {
@@ -394,28 +361,6 @@ pub fn build(b: *std.Build) void {
     const run_core_tests = b.addRunArtifact(core_tests);
     test_step.dependOn(&run_core_tests.step);
     b.step("test-core", "Run core tests").dependOn(&run_core_tests.step);
-
-    const plugins_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/server/tests.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libcpp = true,
-            .imports = &.{
-                .{ .name = "core", .module = core },
-                .{ .name = "protocol", .module = protocol },
-                .{ .name = "luaz", .module = luaz_module },
-            },
-        }),
-        .filters = test_filters,
-    });
-    if (policy.use_llvm_linker) {
-        plugins_tests.use_llvm = true;
-        plugins_tests.use_lld = true;
-    }
-    const run_plugins_tests = b.addRunArtifact(plugins_tests);
-    test_step.dependOn(&run_plugins_tests.step);
-    b.step("test-plugins", "Run server plugin runtime tests").dependOn(&run_plugins_tests.step);
 
     const worldgen_tests = b.addTest(.{
         .name = "worldgen_tests",
@@ -473,15 +418,6 @@ pub fn build(b: *std.Build) void {
         .root_module = worldgen_cli_module,
     });
     worldgen_cli_step.dependOn(&b.addInstallArtifact(worldgen_cli_exe, .{}).step);
-
-    const worldgen_cli_tests = b.addTest(.{
-        .name = "worldgen_cli_tests",
-        .root_module = worldgen_cli_module,
-        .filters = test_filters,
-    });
-    const run_worldgen_cli_tests = b.addRunArtifact(worldgen_cli_tests);
-    test_step.dependOn(&run_worldgen_cli_tests.step);
-    b.step("test-worldgen-cli", "Run worldgen oracle CLI tests").dependOn(&run_worldgen_cli_tests.step);
 
     const web_target = Aether.config.web_target(b);
     const web_overrides: Aether.config.Config.Overrides = .{

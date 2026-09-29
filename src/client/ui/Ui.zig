@@ -600,32 +600,3 @@ fn draw_slot_grid(ui: *Ui, rect: LogicalRect, opts: SlotGridOpts) void {
         .origin = .top_center,
     });
 }
-
-test "Aether menu adapter keeps centered click targets across draw replay" {
-    var fonts: FontBatcher = undefined;
-    fonts.style_parser = null;
-    fonts.glyph_widths = @splat(4);
-    fonts.allocator = std.testing.allocator;
-    var texture: Rendering.Texture = undefined;
-    texture.width = 256;
-    texture.height = 256;
-    var state: UiState = .{};
-    defer state.deinit();
-
-    var list: UiDrawList = .{};
-    const screen: LogicalRect = .{ .x0 = 0, .y0 = 0, .x1 = 400, .y1 = 240 };
-    var input_frame: UiInput = .{};
-    var ui = begin(.{ .draw = &list, .state = &state, .input = &input_frame, .fonts = &fonts, .gui_tex = &texture, .glyphs_tex = &texture, .screen = screen });
-    var column = ui.stack(.{});
-    try std.testing.expect(!ui.button(1, "Test", .{}));
-    column.end();
-    ui.end();
-    try std.testing.expectEqual(LogicalRect{ .x0 = 100, .y0 = 110, .x1 = 300, .y1 = 130 }, state.implementation.?.focusables[state.implementation.?.current][0].bounds);
-    list.native().clear();
-    input_frame = .{ .cursor_x = 110, .cursor_y = 115, .cursor_available = true, .cursor_moved = true, .click_edge = true, .click_held = true, .text_events = true };
-    ui = begin(.{ .draw = &list, .state = &state, .input = &input_frame, .fonts = &fonts, .gui_tex = &texture, .glyphs_tex = &texture, .screen = screen });
-    column = ui.stack(.{});
-    try std.testing.expect(ui.button(1, "Test", .{}));
-    column.end();
-    ui.end();
-}

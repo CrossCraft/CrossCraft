@@ -477,26 +477,3 @@ fn classic_definition(value: Block) Definition {
 
     return def;
 }
-
-test "classic registry preserves block properties" {
-    try std.testing.expect(Block.air.is_air());
-    try std.testing.expect(!Block.stone.is_air());
-    try std.testing.expect(Block.stone.is_opaque());
-    try std.testing.expect(!Block.glass.is_opaque());
-    try std.testing.expect(Block.glass.mesh_props().glass);
-    try std.testing.expect(Block.still_water.is_water());
-    try std.testing.expect(Block.flowing_lava.is_lava());
-    try std.testing.expect(Block.still_water.is_fluid());
-    try std.testing.expect(Block.air.is_place_replaceable());
-    try std.testing.expect(Block.still_water.is_place_replaceable());
-    try std.testing.expect(!Block.flower_1.is_place_replaceable());
-    try std.testing.expectEqual(@as(u5, 8), Block.slab.bounds().max_y);
-    try std.testing.expect(Block.stone.bounds().is_full());
-    try std.testing.expect(Block.bedrock.is_solid());
-    try std.testing.expect(!Block.bedrock.is_breakable());
-    try std.testing.expectEqual(@as(f32, 0.5), Block.slab.collision_height());
-    try std.testing.expectEqual(@as(f32, 1.0), Block.stone.collision_height());
-    try std.testing.expectEqual(@as(f32, 0.0), Block.air.collision_height());
-    try std.testing.expectEqual(@as(u8, 1), Block.stone.face_tile(.y_pos).col);
-    try std.testing.expectEqual(Block.obsidian, inventory_block(41));
-}

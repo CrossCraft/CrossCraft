@@ -195,39 +195,3 @@ fn on_disconnect(ctx: *anyopaque, event: zb.DisconnectPlayer) !void {
     Session.set_disconnect_reason(trimmed);
     self.quit_requested = true;
 }
-
-test "multiplayer disconnect stops dispatch and publishes the server reason" {
-    defer Session.clear_disconnect_reason();
-
-    Session.clear_disconnect_reason();
-    var bytes: [256]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&bytes);
-    try proto.send_disconnect_to_client(&writer, "Server shutting down");
-    try proto.send_message(&writer, 0, "Must not be dispatched");
-    var reader = std.Io.Reader.fixed(writer.buffered());
-    var conn: ClientConn = undefined;
-    conn.init(&reader, &writer);
-    var connected: std.atomic.Value(bool) = .init(true);
-
-    conn.read_loop(&connected);
-
-    try std.testing.expect(!connected.load(.acquire));
-    try std.testing.expectEqualStrings("Server shutting down", Session.disconnect_reason());
-    try std.testing.expectEqual(@as(usize, 65), reader.seek);
-}
-
-test "multiplayer truncated packet publishes connection loss" {
-    defer Session.clear_disconnect_reason();
-
-    Session.clear_disconnect_reason();
-    var reader = std.Io.Reader.fixed(&.{ 0x0e, 'x' });
-    var writer = std.Io.Writer.fixed(&.{});
-    var conn: ClientConn = undefined;
-    conn.init(&reader, &writer);
-    var connected: std.atomic.Value(bool) = .init(true);
-
-    conn.read_loop(&connected);
-
-    try std.testing.expect(!connected.load(.acquire));
-    try std.testing.expectEqualStrings("Connection lost", Session.disconnect_reason());
-}

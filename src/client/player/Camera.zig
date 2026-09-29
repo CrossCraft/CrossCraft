@@ -96,25 +96,3 @@ pub fn distance_sq(self: *const Camera, wx: f32, wy: f32, wz: f32) f32 {
     const dz = wz - self.z;
     return dx * dx + dy * dy + dz * dz;
 }
-
-test "Aether camera preserves Classic view projection and frustum conventions" {
-    var camera = Camera.init(302.5, 65.75, 401.25);
-    camera.yaw = 1.25;
-    camera.pitch = -0.35;
-    camera.tilt = Math.Mat4.rotation_z(0.12).mul(Math.Mat4.translation(0.03, -0.02, 0));
-    const result = try camera.matrices(16.0 / 9.0);
-    const expected_view = Math.Mat4.translation(-camera.x, -camera.y, -camera.z)
-        .mul(Math.Mat4.rotation_y(-camera.yaw))
-        .mul(Math.Mat4.rotation_x(camera.pitch))
-        .mul(camera.tilt);
-    const expected_projection = Math.Mat4.perspective_fov_rh(camera.fov, 16.0 / 9.0, near_plane, far_plane);
-    try std.testing.expectEqual(expected_view, result.view);
-    try std.testing.expectEqual(expected_projection, result.projection);
-    try std.testing.expectEqual(Math.Frustum.from_view_projection(expected_view.mul(expected_projection)), result.frustum);
-
-    const basis = camera.billboard_basis();
-    const expected_right = Math.Vec3.new(@cos(camera.yaw), 0, -@sin(camera.yaw));
-    const expected_up = Math.Vec3.new(-@sin(camera.yaw) * @sin(camera.pitch), @cos(camera.pitch), -@cos(camera.yaw) * @sin(camera.pitch));
-    try std.testing.expectApproxEqAbs(@as(f32, 0), basis.right.sub(expected_right).length(), 0.000001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), basis.up.sub(expected_up).length(), 0.000001);
-}

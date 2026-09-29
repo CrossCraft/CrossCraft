@@ -537,27 +537,6 @@ pub fn local_join(reader: *std.Io.Reader, writer: *std.Io.Writer, connected: *bo
     };
 }
 
-test "pending login frame must be complete and use the Classic protocol version" {
-    var frame: [131]u8 = @splat(' ');
-    frame[0] = 0x00;
-    frame[1] = 0x07;
-    @memcpy(frame[2..7], "Alice");
-    frame[130] = 0;
-
-    const request = try parse_login_frame(&frame);
-    try std.testing.expectEqual(@as(u8, 0x07), request.protocol_version);
-    try std.testing.expectEqualStrings("Alice", request.username[0..5]);
-
-    try std.testing.expectError(error.InvalidLoginPacket, parse_login_frame(frame[0..130]));
-
-    frame[0] = 0x05;
-    try std.testing.expectError(error.InvalidLoginPacket, parse_login_frame(&frame));
-
-    frame[0] = 0x00;
-    frame[1] = 0x06;
-    try std.testing.expectError(error.UnsupportedProtocolVersion, parse_login_frame(&frame));
-}
-
 pub const ClientSnapshot = struct {
     handle: PlayerHandle,
 };

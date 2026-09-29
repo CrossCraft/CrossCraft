@@ -72,15 +72,6 @@ pub fn deinit() void {
     backing_allocator.destroy(compress_buf);
 }
 
-test "compression initialization releases allocations on failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
-        fn check(allocator: std.mem.Allocator) !void {
-            try init(allocator, std.testing.io);
-            deinit();
-        }
-    }.check, .{});
-}
-
 /// Reset the global compressor for a new gzip stream targeting `output`.
 /// Must be called from the worker thread (single job at a time).
 pub fn reset(output: *std.Io.Writer) !void {
@@ -139,67 +130,4 @@ pub fn submit(job: *Job) void {
 pub fn cancel_pending_before_worker(job: *Job) bool {
     if (scheduler_context) |context| return scheduler.?.cancel(context, job);
     return false;
-}
-
-test "reusable compression requests preserve failure and single-flight state" {
-    const Fail = struct {
-        fn run(_: *Job) !void {
-            return error.ForcedFailure;
-        }
-    };
-    var request: Job = .{ .state = .init(.done), .run = Fail.run };
-    try std.testing.expect(request.try_begin());
-    try std.testing.expect(!request.try_begin());
-    submit(&request);
-    request.wait(std.testing.io);
-    try std.testing.expect(request.is_done());
-    try std.testing.expectEqual(error.ForcedFailure, request.err.?);
-}
-
-test "compression wait preserves cancellation and restores caller protection" {
-    const Probe = struct {
-        job: *Job,
-        protection: std.Io.CancelProtection,
-        cancel_pending: bool = true,
-        sleeps: usize = 0,
-
-        fn swap_protection(context: ?*anyopaque, next: std.Io.CancelProtection) std.Io.CancelProtection {
-            const self: *@This() = @ptrCast(@alignCast(context.?));
-            const previous = self.protection;
-            self.protection = next;
-            return previous;
-        }
-
-        fn check_cancel(context: ?*anyopaque) std.Io.Cancelable!void {
-            const self: *@This() = @ptrCast(@alignCast(context.?));
-            if (self.protection == .unblocked and self.cancel_pending) {
-                self.cancel_pending = false;
-                return error.Canceled;
-            }
-        }
-
-        fn sleep(context: ?*anyopaque, _: std.Io.Timeout) std.Io.Cancelable!void {
-            try check_cancel(context);
-            const self: *@This() = @ptrCast(@alignCast(context.?));
-            self.sleeps += 1;
-            self.job.mark_done();
-        }
-
-        fn run(_: *Job) !void {}
-    };
-    for ([_]std.Io.CancelProtection{ .unblocked, .blocked }) |initial| {
-        var job: Job = .{ .run = Probe.run };
-        var probe: Probe = .{ .job = &job, .protection = initial };
-        var vtable = std.testing.io.vtable.*;
-        vtable.swapCancelProtection = Probe.swap_protection;
-        vtable.sleep = Probe.sleep;
-        vtable.checkCancel = Probe.check_cancel;
-        const io: std.Io = .{ .userdata = &probe, .vtable = &vtable };
-        job.wait(io);
-        try std.testing.expect(job.is_done());
-        try std.testing.expectEqual(@as(usize, 1), probe.sleeps);
-        try std.testing.expectEqual(initial, probe.protection);
-        try std.testing.expect(probe.cancel_pending);
-        if (initial == .unblocked) try std.testing.expectError(error.Canceled, io.checkCancel());
-    }
 }

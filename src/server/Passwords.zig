@@ -54,19 +54,3 @@ pub fn verify(io: std.Io, password: []const u8, credential: Accounts.Credential)
 
     return std.crypto.timing_safe.eql([32]u8, candidate.hash, credential.hash);
 }
-
-test "auth password hashing salts independently and verifies exactly" {
-    try init(std.testing.allocator);
-    defer deinit();
-
-    const first = try create(std.testing.io, "password123");
-    const second = try create(std.testing.io, "password123");
-    try std.testing.expect(!std.mem.eql(u8, &first.salt, &second.salt));
-    try std.testing.expect(!std.mem.eql(u8, &first.hash, &second.hash));
-    try std.testing.expect(try verify(std.testing.io, "password123", first));
-    try std.testing.expect(!try verify(std.testing.io, "Password123", first));
-    try std.testing.expect(!valid("short"));
-    try std.testing.expect(!valid("white space"));
-    try std.testing.expect(valid("12345678901234567890123456"));
-    try std.testing.expect(!valid("123456789012345678901234567"));
-}

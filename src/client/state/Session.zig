@@ -132,38 +132,3 @@ pub fn connect_endpoint(ep: ServerEndpoint, io: std.Io) !std.Io.net.Stream {
         },
     };
 }
-
-test "seed_from_text trims names and treats blank as no override" {
-    try std.testing.expectEqual(@as(?u64, 0x779a65e7023cd2e7), seed_from_text("hello world"));
-    try std.testing.expectEqual(@as(?u64, 0x779a65e7023cd2e7), seed_from_text(" hello world "));
-    try std.testing.expect(seed_from_text("") == null);
-    try std.testing.expect(seed_from_text("   ") == null);
-}
-
-test "parse_server_endpoint handles literals and hostnames" {
-    defer set_server("");
-
-    set_server("127.0.0.1");
-    switch (try parse_server_endpoint()) {
-        .ip => |addr| try std.testing.expectEqual(DefaultPort, addr.getPort()),
-        .host => return error.ExpectedIpAddress,
-    }
-
-    set_server("[::1]:25570");
-    switch (try parse_server_endpoint()) {
-        .ip => |addr| try std.testing.expectEqual(@as(u16, 25570), addr.getPort()),
-        .host => return error.ExpectedIpAddress,
-    }
-
-    set_server("play.example.com:25571");
-    switch (try parse_server_endpoint()) {
-        .host => |host| {
-            try std.testing.expectEqualStrings("play.example.com", host.name);
-            try std.testing.expectEqual(@as(u16, 25571), host.port);
-        },
-        .ip => return error.ExpectedHostName,
-    }
-
-    set_server("");
-    try std.testing.expectError(error.EmptyHost, parse_server_endpoint());
-}

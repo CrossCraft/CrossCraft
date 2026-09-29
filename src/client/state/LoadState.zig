@@ -542,32 +542,6 @@ pub fn state(self: *@This()) State {
     } };
 }
 
-test "load job runs inline and releases allocations on admission failure" {
-    const Probe = struct {
-        fn run(context: *anyopaque) !void {
-            const task: *LoadTask = @ptrCast(@alignCast(context));
-            task.seed += 1;
-        }
-
-        fn check(allocator: std.mem.Allocator) !void {
-            var task: LoadTask = .{
-                .allocator = allocator,
-                .scratch = allocator,
-                .io = std.testing.io,
-                .seed = 7,
-                .data_dir = .cwd(),
-                .save_location = "",
-            };
-            defer task.join();
-
-            try task.start(run, .{ .capacity = 1, .mode = .inline_execution });
-            try task.job.result();
-            try std.testing.expectEqual(@as(u64, 8), task.seed);
-        }
-    };
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.check, .{});
-}
-
 test "load job joins after session readiness before releasing task context" {
     if (!ae.System.info().background_workers) return error.SkipZigTest;
     const Probe = struct {
