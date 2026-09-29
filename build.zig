@@ -459,6 +459,30 @@ pub fn build(b: *std.Build) void {
     });
     worldgen_test_step.dependOn(&b.addRunArtifact(worldgen_test_exe).step);
 
+    const worldgen_cli_module = b.createModule(.{
+        .root_source_file = b.path("tools/worldgen_cli.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "worldgen", .module = worldgen },
+        },
+    });
+    const worldgen_cli_step = b.step("worldgen-cli", "Build the worldgen oracle CLI for differential fuzzing");
+    const worldgen_cli_exe = b.addExecutable(.{
+        .name = "worldgen_cli",
+        .root_module = worldgen_cli_module,
+    });
+    worldgen_cli_step.dependOn(&b.addInstallArtifact(worldgen_cli_exe, .{}).step);
+
+    const worldgen_cli_tests = b.addTest(.{
+        .name = "worldgen_cli_tests",
+        .root_module = worldgen_cli_module,
+        .filters = test_filters,
+    });
+    const run_worldgen_cli_tests = b.addRunArtifact(worldgen_cli_tests);
+    test_step.dependOn(&run_worldgen_cli_tests.step);
+    b.step("test-worldgen-cli", "Run worldgen oracle CLI tests").dependOn(&run_worldgen_cli_tests.step);
+
     const web_target = Aether.config.web_target(b);
     const web_overrides: Aether.config.Config.Overrides = .{
         .gfx = .webgl,
