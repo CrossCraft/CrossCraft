@@ -465,7 +465,7 @@ pub fn parse_login_frame(frame: []const u8) !LoginRequest {
     const packet = try zb.PlayerIDToServer.read(&reader);
     if (packet.protocol_version != 0x07) return error.UnsupportedProtocolVersion;
 
-    const request: LoginRequest = .{ .protocol_version = packet.protocol_version, .username = packet.username };
+    const request: LoginRequest = .{ .protocol_version = packet.protocol_version, .username = packet.username, .key = packet.key };
     _ = try Client.login_name(request);
     return request;
 }

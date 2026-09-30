@@ -145,7 +145,15 @@ pub fn parse(content: []const u8, seed: u64) !Config {
     if (std.mem.eql(u8, config.save_location_slice(), Server.root_default_save_file_name)) {
         store(config.save_location[0..], &config.save_location_len, Server.default_save_location);
     }
-    if (config.auth == .online) return error.OnlineAuthenticationUnavailable;
+    if (config.auth == .online) {
+        if (config.heartbeat.count == 0) return error.OnlineAuthenticationRequiresHeartbeat;
+        for (0..config.heartbeat.count) |index| {
+            const endpoint = config.heartbeat.url(index);
+            // Anyone who reads the salt can forge an mppass for any name.
+            if (std.ascii.startsWithIgnoreCase(endpoint, "http:"))
+                log.warn("Heartbeat URL {s} is plain HTTP; its salt can be intercepted", .{endpoint});
+        }
+    }
     return config;
 }
 
@@ -205,7 +213,8 @@ fn parse_heartbeat_urls(heartbeat: *Heartbeat, value: []const u8) void {
             log.warn("Ignoring invalid or non-HTTP heartbeat URL", .{});
             continue;
         };
-        if (!std.ascii.eqlIgnoreCase(uri.scheme, "http") or uri.host == null) {
+        const http = std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "https");
+        if (!http or uri.host == null) {
             log.warn("Ignoring invalid or non-HTTP heartbeat URL", .{});
             continue;
         }

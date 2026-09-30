@@ -8,7 +8,7 @@ pub const file_name = "accounts.dat";
 // Version 1: 8-byte magic, little-endian u32 version/count, 144-byte records,
 // then a SHA-256 checksum of the header and records. Records contain lengths
 // and flags (0..4), name (4..20), reason (20..84), salt (84..100), hash
-// (100..132), credential revision (132..140), and zero padding (140..144).
+// (100..132), credential revision (132..140), and online authority (140..144).
 const header_len = 16;
 const record_len = 144;
 const checksum_len = 32;
@@ -27,6 +27,8 @@ pub const Snapshot = struct {
     whitelisted: bool = false,
     reason: [64]u8 = @splat(0),
     reason_len: u8 = 0,
+    /// Online directory that first vouched for this name; zero when unbound.
+    authority: u32 = 0,
 
     pub fn ban_reason(self: *const Snapshot) []const u8 {
         assert(self.reason_len <= self.reason.len);
@@ -115,6 +117,19 @@ pub fn set_policy(name: []const u8, flag: PolicyFlag, enabled: bool, reason: []c
     try replace(name, data);
 }
 
+/// First binding wins so another directory cannot claim the same name later.
+pub fn bind_authority(name: []const u8, authority: u32) !void {
+    assert(authority != 0);
+    mutex.lockUncancelable(save_io);
+    defer mutex.unlock(save_io);
+
+    var data = if (find(name)) |index| records[index].data else Snapshot{};
+    if (data.authority == authority) return;
+    if (data.authority != 0) return error.AuthorityMismatch;
+    data.authority = authority;
+    try replace(name, data);
+}
+
 /// Revision is checked under the same lock as the durable replacement.
 pub fn set_password(name: []const u8, expected_revision: u64, credential: Credential) !void {
     mutex.lockUncancelable(save_io);
@@ -160,6 +175,7 @@ fn encode(record: Record, out: *[record_len]u8) void {
         @memcpy(out[100..132], &credential.hash);
     }
     std.mem.writeInt(u64, out[132..140], data.revision, .little);
+    std.mem.writeInt(u32, out[140..144], data.authority, .little);
 }
 
 fn decode(bytes: *const [record_len]u8) !Record {
@@ -175,6 +191,7 @@ fn decode(bytes: *const [record_len]u8) !Record {
         .reason_len = bytes[2],
         .reason = bytes[20..84].*,
         .revision = std.mem.readInt(u64, bytes[132..140], .little),
+        .authority = std.mem.readInt(u32, bytes[140..144], .little),
         .credential = if (bytes[1] & 1 != 0) .{ .salt = bytes[84..100].*, .hash = bytes[100..132].* } else null,
     };
     if ((record.data.credential == null) != (record.data.revision == 0)) return error.InvalidAccountFile;

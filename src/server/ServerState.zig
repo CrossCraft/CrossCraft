@@ -75,7 +75,7 @@ connections_mutex: std.Io.Mutex,
 tasks: std.Io.Group,
 listener: std.Io.net.Server,
 server_config: ServerConfig,
-heartbeat_salt: [16]u8,
+directories: [ServerConfig.max_heartbeat_urls]Authentication.Directory,
 heartbeat_users: std.atomic.Value(u32),
 backup: Backup,
 host: Host = .{},
@@ -129,9 +129,33 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         CompressWorker.deinit();
     }
 
+    // Each directory gets its own salt so the matching salt identifies who vouched.
+    for (0..self.server_config.heartbeat.count) |index| {
+        const directory = &self.directories[index];
+        generate_salt(engine.io, &directory.salt) catch |err| {
+            if (self.server_config.auth == .online) return err;
+            log.warn("Heartbeat disabled: could not generate a salt: {}", .{err});
+            self.server_config.heartbeat.count = 0;
+            break;
+        };
+        const uri = std.Uri.parse(self.server_config.heartbeat.url(index)) catch unreachable;
+        var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
+        const host = (uri.getHost(&host_buf) catch unreachable).bytes;
+        const bare = if (std.ascii.startsWithIgnoreCase(host, "www.")) host["www.".len..] else host;
+        var sha = std.crypto.hash.sha2.Sha256.init(.{});
+        for (bare) |byte| sha.update(&.{std.ascii.toLower(byte)});
+        directory.authority = @max(1, std.mem.readInt(u32, sha.finalResult()[0..4], .little));
+    }
+
     try Accounts.init(alloc, engine.io, Server.save_dir, self.server_config.max_accounts);
     errdefer Accounts.deinit();
-    try Authentication.init(alloc, self.server_config.auth, self.server_config.auth_grace_period_seconds, self.server_config.whitelist_enabled);
+    try Authentication.init(
+        alloc,
+        self.server_config.auth,
+        self.server_config.auth_grace_period_seconds,
+        self.server_config.whitelist_enabled,
+        self.directories[0..self.server_config.heartbeat.count],
+    );
     errdefer Authentication.deinit();
 
     Commands.reset_registry();
@@ -166,13 +190,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.backup = Backup.init(engine.io, self.server_config.autosave_seconds);
 
     engine.report();
-
-    if (self.server_config.heartbeat.count > 0) {
-        generate_salt(engine.io, &self.heartbeat_salt) catch |err| {
-            log.warn("Heartbeat disabled: could not generate a salt: {}", .{err});
-            self.server_config.heartbeat.count = 0;
-        };
-    }
 
     global_engine = engine;
     errdefer global_engine = null;
@@ -492,6 +509,16 @@ fn promote_ready_logins(self: *ServerState, engine: *Engine) void {
             release_slot_locked(slot, engine);
             continue;
         }
+        // Verify before admission so forged logins never receive the world.
+        const source: ?u8 = if (self.server_config.auth != .online) null else switch (Authentication.vouch(name.value[0..name.len], &slot.login.key, &policy)) {
+            .source => |directory| directory,
+            .rejected => |reason| {
+                log.info("Rejecting unverified login for {s}", .{name.value[0..name.len]});
+                reject_slot_locked(slot, engine, reason);
+                release_slot_locked(slot, engine);
+                continue;
+            },
+        };
 
         // Pending sockets do not need an outbound queue until admission.
         slot.data.out_queue.buf = engine.allocator(.user).alloc(u8, outbound_queue.out_queue_bytes) catch {
@@ -521,6 +548,7 @@ fn promote_ready_logins(self: *ServerState, engine: *Engine) void {
             },
             .accepted => |accepted| accepted,
         };
+        client.auth_source = source;
 
         active_count += 1;
         slot.state = .active;
@@ -657,16 +685,16 @@ fn heartbeat_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
     defer client.deinit();
 
     while (true) {
-        const request = Heartbeat.RequestData{
-            .server_name = &Server.server_name,
-            .port = ServerPort,
-            .users = self.heartbeat_users.load(.acquire),
-            .max_players = Server.MaxPlayers,
-            .salt = &self.heartbeat_salt,
-        };
-
+        const users = self.heartbeat_users.load(.acquire);
         for (0..self.server_config.heartbeat.count) |index| {
             const endpoint = self.server_config.heartbeat.url(index);
+            const request = Heartbeat.RequestData{
+                .server_name = &Server.server_name,
+                .port = ServerPort,
+                .users = users,
+                .max_players = Server.MaxPlayers,
+                .salt = &self.directories[index].salt,
+            };
             Heartbeat.send(engine.io, &client, endpoint, request) catch |err| switch (err) {
                 error.Canceled => return error.Canceled,
                 else => log.warn("Heartbeat endpoint {d} failed after retries: {}", .{ index + 1, err }),

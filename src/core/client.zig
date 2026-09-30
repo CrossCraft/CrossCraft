@@ -103,6 +103,7 @@ pub const AtomicPlayerPose = struct {
 pub const LoginRequest = struct {
     protocol_version: u8,
     username: [64]u8,
+    key: [64]u8,
 };
 
 pub const LoginName = struct {
@@ -140,6 +141,8 @@ needs_registration: bool = false,
 auth_deadline_ms: i64 = 0,
 auth_next_attempt_ms: i64 = 0,
 auth_failures: u8 = 0,
+/// Heartbeat directory whose mppass admitted this player in online mode.
+auth_source: ?u8 = null,
 catchup_mode: std.atomic.Value(CatchupMode) = .init(.none),
 ip: [ip_str_len:0]u8 = @splat(0),
 protocol: Protocol = undefined,
@@ -674,6 +677,7 @@ fn handle_player(ctx: *anyopaque, event: zb.PlayerIDToServer) !void {
     const request: LoginRequest = .{
         .protocol_version = event.protocol_version,
         .username = event.username,
+        .key = event.key,
     };
 
     if (!self.prepare_login(request)) return;
