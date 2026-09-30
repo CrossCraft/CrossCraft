@@ -1,9 +1,11 @@
 /// Gameplay action-set registration and bindings.
 const std = @import("std");
-const caps = @import("capabilities").ClientType(ae);
 const ae = @import("aether");
-const input = ae.Core.input;
+const capabilities = @import("capabilities");
 const Options = @import("../Options.zig");
+
+const caps = capabilities.ClientType(ae);
+const input = ae.Core.input;
 
 pub const ActionSetHandle = input.ActionSetHandle;
 

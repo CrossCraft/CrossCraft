@@ -1,6 +1,11 @@
+//! Shared native/plugin command registry. Native authentication and
+//! moderation commands keep their original synchronous routing and sensitive
+//! text handling; plugin commands dispatch through the host's ordered gameplay
+//! context.
 const std = @import("std");
-const players_db = @import("PlayersDb.zig");
-const access_control = @import("AccessControl.zig");
+const assert = std.debug.assert;
+const Accounts = @import("Accounts.zig");
+const Authentication = @import("Authentication.zig");
 const Server = @import("core").Server;
 
 pub const Sink = struct {
@@ -10,166 +15,549 @@ pub const Sink = struct {
     pub fn write(self: Sink, line: []const u8) void {
         self.write_fn(self.ctx, line);
     }
+};
 
-    fn print(self: Sink, comptime fmt: []const u8, args: anytype, fallback: []const u8) void {
-        var buf: [128]u8 = undefined;
-        self.write(std.fmt.bufPrint(&buf, fmt, args) catch fallback);
+pub const Caller = union(enum) { console, player: *Server.Client };
+pub const Permission = enum { anyone, op };
+pub const Restriction = enum { any, player_only, console_only };
+
+/// Plugin commands resolve through a host-owned dispatch shim so the registry
+/// stays independent of the Luau runtime. `spec` carries the declared argument
+/// forms so the shim can hand the handler a named, typed argument table.
+pub const ScriptDispatch = struct {
+    ctx: *anyopaque,
+    call: *const fn (ctx: *anyopaque, caller: Caller, args: []const []const u8, spec: ?[]const Argument) void,
+};
+
+const Handler = union(enum) { native: Kind, script: ScriptDispatch };
+
+pub fn BufType(comptime n: usize) type {
+    return struct {
+        buf: [n]u8 = @splat(0),
+        len: u8 = 0,
+
+        pub fn set(self: *@This(), text: []const u8) bool {
+            if (text.len == 0 or text.len > self.buf.len) return false;
+            @memcpy(self.buf[0..text.len], text);
+            self.len = @intCast(text.len);
+            return true;
+        }
+
+        pub fn set_or_empty(self: *@This(), text: []const u8) bool {
+            if (text.len > self.buf.len) return false;
+            @memcpy(self.buf[0..text.len], text);
+            self.len = @intCast(text.len);
+            return true;
+        }
+
+        pub fn slice(self: *const @This()) []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+}
+
+const NameBuf = struct {
+    buf: [16]u8 = @splat(0),
+    len: u8 = 0,
+
+    pub fn set(self: *NameBuf, text: []const u8) bool {
+        if (text.len == 0 or text.len > self.buf.len) return false;
+        for (text) |c| {
+            if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
+        }
+        @memcpy(self.buf[0..text.len], text);
+        self.len = @intCast(text.len);
+        return true;
+    }
+
+    pub fn slice(self: *const NameBuf) []const u8 {
+        return self.buf[0..self.len];
     }
 };
 
-const Command = struct {
+const UsageBuf = BufType(96);
+const DescriptionBuf = BufType(72);
+
+pub const ArgType = enum { string, number };
+pub const max_command_args = 6;
+
+/// Declared argument form, as submitted by a plugin.
+pub const ArgumentSpec = struct {
     name: []const u8,
-    usage: []const u8,
-    arguments: enum { none, single, with_reason } = .single,
-    run: *const fn (Sink, []const u8, []const u8) void,
+    type: ArgType = .string,
+    optional: bool = false,
+    variadic: bool = false,
+    description: []const u8 = "",
 };
 
-const commands = [_]Command{
-    .{ .name = "help", .usage = "&e/help -- list commands", .arguments = .none, .run = cmd_help },
-    .{ .name = "ipban", .usage = "&e/ipban <username> [reason] -- ban the IP of the connected username", .arguments = .with_reason, .run = cmd_ipban },
-    .{ .name = "kick", .usage = "&e/kick <username> [reason] -- kick the connected username", .arguments = .with_reason, .run = cmd_kick },
-    .{ .name = "ipop", .usage = "&e/ipop <username> -- grant op to the IP of the connected username", .run = cmd_ipop },
-    .{ .name = "ipwhitelist", .usage = "&e/ipwhitelist <ip> -- add an IP to the whitelist", .run = cmd_ipwhitelist },
+/// Stored argument form backing help output and dispatch-time validation.
+pub const Argument = struct {
+    name: NameBuf = .{},
+    type: ArgType = .string,
+    optional: bool = false,
+    variadic: bool = false,
+    description: DescriptionBuf = .{},
 };
 
-/// Dispatch text after the leading '/', gated by console/player privileges.
-pub fn dispatch(sink: Sink, line: []const u8, is_op: bool) void {
-    if (!is_op) {
-        sink.write("&cFailed to process command: Insufficient permission");
-        return;
+pub const Registration = struct {
+    name: []const u8,
+    aliases: []const []const u8 = &.{},
+    usage: ?[]const u8 = null,
+    description: []const u8 = "",
+    arguments: []const ArgumentSpec = &.{},
+    permission: Permission = .anyone,
+    restriction: Restriction = .any,
+    script: ?ScriptDispatch = null,
+};
+
+const Kind = enum { help, register, login, passwd, resetpassword, ban, unban, op, deop, whitelist, unwhitelist, kick };
+const max_entries = 64;
+const max_aliases = 4;
+
+const Entry = struct {
+    name: NameBuf = .{},
+    aliases: [max_aliases]NameBuf = @splat(.{}),
+    alias_count: u8 = 0,
+    usage: UsageBuf = .{},
+    description: DescriptionBuf = .{},
+    args: [max_command_args]Argument = @splat(.{}),
+    arg_count: u8 = 0,
+    permission: Permission = .anyone,
+    restriction: Restriction = .any,
+    handler: Handler = .{ .native = .help },
+    owner: ?*const anyopaque = null,
+    enabled: bool = true,
+};
+
+var registry_lock: std.Io.RwLock = .init;
+var entries: [max_entries]Entry = @splat(.{});
+var entry_count: usize = 0;
+var native_registered = false;
+
+const native_usages = [_]struct { kind: Kind, usage: []const u8 }{
+    .{ .kind = .help, .usage = "&e/help [cmd] -- list commands or show detail" },
+    .{ .kind = .register, .usage = "&e/register <pass> <pass>" },
+    .{ .kind = .login, .usage = "&e/login <pass>" },
+    .{ .kind = .passwd, .usage = "&e/passwd <old> <new>" },
+    .{ .kind = .resetpassword, .usage = "&e/resetpassword <username> <new> -- console only" },
+    .{ .kind = .ban, .usage = "&e/ban <username> [reason]" },
+    .{ .kind = .unban, .usage = "&e/unban <username>" },
+    .{ .kind = .op, .usage = "&e/op <username>" },
+    .{ .kind = .deop, .usage = "&e/deop <username>" },
+    .{ .kind = .whitelist, .usage = "&e/whitelist <username>" },
+    .{ .kind = .unwhitelist, .usage = "&e/unwhitelist <username>" },
+    .{ .kind = .kick, .usage = "&e/kick <username> [reason]" },
+};
+
+fn native_restriction(kind: Kind) Restriction {
+    return switch (kind) {
+        .resetpassword => .console_only,
+        .register, .login, .passwd, .help => .player_only,
+        else => .any,
+    };
+}
+
+fn native_permission(kind: Kind) Permission {
+    return switch (kind) {
+        .help, .register, .login, .passwd, .resetpassword => .anyone,
+        else => .op,
+    };
+}
+
+/// Install the reserved native command set. Safe to call again; it rebuilds
+/// the registry and drops any previously registered plugin commands.
+pub fn reset_registry() void {
+    registry_lock.lockUncancelable(Server.io);
+    defer registry_lock.unlock(Server.io);
+
+    entry_count = 0;
+    native_registered = true;
+    for (native_usages) |item| {
+        var entry = Entry{
+            .permission = native_permission(item.kind),
+            .restriction = native_restriction(item.kind),
+            .handler = .{ .native = item.kind },
+        };
+        if (!entry.name.set(@tagName(item.kind)) or !entry.usage.set(item.usage)) continue;
+        entries[entry_count] = entry;
+        entry_count += 1;
+    }
+}
+
+fn ensure_native() void {
+    if (native_registered) return;
+    reset_registry();
+}
+
+fn find_entry_locked(name: []const u8) ?*Entry {
+    for (entries[0..entry_count]) |*entry| {
+        if (std.ascii.eqlIgnoreCase(entry.name.slice(), name)) return entry;
+        for (entry.aliases[0..entry.alias_count]) |alias| {
+            if (std.ascii.eqlIgnoreCase(alias.slice(), name)) return entry;
+        }
+    }
+    return null;
+}
+
+/// Register a command, rejecting name and alias collisions explicitly. Script
+/// registrations never override reserved native entries.
+pub fn register(registration: Registration, owner: ?*const anyopaque) bool {
+    ensure_native();
+
+    registry_lock.lockUncancelable(Server.io);
+    defer registry_lock.unlock(Server.io);
+
+    if (entry_count == max_entries) return false;
+    if (find_entry_locked(registration.name) != null) return false;
+
+    var entry = Entry{ .owner = owner, .enabled = true };
+    if (!entry.name.set(registration.name)) return false;
+    if (registration.arguments.len > max_command_args) return false;
+    var saw_optional = false;
+    for (registration.arguments, 0..) |spec, i| {
+        // Positional mapping breaks when a required argument follows an
+        // optional one, and a variadic argument consumes every token left.
+        if (!spec.optional and saw_optional) return false;
+        if (spec.variadic and (i + 1 != registration.arguments.len or spec.type != .string)) return false;
+        var arg = Argument{ .type = spec.type, .optional = spec.optional, .variadic = spec.variadic };
+        if (!arg.name.set(spec.name)) return false;
+        if (!arg.description.set_or_empty(spec.description)) return false;
+        entry.args[entry.arg_count] = arg;
+        entry.arg_count += 1;
+        saw_optional = saw_optional or spec.optional;
+    }
+    assert(entry.arg_count == registration.arguments.len);
+    if (registration.description.len > 0 or registration.arguments.len > 0) {
+        var line: [96]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&line);
+        writer.print("&e/{s}", .{registration.name}) catch return false;
+        if (registration.description.len > 0) writer.print(" &7{s}", .{registration.description}) catch return false;
+        if (!entry.usage.set(writer.buffered())) return false;
+        if (!entry.description.set_or_empty(registration.description)) return false;
+    } else {
+        const usage = registration.usage orelse return false;
+        if (!entry.usage.set(usage)) return false;
+    }
+    entry.permission = registration.permission;
+    entry.restriction = registration.restriction;
+    if (registration.script) |script| {
+        entry.handler = .{ .script = script };
+    } else {
+        return false;
+    }
+    if (registration.aliases.len > max_aliases) return false;
+    for (registration.aliases) |alias| {
+        if (find_entry_locked(alias) != null) return false;
+        if (!entry.aliases[entry.alias_count].set(alias)) return false;
+        entry.alias_count += 1;
     }
 
-    var tok = std.mem.tokenizeAny(u8, line, " \t");
-    const cmd = tok.next() orelse {
+    entries[entry_count] = entry;
+    entry_count += 1;
+    return true;
+}
+
+/// Revoke every registration owned by `owner` when a plugin fails or shuts
+/// down; host cleanup does not rely on script cleanup succeeding.
+pub fn unregister_owner(owner: *const anyopaque) void {
+    registry_lock.lockUncancelable(Server.io);
+    defer registry_lock.unlock(Server.io);
+
+    var i: usize = 0;
+    while (i < entry_count) {
+        if (entries[i].owner == owner) {
+            entries[i] = entries[entry_count - 1];
+            entries[entry_count - 1] = .{};
+            entry_count -= 1;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// True when the first token names a plugin command; those dispatch on the
+/// ordered host context instead of the calling thread.
+pub fn is_script(name: []const u8) bool {
+    ensure_native();
+
+    registry_lock.lockSharedUncancelable(Server.io);
+    defer registry_lock.unlockShared(Server.io);
+
+    const entry = find_entry_locked(name) orelse return false;
+    return entry.handler == .script;
+}
+
+pub fn set_enabled(owner: *const anyopaque, enabled: bool) void {
+    registry_lock.lockUncancelable(Server.io);
+    defer registry_lock.unlock(Server.io);
+
+    for (entries[0..entry_count]) |*entry| {
+        if (entry.owner == owner) entry.enabled = enabled;
+    }
+}
+
+fn can_moderate(caller: Caller) bool {
+    return switch (caller) {
+        .console => true,
+        .player => |client| client.session_open() and client.authenticated.load(.acquire) and client.is_op.load(.acquire),
+    };
+}
+
+fn allowed(caller: Caller, entry: *const Entry) bool {
+    switch (entry.restriction) {
+        .player_only => if (caller != .player) return false,
+        .console_only => if (caller != .console) return false,
+        .any => {},
+    }
+    switch (entry.handler) {
+        .native => |kind| {
+            if (kind == .help) return true;
+            if (kind == .register or kind == .login) return Authentication.mode == .local and caller == .player;
+            if (kind == .passwd) return Authentication.mode == .local and caller == .player and caller.player.authenticated.load(.acquire);
+            if (kind == .resetpassword) return Authentication.mode == .local and caller == .console;
+            return can_moderate(caller);
+        },
+        .script => {
+            const base = switch (caller) {
+                .console => true,
+                .player => |client| client.session_open() and client.authenticated.load(.acquire),
+            };
+            if (!base) return false;
+            if (entry.permission == .op) return can_moderate(caller);
+            return true;
+        },
+    }
+}
+
+/// Never log command text: it may contain a password, even on syntax errors.
+pub fn dispatch(sink: Sink, line: []const u8, caller: Caller) void {
+    ensure_native();
+
+    var tokens = std.mem.tokenizeAny(u8, line, " \t");
+    const name = tokens.next() orelse {
         sink.write("Unknown command, use /help");
         return;
     };
 
-    for (commands) |command| {
-        if (std.mem.eql(u8, cmd, command.name)) {
-            const argument = tok.next();
-            const reason = std.mem.trimEnd(u8, tok.rest(), " \t");
-            if (command.arguments != .none and
-                (argument == null or (command.arguments == .single and reason.len != 0)))
-            {
-                sink.write(command.usage);
+    registry_lock.lockSharedUncancelable(Server.io);
+    const entry = find_entry_locked(name) orelse {
+        registry_lock.unlockShared(Server.io);
+        sink.write("Unknown command, use /help");
+        return;
+    };
+    if (!entry.enabled or !allowed(caller, entry)) {
+        registry_lock.unlockShared(Server.io);
+        sink.write("&cCommand unavailable or insufficient permission");
+        return;
+    }
+    switch (entry.handler) {
+        .native => |kind| {
+            registry_lock.unlockShared(Server.io);
+            dispatch_native(sink, caller, kind, tokens.rest());
+        },
+        .script => |script| {
+            var args: [16][]const u8 = undefined;
+            var arg_count: usize = 0;
+            while (tokens.next()) |arg| {
+                if (arg_count == args.len) break;
+                args[arg_count] = arg;
+                arg_count += 1;
+            }
+            const specs: ?[]const Argument = if (entry.arg_count > 0) entry.args[0..entry.arg_count] else null;
+            if (specs != null and !syntax_matches(entry, args[0..arg_count])) {
+                write_detail_locked(sink, entry);
+                registry_lock.unlockShared(Server.io);
                 return;
             }
-            command.run(sink, argument orelse "", reason);
-            return;
+            registry_lock.unlockShared(Server.io);
+            script.call(script.ctx, caller, args[0..arg_count], specs);
+        },
+    }
+}
+
+fn dispatch_native(sink: Sink, caller: Caller, kind: Kind, rest: []const u8) void {
+    var tokens = std.mem.tokenizeAny(u8, rest, " \t");
+    const first = tokens.next();
+    const second = if (kind == .ban or kind == .kick)
+        std.mem.trimEnd(u8, tokens.rest(), " \t")
+    else
+        tokens.next();
+    const argument_count: u8 = switch (kind) {
+        .help => 0,
+        .register, .passwd, .resetpassword => 2,
+        else => 1,
+    };
+    const with_reason = kind == .ban or kind == .kick;
+    if ((argument_count == 0 and first != null and kind != .help) or
+        (argument_count > 0 and first == null) or
+        (argument_count == 2 and second == null) or
+        (!with_reason and ((argument_count < 2 and second != null) or tokens.next() != null)))
+    {
+        sink.write(usage_for(kind));
+        return;
+    }
+    run_native(sink, caller, kind, first orelse "", second orelse "") catch |err| report_error(sink, err);
+}
+
+fn usage_for(kind: Kind) []const u8 {
+    for (native_usages) |item| {
+        if (item.kind == kind) return item.usage;
+    }
+    return "";
+}
+
+fn run_native(sink: Sink, caller: Caller, kind: Kind, first: []const u8, second: []const u8) !void {
+    switch (kind) {
+        .help => {
+            if (first.len > 0) write_help_detail(sink, caller, first) else write_help(sink, caller);
+        },
+        .register => try Authentication.execute(caller.player, .register, first, second),
+        .login => try Authentication.execute(caller.player, .login, first, second),
+        .passwd => try Authentication.execute(caller.player, .passwd, first, second),
+        .resetpassword => {
+            try Authentication.reset_password(first, second);
+            sink.write("Password reset");
+        },
+        else => try moderate(sink, caller, kind, first, second),
+    }
+}
+
+pub fn write_help(sink: Sink, caller: Caller) void {
+    ensure_native();
+
+    registry_lock.lockSharedUncancelable(Server.io);
+    defer registry_lock.unlockShared(Server.io);
+
+    for (entries[0..entry_count]) |*entry| {
+        if (!entry.enabled or !allowed(caller, entry)) continue;
+        if (caller == .player and caller.player.authenticated.load(.acquire) and entry.handler == .native) {
+            const kind = entry.handler.native;
+            if (kind == .register or kind == .login) continue;
+        }
+        sink.write(entry.usage.slice());
+        if (entry.alias_count > 0) {
+            var line_buf: [160]u8 = undefined;
+            var fbs = std.Io.Writer.fixed(&line_buf);
+            fbs.print("  aliases: /{s}", .{entry.aliases[0].slice()}) catch {};
+            for (entry.aliases[1..entry.alias_count]) |alias| {
+                fbs.print(", /{s}", .{alias.slice()}) catch {};
+            }
+            sink.write(fbs.buffered());
         }
     }
-    sink.write("Unknown command, use /help");
 }
 
-fn cmd_help(sink: Sink, _: []const u8, _: []const u8) void {
-    for (commands) |command| sink.write(command.usage);
-}
-
-fn cmd_ipban(sink: Sink, username: []const u8, reason: []const u8) void {
-    const target = find_client(sink, username) orelse return;
-
-    const ip = target.ip_slice();
-    if (ip.len == 0) {
-        sink.write("Client has no recorded IP (local connection?)");
-        return;
+/// True when `args` satisfies the declared argument forms: required arguments
+/// present, no trailing tokens unless the last argument is variadic, and
+/// number-typed arguments parse as numbers.
+fn syntax_matches(entry: *const Entry, args: []const []const u8) bool {
+    var required: usize = 0;
+    for (entry.args[0..entry.arg_count]) |spec| {
+        if (!spec.optional) required += 1;
     }
-
-    access_control.set_banned(ip, true, if (reason.len > 0) reason else "Banned") catch |err| {
-        report_policy_error(sink, err);
-        return;
-    };
-    const dc_reason = if (reason.len > 0) reason else "You have been banned";
-    _ = Server.disconnect_handle(target.handle, dc_reason);
-
-    sink.print("Banned {s} ({s})", .{ username, ip }, "Banned");
-}
-
-fn cmd_kick(sink: Sink, username: []const u8, reason: []const u8) void {
-    const target = find_client(sink, username) orelse return;
-
-    const dc_reason = if (reason.len > 0) reason else "Kicked";
-    _ = Server.disconnect_handle(target.handle, dc_reason);
-
-    sink.print("Kicked {s}", .{username}, "Kicked");
-}
-
-fn cmd_ipop(sink: Sink, username: []const u8, _: []const u8) void {
-    const target = find_client(sink, username) orelse return;
-
-    const ip = target.ip_slice();
-    if (ip.len == 0) {
-        sink.write("Client has no recorded IP (local connection?)");
-        return;
-    }
-
-    access_control.set_flag(ip, .op, true) catch |err| {
-        report_policy_error(sink, err);
-        return;
-    };
-    _ = Server.grant_op_handle(target.handle);
-
-    sink.print("Granted op to {s} ({s})", .{ username, ip }, "Granted op");
-}
-
-fn cmd_ipwhitelist(sink: Sink, ip_text: []const u8, _: []const u8) void {
-    var canon_buf: [players_db.ip_str_len]u8 = undefined;
-    const address = std.Io.net.IpAddress.parseIp4(ip_text, 0) catch {
-        sink.print("Invalid IP literal: {s}", .{ip_text}, "Invalid IP");
-        return;
-    };
-    const canon = players_db.format_ip(address, &canon_buf).?;
-
-    access_control.set_flag(canon, .whitelisted, true) catch |err| {
-        report_policy_error(sink, err);
-        return;
-    };
-
-    sink.print("Whitelisted {s}", .{canon}, "Whitelisted");
-}
-
-fn find_client(sink: Sink, username: []const u8) ?Server.ClientSnapshot {
-    return Server.find_client_by_name(username) orelse {
-        sink.print("User '{s}' is not connected", .{username}, "User not connected");
-        return null;
-    };
-}
-
-fn report_policy_error(sink: Sink, err: anyerror) void {
-    switch (err) {
-        error.PolicyStoreFull => sink.write("&cAccess-control store is full; raise max-policy-records and restart the server"),
-        else => sink.write("&cFailed to persist access-control policy"),
-    }
-}
-
-test "commands require privileges before changing persistent policy" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try access_control.init(std.testing.allocator, io, tmp.dir, 1);
-    defer access_control.deinit();
-
-    var output: [256]u8 = undefined;
-    var writer = std.Io.Writer.fixed(&output);
-    const sink: Sink = .{ .ctx = &writer, .write_fn = struct {
-        fn write(ctx: *anyopaque, line: []const u8) void {
-            const out: *std.Io.Writer = @ptrCast(@alignCast(ctx));
-            out.writeAll(line) catch unreachable;
+    if (args.len < required) return false;
+    if (args.len > entry.arg_count and !entry.args[entry.arg_count - 1].variadic) return false;
+    for (entry.args[0..@min(entry.arg_count, args.len)], 0..) |spec, i| {
+        if (spec.type != .number) continue;
+        const end = if (spec.variadic) args.len else i + 1;
+        for (args[i..end]) |token| {
+            _ = std.fmt.parseFloat(f64, token) catch return false;
         }
-    }.write };
+    }
+    return true;
+}
 
-    dispatch(sink, "ipwhitelist 203.0.113.10", false);
-    try std.testing.expectEqualStrings("&cFailed to process command: Insufficient permission", writer.buffered());
-    try std.testing.expect(!access_control.lookup("203.0.113.10").whitelisted);
+/// Detailed single-command help; caller must hold the registry lock.
+fn write_detail_locked(sink: Sink, entry: *const Entry) void {
+    if (entry.arg_count == 0) {
+        sink.write(entry.usage.slice());
+        return;
+    }
+    var line: [256]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&line);
+    writer.print("&e/{s}", .{entry.name.slice()}) catch {};
+    for (entry.args[0..entry.arg_count]) |spec| {
+        const open: []const u8 = if (spec.optional) "[" else "<";
+        const close: []const u8 = if (spec.optional) "]" else ">";
+        writer.print(" &b{s}{s}{s}", .{ open, spec.name.slice(), close }) catch {};
+        if (spec.variadic) writer.writeAll("...") catch {};
+    }
+    if (entry.description.len > 0) writer.print(" &7{s}", .{entry.description.slice()}) catch {};
+    sink.write(writer.buffered());
+    for (entry.args[0..entry.arg_count]) |spec| {
+        writer.end = 0;
+        const optional: []const u8 = if (spec.optional) "optional " else "";
+        const kind: []const u8 = if (spec.type == .number) "num" else "str";
+        writer.print("{s} ({s}{s}): {s}", .{ spec.name.slice(), optional, kind, spec.description.slice() }) catch {};
+        sink.write(writer.buffered());
+    }
+}
 
-    writer.end = 0;
-    dispatch(sink, "ipwhitelist 203.0.113.10 extra", true);
-    try std.testing.expectEqualStrings("&e/ipwhitelist <ip> -- add an IP to the whitelist", writer.buffered());
-    try std.testing.expect(!access_control.lookup("203.0.113.10").whitelisted);
+pub fn write_help_detail(sink: Sink, caller: Caller, name: []const u8) void {
+    ensure_native();
 
-    writer.end = 0;
-    dispatch(sink, "ipwhitelist 203.0.113.10", true);
-    try std.testing.expectEqualStrings("Whitelisted 203.0.113.10", writer.buffered());
-    try std.testing.expect(access_control.lookup("203.0.113.10").whitelisted);
+    registry_lock.lockSharedUncancelable(Server.io);
+    defer registry_lock.unlockShared(Server.io);
+
+    const entry = find_entry_locked(name) orelse {
+        sink.write("Unknown command, use /help");
+        return;
+    };
+    if (!entry.enabled or !allowed(caller, entry)) {
+        sink.write("&cCommand unavailable or insufficient permission");
+        return;
+    }
+    write_detail_locked(sink, entry);
+}
+
+fn moderate(sink: Sink, caller: Caller, kind: Kind, username: []const u8, reason: []const u8) !void {
+    if (!Server.Client.valid_username(username)) return error.InvalidUsername;
+    Authentication.lock_actions();
+    defer Authentication.unlock_actions();
+
+    if (!can_moderate(caller)) return error.InsufficientPermission;
+    switch (kind) {
+        .ban => try Accounts.set_policy(username, .banned, true, if (reason.len > 0) reason else "You have been banned"),
+        .unban => try Accounts.set_policy(username, .banned, false, ""),
+        .op, .deop => try Accounts.set_policy(username, .op, kind == .op, ""),
+        .whitelist, .unwhitelist => try Accounts.set_policy(username, .whitelisted, kind == .whitelist, ""),
+        .kick => {},
+        else => unreachable,
+    }
+    const target = Server.find_client_by_name(username);
+    if (kind == .kick and target == null) {
+        sink.write("User is not connected");
+        return;
+    }
+    if (target) |connected| switch (kind) {
+        .ban, .kick => {
+            _ = Server.disconnect_handle(connected.handle, if (reason.len > 0) reason else @tagName(kind));
+        },
+        .op, .deop => {
+            _ = Server.set_op_handle(connected.handle, kind == .op);
+        },
+        else => {},
+    };
+    sink.write("Command completed");
+}
+
+fn report_error(sink: Sink, err: anyerror) void {
+    sink.write(switch (err) {
+        error.InvalidUsername => "&cUsernames must be 1-16 letters, digits or underscores",
+        error.InvalidPassword => "&cPasswords must be 8-26 printable characters without spaces",
+        error.PasswordsDoNotMatch => "&cPasswords do not match",
+        error.WrongPassword => "&cIncorrect password",
+        error.AlreadyRegistered => "&cAlready registered; use /login <pass>",
+        error.NotRegistered => "&cUsername is not registered",
+        error.AlreadyAuthenticated => "&cAlready logged in; use /passwd <old> <new>",
+        error.LoginRequired => "&cLog in first",
+        error.AuthenticationBusy => "&eAuthentication is busy; try again shortly",
+        error.AuthenticationThrottled => "&eWait one second between password checks",
+        error.AuthenticationDisabled => "&cPassword authentication is disabled",
+        error.CredentialsChanged => "&cCredentials changed; try again",
+        error.AccountStoreFull => "&cAccount store full; raise max-accounts and restart",
+        error.SessionClosed => "&cAuthentication session ended",
+        error.InsufficientPermission => "&cInsufficient permission",
+        else => "&cCould not complete the account operation",
+    });
 }

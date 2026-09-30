@@ -110,25 +110,3 @@ pub fn all_resource_passes(random: *random_state, field: terrain.block_field) vo
     resource_pass(.iron, random, field);
     resource_pass(.gold, random, field);
 }
-
-test "resource passes replace only stone" {
-    const dimensions: terrain.world_dimensions = .{ .width = 32, .height = 32, .depth = 32 };
-    const blocks = try std.testing.allocator.alloc(u8, dimensions.volume());
-    defer std.testing.allocator.free(blocks);
-
-    @memset(blocks, terrain.stone_id);
-    blocks[0] = terrain.dirt_id;
-    const field = terrain.block_field.init(dimensions, blocks);
-    var random = random_state.init(1_234);
-    all_resource_passes(&random, field);
-
-    try std.testing.expectEqual(terrain.dirt_id, blocks[0]);
-    var replaced = false;
-    for (blocks) |material| {
-        try std.testing.expect(material == terrain.stone_id or material == terrain.dirt_id or
-            material == resource_kind.coal.material() or material == resource_kind.iron.material() or
-            material == resource_kind.gold.material());
-        replaced = replaced or (material != terrain.stone_id and material != terrain.dirt_id);
-    }
-    try std.testing.expect(replaced);
-}

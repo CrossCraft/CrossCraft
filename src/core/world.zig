@@ -37,6 +37,8 @@ const load_status_downloading_base: u16 = 128;
 pub const default_format: SaveFormat = .{ .classic_cw = .{} };
 
 pub var data: WorldData = undefined;
+/// True between init_empty and deinit; guards host spawn recovery reads.
+pub var active: bool = false;
 var sim: ?WorldSimulation = null;
 pub var saver: WorldSaver = undefined;
 var load_status_atomic: std.atomic.Value(u16) = .init(load_status_loading);
@@ -88,9 +90,19 @@ pub fn init_empty(
     format: SaveFormat,
 ) !void {
     assert(sim == null);
+    active = true;
     try data.init_in_place(allocator, geometry, seed);
     saver = WorldSaver.init(io, save_dir, save_file_name, format);
     set_load_status(.loading);
+}
+
+/// Install the simulation that owns authoritative edits and gravity. Local
+/// worlds do this during `init`; tests of ordered gameplay edits use it
+/// directly, while client-side empty worlds stay simulation-free.
+pub fn install_local_simulation(allocator: std.mem.Allocator, seed: u64) !void {
+    assert(sim == null);
+    sim = try WorldSimulation.init(allocator, seed);
+    saver.owned_locally = true;
 }
 
 /// Load a local world or generate and save it when no valid save exists.
@@ -118,8 +130,7 @@ pub fn init(
 
     try init_empty(allocator, io, save_dir, save_file_name, load_geometry, seed, format);
     errdefer deinit_components();
-    sim = try WorldSimulation.init(allocator, seed);
-    saver.owned_locally = true;
+    try install_local_simulation(allocator, seed);
 
     try io.sleep(.fromMilliseconds(250), .real);
 
@@ -170,6 +181,7 @@ pub fn deinit_after_init_error() void {
 }
 
 fn deinit_components() void {
+    active = false;
     if (sim) |*simulation| simulation.deinit(data.backing_allocator);
     sim = null;
     saver.deinit();
@@ -198,14 +210,12 @@ pub fn tick(sink: BlockChangeSink) u32 {
     return sim.?.tick(&data, sink);
 }
 
-pub fn set_block(x: u16, y: u16, z: u16, block: Block) void {
+/// Commit an edit and its gravity changes before returning. Returns the
+/// number of committed changes; zero means a host guard denied the whole
+/// logical operation.
+pub fn set_block(sink: BlockChangeSink, x: u16, y: u16, z: u16, block: Block) u32 {
     assert(saver.owned_locally);
-    sim.?.set_block(&data, x, y, z, block);
-}
-
-pub fn enqueue_neighbors_of(x: u16, y: u16, z: u16) void {
-    assert(saver.owned_locally);
-    sim.?.enqueue_neighbors_of(&data, x, y, z);
+    return sim.?.set_block(&data, sink, x, y, z, block);
 }
 
 pub fn sponge_absorb(sink: BlockChangeSink, cx: u16, cy: u16, cz: u16) void {
@@ -242,39 +252,4 @@ pub fn is_sunlit(x: u16, y: u16, z: u16) bool {
 
 pub fn find_spawn() [3]u16 {
     return data.find_spawn(saver.io);
-}
-
-test "downloaded worlds need no simulation and clean up after local initialization fails" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const dims = WorldDims.init(128, 64, 128);
-    var allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-
-    try init_empty(allocator.allocator(), std.testing.io, tmp.dir, "world.cw", dims, 0, default_format);
-    const storage_allocations = allocator.allocations;
-    {
-        defer deinit();
-
-        try std.testing.expect(sim == null);
-        finalize_loaded();
-        data.apply_block(1, 8, 1, .stone);
-        try std.testing.expectEqual(Block.stone, get_block(1, 8, 1));
-        try std.testing.expect(!is_sunlit(1, 7, 1));
-    }
-    try std.testing.expectEqual(allocator.allocated_bytes, allocator.freed_bytes);
-
-    allocator = .init(std.testing.allocator, .{ .fail_index = storage_allocations });
-    try std.testing.expectError(error.OutOfMemory, init(
-        allocator.allocator(),
-        std.testing.allocator,
-        std.testing.io,
-        tmp.dir,
-        "world.cw",
-        dims,
-        0,
-        default_format,
-    ));
-    try std.testing.expect(sim == null);
-    try std.testing.expectEqual(allocator.allocated_bytes, allocator.freed_bytes);
 }

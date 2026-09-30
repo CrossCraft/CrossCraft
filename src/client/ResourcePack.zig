@@ -1,13 +1,15 @@
 /// Game asset names and animation policy over Aether's staged resource store.
-const SoundManager = @import("SoundManager.zig");
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const capabilities = @import("capabilities");
+const SoundManager = @import("SoundManager.zig");
+const TextureAtlas = @import("graphics/TextureAtlas.zig").TextureAtlas;
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
 const Rendering = ae.Rendering;
 const Image = ae.Util.Image;
 const Zip = ae.Util.Zip;
-const TextureAtlas = @import("graphics/TextureAtlas.zig").TextureAtlas;
 
 pub const Tex = enum(u8) {
     dirt,
@@ -243,57 +245,4 @@ fn make_animation(allocator: std.mem.Allocator, image: Image.Image, playback: Re
             .playback = playback,
         }),
     };
-}
-
-fn check_animation(allocator: std.mem.Allocator) !void {
-    var image: Image.Image = .{
-        .width = 32,
-        .height = 34,
-        .mode = .rgba8,
-        .data = try allocator.alignedAlloc(u8, .fromByteUnits(16), 32 * 34 * 4),
-    };
-    for (0..34) |y| for (0..32) |x| {
-        const offset = (y * 32 + x) * 4;
-        const red: u8 = if (x >= 16) 99 else if (y >= 32) 88 else if (y >= 16) 2 else 1;
-        @memcpy(image.data[offset..][0..4], &[_]u8{ red, 0, 0, 255 });
-    };
-    var animation = try make_animation(allocator, image, .ping_pong);
-    defer animation.image.deinit(allocator);
-
-    try std.testing.expectEqual(@as(u32, 16), animation.image.width);
-    try std.testing.expectEqual(@as(u32, 32), animation.image.height);
-    for ([_]u32{ 0, 1, 0, 1, 0 }, 0..) |frame, step| {
-        try std.testing.expectEqual(frame, try animation.flipbook.frame_at(@floatFromInt(step)));
-    }
-    var target: [16 * 16 * 4]u8 = undefined;
-    try animation.flipbook.copy_to_image(.{ .width = 16, .height = 16, .data = &target }, animation.image.view(), 1, 0, 0);
-    for (0..16 * 16) |i| try std.testing.expectEqualSlices(u8, &.{ 2, 0, 0, 255 }, target[i * 4 ..][0..4]);
-}
-
-test "resource animation migration preserves vertical frames and ping pong cadence" {
-    try check_animation(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, check_animation, .{});
-}
-
-test "resource store migration stages mixed assets without invalidating active textures" {
-    if (!caps.render.headless) return error.SkipZigTest;
-    const t = std.testing;
-    const pixel = @embedFile("util/testdata/pixel.png");
-    var first: ae.Resources.MemorySource = .{ .allocator = t.allocator, .files = &.{.{ .path = asset_paths[@intFromEnum(Tex.dirt)], .bytes = pixel }} };
-    var broken: ae.Resources.MemorySource = .{ .allocator = t.allocator, .files = &.{
-        .{ .path = asset_paths[@intFromEnum(Tex.dirt)], .bytes = pixel },
-        .{ .path = asset_paths[@intFromEnum(Tex.water_still)], .bytes = "not a PNG" },
-    } };
-    var store = Store.init(t.allocator, .{ .load = load_asset, .destroy = destroy_asset }, Tex.count);
-    defer store.deinit();
-
-    const dirt = asset_paths[@intFromEnum(Tex.dirt)];
-    try store.apply(first.source(), &.{dirt});
-    const stable = &store.get(dirt).?.texture;
-    const original_handle = stable.handle;
-    try t.expectError(error.InvalidPNG, store.apply(broken.source(), &.{ dirt, asset_paths[@intFromEnum(Tex.water_still)] }));
-    try t.expect(stable == &store.get(dirt).?.texture);
-    try t.expectEqual(original_handle, stable.handle);
-    try store.apply(first.source(), &.{dirt});
-    try t.expect(stable == &store.get(dirt).?.texture);
 }

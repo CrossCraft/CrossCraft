@@ -1,11 +1,13 @@
 //! CrossCraft prompt wording/artwork over Aether's generic prompt layout.
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const capabilities = @import("capabilities");
 const Buttons = @import("Buttons.zig");
 const Options = @import("../Options.zig");
 const Colors = @import("../graphics/Color.zig");
 const UiDrawList = @import("UiDrawList.zig");
 const Screen = @import("Screen.zig");
+
+const caps = capabilities.ClientType(ae);
 const Input = ae.Core.input;
 pub const Anchor = ae.Ui.Anchor;
 pub const Prompt = struct { chord: [2]?Buttons.Button, label: []const u8, letter_overlay: ?[]const u8 = null };

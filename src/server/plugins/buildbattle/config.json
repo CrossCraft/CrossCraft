@@ -1,0 +1,17 @@
+{
+  "build_seconds": 180,
+  "judge_seconds": 20,
+  "gather_seconds": 60,
+  "tick_ms": 250,
+  "plots": 4,
+  "themes": [
+    "Castle",
+    "Spaceship",
+    "Pirate Cove",
+    "Farm",
+    "Underwater",
+    "Haunted House",
+    "Racetrack",
+    "Festival"
+  ]
+}

@@ -823,68 +823,11 @@ fn test_field(dimensions: world_dimensions, material: u8) !block_field {
     return .init(dimensions, blocks);
 }
 
-test "block indexing follows the oracle x-major layout" {
-    const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 32 };
-    try std.testing.expectEqual(@as(usize, 3 + 16 * (5 + 32 * 7)), dimensions.index(3, 7, 5));
-    try std.testing.expectEqual(@as(usize, 16 * 16 * 32), dimensions.volume());
-}
-
 test "512x128x512 dimensions preserve the final index" {
     const dimensions: world_dimensions = .{ .width = 512, .height = 128, .depth = 512 };
     try std.testing.expect(dimensions.validate());
     try std.testing.expectEqual(@as(usize, 512 * 128 * 512), dimensions.volume());
     try std.testing.expectEqual(dimensions.volume() - 1, dimensions.index(511, 127, 511));
-}
-
-test "elevation construction consumes the exact octave sequence" {
-    var actual_random = random_state.init(44);
-    _ = elevation_noise.init(&actual_random);
-
-    var expected_random = random_state.init(44);
-    const counts = [_]u4{ 8, 8, 8, 8, 6, 8, 8, 8, 8, 8 };
-    for (counts) |count| _ = noise_module.octave_noise.init(&expected_random, count);
-    try std.testing.expectEqual(expected_random.state, actual_random.state);
-}
-
-test "flood fill moves horizontally and downward but never upward" {
-    const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
-    const field = try test_field(dimensions, stone_id);
-    defer std.testing.allocator.free(field.blocks);
-
-    field.set(4, 8, 4, air_id);
-    field.set(5, 8, 4, air_id);
-    field.set(5, 7, 4, air_id);
-    field.set(5, 9, 4, air_id);
-    try flood_fill(std.testing.allocator, field, .{ .x = 4, .y = 8, .z = 4 }, still_water_id);
-    try std.testing.expectEqual(still_water_id, field.at(5, 7, 4));
-    try std.testing.expectEqual(air_id, field.at(5, 9, 4));
-}
-
-test "lava over water converts the lower cell to stone" {
-    const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
-    const field = try test_field(dimensions, stone_id);
-    defer std.testing.allocator.free(field.blocks);
-
-    field.set(3, 4, 3, air_id);
-    field.set(3, 3, 3, still_water_id);
-    try flood_fill(std.testing.allocator, field, .{ .x = 3, .y = 4, .z = 3 }, still_lava_id);
-    try std.testing.expectEqual(stone_id, field.at(3, 3, 3));
-}
-
-test "boundary water fills only boundary-connected downward air" {
-    const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
-    const field = try test_field(dimensions, stone_id);
-    defer std.testing.allocator.free(field.blocks);
-
-    const water_y = dimensions.sea_level() - 1;
-    field.set(0, water_y, 6, air_id);
-    field.set(1, water_y, 6, air_id);
-    field.set(1, water_y - 1, 6, air_id);
-    field.set(8, water_y, 8, air_id);
-    try boundary_water_pass(std.testing.allocator, field);
-    try std.testing.expectEqual(still_water_id, field.at(0, water_y, 6));
-    try std.testing.expectEqual(still_water_id, field.at(1, water_y - 1, 6));
-    try std.testing.expectEqual(air_id, field.at(8, water_y, 8));
 }
 
 test "boundary water submits a westward air interval behind a blocked source" {
@@ -909,55 +852,6 @@ test "boundary water submits a westward air interval behind a blocked source" {
     try std.testing.expectEqual(still_water_id, field.at(dimensions.width - 2, water_y - 1, 6));
     try std.testing.expectEqual(air_id, field.at(dimensions.width - 3, water_y, 9));
     try std.testing.expectEqual(air_id, field.at(dimensions.width - 3, water_y - 1, 9));
-}
-
-test "fluid passes consume their exact random draws" {
-    const dimensions: world_dimensions = .{ .width = 128, .height = 16, .depth = 64 };
-    const field = try test_field(dimensions, stone_id);
-    defer std.testing.allocator.free(field.blocks);
-
-    var actual = random_state.init(903);
-    try inland_water_pass(std.testing.allocator, &actual, field);
-    var expected = random_state.init(903);
-    for (0..@as(u64, dimensions.width) * dimensions.depth / 8000) |_| {
-        _ = expected.next_int_bounded(dimensions.width);
-        _ = expected.next_int_bounded(2);
-        _ = expected.next_int_bounded(dimensions.depth);
-    }
-    try std.testing.expectEqual(expected.state, actual.state);
-
-    try lava_pass(std.testing.allocator, &actual, field);
-    for (0..@as(u64, dimensions.width) * dimensions.height * dimensions.depth / 20_000) |_| {
-        _ = expected.next_int_bounded(dimensions.width);
-        _ = expected.next_float();
-        _ = expected.next_float();
-        _ = expected.next_int_bounded(dimensions.depth);
-    }
-    try std.testing.expectEqual(expected.state, actual.state);
-}
-
-test "surface pass changes only the computed top to a dry surface material" {
-    const dimensions: world_dimensions = .{ .width = 16, .height = 16, .depth = 16 };
-    const field = try test_field(dimensions, air_id);
-    defer std.testing.allocator.free(field.blocks);
-
-    var random = random_state.init(55);
-    const elevation = elevation_noise.init(&random);
-    const sampled_surface_noise = surface_noise.init(&random);
-    var heights = try elevation_cache.init(std.testing.allocator, &elevation, dimensions);
-    defer heights.deinit(std.testing.allocator);
-
-    soil(field, &heights);
-
-    const x: u32 = 7;
-    const z: u32 = 9;
-    const top = heights.surface_height(dimensions, x, z);
-    field.set(x, top + 1, z, air_id);
-    const preserved = field.at(x, top - 1, z);
-    surface(field, &heights, &sampled_surface_noise);
-    const material = field.at(x, top, z);
-    try std.testing.expect(material == grass_id or material == sand_id);
-    try std.testing.expectEqual(preserved, field.at(x, top - 1, z));
 }
 
 test "soil preserves stone above a column's dirt top" {

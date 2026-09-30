@@ -1,6 +1,12 @@
 const std = @import("std");
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+pub const build_options = @import("build_options");
+const capabilities = @import("capabilities");
+const MenuState = @import("state/MenuState.zig");
+const ResourcePack = @import("ResourcePack.zig");
+const game_config = @import("config.zig");
+
+const caps = capabilities.ClientType(ae);
 
 pub const aether_options: ae.Options = .{
     .title = "CrossCraft Classic",
@@ -12,12 +18,6 @@ pub const aether_options: ae.Options = .{
         .heap_reserve_kb_size = 2048,
     },
 };
-
-pub const build_options = @import("build_options");
-
-const MenuState = @import("state/MenuState.zig");
-const ResourcePack = @import("ResourcePack.zig");
-const game_config = @import("config.zig");
 
 pub fn main(init: std.process.Init) !void {
     game_config.init();

@@ -1,8 +1,10 @@
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const capabilities = @import("capabilities");
 const Ui = @import("../Ui.zig");
 const Prompts = @import("../Prompts.zig");
 const widget_id = @import("../widget_id.zig");
+
+const caps = capabilities.ClientType(ae);
 
 pub const Widget = enum(u16) {
     back = 1,

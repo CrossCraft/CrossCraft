@@ -1,12 +1,14 @@
 //! CrossCraft artwork/block adapters around Aether's bounded command list.
 const std = @import("std");
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
-const Rendering = ae.Rendering;
-const Native = ae.Ui.DrawList;
+const capabilities = @import("capabilities");
 const IsoBlockDrawer = @import("IsoBlockDrawer.zig");
 const Screen = @import("Screen.zig");
 pub const Colors = @import("../graphics/Color.zig");
+
+const caps = capabilities.ClientType(ae);
+const Rendering = ae.Rendering;
+const Native = ae.Ui.DrawList;
 pub const Anchor = ae.Ui.Anchor;
 pub const Point = ae.Ui.Point;
 pub const SpriteCmd = ae.Ui.SpriteBatcher.Sprite;

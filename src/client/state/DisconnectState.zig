@@ -1,13 +1,5 @@
 const std = @import("std");
 const ae = @import("aether");
-const Core = ae.Core;
-const Util = ae.Util;
-const Engine = ae.Engine;
-const Rendering = ae.Rendering;
-const State = Core.State;
-
-const SpriteBatcher = ae.Ui.SpriteBatcher;
-const FontBatcher = ae.Ui.FontBatcher;
 const UiDrawList = @import("../ui/UiDrawList.zig");
 const Ui = @import("../ui/Ui.zig");
 const UiState = @import("../ui/UiState.zig");
@@ -17,6 +9,16 @@ const ui_input = @import("../ui/input.zig");
 const DisconnectScreen = @import("../ui/screens/Disconnect.zig");
 const Session = @import("Session.zig");
 const MenuState = @import("MenuState.zig");
+const TextFormat = @import("../ui/TextFormat.zig");
+
+const Core = ae.Core;
+const Util = ae.Util;
+const Engine = ae.Engine;
+const Rendering = ae.Rendering;
+const State = Core.State;
+
+const SpriteBatcher = ae.Ui.SpriteBatcher;
+const FontBatcher = ae.Ui.FontBatcher;
 
 var disconnect_state: @This() = undefined;
 var disconnect_state_inst: State = undefined;
@@ -45,7 +47,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     try ResourcePack.apply_tex_set(&.{ .dirt, .font, .gui, .glyphs });
 
     self.batcher = try SpriteBatcher.init(render_alloc);
-    self.font_batcher = try @import("../ui/TextFormat.zig").init_font(render_alloc, ResourcePack.get_tex(.font));
+    self.font_batcher = try TextFormat.init_font(render_alloc, ResourcePack.get_tex(.font));
     self.ui_repeat = .{};
     self.ui_state = .{};
 

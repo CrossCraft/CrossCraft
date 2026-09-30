@@ -1,20 +1,22 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
-const Math = ae.Math;
-const Rendering = ae.Rendering;
-
 const core = @import("core");
-const World = core.World;
-
 const Vertex = @import("aether").Rendering.Vertex;
+const capabilities = @import("capabilities");
 const Colors = @import("../graphics/Color.zig");
-const Color = Colors.Color;
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Options = @import("../Options.zig");
 const effect_positions = @import("../graphics/effect_positions.zig");
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
+const Math = ae.Math;
+const Rendering = ae.Rendering;
+
+const World = core.World;
+
+const Color = Colors.Color;
 
 const Extent: i32 = 4;
 const ExtentU: u32 = @intCast(Extent);

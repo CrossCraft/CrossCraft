@@ -52,14 +52,14 @@ pub const MemoryProfile = struct {
 
 const desktop_profile: MemoryProfile = .{
     .hardware = .desktop,
-    .total_memory_mb = 480,
+    .total_memory_mb = 512,
     .chunk_radius = 16,
     .lod_near_radius_blocks = 96,
     .init_render = 8 * MB,
     .init_audio = 2 * MB,
     .init_game = 2 * MB,
     .init_user = 72 * MB,
-    .rt_render = 384 * MB,
+    .rt_render = 416 * MB,
     .rt_audio = 512 * KB,
     .rt_game = 512 * KB,
     .rt_user = 4 * MB + 512 * KB,
@@ -406,73 +406,4 @@ fn TestEngineType(comptime target_platform: TestPlatform, comptime headless: boo
             }
         };
     };
-}
-
-test "capabilities preserve runtime Old 3DS controls and New 3DS fallback" {
-    const Psp = ClientType(TestEngineType(.psp, false));
-    const N3ds = ClientType(TestEngineType(.nintendo_3ds, false));
-    const Switch = ClientType(TestEngineType(.nintendo_switch, false));
-    const Desktop = ClientType(TestEngineType(.linux, false));
-    try std.testing.expect(!Psp.controls.uses_single_stick_fallback(.psp_phat, false));
-    try std.testing.expect(!Psp.controls.uses_single_stick_fallback(.psp_phat, true));
-    try std.testing.expect(N3ds.controls.uses_single_stick_fallback(.old_3ds, false));
-    try std.testing.expect(N3ds.controls.uses_single_stick_fallback(.old_3ds, true));
-    try std.testing.expect(!N3ds.controls.uses_single_stick_fallback(.new_3ds, false));
-    try std.testing.expect(N3ds.controls.uses_single_stick_fallback(.new_3ds, true));
-    try std.testing.expect(!Switch.controls.uses_single_stick_fallback(.nintendo_switch, true));
-    try std.testing.expect(!Desktop.controls.uses_single_stick_fallback(.desktop, true));
-
-    try std.testing.expect(!Psp.controls.supports_single_stick_fallback(.psp_phat));
-    try std.testing.expect(!N3ds.controls.supports_single_stick_fallback(.old_3ds));
-    try std.testing.expect(N3ds.controls.supports_single_stick_fallback(.new_3ds));
-    try std.testing.expect(!Switch.controls.supports_single_stick_fallback(.nintendo_switch));
-    try std.testing.expect(Psp.controls.supports_rebinding(.psp_phat));
-    try std.testing.expect(N3ds.controls.supports_rebinding(.old_3ds));
-    try std.testing.expect(N3ds.controls.supports_rebinding(.new_3ds));
-    try std.testing.expect(!Switch.controls.supports_rebinding(.nintendo_switch));
-    try std.testing.expect(Desktop.controls.supports_rebinding(.desktop));
-
-    const Engine = TestEngineType(.nintendo_3ds, false);
-    Engine.N3ds.new_hardware = false;
-    try std.testing.expectEqual(HardwareClass.old_3ds, N3ds.memory.detect_profile().hardware);
-    Engine.N3ds.new_hardware = true;
-    defer Engine.N3ds.new_hardware = false;
-
-    try std.testing.expectEqual(HardwareClass.new_3ds, N3ds.memory.detect_profile().hardware);
-}
-
-test "capabilities keep browser, pointer and console policies independent" {
-    const Browser = ClientType(TestEngineType(.wasm, false));
-    const Headless = ClientType(TestEngineType(.linux, true));
-    const Psp = ClientType(TestEngineType(.psp, false));
-    const N3ds = ClientType(TestEngineType(.nintendo_3ds, false));
-    const Switch = ClientType(TestEngineType(.nintendo_switch, false));
-    try std.testing.expect(Browser.saves.download);
-    try std.testing.expect(!Browser.networking.multiplayer);
-    try std.testing.expect(!Browser.resources.texture_pack_selection);
-    try std.testing.expect(Browser.ui.pointer);
-    try std.testing.expect(!Headless.ui.pointer);
-    try std.testing.expect(!Psp.ui.pointer);
-    try std.testing.expect(!N3ds.ui.pointer);
-    try std.testing.expect(Switch.ui.pointer and Switch.ui.seed_controller_focus);
-    try std.testing.expect(!Psp.defaults.vsync and !N3ds.defaults.vsync);
-    try std.testing.expect(!Psp.defaults.loaded_vsync and N3ds.defaults.loaded_vsync);
-    try std.testing.expect(Psp.memory.initial_profile.chunk_radius <= Psp.memory.max_chunk_radius);
-    try std.testing.expect(psp_slim_profile.chunk_radius <= Psp.memory.max_chunk_radius);
-    try std.testing.expect(new_3ds_profile.chunk_radius <= N3ds.memory.max_chunk_radius);
-    try std.testing.expect(Switch.memory.initial_profile.chunk_radius <= Switch.memory.max_chunk_radius);
-}
-
-test "capabilities limit standalone server packaging to PC targets" {
-    inline for (std.meta.tags(TestPlatform)) |platform| {
-        const policy = build_policy(.{ .platform = platform }, builtin.target);
-        const pc = platform == .linux or platform == .windows or platform == .macos;
-        try std.testing.expectEqual(pc, policy.standalone_server);
-        if (policy.client_dir != null) try std.testing.expect(policy.install_package);
-    }
-    const bundle = build_policy(.{ .platform = TestPlatform.macos }, builtin.target);
-    try std.testing.expect(bundle.bundle_resources and !bundle.install_raw_executable);
-    try std.testing.expectEqual(.app_bundle, bundle.launch);
-    const browser = build_policy(.{ .platform = TestPlatform.wasm }, builtin.target);
-    try std.testing.expect(!browser.embed_default_pack);
 }

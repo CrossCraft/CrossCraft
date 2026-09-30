@@ -1,24 +1,24 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const Util = ae.Util;
-const Rendering = ae.Rendering;
-
 const core = @import("core");
-const World = core.World;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Colors = @import("../graphics/Color.zig");
 const Camera = @import("../player/Camera.zig");
 const collision = @import("../player/collision.zig");
-const config = @import("../config.zig");
 const Options = @import("../Options.zig");
-
 const ChunkMesh = @import("chunk/ChunkMesh.zig");
 const Sky = @import("sky/sky.zig");
 const ParticleSystem = @import("ParticleSystem.zig");
 const Rain = @import("Rain.zig");
+const config = @import("../config.zig");
 
-const MaxActive: u32 = @import("../config.zig").max_sections();
+const assert = std.debug.assert;
+const Util = ae.Util;
+const Rendering = ae.Rendering;
+
+const World = core.World;
+
+const MaxActive: u32 = config.max_sections();
 comptime {
     // Chunk coordinates must fit GridRef.
     assert(core.world_dims.max_length / core.world_dims.chunk_size <= std.math.maxInt(u8));

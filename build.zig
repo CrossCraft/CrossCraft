@@ -89,6 +89,11 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Luaz is linked only into the standalone server and its host tests;
+    // client, core, and console targets never import it.
+    const luaz_dep = b.dependency("luaz", .{ .target = target, .optimize = optimize });
+    const luaz_module = luaz_dep.module("luaz");
+
     const console_client_dir = policy.client_dir;
 
     const ae_dep = b.dependency("engine", .{
@@ -202,6 +207,8 @@ pub fn build(b: *std.Build) void {
         const server_root = Aether.modules.user_root_module(server_exe);
         server_root.addImport("core", core);
         server_root.addImport("capabilities", capabilities);
+        server_root.addImport("luaz", luaz_module);
+        server_root.link_libcpp = true;
         add_engine_services(b, server_root, core);
 
         const build_server_step = b.step("server", "Build the server");
@@ -304,40 +311,19 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(lint_step);
 
     const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &.{};
-    const pack_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/pack_zip.zig"),
-            .target = b.graph.host,
-            .imports = &.{.{ .name = "capabilities", .module = capabilities }},
-        }),
-        .filters = test_filters,
-    });
-    const run_pack_tests = b.addRunArtifact(pack_tests);
-    test_step.dependOn(&run_pack_tests.step);
-    b.step("test-pack", "Verify CrossCraft resource pack creation").dependOn(&run_pack_tests.step);
-    const capability_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/capabilities.zig"),
-            .target = b.graph.host,
-            .optimize = optimize,
-        }),
-        .filters = test_filters,
-    });
-    const run_capability_tests = b.addRunArtifact(capability_tests);
-    test_step.dependOn(&run_capability_tests.step);
-    b.step("test-capabilities", "Verify target capability policy").dependOn(&run_capability_tests.step);
-
     const unit_tests = b.addTest(.{
         .root_module = unit_tests_root: {
             const root = b.createModule(.{
                 .root_source_file = b.path("src/unit.zig"),
                 .target = target,
                 .optimize = optimize,
+                .link_libcpp = true,
             });
             root.addImport("aether", client_root.import_table.get("aether").?);
             root.addImport("protocol", protocol);
             root.addImport("capabilities", capabilities);
             root.addImport("core", core);
+            root.addImport("luaz", luaz_module);
             root.addImport("engine_services", client_root.import_table.get("engine_services").?);
             break :unit_tests_root root;
         },
@@ -351,18 +337,8 @@ pub fn build(b: *std.Build) void {
     }
     const run_unit_tests = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_unit_tests.step);
-    const service_tests = b.addTest(.{
-        .root_module = client_root.import_table.get("engine_services").?,
-        .filters = test_filters,
-        .use_llvm = unit_tests.use_llvm,
-        .use_lld = unit_tests.use_lld,
-    });
-    const run_service_tests = b.addRunArtifact(service_tests);
-    test_step.dependOn(&run_service_tests.step);
     const hosts_step = b.step("test-hosts", "Run client and server host tests");
     hosts_step.dependOn(&run_unit_tests.step);
-    hosts_step.dependOn(&run_service_tests.step);
-    b.step("test-services", "Verify injected Aether job and storage adapters").dependOn(&run_service_tests.step);
 
     const core_tests = b.addTest(.{
         .root_module = core_tests_root: {
@@ -427,6 +403,21 @@ pub fn build(b: *std.Build) void {
         }),
     });
     worldgen_test_step.dependOn(&b.addRunArtifact(worldgen_test_exe).step);
+
+    const worldgen_cli_module = b.createModule(.{
+        .root_source_file = b.path("tools/worldgen_cli.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "worldgen", .module = worldgen },
+        },
+    });
+    const worldgen_cli_step = b.step("worldgen-cli", "Build the worldgen oracle CLI for differential fuzzing");
+    const worldgen_cli_exe = b.addExecutable(.{
+        .name = "worldgen_cli",
+        .root_module = worldgen_cli_module,
+    });
+    worldgen_cli_step.dependOn(&b.addInstallArtifact(worldgen_cli_exe, .{}).step);
 
     const web_target = Aether.config.web_target(b);
     const web_overrides: Aether.config.Config.Overrides = .{

@@ -43,7 +43,7 @@ jobs:
 
       - name: Fetch Zig packages
         if: steps.zig-pkg-cache.outputs.cache-hit != 'true'
-        run: zig build --fetch=all
+        run: bash .github/scripts/fetch-zig-packages.sh
 
       - name: Save Zig package cache
         if: steps.zig-pkg-cache.outputs.cache-hit != 'true'

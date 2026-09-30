@@ -98,8 +98,6 @@ Client and server hosts install `engine_services`, which connects Core's small
 job/storage interfaces to Aether. Shared Core and worldgen modules do not import
 Aether or console SDKs.
 
-Run `zig build test-capabilities` to verify target capability policy. These tests also run under `zig build test`.
-
 `tiger_lint.json` bans direct target checks and excludes `src/capabilities.zig` from linting.
 
 ## Legal Notice

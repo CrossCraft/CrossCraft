@@ -1,0 +1,8 @@
+{
+  "countdown_seconds": 10,
+  "results_seconds": 8,
+  "tick_ms": 250,
+  "max_participants": 16,
+  "flight_dq_violations": 3,
+  "kick_on_flight": false
+}

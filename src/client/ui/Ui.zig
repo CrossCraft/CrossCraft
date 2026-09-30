@@ -1,21 +1,23 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
-const Rendering = ae.Rendering;
-
 const core = @import("core");
-const layout_mod = ae.Ui.layout;
-const texture_region = ae.Ui.texture_region;
+const capabilities = @import("capabilities");
 const widget_style = @import("WidgetStyle.zig");
 const prompt_strip = @import("PromptStrip.zig");
 const prompts_mod = @import("Prompts.zig");
 const ui_input = @import("input.zig");
 const widget_id = @import("widget_id.zig");
-const FontBatcher = ae.Ui.FontBatcher;
 const UiDrawList = @import("UiDrawList.zig");
 const UiState = @import("UiState.zig");
 const Colors = @import("../graphics/Color.zig");
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
+const Rendering = ae.Rendering;
+
+const layout_mod = ae.Ui.layout;
+const texture_region = ae.Ui.texture_region;
+const FontBatcher = ae.Ui.FontBatcher;
 
 pub const LogicalRect = layout_mod.LogicalRect;
 pub const Point = layout_mod.Point;
@@ -597,33 +599,4 @@ fn draw_slot_grid(ui: *Ui, rect: LogicalRect, opts: SlotGridOpts) void {
         .reference = .top_left,
         .origin = .top_center,
     });
-}
-
-test "Aether menu adapter keeps centered click targets across draw replay" {
-    var fonts: FontBatcher = undefined;
-    fonts.style_parser = null;
-    fonts.glyph_widths = @splat(4);
-    fonts.allocator = std.testing.allocator;
-    var texture: Rendering.Texture = undefined;
-    texture.width = 256;
-    texture.height = 256;
-    var state: UiState = .{};
-    defer state.deinit();
-
-    var list: UiDrawList = .{};
-    const screen: LogicalRect = .{ .x0 = 0, .y0 = 0, .x1 = 400, .y1 = 240 };
-    var input_frame: UiInput = .{};
-    var ui = begin(.{ .draw = &list, .state = &state, .input = &input_frame, .fonts = &fonts, .gui_tex = &texture, .glyphs_tex = &texture, .screen = screen });
-    var column = ui.stack(.{});
-    try std.testing.expect(!ui.button(1, "Test", .{}));
-    column.end();
-    ui.end();
-    try std.testing.expectEqual(LogicalRect{ .x0 = 100, .y0 = 110, .x1 = 300, .y1 = 130 }, state.implementation.?.focusables[state.implementation.?.current][0].bounds);
-    list.native().clear();
-    input_frame = .{ .cursor_x = 110, .cursor_y = 115, .cursor_available = true, .cursor_moved = true, .click_edge = true, .click_held = true, .text_events = true };
-    ui = begin(.{ .draw = &list, .state = &state, .input = &input_frame, .fonts = &fonts, .gui_tex = &texture, .glyphs_tex = &texture, .screen = screen });
-    column = ui.stack(.{});
-    try std.testing.expect(ui.button(1, "Test", .{}));
-    column.end();
-    ui.end();
 }

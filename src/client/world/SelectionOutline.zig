@@ -1,12 +1,13 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const SubvoxelBounds = @import("core").blocks.SubvoxelBounds;
+const Vertex = @import("aether").Rendering.Vertex;
+const capabilities = @import("capabilities");
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
 const Rendering = ae.Rendering;
 const Transform = Rendering.Transform;
-const SubvoxelBounds = @import("core").blocks.SubvoxelBounds;
-
-const Vertex = @import("aether").Rendering.Vertex;
 
 // Twelve overlapping prisms form a backend-independent block outline.
 // Geometry uses the chunk mesh SNORM16 scale (one block = 2048 units).

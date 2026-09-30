@@ -1,7 +1,9 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const zb = @import("protocol");
 const Block = @import("blocks.zig").Block;
+const world_dims = @import("world_dims.zig");
+
+const assert = std.debug.assert;
 
 const Writer = std.Io.Writer;
 
@@ -138,7 +140,7 @@ pub fn send_level_chunk_to_client(writer: *Writer, length: u16, data: *const [10
 }
 
 pub fn send_level_finalize_to_client(writer: *Writer, x: u16, y: u16, z: u16) !void {
-    assert(@import("world_dims.zig").WorldDims.valid(.{ x, y, z }));
+    assert(world_dims.WorldDims.valid(.{ x, y, z }));
     var packet = zb.LevelFinalize{
         .x = x,
         .y = y,

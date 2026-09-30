@@ -1,8 +1,18 @@
 const std = @import("std");
-const assert = std.debug.assert;
 const caps = @import("capabilities");
 const ae = @import("aether");
 const core = @import("core");
+const engine_services = @import("engine_services");
+const ServerConfig = @import("Config.zig");
+const Heartbeat = @import("Heartbeat.zig");
+const Backup = @import("Backup.zig");
+const Accounts = @import("Accounts.zig");
+const Authentication = @import("Authentication.zig");
+const Commands = @import("Commands.zig");
+const plugins = @import("plugins/Plugins.zig");
+const Host = @import("plugins/Host.zig");
+
+const assert = std.debug.assert;
 
 const Util = ae.Util;
 const Engine = ae.Engine;
@@ -10,12 +20,6 @@ const State = ae.Core.State;
 
 const Server = core.Server;
 const CompressWorker = core.CompressWorker;
-const ServerConfig = @import("Config.zig");
-const Heartbeat = @import("Heartbeat.zig");
-const Backup = @import("Backup.zig");
-const PlayersDb = @import("PlayersDb.zig");
-const AccessControl = @import("AccessControl.zig");
-const Commands = @import("Commands.zig");
 const outbound_queue = core.OutboundQueue;
 
 const log = std.log.scoped(.server);
@@ -42,8 +46,7 @@ const ConnectionData = struct {
     // Only the connection worker writes to the socket; producers enqueue here.
     out_queue: outbound_queue.OutboundQueue,
     transport: std.atomic.Value(Server.Client.TransportState),
-    ip: [PlayersDb.ip_str_len:0]u8,
-    is_op: bool,
+    ip: [Server.Client.ip_str_len:0]u8,
     closed: bool = false,
 };
 
@@ -72,9 +75,14 @@ connections_mutex: std.Io.Mutex,
 tasks: std.Io.Group,
 listener: std.Io.net.Server,
 server_config: ServerConfig,
-heartbeat_salt: [16]u8,
+directories: [ServerConfig.max_heartbeat_urls]Authentication.Directory,
 heartbeat_users: std.atomic.Value(u32),
 backup: Backup,
+host: Host = .{},
+plugin_manager: ?*plugins.Plugins = null,
+
+/// Ordered gameplay slice per tick; queued traffic cannot extend it.
+const drain_budget_ms: i64 = 10;
 
 pub fn state(self: *ServerState) State {
     return .{ .ptr = self, .tab = &.{
@@ -87,7 +95,7 @@ pub fn state(self: *ServerState) State {
 }
 
 fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
-    @import("engine_services").install();
+    engine_services.install();
     var self = Util.ctx_to_self(ServerState, ctx);
     self.inited = false;
 
@@ -99,7 +107,10 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     stdout_mutex = .init;
 
     const seed: u64 = @bitCast(@as(i64, @truncate(std.Io.Clock.Timestamp.now(engine.io, .boot).raw.nanoseconds)));
-    self.server_config = ServerConfig.load(engine.io, engine.dirs.data, seed);
+    self.server_config = ServerConfig.load(engine.io, engine.dirs.data, seed) catch |err| {
+        log.err("Invalid server configuration: {}", .{err});
+        return err;
+    };
     const config: Server.GameConfig = .{ .standalone = self.server_config.core_config() };
     Backup.pre_init_validate_and_restore(
         engine.io,
@@ -118,11 +129,58 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         CompressWorker.deinit();
     }
 
-    try AccessControl.init(alloc, engine.io, Server.save_dir, self.server_config.max_policy_records);
-    errdefer AccessControl.deinit();
-    try PlayersDb.init(alloc, engine.io, Server.save_dir, self.server_config.max_players_saved);
-    errdefer PlayersDb.deinit();
-    try AccessControl.finish_legacy_migration();
+    // Each directory gets its own salt so the matching salt identifies who vouched.
+    for (0..self.server_config.heartbeat.count) |index| {
+        const directory = &self.directories[index];
+        generate_salt(engine.io, &directory.salt) catch |err| {
+            if (self.server_config.auth == .online) return err;
+            log.warn("Heartbeat disabled: could not generate a salt: {}", .{err});
+            self.server_config.heartbeat.count = 0;
+            break;
+        };
+        const uri = std.Uri.parse(self.server_config.heartbeat.url(index)) catch unreachable;
+        var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
+        const host = (uri.getHost(&host_buf) catch unreachable).bytes;
+        const bare = if (std.ascii.startsWithIgnoreCase(host, "www.")) host["www.".len..] else host;
+        var sha = std.crypto.hash.sha2.Sha256.init(.{});
+        for (bare) |byte| sha.update(&.{std.ascii.toLower(byte)});
+        directory.authority = @max(1, std.mem.readInt(u32, sha.finalResult()[0..4], .little));
+    }
+
+    try Accounts.init(alloc, engine.io, Server.save_dir, self.server_config.max_accounts);
+    errdefer Accounts.deinit();
+    try Authentication.init(
+        alloc,
+        self.server_config.auth,
+        self.server_config.auth_grace_period_seconds,
+        self.server_config.whitelist_enabled,
+        self.directories[0..self.server_config.heartbeat.count],
+    );
+    errdefer Authentication.deinit();
+
+    Commands.reset_registry();
+    self.host = .{};
+    self.host.player_write = player_command_write;
+    self.host.console_sink = .{ .ctx = self, .write_fn = stdout_console_write };
+    self.plugin_manager = plugins.init(alloc, engine.dirs.data, &self.host) catch |err| blk: {
+        log.warn("Plugin host disabled: {}", .{err});
+        break :blk null;
+    };
+    self.host.plugins = self.plugin_manager;
+    Host.instance = &self.host;
+    Server.on_gameplay_action = route_gameplay;
+    Server.on_command = route_player_command;
+    Server.on_player_join = route_player_join;
+    Server.on_player_leave = route_player_leave;
+    errdefer {
+        Server.on_gameplay_action = null;
+        Server.on_command = null;
+        Server.on_player_join = null;
+        Server.on_player_leave = null;
+        Host.instance = null;
+        if (self.plugin_manager) |manager| manager.deinit();
+        self.plugin_manager = null;
+    }
 
     const pending_len: usize = @intCast(self.server_config.max_pending_logins);
     self.connection_pool = try alloc.alloc(ConnectionSlot, Server.MaxPlayers + pending_len);
@@ -132,13 +190,6 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     self.backup = Backup.init(engine.io, self.server_config.autosave_seconds);
 
     engine.report();
-
-    if (self.server_config.heartbeat.count > 0) {
-        generate_salt(engine.io, &self.heartbeat_salt) catch |err| {
-            log.warn("Heartbeat disabled: could not generate a salt: {}", .{err});
-            self.server_config.heartbeat.count = 0;
-        };
-    }
 
     global_engine = engine;
     errdefer global_engine = null;
@@ -156,9 +207,11 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     stdout_writer = stdout_file.writer(engine.io, &stdout_buf);
     Server.on_broadcast_chat = write_stripped_line;
     Server.on_command = dispatch_player_command;
+    Server.on_client_ready = Authentication.begin;
     errdefer {
         Server.on_broadcast_chat = null;
         Server.on_command = null;
+        Server.on_client_ready = null;
     }
     errdefer {
         self.tasks.cancel(engine.io);
@@ -181,7 +234,83 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
 }
 
 fn dispatch_player_command(client: *Server.Client, line: []const u8) void {
-    Commands.dispatch(.{ .ctx = client, .write_fn = player_command_write }, line, client.is_op.load(.acquire));
+    Commands.dispatch(.{ .ctx = client, .write_fn = player_command_write }, line, .{ .player = client });
+}
+
+/// Route player commands: native entries keep their synchronous connection
+/// path (password work never touches the gameplay loop); plugin commands are
+/// ordered through the host queue.
+fn route_player_command(client: *Server.Client, line: []const u8) void {
+    const sink: Commands.Sink = .{ .ctx = client, .write_fn = player_command_write };
+    var tokens = std.mem.tokenizeAny(u8, line, " \t");
+    const name = tokens.next() orelse {
+        Commands.dispatch(sink, line, .{ .player = client });
+        return;
+    };
+    if (Commands.is_script(name)) {
+        self_host().enqueue_command(
+            .{ .id = @intCast(client.id), .generation = client.generation },
+            line,
+        );
+    } else {
+        Commands.dispatch(sink, line, .{ .player = client });
+    }
+}
+
+fn route_console_command(self: *ServerState, line: []const u8) void {
+    const sink: Commands.Sink = .{ .ctx = self, .write_fn = stdout_console_write };
+    var tokens = std.mem.tokenizeAny(u8, line, " \t");
+    const name = tokens.next() orelse return;
+    if (Commands.is_script(name)) {
+        self.host.enqueue_command(null, line);
+    } else {
+        Commands.dispatch(sink, line, .console);
+    }
+}
+
+fn self_host() *Host.Host {
+    return Host.instance.?;
+}
+
+fn route_gameplay(action: Server.GameplayAction) void {
+    const host = Host.instance orelse return;
+    switch (action) {
+        .position => |p| host.enqueue(.{ .position = .{
+            .handle = .{ .id = @intCast(p.client.id), .generation = p.client.generation },
+            .x = p.x,
+            .y = p.y,
+            .z = p.z,
+            .yaw = p.yaw,
+            .pitch = p.pitch,
+            .teleport_serial = p.teleport_serial,
+        } }),
+        .set_block => |b| host.enqueue(.{ .set_block = .{
+            .handle = .{ .id = @intCast(b.client.id), .generation = b.client.generation },
+            .x = b.x,
+            .y = b.y,
+            .z = b.z,
+            .mode = b.mode,
+            .block = b.block,
+        } }),
+    }
+}
+
+fn route_player_join(handle: Server.PlayerHandle, name: []const u8) void {
+    const host = Host.instance orelse return;
+    var identity: Host.Identity = .{ .handle = handle };
+    const len = @min(name.len, identity.name_buf.len);
+    @memcpy(identity.name_buf[0..len], name[0..len]);
+    identity.name_len = @intCast(len);
+    host.enqueue(.{ .join = identity });
+}
+
+fn route_player_leave(handle: Server.PlayerHandle, name: []const u8) void {
+    const host = Host.instance orelse return;
+    var identity: Host.Identity = .{ .handle = handle };
+    const len = @min(name.len, identity.name_buf.len);
+    @memcpy(identity.name_buf[0..len], name[0..len]);
+    identity.name_len = @intCast(len);
+    host.enqueue(.{ .leave = identity });
 }
 
 fn player_command_write(ctx: *anyopaque, line: []const u8) void {
@@ -224,6 +353,9 @@ fn write_without_color_codes(writer: *std.Io.Writer, line: []const u8) std.Io.Wr
 fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     var self = Util.ctx_to_self(ServerState, ctx);
 
+    self.host.deadline_ms = Server.Client.now_ms() + drain_budget_ms;
+    self.host.drain();
+    if (self.plugin_manager) |manager| manager.tick();
     Server.tick();
     self.reap_finished_connections(engine);
     self.promote_ready_logins(engine);
@@ -233,9 +365,7 @@ fn tick(ctx: *anyopaque, engine: *Engine) anyerror!void {
     }
 }
 
-fn update(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
-    PlayersDb.flush_if_due();
-}
+fn update(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {}
 fn draw(_: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {}
 
 const PendingReservation = union(enum) {
@@ -253,7 +383,6 @@ fn reserve_pending_slot_locked(
     self: *ServerState,
     conn: std.Io.net.Stream,
     ip: []const u8,
-    is_op: bool,
     io: std.Io,
 ) PendingReservation {
     var ip_count: usize = 0;
@@ -282,13 +411,12 @@ fn reserve_pending_slot_locked(
             .write_buffer = undefined,
             .out_queue = .{},
             .transport = .init(.open),
-            .ip = std.mem.zeroes([PlayersDb.ip_str_len:0]u8),
-            .is_op = is_op,
+            .ip = std.mem.zeroes([Server.Client.ip_str_len:0]u8),
         },
         .state = .pending,
         .worker_done = false,
     };
-    const ip_len = @min(ip.len, PlayersDb.ip_str_len);
+    const ip_len = @min(ip.len, Server.Client.ip_str_len);
     @memcpy(slot.data.ip[0..ip_len], ip[0..ip_len]);
     slot.data.reader = std.Io.net.Stream.Reader.init(conn, io, &slot.data.read_buffer);
     slot.data.writer = std.Io.net.Stream.Writer.init(conn, io, &slot.data.write_buffer);
@@ -374,6 +502,24 @@ fn promote_ready_logins(self: *ServerState, engine: *Engine) void {
             continue;
         }
 
+        const name = Server.Client.login_name(slot.login) catch unreachable;
+        const policy = Accounts.lookup(name.value[0..name.len]);
+        if (Authentication.denial(&policy)) |reason| {
+            reject_slot_locked(slot, engine, reason);
+            release_slot_locked(slot, engine);
+            continue;
+        }
+        // Verify before admission so forged logins never receive the world.
+        const source: ?u8 = if (self.server_config.auth != .online) null else switch (Authentication.vouch(name.value[0..name.len], &slot.login.key, &policy)) {
+            .source => |directory| directory,
+            .rejected => |reason| {
+                log.info("Rejecting unverified login for {s}", .{name.value[0..name.len]});
+                reject_slot_locked(slot, engine, reason);
+                release_slot_locked(slot, engine);
+                continue;
+            },
+        };
+
         // Pending sockets do not need an outbound queue until admission.
         slot.data.out_queue.buf = engine.allocator(.user).alloc(u8, outbound_queue.out_queue_bytes) catch {
             log.err("Failed to allocate outbound queue, rejecting completed login", .{});
@@ -389,7 +535,8 @@ fn promote_ready_logins(self: *ServerState, engine: *Engine) void {
             &slot.data.out_queue,
             &slot.data.stream,
             slot_ip(slot),
-            slot.data.is_op,
+            policy.op,
+            self.server_config.auth == .local,
             slot.login,
         );
         const client = switch (admission) {
@@ -401,6 +548,7 @@ fn promote_ready_logins(self: *ServerState, engine: *Engine) void {
             },
             .accepted => |accepted| accepted,
         };
+        client.auth_source = source;
 
         active_count += 1;
         slot.state = .active;
@@ -498,7 +646,6 @@ fn client_login_loop(
             return;
         },
     };
-    PlayersDb.record_completed_login(slot_ip(slot), client.name[0..client.name_len]);
     client.read_loop();
 }
 
@@ -525,7 +672,7 @@ fn count_initialized_users() u32 {
 
     for (&Server.players.items) |*entry| {
         const client = &(entry.* orelse continue);
-        if (client.initialized and client.is_connected()) count += 1;
+        if (client.initialized and client.authenticated.load(.acquire) and client.is_connected()) count += 1;
     }
     return count;
 }
@@ -538,16 +685,16 @@ fn heartbeat_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
     defer client.deinit();
 
     while (true) {
-        const request = Heartbeat.RequestData{
-            .server_name = &Server.server_name,
-            .port = ServerPort,
-            .users = self.heartbeat_users.load(.acquire),
-            .max_players = Server.MaxPlayers,
-            .salt = &self.heartbeat_salt,
-        };
-
+        const users = self.heartbeat_users.load(.acquire);
         for (0..self.server_config.heartbeat.count) |index| {
             const endpoint = self.server_config.heartbeat.url(index);
+            const request = Heartbeat.RequestData{
+                .server_name = &Server.server_name,
+                .port = ServerPort,
+                .users = users,
+                .max_players = Server.MaxPlayers,
+                .salt = &self.directories[index].salt,
+            };
             Heartbeat.send(engine.io, &client, endpoint, request) catch |err| switch (err) {
                 error.Canceled => return error.Canceled,
                 else => log.warn("Heartbeat endpoint {d} failed after retries: {}", .{ index + 1, err }),
@@ -574,8 +721,16 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
     global_listener = null;
     self.listener.deinit(engine.io);
 
-    PlayersDb.deinit();
-    AccessControl.deinit();
+    if (self.plugin_manager) |manager| manager.deinit();
+    self.plugin_manager = null;
+    Host.instance = null;
+    Server.on_gameplay_action = null;
+    Server.on_command = null;
+    Server.on_player_join = null;
+    Server.on_player_leave = null;
+
+    Authentication.deinit();
+    Accounts.deinit();
     // The compressor must finish the final world save before it shuts down.
     Server.deinit();
 
@@ -585,6 +740,7 @@ fn deinit(ctx: *anyopaque, engine: *Engine) void {
 
     Server.on_broadcast_chat = null;
     Server.on_command = null;
+    Server.on_client_ready = null;
     global_engine = null;
 }
 
@@ -611,24 +767,11 @@ fn accept_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
         }
         log.info("Client connected: {}", .{conn.socket.address});
 
-        // Check policy before consuming a pending slot.
-        var ip_buf: [PlayersDb.ip_str_len]u8 = undefined;
-        const ip = PlayersDb.format_ip(conn.socket.address, &ip_buf) orelse "";
-        const policy = AccessControl.lookup(ip);
+        var ip_buf: [Server.Client.ip_str_len]u8 = undefined;
+        const ip = format_ip(conn.socket.address, &ip_buf);
 
-        if (self.server_config.whitelist_enabled and !policy.whitelisted) {
-            log.info("Rejecting {s}: not whitelisted", .{ip});
-            reject_connection(conn, engine, "Not whitelisted");
-            continue;
-        }
-        if (policy.banned) {
-            const reason = if (policy.ban_reason_slice().len > 0) policy.ban_reason_slice() else "Banned";
-            log.info("Rejecting {s}: banned ({s})", .{ ip, reason });
-            reject_connection(conn, engine, reason);
-            continue;
-        }
         self.connections_mutex.lockUncancelable(engine.io);
-        const reservation = self.reserve_pending_slot_locked(conn, ip, policy.op, engine.io);
+        const reservation = self.reserve_pending_slot_locked(conn, ip, engine.io);
         self.connections_mutex.unlock(engine.io);
 
         switch (reservation) {
@@ -674,8 +817,8 @@ fn console_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
         if (line.len == 0) continue;
 
         if (line[0] == '/') {
-            const sink: Commands.Sink = .{ .ctx = self, .write_fn = stdout_console_write };
-            Commands.dispatch(sink, line[1..], true);
+            self.route_console_command(line[1..]);
+            std.crypto.secureZero(u8, @constCast(raw));
         } else {
             var msg_buf: core.protocol.Message = @splat(' ');
             const prefix = "&4[Server]: ";
@@ -757,24 +900,31 @@ test "pending connection limits include ready and failed logins and active IPs" 
     var pool = [_]ConnectionSlot{.{}} ** 3;
     var self: ServerState = undefined;
     self.connection_pool = &pool;
-    self.server_config = ServerConfig.parse("max-pending-logins:1\nmax-connections-per-ip:1\n", 0);
+    self.server_config = try ServerConfig.parse("max-pending-logins:1\nmax-connections-per-ip:1\n", 0);
     const io = std.testing.io;
     const stream: std.Io.net.Stream = undefined;
 
-    const first = self.reserve_pending_slot_locked(stream, "203.0.113.1", false, io).accepted;
+    const first = self.reserve_pending_slot_locked(stream, "203.0.113.1", io).accepted;
     try std.testing.expectEqualStrings("203.0.113.1", slot_ip(first));
     try std.testing.expect(!first.worker_done);
-    try std.testing.expectEqual(.ip_limited, self.reserve_pending_slot_locked(stream, "203.0.113.1", false, io));
+    try std.testing.expectEqual(.ip_limited, self.reserve_pending_slot_locked(stream, "203.0.113.1", io));
     for ([_]ConnectionState{ .pending, .ready, .failed }) |state_| {
         first.state = state_;
-        try std.testing.expectEqual(.pending_full, self.reserve_pending_slot_locked(stream, "203.0.113.2", false, io));
+        try std.testing.expectEqual(.pending_full, self.reserve_pending_slot_locked(stream, "203.0.113.2", io));
     }
 
     first.state = .active;
-    try std.testing.expectEqual(.ip_limited, self.reserve_pending_slot_locked(stream, "203.0.113.1", false, io));
-    const second = self.reserve_pending_slot_locked(stream, "203.0.113.2", true, io).accepted;
+    try std.testing.expectEqual(.ip_limited, self.reserve_pending_slot_locked(stream, "203.0.113.1", io));
+    const second = self.reserve_pending_slot_locked(stream, "203.0.113.2", io).accepted;
     try std.testing.expect(first != second);
-    try std.testing.expect(second.data.is_op);
     try std.testing.expectEqualStrings("203.0.113.1", slot_ip(first));
-    try std.testing.expectEqual(.pending_full, self.reserve_pending_slot_locked(stream, "203.0.113.3", false, io));
+    try std.testing.expectEqual(.pending_full, self.reserve_pending_slot_locked(stream, "203.0.113.3", io));
+}
+
+fn format_ip(address: std.Io.net.IpAddress, buffer: *[Server.Client.ip_str_len]u8) []const u8 {
+    const bytes = switch (address) {
+        .ip4 => |ip| ip.bytes,
+        .ip6 => return "",
+    };
+    return std.fmt.bufPrint(buffer, "{d}.{d}.{d}.{d}", .{ bytes[0], bytes[1], bytes[2], bytes[3] }) catch unreachable;
 }

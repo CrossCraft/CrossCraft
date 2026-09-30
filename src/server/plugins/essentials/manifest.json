@@ -1,0 +1,14 @@
+{
+  "uuid": "8c4f7d2e-3a91-4b7f-9d25-6e0c1a8f5b31",
+  "name": "Essentials",
+  "version": "1.0.0",
+  "author": "CrossCraft",
+  "api_version": "1.x",
+  "entrypoint": "essentials.luau",
+  "capabilities": [
+    "player.lookup",
+    "player.message",
+    "player.teleport",
+    "player.spawn"
+  ]
+}

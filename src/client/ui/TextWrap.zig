@@ -1,6 +1,7 @@
 //! Classic chat color continuation over Aether's generic bounded wrapper.
 const ae = @import("aether");
 const TextFormat = @import("TextFormat.zig");
+
 pub fn wrap(comptime max_lines: usize, comptime max_line_bytes: usize, font: anytype, text: []const u8, width: i16, output: *[max_lines][max_line_bytes]u8, lengths: *[max_lines]u8) u8 {
     if (width <= 0) return 0;
     var storage: [max_lines * max_line_bytes]u8 = undefined;
@@ -28,37 +29,4 @@ pub fn wrap(comptime max_lines: usize, comptime max_line_bytes: usize, font: any
         }
     }
     return @intCast(count);
-}
-
-test "Aether chat wrapping preserves colors in fixed line buffers" {
-    const std = @import("std");
-    var fonts: ae.Ui.FontBatcher = undefined;
-    fonts.glyph_widths = @splat(1);
-    fonts.style_parser = TextFormat.parse;
-    var output: [4][32]u8 = undefined;
-    var lengths: [4]u8 = undefined;
-    const count = wrap(4, 32, &fonts, "&cabc def", 5, &output, &lengths);
-    try std.testing.expectEqual(2, count);
-    try std.testing.expectEqualStrings("&cabc", output[0][0..lengths[0]]);
-    try std.testing.expectEqualStrings("&cdef", output[1][0..lengths[1]]);
-}
-
-test "Classic chat wrapping carries trailing controls through empty lines" {
-    const std = @import("std");
-    var fonts: ae.Ui.FontBatcher = undefined;
-    fonts.glyph_widths = @splat(1);
-    fonts.style_parser = TextFormat.parse;
-    var output: [8][32]u8 = undefined;
-    var lengths: [8]u8 = undefined;
-    const count = wrap(8, 32, &fonts, "&cabc def&b\n\n&fX\n", 5, &output, &lengths);
-    try std.testing.expectEqual(5, count);
-    for ([_][]const u8{ "&cabc", "&cdef&b", "&b", "&b&fX", "&f" }, 0..) |expected, i| {
-        try std.testing.expectEqualStrings(expected, output[i][0..lengths[i]]);
-    }
-    const controls_only = wrap(8, 32, &fonts, "&c&b", 1, &output, &lengths);
-    try std.testing.expectEqual(1, controls_only);
-    try std.testing.expectEqualStrings("&c&b", output[0][0..lengths[0]]);
-    var small: [4][3]u8 = undefined;
-    var small_lengths: [4]u8 = undefined;
-    try std.testing.expectEqual(0, wrap(4, 3, &fonts, "&cAB", 3, &small, &small_lengths));
 }

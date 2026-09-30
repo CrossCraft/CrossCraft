@@ -7,8 +7,8 @@ on:
 
 permissions:
   actions: read
-  issues: write
-  pull-requests: read
+  # PR timeline comments use the issues API but need pull-request write access.
+  pull-requests: write
 
 concurrency:
   group: lint-metrics-comment-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}

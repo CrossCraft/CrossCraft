@@ -1,0 +1,15 @@
+{
+  "uuid": "7d3a9c52-4e18-4f6b-a2d1-9c05e8f31b44",
+  "name": "Spleef",
+  "version": "1.0.0",
+  "author": "CrossCraft",
+  "api_version": "1.x",
+  "entrypoint": "spleef.luau",
+  "capabilities": [
+    "player.lookup",
+    "player.message",
+    "player.kick",
+    "world.edit",
+    "session.host"
+  ]
+}

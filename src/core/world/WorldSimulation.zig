@@ -1,5 +1,5 @@
 // Block physics, fluid spread, vegetation growth, and gravity.
-// Runtime mutation goes through `set_block` to maintain scheduler dedup;
+// Runtime mutation goes through `set_block` to settle gravity and notify clients;
 // bulk loaders bypass scheduling with `WorldData.apply_block`.
 
 const std = @import("std");
@@ -37,6 +37,12 @@ pub const BlockChange = struct {
     z: u16,
     block: Block,
 };
+
+/// Optional host policy consulted before any logical mutation commits. A
+/// false answer skips the whole source/landing operation (and a tree skips
+/// growth entirely) so protected cells never lose or duplicate blocks. The
+/// host installs this only in the standalone server; vanilla stays unguarded.
+pub var mutation_guard: ?*const fn (x: u16, y: u16, z: u16) bool = null;
 
 /// Receives each committed simulation change without buffering or allocating.
 pub const BlockChangeSink = struct {
@@ -149,12 +155,36 @@ pub fn tick(self: *WorldSimulation, data: *WorldData, sink: BlockChangeSink) u32
     return emitted;
 }
 
-/// Runtime block mutation entry point: data write + clear scheduler dedup.
-pub fn set_block(self: *WorldSimulation, data: *WorldData, x: u16, y: u16, z: u16, block: Block) void {
-    data.apply_block(x, y, z, block);
-    // Clear location-based dedup so replacing a slow-tick block with a fast
-    // one can schedule immediately. The orphaned old entry safely re-reads it.
-    self.enqueued_remove(data.get_index(x, y, z));
+/// Commit an edit and its gravity changes before returning. Falling blocks
+/// are placed directly at their landing cell, including in client updates.
+pub fn set_block(self: *WorldSimulation, data: *WorldData, sink: BlockChangeSink, x: u16, y: u16, z: u16, block: Block) u32 {
+    var emitted: u32 = 0;
+    var source_y = y;
+    var source_block = block;
+    while (true) {
+        var landing_y = source_y;
+        if (source_block.has_gravity()) {
+            while (landing_y > 0 and data.get_block(x, landing_y - 1, z).is_place_replaceable()) {
+                landing_y -= 1;
+            }
+        }
+        if (mutation_guard) |guard| {
+            // Source removal and landing placement stay one logical operation.
+            if (!guard(x, source_y, z)) break;
+            if (landing_y != source_y and !guard(x, landing_y, z)) break;
+        }
+        self.commit_block_change(data, sink, &emitted, x, source_y, z, if (landing_y == source_y) source_block else .air);
+        if (landing_y != source_y) {
+            self.commit_block_change(data, sink, &emitted, x, landing_y, z, source_block);
+        } else if (!source_block.is_air()) break;
+
+        // Removing or dropping this block also releases the stack above it.
+        source_y += 1;
+        if (source_y >= data.dims.height) break;
+        source_block = data.get_block(x, source_y, z);
+        if (!source_block.has_gravity()) break;
+    }
+    return emitted;
 }
 
 fn process_block_update(
@@ -170,27 +200,25 @@ fn process_block_update(
     self.enqueued_remove(data.get_index(x, y, z));
     const block = data.get_block(x, y, z);
 
-    if ((block == .sand or block == .gravel) and y > 0) {
-        const below = data.get_block(x, y - 1, z);
-        if (below.is_air() or below.is_fluid()) {
-            self.queue_block_change(data, sink, emitted, x, y, z, .air);
-            self.queue_block_change(data, sink, emitted, x, y - 1, z, block);
+    if (block.has_gravity()) {
+        if (y > 0 and data.get_block(x, y - 1, z).is_place_replaceable()) {
+            emitted.* += self.set_block(data, sink, x, y, z, block);
         }
     } else if (block == .dirt and data.is_sunlit(x, y, z)) {
-        self.queue_block_change(data, sink, emitted, x, y, z, .grass);
+        emitted.* += self.set_block(data, sink, x, y, z, .grass);
     } else if (block == .grass and !data.is_sunlit(x, y, z)) {
-        self.queue_block_change(data, sink, emitted, x, y, z, .dirt);
+        emitted.* += self.set_block(data, sink, x, y, z, .dirt);
     } else if (block == .sapling and data.is_sunlit(x, y, z)) {
         const height: u32 = @intCast(self.rng.next() % 3 + 4);
         self.grow_tree(data, sink, emitted, x, y, z, height);
     } else if ((block == .sapling or block == .flower_1 or block == .flower_2) and
         !data.is_sunlit(x, y, z))
     {
-        self.queue_block_change(data, sink, emitted, x, y, z, .air);
+        emitted.* += self.set_block(data, sink, x, y, z, .air);
     } else if ((block == .mushroom_1 or block == .mushroom_2) and
         data.is_sunlit(x, y, z))
     {
-        self.queue_block_change(data, sink, emitted, x, y, z, .air);
+        emitted.* += self.set_block(data, sink, x, y, z, .air);
     } else if (block.is_fluid()) {
         self.process_fluid(data, sink, emitted, x, y, z, block);
     }
@@ -306,7 +334,7 @@ fn enqueued_remove(self: *WorldSimulation, idx: u32) void {
 
 /// Maximum client-visible changes this update can commit from its current
 /// state. The scheduler admits an update only when this many budget slots are
-/// available, so queue_block_change can stay allocation-free and atomic at
+/// available, so updates can stay allocation-free and atomic at
 /// the update level. Fast fluid cases are counted precisely where cheap so a
 /// large falling-water batch can use the full 2048-change budget.
 fn block_update_change_bound(data: *const WorldData, loc: Location) u32 {
@@ -316,16 +344,24 @@ fn block_update_change_bound(data: *const WorldData, loc: Location) u32 {
     const block = data.get_block(x, y, z);
 
     return switch (block) {
-        .sand, .gravel => if (y > 0 and (data.get_block(x, y - 1, z).is_air() or data.get_block(x, y - 1, z).is_fluid())) 2 else 0,
+        .sand, .gravel => if (y > 0 and data.get_block(x, y - 1, z).is_place_replaceable()) gravity_stack_change_bound(data, x, y, z) else 0,
         .dirt => if (data.is_sunlit(x, y, z)) 1 else 0,
         .grass => if (!data.is_sunlit(x, y, z)) 1 else 0,
-        .sapling => if (data.is_sunlit(x, y, z)) MaxTreeChanges else 1,
-        .flower_1, .flower_2 => if (!data.is_sunlit(x, y, z)) 1 else 0,
-        .mushroom_1, .mushroom_2 => if (data.is_sunlit(x, y, z)) 1 else 0,
+        .sapling => if (data.is_sunlit(x, y, z)) MaxTreeChanges else 1 + gravity_stack_change_bound(data, x, y + 1, z),
+        .flower_1, .flower_2 => if (!data.is_sunlit(x, y, z)) 1 + gravity_stack_change_bound(data, x, y + 1, z) else 0,
+        .mushroom_1, .mushroom_2 => if (data.is_sunlit(x, y, z)) 1 + gravity_stack_change_bound(data, x, y + 1, z) else 0,
         .flowing_water, .still_water => water_change_bound(data, x, y, z, block),
         .flowing_lava, .still_lava => lava_change_bound(data, x, y, z, block),
         else => 0,
     };
+}
+
+fn gravity_stack_change_bound(data: *const WorldData, x: u16, y: u16, z: u16) u32 {
+    var top_y = y;
+    while (top_y < data.dims.height and data.get_block(x, top_y, z).has_gravity()) {
+        top_y += 1;
+    }
+    return 2 * @as(u32, top_y - y);
 }
 
 /// Six trunk blocks plus at most 61 leaves under the current tree shape.
@@ -334,12 +370,14 @@ const MaxTreeChanges: u32 = 67;
 comptime {
     if (MaxTreeChanges > MaxBlockChangesPerTick)
         @compileError("the per-tick change budget must fit one complete tree update");
+    if (2 * wd.max_height + 7 > MaxBlockChangesPerTick)
+        @compileError("the per-tick change budget must fit a fluid update and a complete falling stack");
 }
 
 fn water_change_bound(data: *const WorldData, x: u16, y: u16, z: u16, block: Block) u32 {
     assert(block.is_water());
     const lava_neighbors = count_lava_neighbors(data, x, y, z);
-    if (block == .flowing_water and !has_fluid_neighbor(data, x, y, z, true)) return lava_neighbors + 1;
+    if (block == .flowing_water and !has_fluid_neighbor(data, x, y, z, true)) return lava_neighbors + 1 + gravity_stack_change_bound(data, x, y + 1, z);
     if (y > 0 and data.get_block(x, y - 1, z).is_air() and !is_near_sponge(data, x, y - 1, z)) return lava_neighbors + 1;
     return lava_neighbors + count_horizontal_air_neighbors(data, x, y, z);
 }
@@ -347,7 +385,7 @@ fn water_change_bound(data: *const WorldData, x: u16, y: u16, z: u16, block: Blo
 fn lava_change_bound(data: *const WorldData, x: u16, y: u16, z: u16, block: Block) u32 {
     assert(block.is_lava());
     if (has_fluid_neighbor(data, x, y, z, true)) return 1;
-    if (block == .flowing_lava and !has_fluid_neighbor(data, x, y, z, false)) return 1;
+    if (block == .flowing_lava and !has_fluid_neighbor(data, x, y, z, false)) return 1 + gravity_stack_change_bound(data, x, y + 1, z);
     if (y > 0 and data.get_block(x, y - 1, z).is_air()) return 1;
     return count_horizontal_air_neighbors(data, x, y, z);
 }
@@ -391,13 +429,13 @@ fn process_fluid(
     if ((block == .flowing_water or block == .flowing_lava) and
         !has_fluid_neighbor(data, x, y, z, water))
     {
-        self.queue_block_change(data, sink, emitted, x, y, z, .air);
+        emitted.* += self.set_block(data, sink, x, y, z, .air);
         return;
     }
 
     if (y > 0 and data.get_block(x, y - 1, z).is_air()) {
         if (!water or !is_near_sponge(data, x, y - 1, z)) {
-            self.queue_block_change(data, sink, emitted, x, y - 1, z, flow);
+            emitted.* += self.set_block(data, sink, x, y - 1, z, flow);
             return;
         }
     }
@@ -417,12 +455,12 @@ fn check_lava_water(
     water: bool,
 ) bool {
     if (water) {
-        if (x > 0 and data.get_block(x - 1, y, z).is_lava()) self.queue_block_change(data, sink, emitted, x - 1, y, z, .stone);
-        if (x + 1 < data.dims.length and data.get_block(x + 1, y, z).is_lava()) self.queue_block_change(data, sink, emitted, x + 1, y, z, .stone);
-        if (y > 0 and data.get_block(x, y - 1, z).is_lava()) self.queue_block_change(data, sink, emitted, x, y - 1, z, .stone);
-        if (y + 1 < data.dims.height and data.get_block(x, y + 1, z).is_lava()) self.queue_block_change(data, sink, emitted, x, y + 1, z, .stone);
-        if (z > 0 and data.get_block(x, y, z - 1).is_lava()) self.queue_block_change(data, sink, emitted, x, y, z - 1, .stone);
-        if (z + 1 < data.dims.depth and data.get_block(x, y, z + 1).is_lava()) self.queue_block_change(data, sink, emitted, x, y, z + 1, .stone);
+        if (x > 0 and data.get_block(x - 1, y, z).is_lava()) emitted.* += self.set_block(data, sink, x - 1, y, z, .stone);
+        if (x + 1 < data.dims.length and data.get_block(x + 1, y, z).is_lava()) emitted.* += self.set_block(data, sink, x + 1, y, z, .stone);
+        if (y > 0 and data.get_block(x, y - 1, z).is_lava()) emitted.* += self.set_block(data, sink, x, y - 1, z, .stone);
+        if (y + 1 < data.dims.height and data.get_block(x, y + 1, z).is_lava()) emitted.* += self.set_block(data, sink, x, y + 1, z, .stone);
+        if (z > 0 and data.get_block(x, y, z - 1).is_lava()) emitted.* += self.set_block(data, sink, x, y, z - 1, .stone);
+        if (z + 1 < data.dims.depth and data.get_block(x, y, z + 1).is_lava()) emitted.* += self.set_block(data, sink, x, y, z + 1, .stone);
         return false;
     } else {
         if ((x > 0 and data.get_block(x - 1, y, z).is_water()) or
@@ -432,7 +470,7 @@ fn check_lava_water(
             (z > 0 and data.get_block(x, y, z - 1).is_water()) or
             (z + 1 < data.dims.depth and data.get_block(x, y, z + 1).is_water()))
         {
-            self.queue_block_change(data, sink, emitted, x, y, z, .stone);
+            emitted.* += self.set_block(data, sink, x, y, z, .stone);
             return true;
         }
         return false;
@@ -465,13 +503,13 @@ fn spread_horizontal(
     water: bool,
 ) void {
     if (x > 0 and data.get_block(x - 1, y, z).is_air() and (!water or !is_near_sponge(data, x - 1, y, z)))
-        self.queue_block_change(data, sink, emitted, x - 1, y, z, flow);
+        emitted.* += self.set_block(data, sink, x - 1, y, z, flow);
     if (x + 1 < data.dims.length and data.get_block(x + 1, y, z).is_air() and (!water or !is_near_sponge(data, x + 1, y, z)))
-        self.queue_block_change(data, sink, emitted, x + 1, y, z, flow);
+        emitted.* += self.set_block(data, sink, x + 1, y, z, flow);
     if (z > 0 and data.get_block(x, y, z - 1).is_air() and (!water or !is_near_sponge(data, x, y, z - 1)))
-        self.queue_block_change(data, sink, emitted, x, y, z - 1, flow);
+        emitted.* += self.set_block(data, sink, x, y, z - 1, flow);
     if (z + 1 < data.dims.depth and data.get_block(x, y, z + 1).is_air() and (!water or !is_near_sponge(data, x, y, z + 1)))
-        self.queue_block_change(data, sink, emitted, x, y, z + 1, flow);
+        emitted.* += self.set_block(data, sink, x, y, z + 1, flow);
 }
 
 const SpongeRadius: i32 = 2;
@@ -494,9 +532,7 @@ pub fn sponge_absorb(self: *WorldSimulation, data: *WorldData, sink: BlockChange
                 const uz: u16 = @intCast(nz);
                 const blk = data.get_block(ux, uy, uz);
                 if (blk.is_water()) {
-                    self.set_block(data, ux, uy, uz, .air);
-                    sink.emit(.{ .x = ux, .y = uy, .z = uz, .block = .air });
-                    self.enqueue_neighbors_of(data, ux, uy, uz);
+                    _ = self.set_block(data, sink, ux, uy, uz, .air);
                 }
             }
         }
@@ -538,7 +574,7 @@ fn is_near_sponge(data: *const WorldData, x: u16, y: u16, z: u16) bool {
     return false;
 }
 
-fn queue_block_change(
+fn commit_block_change(
     self: *WorldSimulation,
     data: *WorldData,
     sink: BlockChangeSink,
@@ -548,8 +584,10 @@ fn queue_block_change(
     z: u16,
     block: Block,
 ) void {
-    assert(emitted.* < MaxBlockChangesPerTick);
-    self.set_block(data, x, y, z, block);
+    data.apply_block(x, y, z, block);
+    // Replacing a slow-tick block must allow its replacement to schedule now.
+    // Orphaned entries safely re-read the current block when they execute.
+    self.enqueued_remove(data.get_index(x, y, z));
     sink.emit(.{ .x = x, .y = y, .z = z, .block = block });
     emitted.* += 1;
     self.enqueue_neighbors_of(data, x, y, z);
@@ -575,9 +613,31 @@ fn grow_tree(
         if (!data.get_block(x, @intCast(check_y), z).is_air()) return;
     }
 
+    if (mutation_guard) |guard| {
+        // A denied tree skips growth entirely rather than committing a partial one.
+        var gy: u32 = base_y + 1;
+        while (gy <= base_y + height) : (gy += 1) {
+            if (!guard(x, @intCast(gy), z)) return;
+        }
+        var layer: u32 = 0;
+        while (layer < 4) : (layer += 1) {
+            const ly: u32 = base_y + height - 2 + layer;
+            var dx: i32 = -2;
+            while (dx <= 2) : (dx += 1) {
+                var dz: i32 = -2;
+                while (dz <= 2) : (dz += 1) {
+                    const lx = @as(i32, @intCast(x)) + dx;
+                    const lz = @as(i32, @intCast(z)) + dz;
+                    if (lx < 0 or lx >= data.dims.length or lz < 0 or lz >= data.dims.depth) continue;
+                    if (!guard(@intCast(lx), @intCast(ly), @intCast(lz))) return;
+                }
+            }
+        }
+    }
+
     for (0..height) |i| {
         const ty: u32 = base_y + 1 + @as(u32, @intCast(i));
-        if (ty < data.dims.height) self.queue_block_change(data, sink, emitted, x, @intCast(ty), z, .log);
+        if (ty < data.dims.height) emitted.* += self.set_block(data, sink, x, @intCast(ty), z, .log);
     }
 
     self.grow_tree_leaves(data, sink, emitted, x, base_y, z, height);
@@ -611,7 +671,7 @@ fn grow_tree_leaves(
                 const ux: u16 = @intCast(lx);
                 const uz: u16 = @intCast(lz);
                 if (data.get_block(ux, @intCast(ly), uz).is_air()) {
-                    self.queue_block_change(data, sink, emitted, ux, @intCast(ly), uz, .leaves);
+                    emitted.* += self.set_block(data, sink, ux, @intCast(ly), uz, .leaves);
                 }
             }
         }
@@ -621,10 +681,12 @@ fn grow_tree_leaves(
 const TestChangeRecorder = struct {
     count: u32 = 0,
     first: ?BlockChange = null,
+    last: ?BlockChange = null,
 
     fn emit(ctx: ?*anyopaque, change: BlockChange) void {
         const self: *TestChangeRecorder = @ptrCast(@alignCast(ctx.?));
         if (self.count == 0) self.first = change;
+        self.last = change;
         self.count += 1;
     }
 };

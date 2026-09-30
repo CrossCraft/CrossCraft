@@ -6,33 +6,34 @@
 //
 // Ported to Zig for CrossCraft (GPLv2; uses separate Aether-Engine).
 // Modifications Copyright (c) 2026 CrossCraft
-
 const std = @import("std");
-const assert = std.debug.assert;
-const caps = @import("capabilities").ClientType(ae);
 const ae = @import("aether");
-const Math = ae.Math;
-const Rendering = ae.Rendering;
-const input = ae.Core.input;
-
 const core = @import("core");
-const World = core.World;
-const Block = core.blocks.Block;
-const proto = core.protocol;
-
+const capabilities = @import("capabilities");
 const Camera = @import("Camera.zig");
 const bindings = @import("bindings.zig");
 const collision = @import("collision.zig");
 const UiDrawList = @import("../ui/UiDrawList.zig");
-const Scaling = ae.Ui.Scaling;
-const layout = ae.Ui.layout;
 const Colors = @import("../graphics/Color.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
-const blocks = core.blocks;
 const SoundManager = @import("../SoundManager.zig");
 const Face = @import("../world/chunk/face.zig").Face;
 const Options = @import("../Options.zig");
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
+const Math = ae.Math;
+const Rendering = ae.Rendering;
+const input = ae.Core.input;
+
+const World = core.World;
+const Block = core.blocks.Block;
+const proto = core.protocol;
+
+const Scaling = ae.Ui.Scaling;
+const layout = ae.Ui.layout;
+const blocks = core.blocks;
 
 const PrevInputs = struct {
     inventory_toggle: input.ButtonState = .released,
@@ -305,6 +306,30 @@ pub fn init(self: *Player, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void
         .bob_amount = 0,
         .bob_amount_prev = 0,
     };
+}
+
+/// Called by the game thread, never the network reader.
+pub fn apply_server_position(self: *Player, pose: core.Server.Client.PlayerPose) void {
+    self.pos_x = @as(f32, @floatFromInt(pose.x)) / 32.0;
+    self.pos_y = @as(f32, @floatFromInt(pose.y)) / 32.0 - collision.EyeHeight;
+    self.pos_z = @as(f32, @floatFromInt(pose.z)) / 32.0;
+    self.prev_x = self.pos_x;
+    self.prev_y = self.pos_y;
+    self.prev_z = self.pos_z;
+    self.vel_x = 0;
+    self.vel_y = 0;
+    self.vel_z = 0;
+    self.vel_y_prev = 0;
+    self.tick_remainder = 0;
+    self.camera.x = self.pos_x;
+    self.camera.y = self.pos_y + collision.EyeHeight;
+    self.camera.z = self.pos_z;
+    const turn = 2.0 * std.math.pi / 256.0;
+    self.camera.yaw = -@as(f32, @floatFromInt(pose.yaw)) * turn;
+    self.camera.pitch = @as(f32, @floatFromInt(@as(i8, @bitCast(pose.pitch)))) * turn;
+    self.hit_horizontal = false;
+    self.can_liquid_jump = false;
+    self.on_ground = collision.on_ground(self.pos_x, self.pos_y, self.pos_z);
 }
 
 pub fn consume_fly_tap_event(self: *Player) ?FlyTapEvent {
@@ -1416,7 +1441,7 @@ fn do_place(self: *Player) void {
     send_block_change(self.writer, hit.place_x, hit.place_y, hit.place_z, 1, block);
     if (self.held_renderer) |hr| hr.trigger_place();
     // Promoted slabs already have collision and may target a different cell.
-    if (block.collision_height() > 0 and !promotes_to_double_slab) {
+    if (block.collision_height() > 0 and !promotes_to_double_slab and !block.has_gravity()) {
         self.pending_block = .{
             .x = hit.place_x,
             .y = hit.place_y,

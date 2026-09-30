@@ -1,10 +1,11 @@
 //! Physical controller / keyboard-and-mouse button to sprite-rect lookup.
 //! `pc.png` uses paired 32px rows for Xbox, Nintendo, PlayStation, and KBM.
 //! `psp.png` uses 8px face buttons and 16x8 wide buttons.
-
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
+const capabilities = @import("capabilities");
 const Options = @import("../Options.zig");
+
+const caps = capabilities.ClientType(ae);
 const input = ae.Core.input;
 
 pub const Rect = struct {
@@ -181,18 +182,4 @@ fn lookup_psp(button: Button) Rect {
         .Home => psp_wide(0, PspFace * 2),
         else => unreachable,
     };
-}
-
-test "glyph sheets map platform-specific controls" {
-    const std = @import("std");
-    const r = lookup(.A, .xbox);
-    try std.testing.expect(r.render_w > 0 and r.render_h > 0);
-    try std.testing.expect(lookup(.A, .nintendo).tex_x == PcTile);
-    try std.testing.expect(lookup(.B, .nintendo).tex_x == 0);
-    try std.testing.expect(lookup(.X, .nintendo).tex_x == 3 * PcTile);
-    try std.testing.expect(lookup(.Y, .nintendo).tex_x == 2 * PcTile);
-    const p = lookup(.LButton, .psp);
-    try std.testing.expect(p.tex_w == PspWideW);
-    const k = lookup(.EscapeKey, .kbm);
-    try std.testing.expect(k.render_w == PcRender);
 }

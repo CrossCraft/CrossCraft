@@ -6,20 +6,20 @@
 //
 // Ported to Zig for CrossCraft (GPLv2; uses separate Aether-Engine).
 // Modifications Copyright (c) 2026 CrossCraft
-
 const std = @import("std");
-const assert = std.debug.assert;
 const ae = @import("aether");
-const caps = @import("capabilities").ClientType(ae);
-const Math = ae.Math;
-const Rendering = ae.Rendering;
-
 const Block = @import("core").blocks.Block;
-
 const Vertex = @import("aether").Rendering.Vertex;
+const capabilities = @import("capabilities");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Camera = @import("Camera.zig");
 const face_mod = @import("../world/chunk/face.zig");
+
+const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
+const Math = ae.Math;
+const Rendering = ae.Rendering;
+
 const Face = face_mod.Face;
 
 // emit_face stores a unit cube in [0, 2048] SNORM16 units.

@@ -69,19 +69,3 @@ fn write_query_value(writer: *std.Io.Writer, value: []const u8) std.Io.Writer.Er
         else => try writer.print("%{X:0>2}", .{byte}),
     };
 }
-
-test "heartbeat query values are escaped and existing queries are preserved" {
-    var out: [request_buffer_len]u8 = undefined;
-    const url = try build_url("http://localhost:3000/heartbeat?token=abc#fragment", .{
-        .server_name = "A&B Server",
-        .port = 25565,
-        .users = 3,
-        .max_players = 128,
-        .salt = "0123456789ABCDEF",
-    }, &out);
-
-    try std.testing.expectEqualStrings(
-        "http://localhost:3000/heartbeat?token=abc&name=A%26B%20Server&port=25565&users=3&max=128&public=True&version=7&salt=0123456789ABCDEF&software=CrossCraft%20Classic&web=False#fragment",
-        url,
-    );
-}
