@@ -38,8 +38,8 @@ pub fn wid(w: Widget) widget_id.WidgetId {
 }
 
 fn cycle(comptime E: type, v: E) E {
-    const n = @typeInfo(E).@"enum".fields.len;
-    return @enumFromInt((@intFromEnum(v) + 1) % n);
+    const n = @typeInfo(E).@"enum".field_names.len;
+    return @fromBackingInt(@intCast((@backingInt(v) + 1) % n));
 }
 
 pub fn run(ui: *Ui, ctx: *Ctx) Action {

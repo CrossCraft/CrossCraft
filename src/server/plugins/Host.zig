@@ -246,7 +246,7 @@ fn dispatch_set_block(self: *Host, b: @FieldType(Action, "set_block")) void {
         .y = b.y,
         .z = b.z,
         .mode = mode,
-        .block = @enumFromInt(b.block),
+        .block = @fromBackingInt(@intCast(b.block)),
         .old_block = world.get_block(b.x, b.y, b.z),
     };
     world.unlock_world_shared();

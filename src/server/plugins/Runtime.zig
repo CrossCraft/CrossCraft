@@ -240,7 +240,7 @@ pub const Runtime = struct {
         defer runtime.alloc.free(source);
 
         var chunk_buf: [112:0]u8 = @splat(0);
-        const chunkname = std.fmt.bufPrintZ(&chunk_buf, "{s}", .{path}) catch {
+        const chunkname = std.mem.printSentinel(&chunk_buf, "{s}", .{path}, 0) catch {
             state.pushLString("module path is too long");
             state.raiseError();
         };
@@ -284,7 +284,7 @@ pub const Runtime = struct {
     pub fn run_entrypoint(self: *Runtime, entrypoint: []const u8, source: []const u8) bool {
         assert(source.len > 0 and source.len <= max_source_bytes);
         var chunkname_buf: [128:0]u8 = @splat(0);
-        const chunkname = std.fmt.bufPrintZ(&chunkname_buf, "@{s}", .{entrypoint}) catch return false;
+        const chunkname = std.mem.printSentinel(&chunkname_buf, "@{s}", .{entrypoint}, 0) catch return false;
         self.compile_function(chunkname, source) catch return false;
         return self.protect_call(0, 0);
     }

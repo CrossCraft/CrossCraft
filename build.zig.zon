@@ -2,30 +2,30 @@
     .name = .CrossCraft,
     .version = "0.0.0",
     .fingerprint = 0xe210aad5fbf843a4, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.18.0-dev",
     .dependencies = .{
         .ZeeBuffer = .{
-            .url = "git+https://github.com/IridescentRose/ZeeBuffer#8e1b2d03a905c2a70d4b0430f9a651e31027b181",
-            .hash = "ZeeBuffer-0.2.0-RVIQu-7-AQC_98ycQNuJ4hxVxLDGMQkPAvLVvP4DsHz2",
+            .url = "git+https://github.com/IridescentRose/ZeeBuffer#6f17370bbba1d35b8e3a6fc0fee05ab1cc6b6a95",
+            .hash = "ZeeBuffer-0.2.0-RVIQu7v-AQACD5HRRz3Y9hfeI1FkL7VwGDN_DJfxVp_O",
         },
         .resources = .{
             .path = "resources",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#b7eaf1d4d194085baa6689808c7dba00502e48bc",
-            .hash = "Aether-0.0.0-cjG28hmTHQATh7SmgVU_Dq3UHUaysNBzugjVbFCJv5ZH",
+            .url = "git+https://github.com/AetherEngine/Aether#b4f7092be7fbf337078cb62f100d6063beafa7fc",
+            .hash = "Aether-0.0.0-cjG28heOHQC8TNcOkwnrfJDhy87pQ1eeq3VCc8Ik5Ioy",
         },
         .zitrus = .{
-            .url = "git+https://codeberg.org/GasInfinity/zitrus#4482d4988b368385aefbe4dffec56feee5b3488a",
-            .hash = "zitrus-0.0.0-Ewix9DbxHABJbXBbOueD9Y15rNb-9HCuYq_-TL0FAJiT",
+            .url = "git+https://codeberg.org/GasInfinity/zitrus#35cb3ecddb5a7abf4051d731757e73a16da3e64c",
+            .hash = "zitrus-0.0.0-Ewix9KcGIADBrToWj8CSU_t7ew_VgLRk4s7DsLi4fpsT",
         },
         .lint = .{
-            .url = "git+https://gitlab.com/hanabi_dev/tiger_lint#87ec426b183c71ae0d12a11faead6c00cb2c9778",
-            .hash = "tiger_lint-0.0.0-bKhmM1h-AwB_cGQluD-yzE_t7oy4bjY5-nAv6I2X-7zk",
+            .url = "git+https://gitlab.com/hanabi_dev/tiger_lint#3131804b31bd1898865415a507a502ef1118bf08",
+            .hash = "tiger_lint-0.0.0-bKhmM9agAwA8kiw7qOAMnu34tkOY2iAODMH3ejES5ILd",
         },
         .luaz = .{
-            .url = "git+https://github.com/mxpv/luaz.git#05f4d1f0ad91d6f22bcd271837000f9d42995f63",
-            .hash = "luaz-0.6.0-w-BJfN6fBQAR5qTc0K5XHxk53gbI8ijgx0kSL_8T04U5",
+            .url = "git+https://github.com/IridescentRose/luaz?ref=nbourgeois/update-0.17#7f9ade1e34b5b2607711065a860d94c96f13d499",
+            .hash = "luaz-0.6.0-w-BJfFujBQC9j6hB6-wyqs2hK-RKJIiHBWXIil4M4U_j",
         },
     },
     .paths = .{

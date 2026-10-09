@@ -128,7 +128,7 @@ fn scatter_legacy_blocks(legacy_blocks: []const u8, data: *WorldData) void {
             for (0..data.dims.depth) |z| {
                 const source_idx = (x * data.dims.depth * data.dims.height) + (z * data.dims.height) + y;
                 const dest_idx = data.dims.block_index(@intCast(x), @intCast(y), @intCast(z));
-                data.blocks[dest_idx] = @enumFromInt(legacy_blocks[source_idx]);
+                data.blocks[dest_idx] = @fromBackingInt(legacy_blocks[source_idx]);
             }
         }
     }

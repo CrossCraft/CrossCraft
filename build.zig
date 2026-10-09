@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
 
     const lint_dep = b.dependency("lint", .{
         .target = b.graph.host,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
     });
     const lint_roots: []const []const u8 = &.{
         ".",
@@ -47,7 +47,6 @@ pub fn build(b: *std.Build) void {
         .audio = b.option(Aether.config.Audio, "audio", "Audio backend override (default: auto-detect from target)"),
         .psp_display_mode = b.option(Aether.config.PspDisplayMode, "psp-display", "PSP display mode: rgba8888 (32-bit, default) or rgb565 (16-bit)"),
         .psp_mipmaps = b.option(bool, "psp-mipmaps", "PSP: generate mip levels for VRAM-resident textures (default: false)"),
-        .nintendo_switch = b.option(bool, "nintendo-switch", "Build for Nintendo Switch (requires -Dtarget=aarch64-freestanding-none and devkitA64/libnx)"),
         .use_cwd = b.option(bool, "use-cwd", "Force resources+data dirs to CWD (debug/CI convenience; default: false)"),
         .flush_logs = b.option(bool, "flush-logs", "Flush aether.log after every log message (debugging hard hangs; default: false)"),
         .mesh_indexing = b.option(bool, "mesh-indexing", "Enable mesh index buffers (default: on except PSP/headless; override works on all backends)"),
@@ -56,7 +55,7 @@ pub fn build(b: *std.Build) void {
     const skip_pack = b.option(bool, "skip-pack", "Skip zipping resources into pack.zip (for CI builds without LFS assets)") orelse false;
 
     const config = Aether.config.Config.resolve(target, overrides);
-    const policy = Capabilities.build_policy(config, target.result);
+    const policy = Capabilities.build_policy(config);
     const capabilities = b.addModule("capabilities", .{
         .root_source_file = b.path("src/capabilities.zig"),
         .optimize = optimize,
@@ -75,7 +74,7 @@ pub fn build(b: *std.Build) void {
 
     const worldgen = b.addModule("worldgen", .{
         .root_source_file = b.path("src/core/worldgen/root.zig"),
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
         .imports = &.{.{ .name = "capabilities", .module = capabilities }},
     });
 
@@ -99,7 +98,6 @@ pub fn build(b: *std.Build) void {
     const ae_dep = b.dependency("engine", .{
         .target = target,
         .optimize = optimize,
-        .@"nintendo-switch" = overrides.nintendo_switch orelse false,
         .@"mesh-indexing" = overrides.mesh_indexing,
     });
 
@@ -112,7 +110,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("tools/pack_zip.zig"),
                 .target = b.graph.host,
-                .optimize = .ReleaseSafe,
+                .optimize = .safe,
                 .imports = &.{.{ .name = "capabilities", .module = capabilities }},
             }),
         });
@@ -147,10 +145,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .overrides = overrides,
     });
-    if (policy.use_llvm_linker) {
-        client_exe.use_llvm = true;
-        client_exe.use_lld = true;
-    }
     const client_root = Aether.modules.user_root_module(client_exe);
     client_root.addImport("core", core);
     client_root.addImport("capabilities", capabilities);
@@ -218,13 +212,10 @@ pub fn build(b: *std.Build) void {
         const run_server_step = b.step("run-server", "Run the server");
         const run_server_cmd = b.addRunArtifact(server_exe);
         // Keep server data under zig-out/bin instead of the source tree.
-        run_server_cmd.setCwd(.{ .cwd_relative = b.getInstallPath(.bin, "") });
+        run_server_cmd.setCwd(b.graph.path(.install_bin, ""));
         run_server_cmd.step.dependOn(build_server_step);
+        run_server_cmd.addPassthruArgs();
         run_server_step.dependOn(&run_server_cmd.step);
-
-        if (b.args) |args| {
-            run_server_cmd.addArgs(args);
-        }
     } else {
         const unsupported_server = b.addFail("Standalone server builds are supported only on PC targets (Linux, macOS, Windows).");
 
@@ -260,10 +251,6 @@ pub fn build(b: *std.Build) void {
         const link_step = b.step("3dslink", "Push the 3dsx to a networked 3DS via 3dslink");
         link_step.dependOn(&link_cmd.step);
     } else if (policy.launch == .network_switch) {
-        const nro_path = b.getInstallPath(
-            .bin,
-            b.fmt("{s}/{s}.nro", .{ console_client_dir.?, client_name }),
-        );
         const nxlink_path = b.option([]const u8, "nxlink-path", "Switch: path to nxlink (default: $DEVKITPRO/tools/bin/nxlink or /opt/devkitpro/tools/bin/nxlink)") orelse blk: {
             const dkp = b.graph.environ_map.get("DEVKITPRO") orelse "/opt/devkitpro";
             break :blk b.pathJoin(&.{ dkp, "tools/bin/nxlink" });
@@ -278,33 +265,32 @@ pub fn build(b: *std.Build) void {
         if (b.option(bool, "nxlink-server", "Switch: pass -s so nxlink stays listening after upload (relays stdout/stderr from nro)") orelse false) {
             link_cmd.addArg("-s");
         }
-        link_cmd.addArg(nro_path);
+        link_cmd.addFileArg(b.graph.path(
+            .install_bin,
+            b.fmt("{s}/{s}.nro", .{ console_client_dir.?, client_name }),
+        ));
         link_cmd.step.dependOn(build_game_step);
-        if (b.args) |args| {
-            link_cmd.addArg("--args");
-            link_cmd.addArgs(args);
-        }
+        // nxlink forwards arguments after the nro path to the nro's argv.
+        link_cmd.addPassthruArgs();
         run_client_step.dependOn(&link_cmd.step);
 
         const link_step = b.step("nxlink", "Push the nro to a networked Switch via nxlink");
         link_step.dependOn(&link_cmd.step);
     } else {
         // macOS resolves resources relative to the installed app bundle.
-        const run_client_cmd = if (policy.launch == .app_bundle)
-            b.addSystemCommand(&.{b.getInstallPath(
-                .bin,
+        const run_client_cmd = if (policy.launch == .app_bundle) blk: {
+            const cmd = std.Build.Step.Run.create(b, "run " ++ client_name);
+            cmd.addFileArg(b.graph.path(
+                .install_bin,
                 b.fmt("{s}.app/Contents/MacOS/{s}", .{ client_name, client_name }),
-            )})
-        else
-            b.addRunArtifact(client_exe);
+            ));
+            break :blk cmd;
+        } else b.addRunArtifact(client_exe);
         // Keep data and the loose resource pack together under -Duse-cwd.
-        run_client_cmd.setCwd(.{ .cwd_relative = b.getInstallPath(.bin, "") });
+        run_client_cmd.setCwd(b.graph.path(.install_bin, ""));
         run_client_cmd.step.dependOn(build_game_step);
+        run_client_cmd.addPassthruArgs();
         run_client_step.dependOn(&run_client_cmd.step);
-
-        if (b.args) |args| {
-            run_client_cmd.addArgs(args);
-        }
     }
 
     const test_step = b.step("test", "Run unit tests");
@@ -329,12 +315,6 @@ pub fn build(b: *std.Build) void {
         },
         .filters = test_filters,
     });
-    // Same glibc .sframe workaround as the desktop client executable: the
-    // system linker cannot consume GCC 16's R_X86_64_PC64 relocations.
-    if (policy.use_llvm_linker) {
-        unit_tests.use_llvm = true;
-        unit_tests.use_lld = true;
-    }
     const run_unit_tests = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_unit_tests.step);
     const hosts_step = b.step("test-hosts", "Run client and server host tests");
@@ -354,10 +334,6 @@ pub fn build(b: *std.Build) void {
         },
         .filters = test_filters,
     });
-    if (policy.use_llvm_linker) {
-        core_tests.use_llvm = true;
-        core_tests.use_lld = true;
-    }
     const run_core_tests = b.addRunArtifact(core_tests);
     test_step.dependOn(&run_core_tests.step);
     b.step("test-core", "Run core tests").dependOn(&run_core_tests.step);
@@ -368,7 +344,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/core/worldgen/root.zig"),
             .imports = &.{.{ .name = "capabilities", .module = capabilities }},
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
         }),
         .filters = test_filters,
     });

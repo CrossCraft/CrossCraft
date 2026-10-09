@@ -188,7 +188,7 @@ pub fn ClientType(comptime ae: type) type {
             pub const shoulder_action_chords = ae.platform == .psp;
             pub const trigger_block_actions = ae.platform != .psp;
             pub const view_toggle_shortcuts = ae.platform != .psp;
-            pub const debug_noclip = builtin.mode == .Debug and ae.platform != .psp;
+            pub const debug_noclip = builtin.mode == .debug and ae.platform != .psp;
             pub const linear_look = ae.platform == .nintendo_3ds;
             pub const look_deadzone: f32 = if (ae.platform == .nintendo_3ds) 0.0 else ae.Core.input.config.default_axis_deadzone;
 
@@ -334,7 +334,6 @@ pub const BuildPolicy = struct {
     bundle_resources: bool,
     install_raw_executable: bool,
     install_package: bool,
-    use_llvm_linker: bool,
     launch: enum { direct, app_bundle, network_3ds, network_switch },
     icon_png: ?[]const u8,
     windows_icon: ?[]const u8,
@@ -348,7 +347,7 @@ pub const BuildPolicy = struct {
     version: []const u8,
 };
 
-pub fn build_policy(config: anytype, target: std.Target) BuildPolicy {
+pub fn build_policy(config: anytype) BuildPolicy {
     const is_psp = config.platform == .psp;
     const is_macos = config.platform == .macos;
     const is_3ds = config.platform == .nintendo_3ds;
@@ -368,7 +367,6 @@ pub fn build_policy(config: anytype, target: std.Target) BuildPolicy {
         .bundle_resources = is_macos,
         .install_raw_executable = !is_macos and !is_3ds and !is_switch,
         .install_package = is_psp or is_macos or is_3ds or is_switch,
-        .use_llvm_linker = target.os.tag == .linux and target.isGnuLibC(),
         .launch = if (is_3ds) .network_3ds else if (is_switch) .network_switch else if (is_macos) .app_bundle else .direct,
         .icon_png = if (is_macos) "assets/icon-osx.png" else null,
         .windows_icon = if (config.platform == .windows) "assets/icon-win32.ico" else null,

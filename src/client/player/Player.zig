@@ -1354,7 +1354,7 @@ fn reset_jump_taps(self: *Player) void {
 fn is_gameplay_active(sys: *input.InputSystem) bool {
     const top = sys.stack_top() orelse return false;
     const set = bindings.handle() orelse return false;
-    return @intFromEnum(top.actions) == @intFromEnum(set);
+    return @backingInt(top.actions) == @backingInt(set);
 }
 
 fn playerlist_controller_button() input.Button {

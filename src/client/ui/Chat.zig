@@ -262,7 +262,7 @@ pub fn update(self: *Chat, sys: *input.InputSystem, player: *Player) void {
 fn is_chat_set_active(sys: *input.InputSystem) bool {
     const top = sys.stack_top() orelse return false;
     const set = chat_set orelse return false;
-    return @intFromEnum(top.actions) == @intFromEnum(set);
+    return @backingInt(top.actions) == @backingInt(set);
 }
 
 fn send_session(sys: *input.InputSystem, player: *Player) void {

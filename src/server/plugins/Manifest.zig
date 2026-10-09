@@ -61,10 +61,7 @@ pub const Capability = enum {
     @"session.host",
 
     pub fn parse(text: []const u8) ?Capability {
-        inline for (@typeInfo(Capability).@"enum".fields) |field| {
-            if (std.mem.eql(u8, field.name, text)) return @enumFromInt(field.value);
-        }
-        return null;
+        return std.meta.stringToEnum(Capability, text);
     }
 };
 

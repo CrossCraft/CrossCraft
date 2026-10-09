@@ -10,7 +10,7 @@ A file for [guiding coding agents](https://agents.md/).
   - Console targets:
     - PSP: `zig build -Dtarget=mipsel-psp`
     - 3DS: `zig build -Dtarget=arm-3ds`
-    - Switch: `zig build -Dtarget=aarch64-freestanding -Dnintendo-switch`
+    - Switch: `zig build -Dtarget=aarch64-switch`
 - **Test (Zig):** `zig build test`
   - Prefer to run targeted tests with -Dtest-filter because the full test suite is slow to run.
 - **Test filter (Zig)**: `zig build test -Dtest-filter=<test name>`

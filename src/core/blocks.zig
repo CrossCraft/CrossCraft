@@ -203,31 +203,31 @@ pub const Block = enum(u8) {
     }
 
     pub inline fn mesh_props(self: Block) MeshProps {
-        return global.mesh_props[@intFromEnum(self)];
+        return global.mesh_props[@backingInt(self)];
     }
 
     pub inline fn sim_props(self: Block) SimProps {
-        return global.sim_props[@intFromEnum(self)];
+        return global.sim_props[@backingInt(self)];
     }
 
     pub inline fn fluid_kind(self: Block) FluidKind {
-        return global.fluid_kind[@intFromEnum(self)];
+        return global.fluid_kind[@backingInt(self)];
     }
 
     pub inline fn material(self: Block) Material {
-        return global.material[@intFromEnum(self)];
+        return global.material[@backingInt(self)];
     }
 
     pub inline fn bounds(self: Block) SubvoxelBounds {
-        return global.bounds[@intFromEnum(self)];
+        return global.bounds[@backingInt(self)];
     }
 
     pub inline fn face_tile(self: Block, face: Face) Tile {
-        return global.face_tiles[@intFromEnum(self)].for_face(face);
+        return global.face_tiles[@backingInt(self)].for_face(face);
     }
 
     pub inline fn display_name(self: Block) []const u8 {
-        return global.display_name[@intFromEnum(self)];
+        return global.display_name[@backingInt(self)];
     }
 
     pub inline fn collision_height(self: Block) f32 {
@@ -306,14 +306,14 @@ const Registry = struct {
     fn classic() Registry {
         var self: Registry = .{};
         for (0..classic_block_count) |raw_id| {
-            const value: Block = @enumFromInt(raw_id);
+            const value: Block = @fromBackingInt(@intCast(raw_id));
             self.register(value, classic_definition(value));
         }
         return self;
     }
 
     fn register(self: *Registry, value: Block, def: Definition) void {
-        const id = @intFromEnum(value);
+        const id = @backingInt(value);
         assert(def.valid());
         self.mesh_props[id] = def.mesh;
         self.sim_props[id] = def.simulation;

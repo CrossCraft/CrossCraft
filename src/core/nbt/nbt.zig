@@ -19,8 +19,8 @@ pub const Tag = enum(u8) {
 
 pub fn read_tag(reader: *std.Io.Reader) ReadError!Tag {
     const value = try reader.takeByte();
-    if (value > @intFromEnum(Tag.compound)) return error.InvalidTag;
-    return @enumFromInt(value);
+    if (value > @backingInt(Tag.compound)) return error.InvalidTag;
+    return @fromBackingInt(@intCast(value));
 }
 
 pub const Nbt = struct {
@@ -62,13 +62,13 @@ pub const Nbt = struct {
             .string => |v| try write_string(writer, v),
             .list => |items| {
                 const tag: Tag = if (items.len == 0) .end else std.meta.activeTag(items[0].value);
-                try writer.writeByte(@intFromEnum(tag));
+                try writer.writeByte(@backingInt(tag));
                 try writer.writeInt(i32, @intCast(items.len), .big);
                 for (items) |item| try write_payload(item.value, writer);
             },
             .compound => |items| {
                 for (items) |item| try item.write(writer);
-                try writer.writeByte(@intFromEnum(Tag.end));
+                try writer.writeByte(@backingInt(Tag.end));
             },
         }
     }
@@ -80,6 +80,6 @@ fn write_string(writer: *std.Io.Writer, value: []const u8) WriteError!void {
 }
 
 pub fn write_header(writer: *std.Io.Writer, tag: Tag, name: []const u8) WriteError!void {
-    try writer.writeByte(@intFromEnum(tag));
+    try writer.writeByte(@backingInt(tag));
     if (tag != .end) try write_string(writer, name);
 }

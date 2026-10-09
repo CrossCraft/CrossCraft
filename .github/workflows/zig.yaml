@@ -11,9 +11,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# checkout@v6 and upload-artifact@v7 ship Node 24 natively. setup-zig@v2
-# still ships Node 20, so keep the runner-level Node 24 opt-in until mlugg
-# cuts a Node 24 release; drop this once it does.
 env:
   CI: "true"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -149,7 +146,7 @@ jobs:
           enableCrossOsArchive: true
 
       - name: Build Nintendo Switch game
-        run: zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch -Doptimize=ReleaseSafe -Dskip-pack=true
+        run: zig build game -Dtarget=aarch64-switch -Doptimize=ReleaseSafe -Dskip-pack=true
 
       - name: Verify Nintendo Switch artifact
         shell: sh
@@ -378,7 +375,7 @@ jobs:
           enableCrossOsArchive: true
 
       - name: Build Nintendo Switch game
-        run: zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch -Doptimize=ReleaseSafe
+        run: zig build game -Dtarget=aarch64-switch -Doptimize=ReleaseSafe
 
       - name: Bundle archival saves
         shell: sh

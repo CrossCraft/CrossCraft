@@ -11,9 +11,9 @@ const WorldData = @import("WorldData.zig");
 
 const Block = blocks.Block;
 
-const LocY = std.meta.Int(.unsigned, 7);
-const LocZ = std.meta.Int(.unsigned, 9);
-const LocX = std.meta.Int(.unsigned, 9);
+const LocY = u7;
+const LocZ = u9;
+const LocX = u9;
 
 const Location = packed struct(u32) {
     y: LocY,

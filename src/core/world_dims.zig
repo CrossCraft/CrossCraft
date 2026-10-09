@@ -124,7 +124,7 @@ pub const WorldSize = enum(u8) {
     huge,
 
     pub fn edge(self: WorldSize) u32 {
-        return @as(u32, 128) << @intCast(@intFromEnum(self));
+        return @as(u32, 128) << @intCast(@backingInt(self));
     }
 
     pub fn label(self: WorldSize) []const u8 {
@@ -145,7 +145,7 @@ pub const WorldHeight = enum(u8) {
     tall,
 
     pub fn height(self: WorldHeight) u32 {
-        return @as(u32, 64) << @intCast(@intFromEnum(self));
+        return @as(u32, 64) << @intCast(@backingInt(self));
     }
 
     pub fn label(self: WorldHeight) []const u8 {

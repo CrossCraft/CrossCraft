@@ -809,7 +809,7 @@ pub fn apply_set_block(self: *Client, event: zb.SetBlockToServer) void {
     // Validate untrusted mode bytes before converting to an enum.
     const mode = std.enums.fromInt(zb.ClickMode, event.mode) orelse return;
 
-    const block: blocks.Block = @enumFromInt(event.block);
+    const block: blocks.Block = @fromBackingInt(@intCast(event.block));
 
     if (mode == .create and block.is_fluid()) {
         return;
