@@ -251,7 +251,7 @@ pub fn ClientType(comptime ae: type) type {
             pub const download = ae.platform == .wasm;
             pub const legacy_migration = ae.platform != .wasm;
             pub fn download_file(path: []const u8) bool {
-                ae.FileExport.download(path, .{ .filename = std.fs.path.basename(path) }) catch return false;
+                ae.Web.FileExport.download(path, .{ .filename = std.fs.path.basename(path) }) catch return false;
                 return true;
             }
         };
