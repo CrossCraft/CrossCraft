@@ -2,7 +2,7 @@
     .name = .CrossCraft,
     .version = "0.0.0",
     .fingerprint = 0xe210aad5fbf843a4, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.18.0-dev",
+    .minimum_zig_version = "0.18.0-dev.146+35accc06e",
     .dependencies = .{
         .ZeeBuffer = .{
             .url = "git+https://github.com/IridescentRose/ZeeBuffer#6f17370bbba1d35b8e3a6fc0fee05ab1cc6b6a95",
@@ -12,8 +12,8 @@
             .path = "resources",
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#c03fae30fb0d3280b1b86f3b8670eda16d608373",
-            .hash = "Aether-0.0.0-cjG28gffHQC8zgi8igFEZKfkaPMiQgqfhVWbx1uFsnZg",
+            .url = "git+https://github.com/AetherEngine/Aether#fb21633a3eb0ebce5d21fc525e3d136ac6616e3c",
+            .hash = "Aether-0.0.0-cjG28rngHQCecKL8lP5EtBo2BZ0zifHNVXieNfphzPxb",
         },
         .zitrus = .{
             .url = "git+https://codeberg.org/GasInfinity/zitrus#35cb3ecddb5a7abf4051d731757e73a16da3e64c",
