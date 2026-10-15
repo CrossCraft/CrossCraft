@@ -151,6 +151,17 @@ pub fn build(b: *std.Build) void {
     client_root.addImport("protocol", protocol);
     add_engine_services(b, client_root, core);
 
+    // MinGW's intrin.h pulls in Zig's AVX512-BMM clang headers, whose builtins
+    // translate-c doesn't know yet; pre-define their guards to skip them.
+    if (target.result.os.tag == .windows) sdl: {
+        const platform = client_root.import_table.get("aether").?.import_table.get("platform").?;
+        const sdl3 = platform.import_table.get("sdl3") orelse break :sdl;
+        const sdl_c = sdl3.import_table.get("c").?.root_source_file.?.generated.index;
+        const translate_c = b.graph.generated_files.items[@backingInt(sdl_c)].cast(std.Build.Step.TranslateC).?;
+        translate_c.defineCMacro("_AVX512BMMINTRIN_H", null);
+        translate_c.defineCMacro("__BMMVLINTRIN_H", null);
+    }
+
     if (should_embed) {
         client_root.addAnonymousImport("default_pack", .{
             .root_source_file = pack_zip_path.?,
