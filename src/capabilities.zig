@@ -41,12 +41,10 @@ pub const MemoryProfile = struct {
 
     init_render: u32,
     init_audio: u32,
-    init_game: u32,
     init_user: u32,
 
     rt_render: u32,
     rt_audio: u32,
-    rt_game: u32,
     rt_user: u32,
 };
 
@@ -57,12 +55,10 @@ const desktop_profile: MemoryProfile = .{
     .lod_near_radius_blocks = 96,
     .init_render = 8 * MB,
     .init_audio = 2 * MB,
-    .init_game = 2 * MB,
-    .init_user = 72 * MB,
+    .init_user = 74 * MB,
     .rt_render = 416 * MB,
     .rt_audio = 512 * KB,
-    .rt_game = 512 * KB,
-    .rt_user = 4 * MB + 512 * KB,
+    .rt_user = 5 * MB,
 };
 
 const psp_phat_profile: MemoryProfile = .{
@@ -72,12 +68,10 @@ const psp_phat_profile: MemoryProfile = .{
     .lod_near_radius_blocks = 0, // Always opaque leaves
     .init_render = 2 * MB,
     .init_audio = 1 * MB,
-    .init_game = 1 * MB,
-    .init_user = 12 * MB,
+    .init_user = 13 * MB,
     .rt_render = 13 * MB + 512 * KB,
     .rt_audio = 0,
-    .rt_game = 1 * MB,
-    .rt_user = 4 * MB + 512 * KB,
+    .rt_user = 5 * MB + 512 * KB,
 };
 
 const psp_slim_profile: MemoryProfile = .{
@@ -87,12 +81,10 @@ const psp_slim_profile: MemoryProfile = .{
     .lod_near_radius_blocks = 28,
     .init_render = 4 * MB,
     .init_audio = 2 * MB,
-    .init_game = 2 * MB,
-    .init_user = 12 * MB,
+    .init_user = 14 * MB,
     .rt_render = 29 * MB + 768 * KB,
     .rt_audio = 0 * KB,
-    .rt_game = 1 * MB,
-    .rt_user = 4 * MB + 512 * KB,
+    .rt_user = 5 * MB + 512 * KB,
 };
 
 const old_3ds_profile: MemoryProfile = .{
@@ -102,12 +94,10 @@ const old_3ds_profile: MemoryProfile = .{
     .lod_near_radius_blocks = 28,
     .init_render = 4 * MB,
     .init_audio = 2 * MB,
-    .init_game = 2 * MB,
-    .init_user = 12 * MB,
+    .init_user = 14 * MB,
     .rt_render = 26 * MB,
     .rt_audio = 512 * KB,
-    .rt_game = 1 * MB,
-    .rt_user = 4 * MB + 512 * KB,
+    .rt_user = 5 * MB + 512 * KB,
 };
 
 const new_3ds_profile: MemoryProfile = blk: {
@@ -122,21 +112,17 @@ const nintendo_switch_profile: MemoryProfile = .{
     .chunk_radius = 12,
     .lod_near_radius_blocks = 40,
     .init_audio = desktop_profile.init_audio,
-    .init_game = desktop_profile.init_game,
     .init_user = desktop_profile.init_user,
     .init_render = render_remainder(
         SWITCH_TOTAL_MEMORY_MB,
         desktop_profile.init_audio,
-        desktop_profile.init_game,
         desktop_profile.init_user,
     ),
     .rt_audio = desktop_profile.rt_audio,
-    .rt_game = desktop_profile.rt_game,
     .rt_user = desktop_profile.rt_user,
     .rt_render = render_remainder(
         SWITCH_TOTAL_MEMORY_MB,
         desktop_profile.rt_audio,
-        desktop_profile.rt_game,
         desktop_profile.rt_user,
     ),
 };
@@ -144,11 +130,10 @@ const nintendo_switch_profile: MemoryProfile = .{
 fn render_remainder(
     comptime total_memory_mb: u32,
     comptime audio: u32,
-    comptime game: u32,
     comptime user: u32,
 ) u32 {
     const total = total_memory_mb * MB;
-    const reserved = audio + game + user;
+    const reserved = audio + user;
     if (reserved > total) @compileError("non-render memory pools exceed total memory");
     return total - reserved;
 }

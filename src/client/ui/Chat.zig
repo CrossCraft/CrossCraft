@@ -214,15 +214,10 @@ pub fn update(self: *Chat, sys: *input.InputSystem, player: *Player) void {
     assert(self.open);
 
     if (self.session_active) {
-        const session_const = sys.current_text_session() orelse return;
-        // Aether exposes stable session storage but no pop-byte helper.
-        const session: *input.TextInputSession = @constCast(session_const);
         for (sys.frame_events()) |ev| {
             switch (ev.kind) {
                 .key_down => |k| {
-                    if (k.key == .Backspace and session.buffer.items.len > 0) {
-                        session.buffer.items.len -= 1;
-                    }
+                    if (k.key == .Backspace) sys.delete_text_codepoint();
                 },
                 else => {},
             }
@@ -267,7 +262,7 @@ fn is_chat_set_active(sys: *input.InputSystem) bool {
 
 fn send_session(sys: *input.InputSystem, player: *Player) void {
     const session = sys.current_text_session() orelse return;
-    const body = session.buffer.items;
+    const body = session.text();
     if (body.len == 0) return;
 
     defer std.crypto.secureZero(u8, @constCast(body));
@@ -288,7 +283,7 @@ pub fn draw_into(self: *Chat, sys: *input.InputSystem, list: *UiDrawList, fonts:
 
     // Social mode has no session buffer until text entry starts.
     const body: []const u8 = if (self.open)
-        if (sys.current_text_session()) |s| s.buffer.items else &.{}
+        if (sys.current_text_session()) |s| s.text() else &.{}
     else
         &.{};
 

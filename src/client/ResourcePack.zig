@@ -79,10 +79,10 @@ var anim_tick: u32 = 0;
 var pack_initialized: bool = false;
 
 /// Open a pack relative to dir. Repeated calls keep the current pack open.
-pub fn init(render_alloc: std.mem.Allocator, game_alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) !void {
+pub fn init(render_alloc: std.mem.Allocator, user_alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) !void {
     if (pack_initialized) return;
     assert(path.len > 0 and path.len <= max_pack_path_len);
-    pack = try Zip.init_options(game_alloc, io, dir, path, archive_options);
+    pack = try Zip.init_options(user_alloc, io, dir, path, archive_options);
     assets = Store.init(render_alloc, .{ .load = load_asset, .destroy = destroy_asset }, Tex.count);
     active_mask = 0;
     anim_tick = 0;

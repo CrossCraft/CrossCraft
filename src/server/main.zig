@@ -10,9 +10,8 @@ const ServerState = @import("ServerState.zig");
 pub fn main(init: std.process.Init) !void {
     const total_bytes = 96 * 1024 * 1024;
     const render_budget = 4 * 1024;
-    const game_budget = 512 * 1024;
     const frame_budget = 0;
-    const user_budget = total_bytes - render_budget - game_budget - frame_budget;
+    const user_budget = total_bytes - render_budget - frame_budget;
     const memory = try init.gpa.alloc(u8, total_bytes);
     defer init.gpa.free(memory);
 
@@ -24,7 +23,6 @@ pub fn main(init: std.process.Init) !void {
         .memory = .{
             .render = render_budget,
             .audio = 0,
-            .game = game_budget,
             .frame = frame_budget,
             .user = user_budget,
         },
