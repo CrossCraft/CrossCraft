@@ -45,7 +45,6 @@ pub fn init_memory() Util.MemoryConfig {
     return .{
         .render = profile.init_render,
         .audio = profile.init_audio,
-        .game = profile.init_game,
         .frame = 0,
         .user = profile.init_user,
     };
@@ -65,7 +64,6 @@ pub fn apply_runtime_budgets(engine: *Engine) void {
     const profile = current();
     set_budget_clamped(engine, .render, profile.rt_render);
     set_budget_clamped(engine, .audio, profile.rt_audio);
-    set_budget_clamped(engine, .game, profile.rt_game);
     const want = @max(profile.rt_user, gameplay_user_budget(core.World.data.dims));
     set_budget_clamped(engine, .user, want);
 }
@@ -75,7 +73,6 @@ pub fn apply_init_budgets(engine: *Engine) void {
     const profile = current();
     set_budget_clamped(engine, .render, profile.init_render);
     set_budget_clamped(engine, .audio, profile.init_audio);
-    set_budget_clamped(engine, .game, profile.init_game);
     set_budget_clamped(engine, .user, profile.init_user);
 }
 

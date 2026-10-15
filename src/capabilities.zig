@@ -41,12 +41,10 @@ pub const MemoryProfile = struct {
 
     init_render: u32,
     init_audio: u32,
-    init_game: u32,
     init_user: u32,
 
     rt_render: u32,
     rt_audio: u32,
-    rt_game: u32,
     rt_user: u32,
 };
 
@@ -57,12 +55,10 @@ const desktop_profile: MemoryProfile = .{
     .lod_near_radius_blocks = 96,
     .init_render = 8 * MB,
     .init_audio = 2 * MB,
-    .init_game = 2 * MB,
-    .init_user = 72 * MB,
+    .init_user = 74 * MB,
     .rt_render = 416 * MB,
     .rt_audio = 512 * KB,
-    .rt_game = 512 * KB,
-    .rt_user = 4 * MB + 512 * KB,
+    .rt_user = 5 * MB,
 };
 
 const psp_phat_profile: MemoryProfile = .{
@@ -72,12 +68,10 @@ const psp_phat_profile: MemoryProfile = .{
     .lod_near_radius_blocks = 0, // Always opaque leaves
     .init_render = 2 * MB,
     .init_audio = 1 * MB,
-    .init_game = 1 * MB,
-    .init_user = 12 * MB,
+    .init_user = 13 * MB,
     .rt_render = 13 * MB + 512 * KB,
     .rt_audio = 0,
-    .rt_game = 1 * MB,
-    .rt_user = 4 * MB + 512 * KB,
+    .rt_user = 5 * MB + 512 * KB,
 };
 
 const psp_slim_profile: MemoryProfile = .{
@@ -87,12 +81,10 @@ const psp_slim_profile: MemoryProfile = .{
     .lod_near_radius_blocks = 28,
     .init_render = 4 * MB,
     .init_audio = 2 * MB,
-    .init_game = 2 * MB,
-    .init_user = 12 * MB,
+    .init_user = 14 * MB,
     .rt_render = 29 * MB + 768 * KB,
     .rt_audio = 0 * KB,
-    .rt_game = 1 * MB,
-    .rt_user = 4 * MB + 512 * KB,
+    .rt_user = 5 * MB + 512 * KB,
 };
 
 const old_3ds_profile: MemoryProfile = .{
@@ -102,12 +94,10 @@ const old_3ds_profile: MemoryProfile = .{
     .lod_near_radius_blocks = 28,
     .init_render = 4 * MB,
     .init_audio = 2 * MB,
-    .init_game = 2 * MB,
-    .init_user = 12 * MB,
+    .init_user = 14 * MB,
     .rt_render = 26 * MB,
     .rt_audio = 512 * KB,
-    .rt_game = 1 * MB,
-    .rt_user = 4 * MB + 512 * KB,
+    .rt_user = 5 * MB + 512 * KB,
 };
 
 const new_3ds_profile: MemoryProfile = blk: {
@@ -122,21 +112,17 @@ const nintendo_switch_profile: MemoryProfile = .{
     .chunk_radius = 12,
     .lod_near_radius_blocks = 40,
     .init_audio = desktop_profile.init_audio,
-    .init_game = desktop_profile.init_game,
     .init_user = desktop_profile.init_user,
     .init_render = render_remainder(
         SWITCH_TOTAL_MEMORY_MB,
         desktop_profile.init_audio,
-        desktop_profile.init_game,
         desktop_profile.init_user,
     ),
     .rt_audio = desktop_profile.rt_audio,
-    .rt_game = desktop_profile.rt_game,
     .rt_user = desktop_profile.rt_user,
     .rt_render = render_remainder(
         SWITCH_TOTAL_MEMORY_MB,
         desktop_profile.rt_audio,
-        desktop_profile.rt_game,
         desktop_profile.rt_user,
     ),
 };
@@ -144,11 +130,10 @@ const nintendo_switch_profile: MemoryProfile = .{
 fn render_remainder(
     comptime total_memory_mb: u32,
     comptime audio: u32,
-    comptime game: u32,
     comptime user: u32,
 ) u32 {
     const total = total_memory_mb * MB;
-    const reserved = audio + game + user;
+    const reserved = audio + user;
     if (reserved > total) @compileError("non-render memory pools exceed total memory");
     return total - reserved;
 }
@@ -188,7 +173,7 @@ pub fn ClientType(comptime ae: type) type {
             pub const shoulder_action_chords = ae.platform == .psp;
             pub const trigger_block_actions = ae.platform != .psp;
             pub const view_toggle_shortcuts = ae.platform != .psp;
-            pub const debug_noclip = builtin.mode == .Debug and ae.platform != .psp;
+            pub const debug_noclip = builtin.mode == .debug and ae.platform != .psp;
             pub const linear_look = ae.platform == .nintendo_3ds;
             pub const look_deadzone: f32 = if (ae.platform == .nintendo_3ds) 0.0 else ae.Core.input.config.default_axis_deadzone;
 
@@ -251,7 +236,7 @@ pub fn ClientType(comptime ae: type) type {
             pub const download = ae.platform == .wasm;
             pub const legacy_migration = ae.platform != .wasm;
             pub fn download_file(path: []const u8) bool {
-                ae.FileExport.download(path, .{ .filename = std.fs.path.basename(path) }) catch return false;
+                ae.Web.FileExport.download(path, .{ .filename = std.fs.path.basename(path) }) catch return false;
                 return true;
             }
         };
@@ -334,7 +319,6 @@ pub const BuildPolicy = struct {
     bundle_resources: bool,
     install_raw_executable: bool,
     install_package: bool,
-    use_llvm_linker: bool,
     launch: enum { direct, app_bundle, network_3ds, network_switch },
     icon_png: ?[]const u8,
     windows_icon: ?[]const u8,
@@ -348,7 +332,7 @@ pub const BuildPolicy = struct {
     version: []const u8,
 };
 
-pub fn build_policy(config: anytype, target: std.Target) BuildPolicy {
+pub fn build_policy(config: anytype) BuildPolicy {
     const is_psp = config.platform == .psp;
     const is_macos = config.platform == .macos;
     const is_3ds = config.platform == .nintendo_3ds;
@@ -368,7 +352,6 @@ pub fn build_policy(config: anytype, target: std.Target) BuildPolicy {
         .bundle_resources = is_macos,
         .install_raw_executable = !is_macos and !is_3ds and !is_switch,
         .install_package = is_psp or is_macos or is_3ds or is_switch,
-        .use_llvm_linker = target.os.tag == .linux and target.isGnuLibC(),
         .launch = if (is_3ds) .network_3ds else if (is_switch) .network_switch else if (is_macos) .app_bundle else .direct,
         .icon_png = if (is_macos) "assets/icon-osx.png" else null,
         .windows_icon = if (config.platform == .windows) "assets/icon-win32.ico" else null,

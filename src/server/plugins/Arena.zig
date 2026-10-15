@@ -147,7 +147,7 @@ pub const Registry = struct {
         var index: u32 = 0;
         while (index < volume) : (index += 1) {
             const cell = cell_at(box, index);
-            cells[index] = @intFromEnum(world.data.get_block(cell[0], cell[1], cell[2]));
+            cells[index] = @backingInt(world.data.get_block(cell[0], cell[1], cell[2]));
         }
         world.unlock_world_shared();
 
@@ -231,7 +231,7 @@ pub const Registry = struct {
             bypass_cells = true;
             while (job.cursor < volume and processed < cells_per_tick) : (job.cursor += 1) {
                 const target: blocks.Block = if (job.template) |cells|
-                    @enumFromInt(cells[job.cursor])
+                    @fromBackingInt(@intCast(cells[job.cursor]))
                 else
                     job.block;
                 const cell = cell_at(job.box, job.cursor);
@@ -365,7 +365,7 @@ fn recover_one(alloc: std.mem.Allocator, data_dir: std.Io.Dir, record_name: []co
     var index: u32 = 0;
     while (index < volume) : (index += 1) {
         const cell = cell_at(box, index);
-        world.data.apply_block(cell[0], cell[1], cell[2], @enumFromInt(cells[index]));
+        world.data.apply_block(cell[0], cell[1], cell[2], @fromBackingInt(@intCast(cells[index])));
     }
     world.unlock_world();
     world.save();

@@ -40,7 +40,7 @@ pub const permutation = struct {
             std.mem.swap(u8, &result.entries[index], &result.entries[other]);
         }
 
-        var seen = [_]bool{false} ** 256;
+        var seen: [256]bool = @splat(false);
         for (0..256) |index| {
             const value = result.entries[index];
             assert(!seen[value]);

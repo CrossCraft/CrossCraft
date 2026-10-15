@@ -140,7 +140,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         };
         const uri = std.Uri.parse(self.server_config.heartbeat.url(index)) catch unreachable;
         var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
-        const host = (uri.getHost(&host_buf) catch unreachable).bytes;
+        const host = (std.Io.net.HostName.fromUri(uri, &host_buf) catch unreachable).bytes;
         const bare = if (std.ascii.startsWithIgnoreCase(host, "www.")) host["www.".len..] else host;
         var sha = std.crypto.hash.sha2.Sha256.init(.{});
         for (bare) |byte| sha.update(&.{std.ascii.toLower(byte)});
@@ -897,7 +897,7 @@ test "console color stripping preserves literal ampersands" {
 }
 
 test "pending connection limits include ready and failed logins and active IPs" {
-    var pool = [_]ConnectionSlot{.{}} ** 3;
+    var pool: [3]ConnectionSlot = @splat(.{});
     var self: ServerState = undefined;
     self.connection_pool = &pool;
     self.server_config = try ServerConfig.parse("max-pending-logins:1\nmax-connections-per-ip:1\n", 0);

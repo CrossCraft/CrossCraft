@@ -154,7 +154,7 @@ fn on_block_change(ctx: *anyopaque, event: zb.SetBlockToClient) !void {
     const self: *ClientConn = @ptrCast(@alignCast(ctx));
     const wr = self.world_renderer orelse return;
     // Singleplayer already applied this change to the shared world.
-    const block: Block = @enumFromInt(event.block);
+    const block: Block = @fromBackingInt(@intCast(event.block));
     World.lock_world();
     World.data.apply_block(event.x, event.y, event.z, block);
     World.unlock_world();

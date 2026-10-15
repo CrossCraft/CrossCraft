@@ -86,8 +86,8 @@ pub fn init(allocator: std.mem.Allocator) !SteveModel {
         .left_leg_data = try BatchMeshData.init(allocator),
         .left_leg = try BatchMesh.init(&.{}),
         .states = std.mem.zeroes([core.Server.MaxPlayers]PlayerState),
-        .name_tags = .{null} ** core.Server.MaxPlayers,
-        .name_aspects = .{1.0} ** core.Server.MaxPlayers,
+        .name_tags = @splat(null),
+        .name_aspects = @splat(1.0),
         .anim_time = 0,
         .allocator = allocator,
     };

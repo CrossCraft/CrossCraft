@@ -17,7 +17,7 @@ const log = std.log.scoped(.audio);
 
 pub const Material = blocks.Material;
 
-const material_count = @typeInfo(Material).@"enum".fields.len;
+const material_count = @typeInfo(Material).@"enum".field_names.len;
 const max_variants = 4;
 const music_count: u8 = 7;
 
@@ -32,11 +32,11 @@ const SoundEntry = struct {
     }
 };
 
-var dig_entries: [material_count][max_variants]SoundEntry = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
-var dig_counts: [material_count]u8 = .{0} ** material_count;
-var step_entries: [material_count][max_variants]SoundEntry = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
-var step_counts: [material_count]u8 = .{0} ** material_count;
-var music_entries: [music_count]SoundEntry = .{SoundEntry{}} ** music_count;
+var dig_entries: [material_count][max_variants]SoundEntry = @splat(@splat(.{}));
+var dig_counts: [material_count]u8 = @splat(0);
+var step_entries: [material_count][max_variants]SoundEntry = @splat(@splat(.{}));
+var step_counts: [material_count]u8 = @splat(0);
+var music_entries: [music_count]SoundEntry = @splat(.{});
 
 const max_voices: u32 = caps.audio.max_voices;
 const music_slot: u32 = max_voices - 1;
@@ -127,11 +127,11 @@ pub fn deinit() void {
     music_delay_timer = 0;
     voices = undefined;
 
-    dig_entries = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
-    dig_counts = .{0} ** material_count;
-    step_entries = .{[_]SoundEntry{.{}} ** max_variants} ** material_count;
-    step_counts = .{0} ** material_count;
-    music_entries = .{SoundEntry{}} ** music_count;
+    dig_entries = @splat(@splat(.{}));
+    dig_counts = @splat(0);
+    step_entries = @splat(@splat(.{}));
+    step_counts = @splat(0);
+    music_entries = @splat(.{});
 }
 
 /// Cancel menu audio before loading and give the world a fresh music delay.
@@ -275,10 +275,10 @@ pub fn play_step(block: Block) void {
     if (!initialised) return;
     if (Options.current.sound_volume == 0.0) return;
     if (!block.has_step_sound()) return;
-    var mat = @intFromEnum(block.material());
+    var mat = @backingInt(block.material());
     var count = step_counts[mat];
     if (count == 0) {
-        mat = @intFromEnum(Material.stone);
+        mat = @backingInt(Material.stone);
         count = step_counts[mat];
     }
     if (count == 0) return;
@@ -294,7 +294,7 @@ pub fn play_step(block: Block) void {
 pub fn play_dig(block: Block, bx: u16, by: u16, bz: u16) void {
     if (!initialised) return;
     if (Options.current.sound_volume == 0.0) return;
-    const mat = @intFromEnum(block.material());
+    const mat = @backingInt(block.material());
     const count = dig_counts[mat];
     if (count == 0) return;
     const entry = dig_entries[mat][rand_u32(count)];

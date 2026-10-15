@@ -200,7 +200,7 @@ pub fn refresh_active_context(sys: *input.InputSystem) !void {
 
 test "refreshing gameplay after an overlay consumes held Escape" {
     var sys = input.InputSystem{};
-    try sys.init(std.testing.allocator);
+    sys.init();
     defer sys.deinit();
     defer {
         gameplay_set = null;

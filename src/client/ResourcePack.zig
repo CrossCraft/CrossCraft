@@ -25,7 +25,7 @@ pub const Tex = enum(u8) {
     rain,
     particles,
 
-    const count = @typeInfo(Tex).@"enum".fields.len;
+    const count = @typeInfo(Tex).@"enum".field_names.len;
 };
 
 fn tex_path(id: Tex) []const u8 {
@@ -47,7 +47,7 @@ fn tex_path(id: Tex) []const u8 {
 
 const asset_paths: [Tex.count][]const u8 = blk: {
     var paths: [Tex.count][]const u8 = undefined;
-    for (0..Tex.count) |i| paths[i] = "assets/" ++ tex_path(@enumFromInt(i)) ++ ".png";
+    for (0..Tex.count) |i| paths[i] = "assets/" ++ tex_path(@fromBackingInt(@intCast(i))) ++ ".png";
     break :blk paths;
 };
 const Animation = struct { image: Image.Image, flipbook: Rendering.Flipbook };
@@ -79,10 +79,10 @@ var anim_tick: u32 = 0;
 var pack_initialized: bool = false;
 
 /// Open a pack relative to dir. Repeated calls keep the current pack open.
-pub fn init(render_alloc: std.mem.Allocator, game_alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) !void {
+pub fn init(render_alloc: std.mem.Allocator, user_alloc: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) !void {
     if (pack_initialized) return;
     assert(path.len > 0 and path.len <= max_pack_path_len);
-    pack = try Zip.init_options(game_alloc, io, dir, path, archive_options);
+    pack = try Zip.init_options(user_alloc, io, dir, path, archive_options);
     assets = Store.init(render_alloc, .{ .load = load_asset, .destroy = destroy_asset }, Tex.count);
     active_mask = 0;
     anim_tick = 0;
@@ -143,8 +143,8 @@ pub fn get_tex(id: Tex) *const Rendering.Texture {
 }
 
 fn get_asset(id: Tex) *Asset {
-    assert(active_mask & (@as(u16, 1) << @intCast(@intFromEnum(id))) != 0);
-    return assets.get(asset_paths[@intFromEnum(id)]).?;
+    assert(active_mask & (@as(u16, 1) << @intCast(@backingInt(id))) != 0);
+    return assets.get(asset_paths[@backingInt(id)]).?;
 }
 
 /// Stage additions before dropping obsolete resources. Retained assets are not
@@ -154,10 +154,10 @@ pub fn apply_tex_set(set: []const Tex) !void {
     var count: usize = 0;
     var requested_mask: u16 = 0;
     for (set) |id| {
-        const bit = @as(u16, 1) << @intCast(@intFromEnum(id));
+        const bit = @as(u16, 1) << @intCast(@backingInt(id));
         if (requested_mask & bit != 0) continue;
         requested_mask |= bit;
-        paths[count] = asset_paths[@intFromEnum(id)];
+        paths[count] = asset_paths[@backingInt(id)];
         count += 1;
     }
     try assets.apply_options(pack.source(), paths[0..count], .{ .reload_existing = false });
@@ -189,7 +189,7 @@ fn is_anim_source(id: Tex) bool {
 
 fn load_asset(_: ?*anyopaque, allocator: std.mem.Allocator, path: []const u8, reader: *std.Io.Reader) !Asset {
     const id: Tex = for (asset_paths, 0..) |candidate, i| {
-        if (std.mem.eql(u8, candidate, path)) break @enumFromInt(i);
+        if (std.mem.eql(u8, candidate, path)) break @fromBackingInt(@intCast(i));
     } else return error.UnknownAsset;
     if (is_anim_source(id)) {
         const image = try Image.load_png_ex(allocator, allocator, reader, .rgba8);

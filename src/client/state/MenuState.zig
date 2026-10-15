@@ -146,7 +146,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         engine.dirs.data
     else
         engine.dirs.resources;
-    ResourcePack.init(render_alloc, engine.allocator(.game), engine.io, default_pack_dir, "pack.zip") catch |err|
+    ResourcePack.init(render_alloc, engine.allocator(.user), engine.io, default_pack_dir, "pack.zip") catch |err|
         return menu_init_error("default_pack_open", err);
     errdefer ResourcePack.deinit();
     ResourcePack.apply_tex_set(&.{ .dirt, .logo, .font, .gui, .glyphs }) catch |err|

@@ -42,7 +42,7 @@ pub fn wid(w: Widget) widget_id.WidgetId {
 }
 
 pub fn row_wid(control: Options.PcControl) widget_id.WidgetId {
-    return widget_id.raw(row_base + @intFromEnum(control));
+    return widget_id.raw(row_base + @backingInt(control));
 }
 
 pub fn run(ui: *Ui, opt: *Options.Options, ctx: Ctx) Result {
@@ -148,7 +148,7 @@ fn pc_row(ui: *Ui, opt: *Options.Options, control: Options.PcControl, label: []c
 fn begin_capture(sys: ?*input.InputSystem, ctx: Ctx, control: Options.PcControl) void {
     const s = sys orelse return;
     cancel_capture(sys, ctx);
-    var eligible = std.EnumSet(input.BindingSourceKind).initEmpty();
+    var eligible: std.EnumSet(input.BindingSourceKind) = .empty;
     eligible.insert(.key);
     s.begin_capture_next_input(eligible) catch return;
     ctx.capture.* = control;

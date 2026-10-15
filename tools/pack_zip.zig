@@ -8,7 +8,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Dir = Io.Dir;
-const Crc32 = std.hash.crc.Crc32IsoHdlc;
+const Crc32 = std.hash.Crc32;
 const flate = std.compress.flate;
 const caps = @import("capabilities").resource_pack;
 const utf8_flag: u16 = 1 << 11;

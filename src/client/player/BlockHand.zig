@@ -44,7 +44,7 @@ const DigPitchRad: f32 = -20.0 * std.math.pi / 180.0;
 
 const QuadCapacity: usize = 6;
 const VertCapacity: usize = QuadCapacity * 6;
-const Sentinel: Block = @enumFromInt(0xFF);
+const Sentinel: Block = @fromBackingInt(@intCast(0xFF));
 
 const SwingKind = enum { idle, place, dig };
 

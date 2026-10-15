@@ -56,7 +56,7 @@ pub const PspJumpMode = enum(u8) {
 
 pub const Options = struct {
     /// Relative to the data directory; empty selects the built-in pack.
-    active_texturepack_buf: [max_pack_path]u8 = [_]u8{0} ** max_pack_path,
+    active_texturepack_buf: [max_pack_path]u8 = @splat(0),
     active_texturepack_len: u8 = 0,
 
     /// Consumers must use `capped_render_distance` to honor the runtime profile.
@@ -121,8 +121,8 @@ pub const Options = struct {
 
     pub fn set_pc_key(self: *Options, control: PcControl, key: input.Key) bool {
         if (!pc_key_assignable(key)) return false;
-        inline for (std.meta.fields(PcControl)) |field| {
-            const other: PcControl = @enumFromInt(field.value);
+        inline for (@typeInfo(PcControl).@"enum".field_values) |value| {
+            const other: PcControl = @fromBackingInt(value);
             if (other != control and self.pc_key(other) == key) return false;
         }
         switch (control) {
@@ -320,8 +320,8 @@ const LoadJsonOptions = struct {
     key_left: []const u8 = "A",
     key_right: []const u8 = "D",
     key_inventory: []const u8 = "B",
-    psp_analog_mode: u8 = @intFromEnum(PspAnalogMode.look),
-    psp_jump_mode: u8 = @intFromEnum(PspJumpMode.up),
+    psp_analog_mode: u8 = @backingInt(PspAnalogMode.look),
+    psp_jump_mode: u8 = @backingInt(PspJumpMode.up),
     new_3ds_use_old_controls: bool = false,
 };
 
@@ -431,7 +431,7 @@ pub fn save(io: Io, dir: std.Io.Dir) void {
         .ambient_occlusion = current.ambient_occlusion,
         .bouncy_chunks = current.bouncy_chunks,
         .vsync = current.vsync,
-        .controller_tooltips = @intFromEnum(current.controller_tooltips),
+        .controller_tooltips = @backingInt(current.controller_tooltips),
         .rain = current.rain,
         .fog = current.fog,
         .key_forward = @tagName(current.key_forward),
@@ -439,8 +439,8 @@ pub fn save(io: Io, dir: std.Io.Dir) void {
         .key_left = @tagName(current.key_left),
         .key_right = @tagName(current.key_right),
         .key_inventory = @tagName(current.key_inventory),
-        .psp_analog_mode = @intFromEnum(current.psp_analog_mode),
-        .psp_jump_mode = @intFromEnum(current.psp_jump_mode),
+        .psp_analog_mode = @backingInt(current.psp_analog_mode),
+        .psp_jump_mode = @backingInt(current.psp_jump_mode),
         .new_3ds_use_old_controls = current.new_3ds_use_old_controls,
     };
 
@@ -478,8 +478,8 @@ fn float_to_json_int(v: f32) u16 {
 }
 
 fn load_pc_controls(j: LoadJsonOptions) void {
-    inline for (std.meta.fields(PcControl)) |control| {
-        const field = "key_" ++ control.name;
+    inline for (@typeInfo(PcControl).@"enum".field_names) |name| {
+        const field = "key_" ++ name;
         @field(current, field) = std.meta.stringToEnum(input.Key, @field(j, field)) orelse {
             current.reset_pc_controls();
             return;

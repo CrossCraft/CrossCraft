@@ -2155,10 +2155,7 @@ fn api_fill(L: ?*luaz.c.lua_State) callconv(.c) c_int {
         state.raiseError();
     };
     const block_name = state.checkString(2);
-    const block: core.blocks.Block = blk: {
-        inline for (@typeInfo(core.blocks.Block).@"enum".fields) |field| {
-            if (std.mem.eql(u8, field.name, block_name)) break :blk @enumFromInt(field.value);
-        }
+    const block = std.meta.stringToEnum(core.blocks.Block, block_name) orelse {
         state.pushLString("unknown block name");
         state.raiseError();
     };

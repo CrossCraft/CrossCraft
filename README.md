@@ -74,7 +74,7 @@ zig build test       # unit tests
 # Consoles
 zig build game -Dtarget=mipsel-psp
 zig build game -Dtarget=arm-3ds
-zig build game -Dtarget=aarch64-freestanding -Dnintendo-switch
+zig build game -Dtarget=aarch64-switch
 
 # Web
 zig build serve-web

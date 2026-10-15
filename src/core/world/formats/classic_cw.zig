@@ -104,7 +104,7 @@ fn write_classic_world_compound(ctx: SaveContext, out: *std.Io.Writer) !void {
     try ctx.world.write_blocks_yzx(ctx.io, out);
 
     try named("Metadata", .{ .compound = &.{} }).write(out);
-    try out.writeByte(@intFromEnum(nbt.Tag.end));
+    try out.writeByte(@backingInt(nbt.Tag.end));
 }
 
 fn named(name: []const u8, value: nbt.Nbt.Value) nbt.Nbt {
