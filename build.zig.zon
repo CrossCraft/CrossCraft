@@ -24,7 +24,7 @@
             .hash = "tiger_lint-0.0.0-bKhmM9agAwA8kiw7qOAMnu34tkOY2iAODMH3ejES5ILd",
         },
         .luaz = .{
-            .url = "git+https://github.com/IridescentRose/luaz?ref=nbourgeois/update-0.17#7f9ade1e34b5b2607711065a860d94c96f13d499",
+            .url = "git+https://github.com/mxpv/luaz#2e12d367d2251c65fdce5c95358cabc5be5d0a9d",
             .hash = "luaz-0.6.0-w-BJfFujBQC9j6hB6-wyqs2hK-RKJIiHBWXIil4M4U_j",
         },
     },
