@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          key: zig-pkg-${{ hashFiles('build.zig.zon', '.github/scripts/fetch-zig-packages.sh') }}
           lookup-only: true
           enableCrossOsArchive: true
 
@@ -49,7 +49,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          key: zig-pkg-${{ hashFiles('build.zig.zon', '.github/scripts/fetch-zig-packages.sh') }}
           enableCrossOsArchive: true
 
   # Pull-request builds skip the LFS-backed resource pack.
@@ -85,7 +85,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          key: zig-pkg-${{ hashFiles('build.zig.zon', '.github/scripts/fetch-zig-packages.sh') }}
           enableCrossOsArchive: true
 
       # macOS game: SDL3 is vendored and statically linked; the only system
@@ -144,7 +144,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          key: zig-pkg-${{ hashFiles('build.zig.zon', '.github/scripts/fetch-zig-packages.sh') }}
           enableCrossOsArchive: true
 
       - name: Build Nintendo Switch game
@@ -205,7 +205,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          key: zig-pkg-${{ hashFiles('build.zig.zon', '.github/scripts/fetch-zig-packages.sh') }}
           enableCrossOsArchive: true
 
       - name: Install macOS dependencies
@@ -373,7 +373,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          key: zig-pkg-${{ hashFiles('build.zig.zon', '.github/scripts/fetch-zig-packages.sh') }}
           enableCrossOsArchive: true
 
       - name: Build Nintendo Switch game
@@ -428,7 +428,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: zig-pkg
-          key: zig-pkg-${{ hashFiles('build.zig.zon') }}
+          key: zig-pkg-${{ hashFiles('build.zig.zon', '.github/scripts/fetch-zig-packages.sh') }}
           enableCrossOsArchive: true
 
       - name: Unit tests
