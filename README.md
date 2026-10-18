@@ -16,12 +16,11 @@ Every era stays within the same source tree, allowing code changes to benefit al
 | Component | State  |
 |-----------|--------|
 | Client    | v1.1.2 |
-| Server    | v1.1.0 |
+| Server    | v1.2.0 |
 
 #### Next Version: Classic v1.2
 
 **Features:**
-* Plugin Support
 * Byte-Identical World Generator
 * Bigger Worlds
 * World Streaming
@@ -41,11 +40,11 @@ Classic Client v1.1 is a feature-complete, clean-room reimplementation of Minecr
 
 ### Server
 
-Classic Server v1.1 is a feature-complete Minecraft Classic 0.30 server with basic server administration. 
+Classic Server v1.2 is a feature-complete Minecraft Classic 0.30 server with scriptable plugins and full support for custom heartbeats.
 
-- **Administrative controls** - A persistent IP-keyed player stat tracker allowing OPs, Bans, etc.
-- **Console mode** - The server runs as a regular console application on Windows, macOS, and Linux.
-- **Tiny footprint** - Creates a fixed 32 MB pool and uses around 6 MB, never grows or OOMs after startup.
+- **Luau Plugins** - A full plugin creation system allowing custom behavior for desktop servers.
+- **Administrative controls** - A full system to administer authenticated or cracked-mode servers.
+- **Tiny footprint** - Creates a fixed pool and never grows or OOMs after startup.
 - **Configurable** - `server.properties` keys allows granular control over server internals.
 
 ## Building

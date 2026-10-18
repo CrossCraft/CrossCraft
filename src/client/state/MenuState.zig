@@ -820,7 +820,7 @@ fn begin_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *const ui
 
 fn draw_corner_labels(self: *@This()) void {
     self.font_batcher.add_text(&.{
-        .str = "CrossCraft Classic v1.1",
+        .str = "CrossCraft Classic v1.2-pre1",
         .pos_x = 2,
         .pos_y = 2,
         .color = Colors.gray_fg,
