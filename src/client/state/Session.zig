@@ -1,6 +1,7 @@
 /// Session data shared by the menu, loading, and game states.
 const std = @import("std");
 const core = @import("core");
+const Math = @import("math");
 
 const wd = core.world_dims;
 
@@ -44,7 +45,7 @@ pub fn clear_disconnect_reason() void {
 }
 
 pub fn set_disconnect_reason(reason: []const u8) void {
-    const len: u8 = @intCast(@min(reason.len, disconnect_reason_buf.len));
+    const len: u8 = @intCast(Math.min(reason.len, disconnect_reason_buf.len));
     @memcpy(disconnect_reason_buf[0..len], reason[0..len]);
     disconnect_reason_len = len;
 }
@@ -58,7 +59,7 @@ pub fn disconnect_reason() []const u8 {
 }
 
 pub fn set_username(name: []const u8) void {
-    const len: u8 = @intCast(@min(name.len, UsernameMax));
+    const len: u8 = @intCast(Math.min(name.len, UsernameMax));
     @memcpy(username_buf[0..len], name[0..len]);
     username_len = len;
 }
@@ -68,7 +69,7 @@ pub fn username() []const u8 {
 }
 
 pub fn set_server(addr: []const u8) void {
-    const len: u8 = @intCast(@min(addr.len, ServerMax));
+    const len: u8 = @intCast(Math.min(addr.len, ServerMax));
     @memcpy(server_buf[0..len], addr[0..len]);
     server_len = len;
 }
@@ -78,7 +79,7 @@ pub fn server() []const u8 {
 }
 
 pub fn set_singleplayer_save(path: []const u8) void {
-    const len: u16 = @intCast(@min(path.len, SavePathMax));
+    const len: u16 = @intCast(Math.min(path.len, SavePathMax));
     @memcpy(singleplayer_save_buf[0..len], path[0..len]);
     singleplayer_save_len = len;
 }

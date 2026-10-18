@@ -3,6 +3,7 @@ const assert = std.debug.assert;
 
 const random_state = @import("random.zig");
 const noise_module = @import("noise.zig");
+const Math = @import("math");
 
 pub const air_id: u8 = 0;
 pub const stone_id: u8 = 1;
@@ -78,8 +79,8 @@ pub const block_field = struct {
 
 // Distance to the nearest integer/truncation boundary.
 fn distance_to_integer(value: f32) f32 {
-    const floored = noise_module.floor_f32(value);
-    return @min(value - floored, noise_module.ceil_f32(value) - value);
+    const floored = Math.floor(value);
+    return Math.min(value - floored, Math.ceil(value) - value);
 }
 
 // These margins are at least 8x the largest observed f32/f64 disagreement.
@@ -195,7 +196,7 @@ pub const elevation_noise = struct {
         const lower = self.lower_elevation_candidate(x, z);
         const selector = self.selector.value_lattice(x, z) * @as(f32, 1.0 / 8.0);
         const selected_candidate = if (selector > 0.0) lower else self.upper_elevation_candidate(x, z);
-        var selected = @max(lower, selected_candidate) / 2.0;
+        var selected = Math.max(lower, selected_candidate) / 2.0;
         if (selected < 0.0) selected *= 0.8;
         assert(std.math.isFinite(selected));
         assert(selected >= -2_147_483_648.0 and selected < 2_147_483_648.0);
@@ -276,7 +277,7 @@ pub const elevation_noise = struct {
         if (needs.selected) {
             const lower_p = self.fixed_lower_elevation_candidate(x, z);
             const selected_candidate = if (selector_p > 0) lower_p else self.fixed_upper_elevation_candidate(x, z);
-            var selected = @divTrunc(@max(lower_p, selected_candidate), 2);
+            var selected = @divTrunc(Math.max(lower_p, selected_candidate), 2);
             if (selected < 0) selected = fixed.mul(selected, @divTrunc(4 * fixed.one, 5));
             selected_p = selected;
         }
@@ -297,7 +298,7 @@ pub const elevation_noise = struct {
         const distance_to_integer_fixed = struct {
             fn distance(value: i64) i64 {
                 const frac = value & (fixed.one - 1);
-                return @min(frac, fixed.one - frac);
+                return Math.min(frac, fixed.one - frac);
             }
         }.distance;
         if ((needs.selector and @abs(selector_p) < guard) or
@@ -353,7 +354,7 @@ pub const elevation_noise = struct {
         if (needs.selected) {
             const lower_64 = self.f64_lower_elevation_candidate(x, z);
             const selected_candidate = if (selector_64 > 0.0) lower_64 else self.f64_upper_elevation_candidate(x, z);
-            var selected = @max(lower_64, selected_candidate) / 2.0;
+            var selected = Math.max(lower_64, selected_candidate) / 2.0;
             if (selected < 0.0) selected *= 0.8;
             assert(std.math.isFinite(selected));
             assert(selected >= -2_147_483_648.0 and selected < 2_147_483_648.0);
@@ -415,7 +416,7 @@ pub const elevation_noise = struct {
 
         var offset: usize = 0;
         while (offset < count) {
-            const n = @min(chunk_size, count - offset);
+            const n = Math.min(chunk_size, count - offset);
             const base = start + offset;
             const x_row: u32 = @intCast(base % dimensions.width);
             const z_row: u32 = @intCast(base / dimensions.width);
@@ -470,7 +471,7 @@ pub const elevation_noise = struct {
             for (0..n) |i| {
                 const at = column_at(start + offset + i, dimensions);
                 const selected_candidate = if (upper_needed[i]) upper[i] else lower[i];
-                var selected = @max(lower[i], selected_candidate) / 2.0;
+                var selected = Math.max(lower[i], selected_candidate) / 2.0;
                 if (selected < 0.0) selected *= 0.8;
                 assert(std.math.isFinite(selected));
                 assert(selected >= -2_147_483_648.0 and selected < 2_147_483_648.0);
@@ -519,7 +520,7 @@ pub const elevation_cache = struct {
         }
         var column: usize = 0;
         while (column < count) {
-            const n = @min(@as(usize, 32), count - column);
+            const n = Math.min(@as(usize, 32), count - column);
             elevation.heights_chunk(dimensions, column, self.dirt[column..][0..n], self.stone[column..][0..n]);
             column += n;
         }
@@ -547,10 +548,10 @@ pub const elevation_cache = struct {
     }
 
     pub fn surface_height(self: *const elevation_cache, dimensions: world_dimensions, x: u32, z: u32) u32 {
-        const raw = @max(self.dirt_top(dimensions, x, z), self.stone_top(dimensions, x, z));
-        const lower_clamped = @max(raw, 1);
+        const raw = Math.max(self.dirt_top(dimensions, x, z), self.stone_top(dimensions, x, z));
+        const lower_clamped = Math.max(raw, 1);
         const upper: i32 = @intCast(dimensions.height - 2);
-        const result: u32 = @intCast(@min(lower_clamped, upper));
+        const result: u32 = @intCast(Math.min(lower_clamped, upper));
         assert(result >= 1 and result <= dimensions.height - 2);
         return result;
     }
@@ -568,8 +569,8 @@ pub fn soil(field: block_field, elevation: *const elevation_cache) void {
             const x: u32 = @intCast(x_usize);
             const stone_top = elevation.stone_top(dimensions, x, z);
             const dirt_top = elevation.dirt_top(dimensions, x, z);
-            min_stone_top = @min(min_stone_top, stone_top);
-            max_material_top = @max(max_material_top, @max(stone_top, dirt_top));
+            min_stone_top = Math.min(min_stone_top, stone_top);
+            max_material_top = Math.max(max_material_top, Math.max(stone_top, dirt_top));
         }
     }
     // Whole uniform planes are contiguous in the x-major layout.
@@ -579,7 +580,7 @@ pub fn soil(field: block_field, elevation: *const elevation_cache) void {
         @memset(field.blocks[@as(usize, @intCast(stone_y)) * pitch ..][0..pitch], stone_id);
     }
     // Cache each row's terrain tops while filling its mixed band.
-    const start_y = @max(@as(i32, 1), min_stone_top + 1);
+    const start_y = Math.max(@as(i32, 1), min_stone_top + 1);
     if (start_y <= max_material_top and dimensions.width <= 512) {
         const width_usize: usize = @intCast(dimensions.width);
         var z: usize = 0;
@@ -595,8 +596,8 @@ pub fn soil(field: block_field, elevation: *const elevation_cache) void {
                 const top_dirt = elevation.dirt_top(dimensions, @intCast(x), z_u32);
                 row_stone[x] = @intCast(top_stone);
                 row_dirt[x] = @intCast(top_dirt);
-                row_min_stone = @min(row_min_stone, top_stone);
-                row_max_material_top = @max(row_max_material_top, @max(top_stone, top_dirt));
+                row_min_stone = Math.min(row_min_stone, top_stone);
+                row_max_material_top = Math.max(row_max_material_top, Math.max(top_stone, top_dirt));
             }
             const height_i32: i32 = @intCast(dimensions.height);
             var y: i32 = start_y;
@@ -673,7 +674,7 @@ pub fn flood_fill(allocator: std.mem.Allocator, field: block_field, source: bloc
     var work: std.ArrayList(flood_span) = .empty;
     defer work.deinit(allocator);
 
-    try work.ensureTotalCapacity(allocator, @min(@as(usize, field.dimensions.width) * field.dimensions.depth / 8, @as(usize, 1 << 14)));
+    try work.ensureTotalCapacity(allocator, Math.min(@as(usize, field.dimensions.width) * field.dimensions.depth / 8, @as(usize, 1 << 14)));
 
     const dimensions = field.dimensions;
     var x0 = source.x;

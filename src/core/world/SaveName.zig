@@ -1,4 +1,5 @@
 const std = @import("std");
+const Math = @import("math");
 
 const Policy = enum { create, dump };
 
@@ -24,7 +25,7 @@ fn SaveNameType(comptime policy: Policy) type {
             const trimmed = std.mem.trim(u8, input, " ");
             if (trimmed.len == 0) return error.EmptyName;
 
-            const limit = @min(@as(usize, NameMax), out.len);
+            const limit = Math.min(@as(usize, NameMax), out.len);
             var len: usize = 0;
             var saw_valid = false;
             for (trimmed) |ch| {

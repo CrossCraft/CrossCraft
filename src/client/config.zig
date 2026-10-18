@@ -2,6 +2,7 @@ const std = @import("std");
 const ae = @import("aether");
 const core = @import("core");
 const capabilities = @import("capabilities");
+const Math = @import("math");
 
 const Util = ae.Util;
 const Engine = ae.Engine;
@@ -64,7 +65,7 @@ pub fn apply_runtime_budgets(engine: *Engine) void {
     const profile = current();
     set_budget_clamped(engine, .render, profile.rt_render);
     set_budget_clamped(engine, .audio, profile.rt_audio);
-    const want = @max(profile.rt_user, gameplay_user_budget(core.World.data.dims));
+    const want = Math.max(profile.rt_user, gameplay_user_budget(core.World.data.dims));
     set_budget_clamped(engine, .user, want);
 }
 
@@ -77,7 +78,7 @@ pub fn apply_init_budgets(engine: *Engine) void {
 }
 
 fn set_budget_clamped(engine: *Engine, pool: Util.Pool, want: u32) void {
-    const target = @max(want, engine.pool_used(pool));
+    const target = Math.max(want, engine.pool_used(pool));
     engine.set_budget(pool, target) catch |err|
         log.err("set_budget({s}, {d}) failed after clamp: {}", .{ @tagName(pool), target, err });
 }

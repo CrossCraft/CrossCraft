@@ -16,6 +16,7 @@ const SaveName = @import("world/SaveName.zig");
 pub const DumpName = SaveName.Dump;
 pub const CreateName = SaveName.Create;
 const fmt_mod = @import("world/SaveFormat.zig");
+const Math = @import("math");
 pub const SaveFormat = fmt_mod.SaveFormat;
 const BlockChangeSink = WorldSimulation.BlockChangeSink;
 
@@ -63,7 +64,7 @@ pub fn get_load_status() LoadStatus {
     const encoded = load_status_atomic.load(.acquire);
     if (encoded == load_status_complete) return .complete;
     if (encoded >= load_status_downloading_base) {
-        return .{ .downloading = @intCast(@min(encoded - load_status_downloading_base, 100)) };
+        return .{ .downloading = @intCast(Math.min(encoded - load_status_downloading_base, 100)) };
     }
     if (encoded >= load_status_generating_base) return .generating;
     return .loading;

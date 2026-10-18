@@ -3,6 +3,7 @@ const assert = std.debug.assert;
 const Ui = @import("../Ui.zig");
 const Prompts = @import("../Prompts.zig");
 const widget_id = @import("../widget_id.zig");
+const Math = @import("math");
 
 const log = std.log.scoped(.menu);
 
@@ -78,7 +79,7 @@ pub fn run(ui: *Ui, entries: []const Entry, delete_mode: bool) Result {
             if (ui.button(wid_for_row(row), entry.label(), .{}) and result == .none) result = .{ .select = row };
         }
 
-        var empty_row: u8 = @intCast(@min(entries.len, visible_rows));
+        var empty_row: u8 = @intCast(Math.min(entries.len, visible_rows));
         while (empty_row < visible_rows) : (empty_row += 1) {
             if (ui.button(wid_for_row(empty_row), "- empty -", .{}) and result == .none) result = .create;
         }

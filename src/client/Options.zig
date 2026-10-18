@@ -3,6 +3,7 @@ const std = @import("std");
 const ae = @import("aether");
 const capabilities = @import("capabilities");
 const cfg = @import("config.zig");
+const Math = @import("math");
 
 const caps = capabilities.ClientType(ae);
 const Io = std.Io;
@@ -104,7 +105,7 @@ pub const Options = struct {
     }
 
     pub fn set_active_texturepack(self: *Options, path: []const u8) void {
-        const len: u8 = @intCast(@min(path.len, max_pack_path - 1));
+        const len: u8 = @intCast(Math.min(path.len, max_pack_path - 1));
         @memcpy(self.active_texturepack_buf[0..len], path[0..len]);
         self.active_texturepack_len = len;
     }
@@ -156,8 +157,8 @@ pub const Options = struct {
 
 /// Cap render distance to the renderer's allocated section capacity.
 pub fn capped_render_distance() u8 {
-    const max: u8 = @intCast(@min(@as(u32, 255), cfg.current().chunk_radius));
-    return @min(current.render_distance, max);
+    const max: u8 = @intCast(Math.min(@as(u32, 255), cfg.current().chunk_radius));
+    return Math.min(current.render_distance, max);
 }
 
 /// A zero near-LOD radius forces opaque leaves on constrained profiles.
@@ -240,14 +241,14 @@ pub fn pc_key_prompt_label(key: input.Key) []const u8 {
 }
 
 pub fn sensitivity_percent(v: f32) u32 {
-    const cl = std.math.clamp(v, SensMin, SensMax);
+    const cl = Math.clamp(v, SensMin, SensMax);
     const lmin = std.math.log10(SensMin);
     const lmax = std.math.log10(SensMax);
-    return @intFromFloat(@round((std.math.log10(cl) - lmin) / (lmax - lmin) * 100));
+    return @intFromFloat(Math.round((std.math.log10(cl) - lmin) / (lmax - lmin) * 100));
 }
 
 pub fn sensitivity_from_percent(percent: u32) f32 {
-    const pct = @as(f32, @floatFromInt(@min(percent, 100))) / 100.0;
+    const pct = @as(f32, @floatFromInt(Math.min(percent, 100))) / 100.0;
     const lmin = std.math.log10(SensMin);
     const lmax = std.math.log10(SensMax);
     return std.math.pow(f32, 10.0, lmin + (lmax - lmin) * pct);
@@ -453,15 +454,15 @@ pub fn save(io: Io, dir: std.Io.Dir) void {
 }
 
 fn json_float_f32(n: JsonNumber, min: f32, max: f32) f32 {
-    return std.math.clamp(@as(f32, @floatCast(n.value)), min, max);
+    return Math.clamp(@as(f32, @floatCast(n.value)), min, max);
 }
 
 fn json_rounded_f32(n: JsonNumber, min: f32, max: f32) f32 {
-    return std.math.clamp(@as(f32, @floatCast(@round(n.value))), min, max);
+    return Math.clamp(@as(f32, @floatCast(Math.round(n.value))), min, max);
 }
 
 fn json_percent(n: JsonNumber) u32 {
-    const clamped = std.math.clamp(@round(n.value), 0.0, 100.0);
+    const clamped = Math.clamp(Math.round(n.value), 0.0, 100.0);
     return @intFromFloat(clamped);
 }
 
@@ -470,11 +471,11 @@ fn json_percent_to_unit(n: JsonNumber) f32 {
 }
 
 fn unit_to_json_percent(v: f32) u8 {
-    return @intFromFloat(@round(std.math.clamp(v, 0.0, 1.0) * 100.0));
+    return @intFromFloat(Math.round(Math.clamp(v, 0.0, 1.0) * 100.0));
 }
 
 fn float_to_json_int(v: f32) u16 {
-    return @intFromFloat(@round(v));
+    return @intFromFloat(Math.round(v));
 }
 
 fn load_pc_controls(j: LoadJsonOptions) void {

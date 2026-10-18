@@ -56,7 +56,7 @@ pub fn update_animation(self: *ChunkMesh, dt: f32) void {
     assert(std.math.isFinite(dt) and dt >= 0.0);
     assert(self.anim_progress >= 0.0 and self.anim_progress <= 1.0);
     if (self.anim_progress < 1.0) {
-        self.anim_progress = @min(self.anim_progress + dt, 1.0);
+        self.anim_progress = Math.min(self.anim_progress + dt, 1.0);
     }
 }
 

@@ -26,6 +26,7 @@ const LoadState = @import("LoadState.zig");
 const Session = @import("Session.zig");
 const game_config = @import("../config.zig");
 const TextFormat = @import("../ui/TextFormat.zig");
+const Math = @import("math");
 
 const caps = capabilities.ClientType(ae);
 const Core = ae.Core;
@@ -758,7 +759,7 @@ fn seed_create_world_name(self: *@This(), engine: *Engine) void {
 
 fn set_create_world_name(self: *@This(), name: []const u8) void {
     @memset(&self.cw_name, 0);
-    const len = @min(name.len, self.cw_name.len);
+    const len = Math.min(name.len, self.cw_name.len);
     @memcpy(self.cw_name[0..len], name[0..len]);
     self.cw_name_len = @intCast(len);
 }
@@ -797,7 +798,7 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     if (self.prepared_ui) |*prepared| prepared.draw();
 
     if (self.active_screen == .main) {
-        const pulse = @sin(self.time * 15.0) * 0.05 + 2.0;
+        const pulse = Math.sin(self.time * 15.0) * 0.05 + 2.0;
         const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 72, .top_center, .top_center, 22, pulse, 2);
         Rendering.set_state(&.{ .texture = ResourcePack.get_tex(.font).handle });
         self.splash_mesh.draw(&model);

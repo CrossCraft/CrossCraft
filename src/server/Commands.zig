@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const Accounts = @import("Accounts.zig");
 const Authentication = @import("Authentication.zig");
 const Server = @import("core").Server;
+const Math = @import("math");
 
 pub const Sink = struct {
     ctx: *anyopaque,
@@ -457,7 +458,7 @@ fn syntax_matches(entry: *const Entry, args: []const []const u8) bool {
     }
     if (args.len < required) return false;
     if (args.len > entry.arg_count and !entry.args[entry.arg_count - 1].variadic) return false;
-    for (entry.args[0..@min(entry.arg_count, args.len)], 0..) |spec, i| {
+    for (entry.args[0..Math.min(entry.arg_count, args.len)], 0..) |spec, i| {
         if (spec.type != .number) continue;
         const end = if (spec.variadic) args.len else i + 1;
         for (args[i..end]) |token| {

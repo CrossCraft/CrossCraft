@@ -1,8 +1,8 @@
-const std = @import("std");
 const ae = @import("aether");
 const capabilities = @import("capabilities");
 const Options = @import("../Options.zig");
 const Buttons = @import("Buttons.zig");
+const Math = @import("math");
 
 const caps = capabilities.ClientType(ae);
 const Rendering = ae.Rendering;
@@ -211,5 +211,5 @@ pub fn build_frame(sys: *input.InputSystem, dt: f32, repeat: *Repeat) UiInput {
         .down => .down,
         .left => .left,
         .right => .right,
-    } else .none, .confirm_edge = frame.confirm, .cancel_edge = frame.cancel, .pause_edge = !fresh and sys.button(actions.pause).pressed(), .title_exit_edge = !fresh and sys.button(actions.title_exit).pressed(), .inventory_edge = !fresh and sys.button(actions.inventory).pressed(), .wheel_dy = if (profile_uses_pointer() and !fresh) @intCast(std.math.clamp(frame.wheel, -127, 127)) else 0, .text_events = true };
+    } else .none, .confirm_edge = frame.confirm, .cancel_edge = frame.cancel, .pause_edge = !fresh and sys.button(actions.pause).pressed(), .title_exit_edge = !fresh and sys.button(actions.title_exit).pressed(), .inventory_edge = !fresh and sys.button(actions.inventory).pressed(), .wheel_dy = if (profile_uses_pointer() and !fresh) @intCast(Math.clamp(frame.wheel, -127, 127)) else 0, .text_events = true };
 }

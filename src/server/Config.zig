@@ -5,6 +5,7 @@ const core = @import("core");
 const Server = core.Server;
 const Accounts = @import("Accounts.zig");
 const Authentication = @import("Authentication.zig");
+const Math = @import("math");
 const log = std.log.scoped(.server_config);
 
 const properties_file_name = "server.properties";
@@ -184,7 +185,7 @@ fn defaults(seed: u64) Config {
 }
 
 fn store(out: []u8, len: *u16, value: []const u8) void {
-    const n = @min(out.len, value.len);
+    const n = Math.min(out.len, value.len);
     @memcpy(out[0..n], value[0..n]);
     len.* = @intCast(n);
 }
@@ -194,7 +195,7 @@ fn parse_clamped(value: []const u8, fallback: u32, min: u32, max: u32, key: []co
         log.warn("server.properties {s} value '{s}' is not a u32; ignoring", .{ key, value });
         return fallback;
     };
-    return std.math.clamp(parsed, min, max);
+    return Math.clamp(parsed, min, max);
 }
 
 fn parse_heartbeat_urls(heartbeat: *Heartbeat, value: []const u8) void {

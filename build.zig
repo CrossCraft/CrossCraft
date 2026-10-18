@@ -56,6 +56,15 @@ pub fn build(b: *std.Build) void {
 
     const config = Aether.config.Config.resolve(target, overrides);
     const policy = Capabilities.build_policy(config);
+    const ae_dep = b.dependency("engine", .{
+        .target = target,
+        .optimize = optimize,
+        .@"mesh-indexing" = overrides.mesh_indexing,
+    });
+    // Aether's maths without the engine, for Core, worldgen and host tools.
+    // The client's engine imports this same module.
+    const math = ae_dep.module("math");
+
     const capabilities = b.addModule("capabilities", .{
         .root_source_file = b.path("src/capabilities.zig"),
         .optimize = optimize,
@@ -75,7 +84,10 @@ pub fn build(b: *std.Build) void {
     const worldgen = b.addModule("worldgen", .{
         .root_source_file = b.path("src/core/worldgen/root.zig"),
         .optimize = .fast,
-        .imports = &.{.{ .name = "capabilities", .module = capabilities }},
+        .imports = &.{
+            .{ .name = "capabilities", .module = capabilities },
+            .{ .name = "math", .module = math },
+        },
     });
 
     const core = b.addModule("core", .{
@@ -85,6 +97,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "protocol", .module = protocol },
             .{ .name = "worldgen", .module = worldgen },
             .{ .name = "capabilities", .module = capabilities },
+            .{ .name = "math", .module = math },
         },
     });
 
@@ -94,12 +107,6 @@ pub fn build(b: *std.Build) void {
     const luaz_module = luaz_dep.module("luaz");
 
     const console_client_dir = policy.client_dir;
-
-    const ae_dep = b.dependency("engine", .{
-        .target = target,
-        .optimize = optimize,
-        .@"mesh-indexing" = overrides.mesh_indexing,
-    });
 
     // CI can skip packing when the LFS-backed resources are unavailable.
     const pack_zip_path: ?std.Build.LazyPath = if (skip_pack) null else blk: {
@@ -111,7 +118,10 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path("tools/pack_zip.zig"),
                 .target = b.graph.host,
                 .optimize = .safe,
-                .imports = &.{.{ .name = "capabilities", .module = capabilities }},
+                .imports = &.{
+                    .{ .name = "capabilities", .module = capabilities },
+                    .{ .name = "math", .module = math },
+                },
             }),
         });
         // Snapshot the inputs so edits, additions and removals invalidate the
@@ -148,6 +158,7 @@ pub fn build(b: *std.Build) void {
     const client_root = Aether.modules.user_root_module(client_exe);
     client_root.addImport("core", core);
     client_root.addImport("capabilities", capabilities);
+    client_root.addImport("math", math);
     client_root.addImport("protocol", protocol);
     add_engine_services(b, client_root, core);
 
@@ -201,6 +212,7 @@ pub fn build(b: *std.Build) void {
         const server_root = Aether.modules.user_root_module(server_exe);
         server_root.addImport("core", core);
         server_root.addImport("capabilities", capabilities);
+        server_root.addImport("math", math);
         server_root.addImport("luaz", luaz_module);
         server_root.link_libcpp = true;
         add_engine_services(b, server_root, core);
@@ -300,6 +312,7 @@ pub fn build(b: *std.Build) void {
             root.addImport("aether", client_root.import_table.get("aether").?);
             root.addImport("protocol", protocol);
             root.addImport("capabilities", capabilities);
+            root.addImport("math", math);
             root.addImport("core", core);
             root.addImport("luaz", luaz_module);
             root.addImport("engine_services", client_root.import_table.get("engine_services").?);
@@ -321,6 +334,7 @@ pub fn build(b: *std.Build) void {
             });
             root.addImport("protocol", protocol);
             root.addImport("capabilities", capabilities);
+            root.addImport("math", math);
             root.addImport("worldgen", worldgen);
             break :core_tests_root root;
         },
@@ -334,7 +348,10 @@ pub fn build(b: *std.Build) void {
         .name = "worldgen_tests",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/core/worldgen/root.zig"),
-            .imports = &.{.{ .name = "capabilities", .module = capabilities }},
+            .imports = &.{
+                .{ .name = "capabilities", .module = capabilities },
+                .{ .name = "math", .module = math },
+            },
             .target = target,
             .optimize = .fast,
         }),
@@ -353,6 +370,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "core", .module = core },
+                .{ .name = "math", .module = math },
             },
         }),
     });
@@ -402,6 +420,7 @@ pub fn build(b: *std.Build) void {
     const web_root = Aether.modules.user_root_module(web_exe);
     web_root.addImport("core", core);
     web_root.addImport("capabilities", capabilities);
+    web_root.addImport("math", math);
     web_root.addImport("protocol", protocol);
     add_engine_services(b, web_root, core);
 

@@ -6,6 +6,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const core = @import("core");
+const Math = @import("math");
 
 const World = core.World;
 const WorldData = World.WorldData;
@@ -140,7 +141,7 @@ fn set_world_name(data: *WorldData, output_path: []const u8) void {
     const base = std.fs.path.basenameWindows(output_path);
     const stem = base[0 .. std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len];
     const source_name = if (stem.len == 0) DefaultWorldName else stem;
-    const name_len = @min(source_name.len, data.name.len);
+    const name_len = Math.min(source_name.len, data.name.len);
 
     @memcpy(data.name[0..name_len], source_name[0..name_len]);
     data.name_len = @intCast(name_len);

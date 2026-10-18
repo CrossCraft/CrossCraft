@@ -10,6 +10,7 @@ const fmt_mod = @import("SaveFormat.zig");
 const SaveFormat = fmt_mod.SaveFormat;
 const SaveContext = fmt_mod.SaveContext;
 const compress_worker = @import("../compress_worker.zig");
+const Math = @import("math");
 
 const log = std.log.scoped(.world);
 
@@ -190,7 +191,7 @@ fn save_worker(self: *WorldSaver) void {
     const end = std.Io.Clock.Timestamp.now(self.io, .boot);
 
     const elapsed_ns: i64 = @truncate(end.raw.nanoseconds - start.raw.nanoseconds);
-    const elapsed_us: i64 = @max(1, @divTrunc(elapsed_ns, std.time.ns_per_us));
+    const elapsed_us: i64 = Math.max(1, @divTrunc(elapsed_ns, std.time.ns_per_us));
     const kib_per_s: u64 = (total_bytes * std.time.us_per_s) /
         (@as(u64, @intCast(elapsed_us)) * 1024);
     log.info("Saved world to {s} ({d} bytes in {d}us, {d} KiB/s)", .{

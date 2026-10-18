@@ -3,6 +3,7 @@
 const std = @import("std");
 const luaz = @import("luaz");
 const Server = @import("core").Server;
+const Math = @import("math");
 const Client = Server.Client;
 
 const log = std.log.scoped(.plugins);
@@ -121,13 +122,13 @@ pub const Runtime = struct {
         if (self.state.getTop() > 0) {
             // tolstring renders any error object; copy before releasing it.
             const text = self.state.tolString(-1, null);
-            const len = @min(text.len, self.error_buf.len);
+            const len = Math.min(text.len, self.error_buf.len);
             @memcpy(self.error_buf[0..len], text[0..len]);
             self.error_len = @intCast(len);
             self.state.setTop(0);
             return;
         }
-        const len = @min(message.len, self.error_buf.len);
+        const len = Math.min(message.len, self.error_buf.len);
         @memcpy(self.error_buf[0..len], message[0..len]);
         self.error_len = @intCast(len);
         self.state.setTop(0);
@@ -145,7 +146,7 @@ pub const Runtime = struct {
 
         switch (result) {
             .err => |message| {
-                const len = @min(message.len, self.error_buf.len);
+                const len = Math.min(message.len, self.error_buf.len);
                 @memcpy(self.error_buf[0..len], message[0..len]);
                 self.error_len = @intCast(len);
                 return error.Compile;

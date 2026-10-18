@@ -197,10 +197,10 @@ pub fn update(dt: f32, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32)
     assert(std.math.isFinite(dt) and dt >= 0.0);
     if (!initialised) return;
 
-    const sy = @sin(yaw);
-    const cy = @cos(yaw);
-    const cp = @cos(pitch);
-    const sp = @sin(pitch);
+    const sy = Math.sin(yaw);
+    const cy = Math.cos(yaw);
+    const cp = Math.cos(pitch);
+    const sp = Math.sin(pitch);
     Audio.set_listener(
         Math.Vec3.new(cam_x, cam_y, cam_z),
         Math.Vec3.new(-sy * cp, sp, -cy * cp),

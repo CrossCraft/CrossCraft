@@ -10,6 +10,7 @@
 //! Swept-AABB collisions resolved nearest-first, with grounded step-up.
 const std = @import("std");
 const WorldData = @import("world/WorldData.zig");
+const Math = @import("math");
 
 const assert = std.debug.assert;
 
@@ -92,9 +93,9 @@ pub fn move_and_wall_slide(
     }
 
     const v_clamped = [3]f32{
-        std.math.clamp(vel[0], -MaxTickVel, MaxTickVel),
-        std.math.clamp(vel[1], -MaxTickVel, MaxTickVel),
-        std.math.clamp(vel[2], -MaxTickVel, MaxTickVel),
+        Math.clamp(vel[0], -MaxTickVel, MaxTickVel),
+        Math.clamp(vel[1], -MaxTickVel, MaxTickVel),
+        Math.clamp(vel[2], -MaxTickVel, MaxTickVel),
     };
 
     var state: ResolveState = .{
@@ -191,12 +192,12 @@ fn entity_aabb(px: f32, py: f32, pz: f32, half_w: f32, height: f32) Aabb {
 
 fn extent_of(entity: Aabb, vel: [3]f32) Aabb {
     return .{
-        .min_x = entity.min_x + @min(vel[0], 0.0),
-        .min_y = entity.min_y + @min(vel[1], 0.0),
-        .min_z = entity.min_z + @min(vel[2], 0.0),
-        .max_x = entity.max_x + @max(vel[0], 0.0),
-        .max_y = entity.max_y + @max(vel[1], 0.0),
-        .max_z = entity.max_z + @max(vel[2], 0.0),
+        .min_x = entity.min_x + Math.min(vel[0], 0.0),
+        .min_y = entity.min_y + Math.min(vel[1], 0.0),
+        .min_z = entity.min_z + Math.min(vel[2], 0.0),
+        .max_x = entity.max_x + Math.max(vel[0], 0.0),
+        .max_y = entity.max_y + Math.max(vel[1], 0.0),
+        .max_z = entity.max_z + Math.max(vel[2], 0.0),
     };
 }
 
@@ -413,12 +414,12 @@ fn try_step(
     const new_y = block.max_y + Epsilon;
 
     const adj = Aabb{
-        .min_x = @min(final.min_x, block.min_x + Epsilon),
+        .min_x = Math.min(final.min_x, block.min_x + Epsilon),
         .min_y = new_y,
-        .min_z = @min(final.min_z, block.min_z + Epsilon),
-        .max_x = @max(final.max_x, block.max_x - Epsilon),
+        .min_z = Math.min(final.min_z, block.min_z + Epsilon),
+        .max_x = Math.max(final.max_x, block.max_x - Epsilon),
         .max_y = new_y + height,
-        .max_z = @max(final.max_z, block.max_z - Epsilon),
+        .max_z = Math.max(final.max_z, block.max_z - Epsilon),
     };
     if (overlaps_any_solid(data, adj)) return false;
 
@@ -501,7 +502,7 @@ fn overlaps_xz(a: Aabb, b: Aabb) bool {
 
 /// Clamp invalid coordinates before converting them to cell indices.
 fn floor_i32(v: f32) i32 {
-    const f = @floor(v);
+    const f = Math.floor(v);
     if (!(f >= -2147483648.0)) return std.math.minInt(i32);
     if (!(f <= 2147483647.0)) return std.math.maxInt(i32);
     return @intFromFloat(f);

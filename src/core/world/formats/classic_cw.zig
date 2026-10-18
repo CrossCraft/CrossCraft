@@ -14,6 +14,7 @@ const LoadOutcome = fmt_mod.LoadOutcome;
 const WorldData = @import("../WorldData.zig");
 const compress_worker = @import("../../compress_worker.zig");
 const nbt = @import("../../nbt/nbt.zig");
+const Math = @import("math");
 
 const log = std.log.scoped(.world);
 
@@ -159,7 +160,7 @@ fn read_classic_world_compound(
             seen_dimensions |= bit;
         } else if (std.mem.eql(u8, child_name, "Name") and t == .string) {
             const slen = try reader.takeInt(u16, .big);
-            const take = @min(slen, outcome.name.len);
+            const take = Math.min(slen, outcome.name.len);
             try reader.readSliceAll(outcome.name[0..take]);
             outcome.name_len = @intCast(take);
             if (slen > take) try reader.discardAll64(slen - take);

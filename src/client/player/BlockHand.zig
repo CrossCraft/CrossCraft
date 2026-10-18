@@ -153,7 +153,7 @@ pub fn update(self: *BlockHand, dt: f32, current_block: Block, shadowed: bool) v
     // Swap blocks as the place swing starts rising from its trough.
     if (self.swing_kind == .place) {
         const t = self.swing_time / self.swing_period;
-        const swing_y = SwingAmplitudeY * @sin(t * std.math.pi);
+        const swing_y = SwingAmplitudeY * Math.sin(t * std.math.pi);
         if (swing_y > self.prev_swing_y and self.cached_block != self.pending_block) {
             self.rebuild(self.pending_block, shadowed);
             self.cached_block = self.pending_block;
@@ -265,7 +265,7 @@ fn compute_anim(self: *const BlockHand) Anim {
     if (self.swing_kind == .place) {
         return .{
             .dx = 0,
-            .dy = SwingAmplitudeY * @sin(t * std.math.pi),
+            .dy = SwingAmplitudeY * Math.sin(t * std.math.pi),
             .dz = 0,
             .yaw = 0,
             .pitch = 0,
@@ -274,10 +274,10 @@ fn compute_anim(self: *const BlockHand) Anim {
 
     const s = @sqrt(t) * std.math.pi;
     return .{
-        .dx = DigAmpX * @sin(s),
-        .dy = DigAmpY * @sin(2.0 * s),
-        .dz = DigAmpZ * @sin(t * std.math.pi),
-        .yaw = DigYawRad * @sin(s),
-        .pitch = DigPitchRad * @sin(t * t * std.math.pi),
+        .dx = DigAmpX * Math.sin(s),
+        .dy = DigAmpY * Math.sin(2.0 * s),
+        .dz = DigAmpZ * Math.sin(t * std.math.pi),
+        .yaw = DigYawRad * Math.sin(s),
+        .pitch = DigPitchRad * Math.sin(t * t * std.math.pi),
     };
 }

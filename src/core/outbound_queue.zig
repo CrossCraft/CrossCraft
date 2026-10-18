@@ -5,6 +5,7 @@
 // queue and is kicked, never waited on.
 
 const std = @import("std");
+const Math = @import("math");
 const assert = std.debug.assert;
 
 pub const out_queue_bytes = 256 * 1024;
@@ -72,7 +73,7 @@ pub const OutboundQueue = struct {
         assert(q.len <= q.buf.len);
         assert(q.catchup_len <= q.buf.len - q.len);
 
-        const n = @min(q.len, dest.len);
+        const n = Math.min(q.len, dest.len);
         @memcpy(dest[0..n], q.buf[0..n]);
         const remaining = q.len - n;
         std.mem.copyForwards(u8, q.buf[0..remaining], q.buf[n..q.len]);

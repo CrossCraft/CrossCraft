@@ -8,6 +8,7 @@ const world = @import("world.zig");
 const world_dims = @import("world_dims.zig");
 const compress_worker = @import("compress_worker.zig");
 const zb = @import("protocol");
+const Math = @import("math");
 
 const log = std.log.scoped(.server);
 
@@ -511,7 +512,7 @@ pub fn admit_login(
         .name = name.value,
         .name_len = name.len,
     };
-    const ip_n = @min(ip.len, client.ip.len);
+    const ip_n = Math.min(ip.len, client.ip.len);
     @memcpy(client.ip[0..ip_n], ip[0..ip_n]);
     return .{ .accepted = players.add(client) orelse return .{ .rejected = "Server is full!" } };
 }

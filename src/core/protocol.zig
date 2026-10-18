@@ -2,6 +2,7 @@ const std = @import("std");
 const zb = @import("protocol");
 const Block = @import("blocks.zig").Block;
 const world_dims = @import("world_dims.zig");
+const Math = @import("math");
 
 const assert = std.debug.assert;
 
@@ -159,7 +160,7 @@ pub fn send_message(writer: *Writer, pid: i8, message: []const u8) !void {
 
 pub fn padded_string(value: []const u8) [64]u8 {
     var out: [64]u8 = @splat(' ');
-    const len = @min(value.len, out.len);
+    const len = Math.min(value.len, out.len);
     @memcpy(out[0..len], value[0..len]);
     return out;
 }

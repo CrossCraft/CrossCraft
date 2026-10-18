@@ -1,6 +1,8 @@
 {
   "min_assertion_density": 2.0,
-  "exclude_paths": ["src/capabilities.zig"],
+  "exclude_paths": [
+    "src/capabilities.zig"
+  ],
   "banned": [
     {
       "banned": "@import(\"builtin\")",
@@ -35,6 +37,56 @@
       "kind": "qualified_symbol",
       "symbol": "std.heap.page_allocator",
       "replacement": "accept an allocator passed into this function"
+    },
+    {
+      "kind": "builtin_call",
+      "symbol": "@min",
+      "replacement": "Aether's math.min: on the PSP the builtin is a library call"
+    },
+    {
+      "kind": "builtin_call",
+      "symbol": "@max",
+      "replacement": "Aether's math.max: on the PSP the builtin is a library call"
+    },
+    {
+      "kind": "builtin_call",
+      "symbol": "@floor",
+      "replacement": "Aether's math.floor: on the PSP the builtin is a library call"
+    },
+    {
+      "kind": "builtin_call",
+      "symbol": "@ceil",
+      "replacement": "Aether's math.ceil: on the PSP the builtin is a library call"
+    },
+    {
+      "kind": "builtin_call",
+      "symbol": "@trunc",
+      "replacement": "Aether's math.trunc: on the PSP the builtin is a library call"
+    },
+    {
+      "kind": "builtin_call",
+      "symbol": "@round",
+      "replacement": "Aether's math.round: on the PSP the builtin is a library call"
+    },
+    {
+      "kind": "builtin_call",
+      "symbol": "@sin",
+      "replacement": "Aether's math.sin: the builtin works in f64, which the PSP only has in software"
+    },
+    {
+      "kind": "builtin_call",
+      "symbol": "@cos",
+      "replacement": "Aether's math.cos: the builtin works in f64, which the PSP only has in software"
+    },
+    {
+      "kind": "builtin_call",
+      "symbol": "@tan",
+      "replacement": "Aether's math.tan: the builtin works in f64, which the PSP only has in software"
+    },
+    {
+      "kind": "call",
+      "symbol": "std.math.clamp",
+      "replacement": "Aether's math.clamp: std's uses @min and @max"
     }
   ],
   "rules": {

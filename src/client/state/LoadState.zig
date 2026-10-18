@@ -10,6 +10,7 @@ const GameState = @import("GameState.zig");
 const DisconnectState = @import("DisconnectState.zig");
 const Session = @import("Session.zig");
 const TextFormat = @import("../ui/TextFormat.zig");
+const Math = @import("math");
 
 const assert = std.debug.assert;
 const Core = ae.Core;
@@ -426,8 +427,8 @@ fn prepare_batches(self: *@This()) !void {
     const bar_y: i16 = 16;
     const load_status = World.get_load_status();
     const progress: f32 = switch (load_status) {
-        .loading => @min(self.time / 3.0, 1.0),
-        .generating => @min(self.time / 3.0, 1.0),
+        .loading => Math.min(self.time / 3.0, 1.0),
+        .generating => Math.min(self.time / 3.0, 1.0),
         .downloading => |pct| @as(f32, @floatFromInt(pct)) / 100.0,
         .complete => 1.0,
     };

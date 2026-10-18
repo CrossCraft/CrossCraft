@@ -3,6 +3,7 @@ const ae = @import("aether");
 const SubvoxelBounds = @import("core").blocks.SubvoxelBounds;
 const Vertex = @import("aether").Rendering.Vertex;
 const capabilities = @import("capabilities");
+const Math = @import("math");
 
 const assert = std.debug.assert;
 const caps = capabilities.ClientType(ae);
@@ -77,9 +78,9 @@ fn axis_size(bounds: SubvoxelBounds, axis: Axis) i32 {
 }
 
 fn compute_thick(bounds: SubvoxelBounds) Thickness {
-    const sx = @max(axis_size(bounds, .x), 1);
-    const sy = @max(axis_size(bounds, .y), 1);
-    const sz = @max(axis_size(bounds, .z), 1);
+    const sx = Math.max(axis_size(bounds, .x), 1);
+    const sy = Math.max(axis_size(bounds, .y), 1);
+    const sz = Math.max(axis_size(bounds, .z), 1);
     return .{
         .thick = .{
             .x = @intCast(@divTrunc(ThickNumerator, sx)),
