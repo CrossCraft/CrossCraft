@@ -151,17 +151,6 @@ pub fn build(b: *std.Build) void {
     client_root.addImport("protocol", protocol);
     add_engine_services(b, client_root, core);
 
-    // MinGW's intrin.h pulls in Zig's AVX512-BMM clang headers, whose builtins
-    // translate-c doesn't know yet; pre-define their guards to skip them.
-    if (target.result.os.tag == .windows) sdl: {
-        const platform = client_root.import_table.get("aether").?.import_table.get("platform").?;
-        const sdl3 = platform.import_table.get("sdl3") orelse break :sdl;
-        const sdl_c = sdl3.import_table.get("c").?.root_source_file.?.generated.index;
-        const translate_c = b.graph.generated_files.items[@backingInt(sdl_c)].cast(std.Build.Step.TranslateC).?;
-        translate_c.defineCMacro("_AVX512BMMINTRIN_H", null);
-        translate_c.defineCMacro("__BMMVLINTRIN_H", null);
-    }
-
     if (should_embed) {
         client_root.addAnonymousImport("default_pack", .{
             .root_source_file = pack_zip_path.?,
@@ -288,19 +277,11 @@ pub fn build(b: *std.Build) void {
         const link_step = b.step("nxlink", "Push the nro to a networked Switch via nxlink");
         link_step.dependOn(&link_cmd.step);
     } else {
-        // macOS resolves resources relative to the installed app bundle.
-        const run_client_cmd = if (policy.launch == .app_bundle) blk: {
-            const cmd = std.Build.Step.Run.create(b, "run " ++ client_name);
-            cmd.addFileArg(b.graph.path(
-                .install_bin,
-                b.fmt("{s}.app/Contents/MacOS/{s}", .{ client_name, client_name }),
-            ));
-            break :blk cmd;
-        } else b.addRunArtifact(client_exe);
+        // Runs the installed exe; macOS resolves resources relative to the app bundle.
+        const run_client_cmd = Aether.packaging.add_run_step(client_exe, config);
         // Keep data and the loose resource pack together under -Duse-cwd.
         run_client_cmd.setCwd(b.graph.path(.install_bin, ""));
         run_client_cmd.step.dependOn(build_game_step);
-        run_client_cmd.addPassthruArgs();
         run_client_step.dependOn(&run_client_cmd.step);
     }
 
