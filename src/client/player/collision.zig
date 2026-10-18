@@ -1,5 +1,6 @@
 const std = @import("std");
 const core = @import("core");
+const Math = @import("math");
 const World = core.World;
 const physics = core.physics;
 const Block = core.blocks.Block;
@@ -12,9 +13,9 @@ pub const StepHeight: f32 = 0.5;
 pub const Liquid = enum { water, lava };
 
 pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
-    const fx = @floor(px);
-    const fy = @floor(py);
-    const fz = @floor(pz);
+    const fx = Math.floor(px);
+    const fy = Math.floor(py);
+    const fz = Math.floor(pz);
     const dims = World.data.dims;
     // Reject NaN/extreme coordinates before @intFromFloat.
     if (fx < 0.0 or fx >= @as(f32, @floatFromInt(dims.length))) return null;
@@ -29,7 +30,7 @@ pub fn liquid_at_point(px: f32, py: f32, pz: f32) ?Liquid {
 
 /// Feet zone: the single block-row at floor(py).
 pub fn liquid_feet(px: f32, py: f32, pz: f32) ?Liquid {
-    const fy = @floor(py);
+    const fy = Math.floor(py);
     if (!safe_for_i32(fy)) return null;
     const by: i32 = @intFromFloat(fy);
     return zone_liquid(px, pz, by, by);
@@ -37,8 +38,8 @@ pub fn liquid_feet(px: f32, py: f32, pz: f32) ?Liquid {
 
 /// Body/head zone: from floor(py + 1) up to floor(py + Height).
 pub fn liquid_body(px: f32, py: f32, pz: f32) ?Liquid {
-    const fy0 = @floor(py + 1.0);
-    const fy1 = @floor(py + Height);
+    const fy0 = Math.floor(py + 1.0);
+    const fy1 = Math.floor(py + Height);
     if (!safe_for_i32(fy0) or !safe_for_i32(fy1)) return null;
     const by0: i32 = @intFromFloat(fy0);
     const by1: i32 = @intFromFloat(fy1);
@@ -127,7 +128,7 @@ fn safe_for_i32(v: f32) bool {
 }
 
 fn world_coord(v: f32) i32 {
-    const f = @floor(v);
+    const f = Math.floor(v);
     if (!safe_for_i32(f)) return if (f < 0.0) std.math.minInt(i32) else std.math.maxInt(i32);
     return @intFromFloat(f);
 }

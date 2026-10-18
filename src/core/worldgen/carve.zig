@@ -3,7 +3,7 @@ const assert = std.debug.assert;
 
 const random_state = @import("random.zig");
 const terrain = @import("terrain.zig");
-const noise_module = @import("noise.zig");
+const Math = @import("math");
 
 pub const pi_32: f32 = 3.1415927;
 pub const pi_64: f64 = 3.141592653589793;
@@ -12,11 +12,12 @@ const offset_memo_max = 64;
 
 // Shared read-only lookup avoids rebuilding a 256 KiB table on every world.
 const sine_table: [65_536]f32 = blk: {
-    @setEvalBranchQuota(65_536 * 6);
+    // Each Math.sin is a few dozen comptime branches
+    @setEvalBranchQuota(65_536 * 64);
     var table: [65_536]f32 = undefined;
     for (0..table.len) |index| {
         const angle = @as(f64, @floatFromInt(index)) * pi_64 * 2.0 / 65_536.0;
-        table[index] = @floatCast(@sin(angle));
+        table[index] = @floatCast(Math.sin(angle));
     }
     break :blk table;
 };
@@ -90,11 +91,11 @@ pub fn turned_motion(pitch_damping: f32, motion: motion_32, draws: motion_draws)
 fn coordinate_bounds(center: f32, radius: f32, dimension: u32) struct { first: u32, end: u32 } {
     const extent = @abs(radius) + @as(f32, 1.0);
     // Keep bounds in f32 to avoid PSP soft-float calls.
-    const raw_first: i32 = @intFromFloat(noise_module.floor_f32(center - extent));
-    const raw_last: i32 = @intFromFloat(noise_module.ceil_f32(center + extent));
+    const raw_first: i32 = @intFromFloat(Math.floor(center - extent));
+    const raw_last: i32 = @intFromFloat(Math.ceil(center + extent));
     const maximum: i32 = @intCast(dimension - 2);
-    const first: u32 = @intCast(std.math.clamp(raw_first, 1, maximum));
-    const last: u32 = @intCast(std.math.clamp(raw_last, 1, maximum));
+    const first: u32 = @intCast(Math.clamp(raw_first, 1, maximum));
+    const last: u32 = @intCast(Math.clamp(raw_last, 1, maximum));
     return .{ .first = first, .end = last + 1 };
 }
 
@@ -188,22 +189,22 @@ pub fn replace_stone_ellipsoid(field: terrain.block_field, center: point_32, rad
 
     // Walk outward from the nearest cell; the ellipsoid metric increases
     // monotonically along each axis, so each direction stops at its first miss.
-    const nearest_x: i32 = @intFromFloat(@round(center.x));
+    const nearest_x: i32 = @intFromFloat(Math.round(center.x));
     const x_range_start: i32 = @intCast(x_bounds.first);
     const x_range_end_excl: i32 = @intCast(x_bounds.end);
-    const row_minimum_x: i32 = std.math.clamp(nearest_x, x_range_start, x_range_end_excl - 1);
+    const row_minimum_x: i32 = Math.clamp(nearest_x, x_range_start, x_range_end_excl - 1);
     const row_minimum_x_dist: f32 = @as(f32, @floatFromInt(row_minimum_x)) - center.x;
     const min_dx_squared: f32 = row_minimum_x_dist * row_minimum_x_dist;
 
-    const nearest_y: i32 = @intFromFloat(@round(center.y));
+    const nearest_y: i32 = @intFromFloat(Math.round(center.y));
     const y_range_start: i32 = @intCast(y_bounds.first);
     const y_range_end_excl: i32 = @intCast(y_bounds.end);
-    const row_minimum_y: i32 = std.math.clamp(nearest_y, y_range_start, y_range_end_excl - 1);
+    const row_minimum_y: i32 = Math.clamp(nearest_y, y_range_start, y_range_end_excl - 1);
 
-    const nearest_z: i32 = @intFromFloat(@round(center.z));
+    const nearest_z: i32 = @intFromFloat(Math.round(center.z));
     const z_range_start: i32 = @intCast(z_bounds.first);
     const z_range_end_excl: i32 = @intCast(z_bounds.end);
-    const row_minimum_z: i32 = std.math.clamp(nearest_z, z_range_start, z_range_end_excl - 1);
+    const row_minimum_z: i32 = Math.clamp(nearest_z, z_range_start, z_range_end_excl - 1);
     const row_minimum_z_dist: f32 = @as(f32, @floatFromInt(row_minimum_z)) - center.z;
     const min_dz_squared: f32 = row_minimum_z_dist * row_minimum_z_dist;
 

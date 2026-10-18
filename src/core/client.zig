@@ -8,6 +8,7 @@ const proto = @import("protocol.zig");
 const Server = @import("server.zig");
 const compress_worker = @import("compress_worker.zig");
 const outbound_queue = @import("outbound_queue.zig");
+const Math = @import("math");
 const OutboundQueue = outbound_queue.OutboundQueue;
 const Message = proto.Message;
 const assert = std.debug.assert;
@@ -173,7 +174,7 @@ const ChunkSender = struct {
     fn percent(cs: *const ChunkSender) u8 {
         assert(cs.raw_written <= cs.total_raw);
         if (cs.total_raw == 0) return 100;
-        const pct = @min((@as(u64, cs.raw_written) * 100) / cs.total_raw, 100);
+        const pct = Math.min((@as(u64, cs.raw_written) * 100) / cs.total_raw, 100);
         return @intCast(pct);
     }
 
@@ -194,7 +195,7 @@ const ChunkSender = struct {
         for (data) |bytes| {
             const space = Chunk - filled;
             if (space == 0) break;
-            const n = @min(bytes.len, space);
+            const n = Math.min(bytes.len, space);
             @memcpy(chunk[filled..][0..n], bytes[0..n]);
             filled += n;
         }
@@ -748,7 +749,7 @@ fn handle_message(ctx: *anyopaque, event: zb.Message) !void {
     }
     var dup_buf: Message = @splat(' ');
     const prefix = std.fmt.bufPrint(&dup_buf, "&f{s}: ", .{self.name[0..self.name_len]}) catch unreachable;
-    const len = @min(trimmed.len, dup_buf.len - prefix.len);
+    const len = Math.min(trimmed.len, dup_buf.len - prefix.len);
     @memcpy(dup_buf[prefix.len..][0..len], trimmed[0..len]);
 
     // Translate Minecraft's alternate '%' color prefix.
@@ -903,7 +904,7 @@ pub fn read_loop(self: *Client) void {
     // Salvage bytes the pending-login phase prefetched past the login frame
     // into the Stream.Reader buffer; that reader is not used afterwards.
     const prefetched = self.reader.buffered();
-    const prefetched_len = @min(prefetched.len, inbuf.len);
+    const prefetched_len = Math.min(prefetched.len, inbuf.len);
     @memcpy(inbuf[0..prefetched_len], prefetched[0..prefetched_len]);
     std.crypto.secureZero(u8, @constCast(prefetched));
     var in_len: usize = prefetched_len;

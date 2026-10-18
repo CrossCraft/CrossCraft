@@ -440,7 +440,7 @@ fn apply_look(self: *Player, dt: f32) void {
     }
 
     const max_pitch = std.math.pi / 2.0 - 0.01;
-    self.camera.pitch = @max(-max_pitch, @min(max_pitch, self.camera.pitch));
+    self.camera.pitch = Math.max(-max_pitch, Math.min(max_pitch, self.camera.pitch));
 }
 
 fn apply_stick_curve(raw: [2]f32) [2]f32 {
@@ -448,13 +448,13 @@ fn apply_stick_curve(raw: [2]f32) [2]f32 {
     const mag_sq = raw[0] * raw[0] + raw[1] * raw[1];
     if (mag_sq < 1e-10) return .{ 0, 0 };
     const mag = @sqrt(mag_sq);
-    const scale = std.math.pow(f32, @min(mag, 1.0), exponent) / mag;
+    const scale = std.math.pow(f32, Math.min(mag, 1.0), exponent) / mag;
     return .{ raw[0] * scale, raw[1] * scale };
 }
 
 fn update_noclip(self: *Player, dt: f32) void {
-    const sin_yaw = @sin(self.camera.yaw);
-    const cos_yaw = @cos(self.camera.yaw);
+    const sin_yaw = Math.sin(self.camera.yaw);
+    const cos_yaw = Math.cos(self.camera.yaw);
     const strafe = self.move_dir[0];
     const forward = self.move_dir[1];
 
@@ -472,9 +472,9 @@ fn update_noclip(self: *Player, dt: f32) void {
 }
 
 fn update_fly(self: *Player, dt: f32) void {
-    const clamped = @min(dt, MaxFrameDt);
-    const sin_yaw = @sin(self.camera.yaw);
-    const cos_yaw = @cos(self.camera.yaw);
+    const clamped = Math.min(dt, MaxFrameDt);
+    const sin_yaw = Math.sin(self.camera.yaw);
+    const cos_yaw = Math.cos(self.camera.yaw);
     const strafe = self.move_dir[0];
     const forward = self.move_dir[1];
 
@@ -512,7 +512,7 @@ fn update_fly(self: *Player, dt: f32) void {
 }
 
 fn run_ticks(self: *Player, dt: f32) void {
-    const clamped = @min(dt, MaxFrameDt);
+    const clamped = Math.min(dt, MaxFrameDt);
     self.tick_remainder += clamped;
 
     while (self.tick_remainder >= Tick) {
@@ -531,8 +531,8 @@ fn physics_tick(self: *Player) void {
 
     const strafe = self.move_dir[0] * 0.98;
     const forward = self.move_dir[1] * 0.98;
-    const sin_yaw = @sin(self.camera.yaw);
-    const cos_yaw = @cos(self.camera.yaw);
+    const sin_yaw = Math.sin(self.camera.yaw);
+    const cos_yaw = Math.cos(self.camera.yaw);
     const head_x = strafe * cos_yaw - forward * sin_yaw;
     const head_z = -strafe * sin_yaw - forward * cos_yaw;
 
@@ -586,8 +586,8 @@ fn advance_view_bob(self: *Player) void {
         self.walk_swing += BobSwingRate * Tick;
 
         if (self.on_ground) {
-            const prev_idx = @as(u32, @intFromFloat(@floor(phase_before / std.math.pi)));
-            const curr_idx = @as(u32, @intFromFloat(@floor(self.walk_phase / std.math.pi)));
+            const prev_idx = @as(u32, @intFromFloat(Math.floor(phase_before / std.math.pi)));
+            const curr_idx = @as(u32, @intFromFloat(Math.floor(self.walk_phase / std.math.pi)));
             if (curr_idx != prev_idx) {
                 const foot = block_under_feet(self);
                 if (!foot.is_air()) SoundManager.play_step(foot);
@@ -596,7 +596,7 @@ fn advance_view_bob(self: *Player) void {
     } else {
         self.walk_swing -= BobSwingRate * Tick;
     }
-    self.walk_swing = std.math.clamp(self.walk_swing, 0.0, 1.0);
+    self.walk_swing = Math.clamp(self.walk_swing, 0.0, 1.0);
 
     var i: u32 = 0;
     while (i < BobStrengthSubsteps) : (i += 1) {
@@ -605,7 +605,7 @@ fn advance_view_bob(self: *Player) void {
         } else {
             self.bob_amount *= BobStrengthDecay;
         }
-        self.bob_amount = std.math.clamp(self.bob_amount, 0.0, 1.0);
+        self.bob_amount = Math.clamp(self.bob_amount, 0.0, 1.0);
     }
 }
 
@@ -620,8 +620,8 @@ fn compute_view_bob(self: *const Player, alpha: f32) ViewBob {
     const swing = self.walk_swing_prev + (self.walk_swing - self.walk_swing_prev) * alpha;
     const amount = self.bob_amount_prev + (self.bob_amount - self.bob_amount_prev) * alpha;
 
-    const cosw = @cos(phase);
-    const sinw = @sin(phase);
+    const cosw = Math.cos(phase);
+    const sinw = Math.sin(phase);
     const abs_sin = @abs(sinw);
 
     const hor_raw = cosw * swing * BobBaseUnit;
@@ -681,13 +681,13 @@ fn update_vertical_state(
 }
 
 fn frac(v: f32) f32 {
-    return v - @floor(v);
+    return v - Math.floor(v);
 }
 
 fn block_under_feet(self: *const Player) Block {
-    const by_f = @floor(self.pos_y - 0.01);
-    const bx_f = @floor(self.pos_x);
-    const bz_f = @floor(self.pos_z);
+    const by_f = Math.floor(self.pos_y - 0.01);
+    const bx_f = Math.floor(self.pos_x);
+    const bz_f = Math.floor(self.pos_z);
     const dims = World.data.dims;
     if (by_f < 0 or by_f >= @as(f32, @floatFromInt(dims.height))) return .air;
     if (bx_f < 0 or bx_f >= @as(f32, @floatFromInt(dims.length))) return .air;
@@ -774,8 +774,8 @@ fn sync_camera(self: *Player) void {
     self.camera.z = self.prev_z + (self.pos_z - self.prev_z) * alpha;
 
     const bob = self.compute_view_bob(alpha);
-    const sin_yaw = @sin(self.camera.yaw);
-    const cos_yaw = @cos(self.camera.yaw);
+    const sin_yaw = Math.sin(self.camera.yaw);
+    const cos_yaw = Math.cos(self.camera.yaw);
     self.camera.x += bob.hor * cos_yaw;
     self.camera.y += bob.ver;
     self.camera.z += bob.hor * sin_yaw;
@@ -789,18 +789,18 @@ pub fn raycast_block(self: *const Player, range: f32) ?RaycastHit {
     assert(range >= 0.0);
     assert(range <= 64.0);
 
-    const cp = @cos(self.camera.pitch);
-    const dir_x = to_fp(-@sin(self.camera.yaw) * cp);
-    const dir_y = to_fp(-@sin(self.camera.pitch));
-    const dir_z = to_fp(-@cos(self.camera.yaw) * cp);
+    const cp = Math.cos(self.camera.pitch);
+    const dir_x = to_fp(-Math.sin(self.camera.yaw) * cp);
+    const dir_y = to_fp(-Math.sin(self.camera.pitch));
+    const dir_z = to_fp(-Math.cos(self.camera.yaw) * cp);
 
     const fp_ox = to_fp(self.camera.x);
     const fp_oy = to_fp(self.camera.y);
     const fp_oz = to_fp(self.camera.z);
 
-    const fx = @floor(self.camera.x);
-    const fy = @floor(self.camera.y);
-    const fz = @floor(self.camera.z);
+    const fx = Math.floor(self.camera.x);
+    const fy = Math.floor(self.camera.y);
+    const fz = Math.floor(self.camera.z);
     if (fx < -2147483648.0 or fx > 2147483647.0) return null;
     if (fy < -2147483648.0 or fy > 2147483647.0) return null;
     if (fz < -2147483648.0 or fz > 2147483647.0) return null;
@@ -979,13 +979,13 @@ fn ray_sub_aabb_fp(
     if (dx != 0) {
         const t0 = fp_div(x0 - ox, dx);
         const t1 = fp_div(x1 - ox, dx);
-        const t_lo = @min(t0, t1);
-        const t_hi = @max(t0, t1);
+        const t_lo = Math.min(t0, t1);
+        const t_hi = Math.max(t0, t1);
         if (t_lo > t_near) {
             t_near = t_lo;
             face = if (dx > 0) .x_neg else .x_pos;
         }
-        t_far = @min(t_far, t_hi);
+        t_far = Math.min(t_far, t_hi);
     } else {
         if (ox < x0 or ox >= x1) return null;
     }
@@ -993,13 +993,13 @@ fn ray_sub_aabb_fp(
     if (dy != 0) {
         const t0 = fp_div(y0 - oy, dy);
         const t1 = fp_div(y1 - oy, dy);
-        const t_lo = @min(t0, t1);
-        const t_hi = @max(t0, t1);
+        const t_lo = Math.min(t0, t1);
+        const t_hi = Math.max(t0, t1);
         if (t_lo > t_near) {
             t_near = t_lo;
             face = if (dy > 0) .y_neg else .y_pos;
         }
-        t_far = @min(t_far, t_hi);
+        t_far = Math.min(t_far, t_hi);
     } else {
         if (oy < y0 or oy >= y1) return null;
     }
@@ -1007,13 +1007,13 @@ fn ray_sub_aabb_fp(
     if (dz != 0) {
         const t0 = fp_div(z0 - oz, dz);
         const t1 = fp_div(z1 - oz, dz);
-        const t_lo = @min(t0, t1);
-        const t_hi = @max(t0, t1);
+        const t_lo = Math.min(t0, t1);
+        const t_hi = Math.max(t0, t1);
         if (t_lo > t_near) {
             t_near = t_lo;
             face = if (dz > 0) .z_neg else .z_pos;
         }
-        t_far = @min(t_far, t_hi);
+        t_far = Math.min(t_far, t_hi);
     } else {
         if (oz < z0 or oz >= z1) return null;
     }
@@ -1028,7 +1028,7 @@ fn ray_sub_aabb_fp(
 fn fp_div(num: i32, den: i32) i32 {
     if (den == 0) return if (num >= 0) std.math.maxInt(i32) else std.math.minInt(i32);
     const wide = @divTrunc(@as(i64, num) <<| Frac, @as(i64, den));
-    return @intCast(std.math.clamp(wide, std.math.minInt(i32), std.math.maxInt(i32)));
+    return @intCast(Math.clamp(wide, std.math.minInt(i32), std.math.maxInt(i32)));
 }
 
 fn face_normal(face: Face) [3]i32 {

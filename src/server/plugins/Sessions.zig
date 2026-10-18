@@ -6,6 +6,7 @@
 const std = @import("std");
 const Server = @import("core").Server;
 const Plugins = @import("Plugins.zig");
+const Math = @import("math");
 
 const assert = std.debug.assert;
 
@@ -54,7 +55,7 @@ pub const Session = struct {
         assert(self.member_count < max_members);
         const member = &self.members[self.member_count];
         member.* = .{ .handle = handle, .return_spot = return_spot };
-        const len = @min(role.len, member.role_buf.len);
+        const len = Math.min(role.len, member.role_buf.len);
         @memcpy(member.role_buf[0..len], role[0..len]);
         member.role_len = @intCast(len);
         self.member_count += 1;
@@ -113,7 +114,7 @@ pub const Registry = struct {
         };
         const generation = self.next_generation;
         self.next_generation += 1;
-        slot.* = .{ .owner = owner, .capacity = @min(@max(capacity, 1), max_members), .active = true, .generation = generation };
+        slot.* = .{ .owner = owner, .capacity = Math.min(Math.max(capacity, 1), max_members), .active = true, .generation = generation };
         return slot;
     }
 

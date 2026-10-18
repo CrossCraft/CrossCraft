@@ -1,4 +1,5 @@
 const std = @import("std");
+const Math = @import("math");
 const assert = std.debug.assert;
 
 const RingSize: u32 = 4096;
@@ -68,7 +69,7 @@ pub const FakeConn = struct {
         const h = head.load(.acquire);
         const t = tail.load(.monotonic);
         const space = RingSize - (t -% h);
-        const n: u32 = @intCast(@min(data.len, @as(usize, space)));
+        const n: u32 = @intCast(Math.min(data.len, @as(usize, space)));
         for (0..n) |i| buf[(t +% @as(u32, @intCast(i))) & RingMask] = data[i];
         if (n > 0) tail.store(t +% n, .release);
         return n;
@@ -78,7 +79,7 @@ pub const FakeConn = struct {
         const t = tail.load(.acquire);
         const h = head.load(.monotonic);
         const available = t -% h;
-        const n: u32 = @intCast(@min(dest.len, @as(usize, available)));
+        const n: u32 = @intCast(Math.min(dest.len, @as(usize, available)));
         for (0..n) |i| dest[i] = buf[(h +% @as(u32, @intCast(i))) & RingMask];
         if (n > 0) head.store(h +% n, .release);
         return n;

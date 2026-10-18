@@ -10,6 +10,7 @@ const widget_id = @import("widget_id.zig");
 const UiDrawList = @import("UiDrawList.zig");
 const UiState = @import("UiState.zig");
 const Colors = @import("../graphics/Color.zig");
+const Math = @import("math");
 
 const assert = std.debug.assert;
 const caps = capabilities.ClientType(ae);
@@ -269,26 +270,26 @@ fn slider_pos_from_value(value: f32, opts: SliderOpts) f32 {
     const span = opts.max - opts.min;
     if (span <= 0) return 0;
     return switch (opts.scale) {
-        .linear => std.math.clamp((value - opts.min) / span, 0.0, 1.0),
+        .linear => Math.clamp((value - opts.min) / span, 0.0, 1.0),
         .log10 => blk: {
-            const lmin = std.math.log10(@max(opts.min, 1e-6));
-            const lmax = std.math.log10(@max(opts.max, 1e-6));
+            const lmin = std.math.log10(Math.max(opts.min, 1e-6));
+            const lmax = std.math.log10(Math.max(opts.max, 1e-6));
             const lspan = lmax - lmin;
             if (lspan <= 0) break :blk 0;
-            const lv = std.math.log10(@max(value, 1e-6));
-            break :blk std.math.clamp((lv - lmin) / lspan, 0.0, 1.0);
+            const lv = std.math.log10(Math.max(value, 1e-6));
+            break :blk Math.clamp((lv - lmin) / lspan, 0.0, 1.0);
         },
     };
 }
 
 fn slider_value_from_pos(opts: SliderOpts, pos: f32) f32 {
     assert(std.math.isFinite(pos));
-    const p = std.math.clamp(pos, 0.0, 1.0);
+    const p = Math.clamp(pos, 0.0, 1.0);
     return switch (opts.scale) {
         .linear => opts.min + (opts.max - opts.min) * p,
         .log10 => blk: {
-            const lmin = std.math.log10(@max(opts.min, 1e-6));
-            const lmax = std.math.log10(@max(opts.max, 1e-6));
+            const lmin = std.math.log10(Math.max(opts.min, 1e-6));
+            const lmax = std.math.log10(Math.max(opts.max, 1e-6));
             const lv = lmin + (lmax - lmin) * p;
             break :blk std.math.pow(f32, 10.0, lv);
         },
@@ -340,7 +341,7 @@ fn draw_button(ui: *Ui, rect: LogicalRect, text: []const u8, focused: bool, opts
         .sizing = elide,
     });
 
-    const inner_w: i16 = @max(rect.width() - 2 * style.text_padding_x, 0);
+    const inner_w: i16 = Math.max(rect.width() - 2 * style.text_padding_x, 0);
     const fit = ui.fonts.fit_width(text, inner_w, 0, 1);
     if (fit == 0) return;
     const label_color = if (!opts.enabled) style.label_color_disabled else if (focused) style.label_color_hover else style.label_color_normal;
@@ -363,7 +364,7 @@ fn draw_rect_outline(ui: *Ui, rect: LogicalRect, thickness: i16, color: Color, l
     const h = rect.height();
     if (thickness <= 0 or w <= 0 or h <= 0) return;
 
-    const t = @min(thickness, @min(w, h));
+    const t = Math.min(thickness, Math.min(w, h));
     ui.draw.add_rect(&.{
         .pos_offset = .{ .x = rect.x0, .y = rect.y0 },
         .pos_extent = .{ .x = w, .y = t },
@@ -415,7 +416,7 @@ fn draw_slider(ui: *Ui, rect: LogicalRect, id: WidgetId, value: f32, opts: Slide
     });
     const usable: i32 = @as(i32, rect.width()) - @as(i32, style.knob_w);
     const norm = slider_pos_from_value(value, opts);
-    const offset: i32 = if (usable > 0) @intFromFloat(@round(norm * @as(f32, @floatFromInt(usable)))) else 0;
+    const offset: i32 = if (usable > 0) @intFromFloat(Math.round(norm * @as(f32, @floatFromInt(usable)))) else 0;
     const knob_x: i16 = rect.x0 + @as(i16, @intCast(offset));
     const dragging = ui.state.captured != null and ui.state.captured.? == id;
     const knob_region = if (dragging) style.knob_active else if (focused) style.knob_hover else style.knob_normal;
@@ -437,7 +438,7 @@ fn draw_slider(ui: *Ui, rect: LogicalRect, id: WidgetId, value: f32, opts: Slide
         draw_rect_outline(ui, rect, style.focus_outline_thickness, style.focus_outline_color, ui.layer_base + 5);
     }
     if (opts.label.len == 0) return;
-    const inner_w: i16 = @max(rect.width() - 2 * style.text_padding_x, 0);
+    const inner_w: i16 = Math.max(rect.width() - 2 * style.text_padding_x, 0);
     const fit = ui.fonts.fit_width(opts.label, inner_w, 0, 1);
     if (fit == 0) return;
     ui.draw.add_text(&.{

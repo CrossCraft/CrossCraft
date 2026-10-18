@@ -11,6 +11,7 @@ const Dir = Io.Dir;
 const Crc32 = std.hash.Crc32;
 const flate = std.compress.flate;
 const caps = @import("capabilities").resource_pack;
+const Math = @import("math");
 const utf8_flag: u16 = 1 << 11;
 
 const local_file_header_sig = [4]u8{ 0x50, 0x4b, 0x03, 0x04 };
@@ -143,7 +144,7 @@ pub fn pack_directory(gpa: std.mem.Allocator, io: Io, input_dir: Dir, w: *Io.Wri
 
     for (entries.items) |entry| {
         const rel_path = entry.archive_path;
-        const data = try input_dir.readFileAlloc(io, entry.source_path, gpa, .limited(@min(opts.max_file_bytes, std.math.maxInt(u32))));
+        const data = try input_dir.readFileAlloc(io, entry.source_path, gpa, .limited(Math.min(opts.max_file_bytes, std.math.maxInt(u32))));
         defer gpa.free(data);
 
         const crc = Crc32.hash(data);

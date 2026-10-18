@@ -1,25 +1,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const caps = @import("capabilities");
 
 const random_state = @import("random.zig");
-
-// Avoid compiler_rt floor/ceil calls on MIPS while preserving finite f32 results.
-pub inline fn floor_f32(x: f32) f32 {
-    if (caps.math.integer_float_rounding) {
-        const truncated: f32 = @floatFromInt(@as(i32, @intFromFloat(x)));
-        return if (x < truncated) truncated - 1.0 else truncated;
-    }
-    return @floor(x);
-}
-
-pub inline fn ceil_f32(x: f32) f32 {
-    if (caps.math.integer_float_rounding) {
-        const truncated: f32 = @floatFromInt(@as(i32, @intFromFloat(x)));
-        return if (x > truncated) truncated + 1.0 else truncated;
-    }
-    return @ceil(x);
-}
+const Math = @import("math");
 
 pub const permutation = struct {
     entries: [512]u8,
@@ -66,7 +49,7 @@ pub const permutation = struct {
 pub fn floor_coordinate(coordinate: f32) i32 {
     assert(std.math.isFinite(coordinate));
     assert(coordinate >= -2_147_483_648.0 and coordinate < 2_147_483_648.0);
-    return @intFromFloat(floor_f32(coordinate));
+    return @intFromFloat(Math.floor(coordinate));
 }
 
 pub fn fade(parameter: f32) f32 {
@@ -260,7 +243,7 @@ pub const octave_noise = struct {
             const lattice_x: i32 = @intCast(x_samp >> k);
             const leading_masked: u32 = x_samp & cell_mask;
             const cell_run: usize = @as(usize, cell_mask - leading_masked) / stride + 1;
-            const run_len: usize = @min(cell_run, n - i);
+            const run_len: usize = Math.min(cell_run, n - i);
 
             const hash_00 = lattice_hash_2d_masked(table, lattice_x, lattice_y);
             const hash_10 = lattice_hash_2d_masked(table, lattice_x + 1, lattice_y);
@@ -334,7 +317,7 @@ pub const octave_noise = struct {
 pub fn f64_floor_coordinate(coordinate: f64) i32 {
     assert(std.math.isFinite(coordinate));
     assert(coordinate >= -2_147_483_648.0 and coordinate < 2_147_483_648.0);
-    return @intFromFloat(@floor(coordinate));
+    return @intFromFloat(Math.floor(coordinate));
 }
 
 pub fn f64_fade(parameter: f64) f64 {

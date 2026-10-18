@@ -194,12 +194,12 @@ fn step_axis_z(p: *Particle, dz: f32) void {
 }
 
 fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
-    const bx0: i32 = @intFromFloat(@floor(wx - CollisionRadius));
-    const bx1: i32 = @intFromFloat(@floor(wx + CollisionRadius));
-    const by0: i32 = @intFromFloat(@floor(wy - CollisionRadius));
-    const by1: i32 = @intFromFloat(@floor(wy + CollisionRadius));
-    const bz0: i32 = @intFromFloat(@floor(wz - CollisionRadius));
-    const bz1: i32 = @intFromFloat(@floor(wz + CollisionRadius));
+    const bx0: i32 = @intFromFloat(Math.floor(wx - CollisionRadius));
+    const bx1: i32 = @intFromFloat(Math.floor(wx + CollisionRadius));
+    const by0: i32 = @intFromFloat(Math.floor(wy - CollisionRadius));
+    const by1: i32 = @intFromFloat(Math.floor(wy + CollisionRadius));
+    const bz0: i32 = @intFromFloat(Math.floor(wz - CollisionRadius));
+    const bz1: i32 = @intFromFloat(Math.floor(wz + CollisionRadius));
 
     const dims = World.data.dims;
     const max_x: i32 = @intCast(dims.length);
@@ -224,9 +224,9 @@ fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
 }
 
 fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
-    const bx: i32 = @intFromFloat(@floor(wx));
-    const by: i32 = @intFromFloat(@floor(wy));
-    const bz: i32 = @intFromFloat(@floor(wz));
+    const bx: i32 = @intFromFloat(Math.floor(wx));
+    const by: i32 = @intFromFloat(Math.floor(wy));
+    const bz: i32 = @intFromFloat(Math.floor(wz));
     const dims = World.data.dims;
     if (bx < 0 or bx >= @as(i32, @intCast(dims.length))) return true;
     if (by < 0 or by >= @as(i32, @intCast(dims.height))) return true;
@@ -239,7 +239,7 @@ pub fn draw(self: *ParticleSystem) void {
 }
 
 fn rebuild_mesh(self: *ParticleSystem, camera: *const Camera) void {
-    const origin = Math.Vec3.new(@floor(camera.x), @floor(camera.y), @floor(camera.z));
+    const origin = Math.Vec3.new(Math.floor(camera.x), Math.floor(camera.y), Math.floor(camera.z));
     self.billboards.begin(origin, camera.billboard_basis()) catch unreachable;
     for (self.particles[0..self.count]) |*particle| self.emit_particle(particle);
 }

@@ -12,6 +12,7 @@ const UiDrawList = @import("UiDrawList.zig");
 const Colors = @import("../graphics/Color.zig");
 const Color = Colors.Color;
 const TextWrap = @import("TextWrap.zig");
+const Math = @import("math");
 const Chat = @This();
 
 pub const MaxMessages: u8 = 10;
@@ -104,7 +105,7 @@ pub fn init() Chat {
 
 pub fn receive(self: *Chat, raw: []const u8) void {
     var len: u8 = 0;
-    const lim = @min(raw.len, MsgMaxLen);
+    const lim = Math.min(raw.len, MsgMaxLen);
     {
         var i: usize = 0;
         while (i < lim) : (i += 1) {
@@ -289,7 +290,7 @@ pub fn draw_into(self: *Chat, sys: *input.InputSystem, list: *UiDrawList, fonts:
 
     if (self.open) {
         @memcpy(input_text[0..InputPrompt.len], InputPrompt);
-        const take = @min(body.len, @as(usize, InputMaxLen));
+        const take = Math.min(body.len, @as(usize, InputMaxLen));
         if (take > 0) {
             @memcpy(input_text[InputPrompt.len .. InputPrompt.len + take], body[0..take]);
         }
@@ -304,7 +305,7 @@ pub fn draw_into(self: *Chat, sys: *input.InputSystem, list: *UiDrawList, fonts:
         );
     }
 
-    const input_h: i16 = if (self.open) @as(i16, @intCast(@max(input_line_count, 1))) * RowH else 0;
+    const input_h: i16 = if (self.open) @as(i16, @intCast(Math.max(input_line_count, 1))) * RowH else 0;
 
     var drawn_lines: usize = 0;
     var i: u8 = 0;
@@ -330,7 +331,7 @@ pub fn draw_into(self: *Chat, sys: *input.InputSystem, list: *UiDrawList, fonts:
         if (msg_line_count == 0) continue;
 
         const remaining = HistoryLineLimit - drawn_lines;
-        const visible_lines = @min(@as(usize, msg_line_count), remaining);
+        const visible_lines = Math.min(@as(usize, msg_line_count), remaining);
         const first_line = @as(usize, msg_line_count) - visible_lines;
 
         const bg_a: u8 = @intFromFloat(160.0 * (@as(f32, @floatFromInt(alpha)) / 255.0));
@@ -385,7 +386,7 @@ pub fn draw_into(self: *Chat, sys: *input.InputSystem, list: *UiDrawList, fonts:
         if (self.store_render_line(input_lines[input_i][0..input_lens[input_i]])) |line| {
             // Separate the prompt to avoid an extra FontBatcher gap before the text.
             if (input_i == 0 and line.len > 0 and line[0] == InputPrompt[0]) {
-                const prompt_len: usize = @min(line.len, InputPrompt.len);
+                const prompt_len: usize = Math.min(line.len, InputPrompt.len);
                 list.add_text(&.{
                     .str = InputPrompt,
                     .pos_x = text_x,

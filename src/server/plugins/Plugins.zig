@@ -14,6 +14,7 @@ const Regions = @import("Regions.zig");
 const Sessions = @import("Sessions.zig");
 const Arena = @import("Arena.zig");
 const Commands = @import("../Commands.zig");
+const Math = @import("math");
 
 const log = std.log.scoped(.plugins);
 const assert = std.debug.assert;
@@ -316,7 +317,7 @@ pub fn init(alloc: std.mem.Allocator, data_dir: std.Io.Dir, host: *HostMod.Host)
             continue;
         }
         manifests[discovered] = manifest;
-        const dir_len = @min(entry.name.len, dirs[0].len);
+        const dir_len = Math.min(entry.name.len, dirs[0].len);
         @memcpy(dirs[discovered][0..dir_len], entry.name[0..dir_len]);
         lens[discovered] = @intCast(dir_len);
         discovered += 1;
@@ -655,7 +656,7 @@ pub fn dispatch_leave(self: *Plugins, handle: Server.PlayerHandle, name: []const
     self.sessions.purge_player(handle);
 
     var info = Server.PlayerInfo{ .handle = handle };
-    const len = @min(name.len, info.name_buf.len);
+    const len = Math.min(name.len, info.name_buf.len);
     @memcpy(info.name_buf[0..len], name[0..len]);
     info.name_len = @intCast(len);
 
@@ -905,9 +906,9 @@ fn init_spawn(self: *Plugins) void {
     const identity_matches = std.mem.eql(u8, &record.uuid, &world.data.uuid) and
         record.length == dims.length and record.height == dims.height and record.depth == dims.depth;
     if (identity_matches) {
-        const x: u16 = @intCast(@min(record.x, @as(u32, dims.length - 1)));
-        const y: u16 = @intCast(@min(record.y, @as(u32, dims.height - 2)));
-        const z: u16 = @intCast(@min(record.z, @as(u32, dims.depth - 1)));
+        const x: u16 = @intCast(Math.min(record.x, @as(u32, dims.length - 1)));
+        const y: u16 = @intCast(Math.min(record.y, @as(u32, dims.height - 2)));
+        const z: u16 = @intCast(Math.min(record.z, @as(u32, dims.depth - 1)));
         world.lock_world_shared();
         const safe = Server.safe_destination(x, y, z);
         world.unlock_world_shared();
@@ -1104,7 +1105,7 @@ fn send_split(client: *Server.Client, text: []const u8) bool {
     var offset: usize = 0;
     var sent_any = false;
     while (offset < text.len) {
-        var payload = @min(chat_payload_max, text.len - offset);
+        var payload = Math.min(chat_payload_max, text.len - offset);
         if (offset + payload < text.len) {
             if (std.mem.lastIndexOfScalar(u8, text[offset .. offset + payload], ' ')) |space| {
                 if (space > 16) payload = @intCast(space);
@@ -1342,7 +1343,7 @@ fn api_register_command(L: ?*luaz.c.lua_State) callconv(.c) c_int {
                         arg_type = .number;
                     } else if (!std.mem.eql(u8, t, "string")) {
                         var msg_buf: [48]u8 = undefined;
-                        const msg = std.fmt.bufPrint(&msg_buf, "unknown argument type: {s}", .{t[0..@min(t.len, 24)]}) catch "unknown argument type";
+                        const msg = std.fmt.bufPrint(&msg_buf, "unknown argument type: {s}", .{t[0..Math.min(t.len, 24)]}) catch "unknown argument type";
                         state.pop(2);
                         state.pushLString(msg);
                         state.raiseError();
@@ -1505,7 +1506,7 @@ fn api_send_message(L: ?*luaz.c.lua_State) callconv(.c) c_int {
         return 1;
     };
     const text = runtime.state.checkString(2);
-    const sent = message_handle(handle, text[0..@min(text.len, max_message_bytes)]);
+    const sent = message_handle(handle, text[0..Math.min(text.len, max_message_bytes)]);
     runtime.state.pushBoolean(sent);
     return 1;
 }
@@ -1516,11 +1517,11 @@ fn api_broadcast(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     if (!require_capability(plugin, .@"player.message")) return 0;
     if (!plugin.take_op_budget()) return 0;
     const text = runtime.state.checkString(1);
-    const bounded = text[0..@min(text.len, max_message_bytes)];
+    const bounded = text[0..Math.min(text.len, max_message_bytes)];
 
     var offset: usize = 0;
     while (offset < bounded.len) {
-        var payload = @min(chat_payload_max, bounded.len - offset);
+        var payload = Math.min(chat_payload_max, bounded.len - offset);
         if (offset + payload < bounded.len) {
             if (std.mem.lastIndexOfScalar(u8, bounded[offset .. offset + payload], ' ')) |space| {
                 if (space > 16) payload = @intCast(space);
@@ -1618,7 +1619,7 @@ fn api_kick(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     var reason: []const u8 = "Kicked";
     if (runtime.state.getTop() >= 2) {
         if (runtime.state.toString(2)) |text| {
-            const len = @min(text.len, reason_buf.len);
+            const len = Math.min(text.len, reason_buf.len);
             @memcpy(reason_buf[0..len], text[0..len]);
             reason = reason_buf[0..len];
         }
@@ -1631,7 +1632,7 @@ fn api_log(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     const plugin = plugin_from(L);
     const state = plugin.runtime.?.state;
     const text = state.checkString(1);
-    log.info("[{s}] {s}", .{ plugin.manifest.name(), text[0..@min(text.len, 256)] });
+    log.info("[{s}] {s}", .{ plugin.manifest.name(), text[0..Math.min(text.len, 256)] });
     return 0;
 }
 
@@ -1831,7 +1832,7 @@ fn api_create_session(L: ?*luaz.c.lua_State) callconv(.c) c_int {
         _ = state.getField(1, "capacity");
         defer state.pop(1);
 
-        if (state.toIntegerX(-1)) |n| capacity = @intCast(@max(n, 1));
+        if (state.toIntegerX(-1)) |n| capacity = @intCast(Math.max(n, 1));
     }
     const session = plugin.owner.sessions.create(plugin, capacity) orelse {
         state.pushNil();
@@ -1872,7 +1873,7 @@ fn api_session_admit(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     }
     var role: []const u8 = "participant";
     if (state.getTop() >= 3) {
-        if (state.toString(3)) |text| role = text[0..@min(text.len, 12)];
+        if (state.toString(3)) |text| role = text[0..Math.min(text.len, 12)];
     }
     const spot: Sessions.ReturnSpot = .{
         .x = info.x,
@@ -1960,7 +1961,7 @@ fn api_session_announce(L: ?*luaz.c.lua_State) callconv(.c) c_int {
     if (!require_capability(plugin, .@"session.host")) return 0;
     if (!plugin.take_op_budget()) return 0;
     const text = state.checkString(2);
-    const bounded = text[0..@min(text.len, max_message_bytes)];
+    const bounded = text[0..Math.min(text.len, max_message_bytes)];
     for (session.members[0..session.member_count]) |*member| {
         _ = message_handle(member.handle, bounded);
     }
@@ -2054,12 +2055,12 @@ fn read_box(state: luaz.State, index: i32) ?Regions.Box {
         raw[i] = value;
     }
     return .{
-        .x0 = @intCast(@min(raw[0], raw[3])),
-        .y0 = @intCast(@min(raw[1], raw[4])),
-        .z0 = @intCast(@min(raw[2], raw[5])),
-        .x1 = @intCast(@max(raw[0], raw[3])),
-        .y1 = @intCast(@max(raw[1], raw[4])),
-        .z1 = @intCast(@max(raw[2], raw[5])),
+        .x0 = @intCast(Math.min(raw[0], raw[3])),
+        .y0 = @intCast(Math.min(raw[1], raw[4])),
+        .z0 = @intCast(Math.min(raw[2], raw[5])),
+        .x1 = @intCast(Math.max(raw[0], raw[3])),
+        .y1 = @intCast(Math.max(raw[1], raw[4])),
+        .z1 = @intCast(Math.max(raw[2], raw[5])),
     };
 }
 

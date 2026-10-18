@@ -4,6 +4,7 @@ const core = @import("core");
 const blocks = core.blocks;
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const Rendering = @import("aether").Rendering;
+const Math = @import("math");
 const Vertex = Rendering.Vertex;
 const BatchMesh = Rendering.MeshDataType(Vertex);
 
@@ -12,7 +13,7 @@ pub const Face = blocks.Face;
 /// Map local coordinate [0, 16] to SNORM16 [0, 32767].
 pub fn encode_pos(local: u32) i16 {
     assert(local <= 16);
-    return @intCast(@min(@as(i32, @intCast(local)) * 2048, 32767));
+    return @intCast(Math.min(@as(i32, @intCast(local)) * 2048, 32767));
 }
 
 /// Encode position with fractional offset (units of 1/256 block).
@@ -20,7 +21,7 @@ pub fn encode_pos_frac(local: u32, frac256: u32) i16 {
     assert(local <= 16);
     assert(frac256 <= 256);
     assert(local < 16 or frac256 == 0);
-    return @intCast(@min(@as(i32, @intCast(local)) * 2048 + @as(i32, @intCast(frac256)) * 8, 32767));
+    return @intCast(Math.min(@as(i32, @intCast(local)) * 2048 + @as(i32, @intCast(frac256)) * 8, 32767));
 }
 
 pub fn face_color(face: Face) u32 {

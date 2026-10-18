@@ -5,6 +5,7 @@ const core = @import("core");
 const capabilities = @import("capabilities");
 const UiDrawList = @import("UiDrawList.zig");
 const Colors = @import("../graphics/Color.zig");
+const Math = @import("math");
 
 const caps = capabilities.ClientType(ae);
 const Rendering = ae.Rendering;
@@ -49,7 +50,7 @@ pub fn spawn(self: *PlayerList, pid: i8, raw: []const u8, x: u16, y: u16, z: u16
     if (pid < 0) return;
     const idx: usize = @intCast(pid);
     if (idx >= core.Server.MaxPlayers) return;
-    const copy_len = @min(raw.len, 16);
+    const copy_len = Math.min(raw.len, 16);
     var len: u8 = 0;
     var i: usize = 0;
     while (i < copy_len) : (i += 1) {
@@ -93,7 +94,7 @@ pub fn draw_into(self: *const PlayerList, list: *UiDrawList, local_name: []const
 
     const available_rows: i16 = @divTrunc(max_ly - PanelTop - HeaderH - 2 * Pad, RowH);
     const rows_cap: u8 = if (available_rows > 0)
-        @intCast(@min(available_rows, MaxVisible))
+        @intCast(Math.min(available_rows, MaxVisible))
     else
         0;
 

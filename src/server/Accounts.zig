@@ -1,6 +1,7 @@
 //! Authoritative, case-sensitive credentials and username policy. No eviction.
 const std = @import("std");
 const Server = @import("core").Server;
+const Math = @import("math");
 const assert = std.debug.assert;
 
 pub const max_capacity: u32 = 65_536;
@@ -106,7 +107,7 @@ pub fn set_policy(name: []const u8, flag: PolicyFlag, enabled: bool, reason: []c
         .banned => {
             data.banned = enabled;
             data.reason = @splat(0);
-            data.reason_len = if (enabled) @intCast(@min(reason.len, data.reason.len)) else 0;
+            data.reason_len = if (enabled) @intCast(Math.min(reason.len, data.reason.len)) else 0;
             @memcpy(data.reason[0..data.reason_len], reason[0..data.reason_len]);
         },
         .op => data.op = enabled,

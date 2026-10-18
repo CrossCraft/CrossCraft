@@ -36,6 +36,7 @@ const DumpWorldScreen = @import("../ui/screens/DumpWorld.zig");
 const bindings = @import("../player/bindings.zig");
 const game_config = @import("../config.zig");
 const TextFormat = @import("../ui/TextFormat.zig");
+const Math = @import("math");
 
 const assert = std.debug.assert;
 const Core = ae.Core;
@@ -874,9 +875,9 @@ fn handle_fly_tap(self: *@This()) void {
 
 fn player_in_shadow(player: *const Player) bool {
     const eye_y = player.pos_y + collision.EyeHeight;
-    const fx = @floor(player.pos_x);
-    const fy = @floor(eye_y);
-    const fz = @floor(player.pos_z);
+    const fx = Math.floor(player.pos_x);
+    const fy = Math.floor(eye_y);
+    const fz = Math.floor(player.pos_z);
     const dims = World.data.dims;
     if (fx < 0.0 or fx >= @as(f32, @floatFromInt(dims.length))) return false;
     if (fy < 0.0 or fy >= @as(f32, @floatFromInt(dims.height))) return false;
@@ -1057,11 +1058,11 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         const bounds = block_id.bounds();
         Rendering.gfx.api.bind_texture(Rendering.Texture.Default.handle);
         var t = Rendering.Transform.new();
-        const cp = @cos(self.player.camera.pitch);
+        const cp = Math.cos(self.player.camera.pitch);
         const toward_camera = .{
-            .x = @sin(self.player.camera.yaw) * cp,
-            .y = @sin(self.player.camera.pitch),
-            .z = @cos(self.player.camera.yaw) * cp,
+            .x = Math.sin(self.player.camera.yaw) * cp,
+            .y = Math.sin(self.player.camera.pitch),
+            .z = Math.cos(self.player.camera.yaw) * cp,
         };
         const Q: f32 = 0.0625;
         t.pos = .{

@@ -11,6 +11,7 @@ const Authentication = @import("Authentication.zig");
 const Commands = @import("Commands.zig");
 const plugins = @import("plugins/Plugins.zig");
 const Host = @import("plugins/Host.zig");
+const Math = @import("math");
 
 const assert = std.debug.assert;
 
@@ -144,7 +145,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
         const bare = if (std.ascii.startsWithIgnoreCase(host, "www.")) host["www.".len..] else host;
         var sha = std.crypto.hash.sha2.Sha256.init(.{});
         for (bare) |byte| sha.update(&.{std.ascii.toLower(byte)});
-        directory.authority = @max(1, std.mem.readInt(u32, sha.finalResult()[0..4], .little));
+        directory.authority = Math.max(1, std.mem.readInt(u32, sha.finalResult()[0..4], .little));
     }
 
     try Accounts.init(alloc, engine.io, Server.save_dir, self.server_config.max_accounts);
@@ -298,7 +299,7 @@ fn route_gameplay(action: Server.GameplayAction) void {
 fn route_player_join(handle: Server.PlayerHandle, name: []const u8) void {
     const host = Host.instance orelse return;
     var identity: Host.Identity = .{ .handle = handle };
-    const len = @min(name.len, identity.name_buf.len);
+    const len = Math.min(name.len, identity.name_buf.len);
     @memcpy(identity.name_buf[0..len], name[0..len]);
     identity.name_len = @intCast(len);
     host.enqueue(.{ .join = identity });
@@ -307,7 +308,7 @@ fn route_player_join(handle: Server.PlayerHandle, name: []const u8) void {
 fn route_player_leave(handle: Server.PlayerHandle, name: []const u8) void {
     const host = Host.instance orelse return;
     var identity: Host.Identity = .{ .handle = handle };
-    const len = @min(name.len, identity.name_buf.len);
+    const len = Math.min(name.len, identity.name_buf.len);
     @memcpy(identity.name_buf[0..len], name[0..len]);
     identity.name_len = @intCast(len);
     host.enqueue(.{ .leave = identity });
@@ -416,7 +417,7 @@ fn reserve_pending_slot_locked(
         .state = .pending,
         .worker_done = false,
     };
-    const ip_len = @min(ip.len, Server.Client.ip_str_len);
+    const ip_len = Math.min(ip.len, Server.Client.ip_str_len);
     @memcpy(slot.data.ip[0..ip_len], ip[0..ip_len]);
     slot.data.reader = std.Io.net.Stream.Reader.init(conn, io, &slot.data.read_buffer);
     slot.data.writer = std.Io.net.Stream.Writer.init(conn, io, &slot.data.write_buffer);
@@ -823,7 +824,7 @@ fn console_loop(self: *ServerState, engine: *Engine) std.Io.Cancelable!void {
             var msg_buf: core.protocol.Message = @splat(' ');
             const prefix = "&4[Server]: ";
             @memcpy(msg_buf[0..prefix.len], prefix);
-            const n_msg = @min(line.len, msg_buf.len - prefix.len);
+            const n_msg = Math.min(line.len, msg_buf.len - prefix.len);
             @memcpy(msg_buf[prefix.len..][0..n_msg], line[0..n_msg]);
             Server.broadcast_chat_message(-1, &msg_buf);
         }

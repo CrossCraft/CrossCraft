@@ -1,6 +1,7 @@
 const std = @import("std");
 const ae = @import("aether");
 const core = @import("core");
+const Math = @import("math");
 
 const Block = core.blocks.Block;
 
@@ -348,5 +349,5 @@ fn snapshot_into(self: *Backup, io: std.Io, index: usize, now_ms: u64) void {
 }
 
 fn current_unix_ms(io: std.Io) u64 {
-    return @intCast(@max(std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(), 0));
+    return @intCast(Math.max(std.Io.Clock.Timestamp.now(io, .real).raw.toMilliseconds(), 0));
 }

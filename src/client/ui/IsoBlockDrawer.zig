@@ -146,13 +146,13 @@ fn ndc_xy(px_log: f32, py_log: f32) [2]i16 {
     const sh: f32 = @floatFromInt(screen_h);
     const max_lx: f32 = sw / scale;
     const max_ly: f32 = sh / scale;
-    const x = std.math.clamp(px_log, 0.0, max_lx);
-    const y = std.math.clamp(py_log, 0.0, max_ly);
+    const x = Math.clamp(px_log, 0.0, max_lx);
+    const y = Math.clamp(py_log, 0.0, max_ly);
     const fx = (2.0 * x * scale - sw) * 32767.0 / sw;
     const fy = (sh - 2.0 * y * scale) * 32767.0 / sh;
     return .{
-        @intFromFloat(@round(std.math.clamp(fx, -32767.0, 32767.0))),
-        @intFromFloat(@round(std.math.clamp(fy, -32767.0, 32767.0))),
+        @intFromFloat(Math.round(Math.clamp(fx, -32767.0, 32767.0))),
+        @intFromFloat(Math.round(Math.clamp(fy, -32767.0, 32767.0))),
     };
 }
 

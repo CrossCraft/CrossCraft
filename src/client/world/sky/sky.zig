@@ -145,13 +145,13 @@ fn fog_params(submerged: ?collision.Liquid) [2]f32 {
 /// Map sky grid index [0, PlaneGrid] to SNORM16 [0, 32767].
 fn encode_plane(i: u32) i16 {
     assert(i <= PlaneGrid);
-    return @intCast(@min(@as(i32, @intCast(i)) * (32768 / PlaneGrid), 32767));
+    return @intCast(Math.min(@as(i32, @intCast(i)) * (32768 / PlaneGrid), 32767));
 }
 
 /// Map cloud grid index [0, CloudGrid] to SNORM16 [0, 32767].
 fn encode_cloud_pos(i: u32) i16 {
     assert(i <= CloudGrid);
-    return @intCast(@min(@as(i32, @intCast(i)) * (32768 / CloudGrid), 32767));
+    return @intCast(Math.min(@as(i32, @intCast(i)) * (32768 / CloudGrid), 32767));
 }
 
 /// Per-tile UV range for clouds: monotonically increasing within each tile,
@@ -161,8 +161,8 @@ fn cloud_tile_uv(tile: u32) [2]i16 {
     const scale: i32 = 32768 / (tiles_per_repeat * CloudTexScale);
     const local: i32 = @intCast(tile % tiles_per_repeat);
     return .{
-        @intCast(@min(local * scale, 32767)),
-        @intCast(@min((local + 1) * scale, 32767)),
+        @intCast(Math.min(local * scale, 32767)),
+        @intCast(Math.min((local + 1) * scale, 32767)),
     };
 }
 

@@ -10,6 +10,7 @@ const zb = core.zb;
 const world = core.World;
 const Commands = @import("../Commands.zig");
 const Plugins = @import("Plugins.zig");
+const Math = @import("math");
 
 const log = std.log.scoped(.plugins);
 const assert = std.debug.assert;
@@ -151,7 +152,7 @@ pub fn enqueue(self: *Host, action: Action) void {
 
 pub fn enqueue_command(self: *Host, handle: ?Server.PlayerHandle, line: []const u8) void {
     var action: Action = .{ .command = .{ .handle = handle } };
-    const len = @min(line.len, action.command.line.len);
+    const len = Math.min(line.len, action.command.line.len);
     @memcpy(action.command.line[0..len], line[0..len]);
     action.command.line_len = @intCast(len);
     self.enqueue(action);

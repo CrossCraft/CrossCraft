@@ -199,8 +199,8 @@ pub fn update(self: *SteveModel, dt: f32, player_list: *const PlayerList, fonts:
 
         const move_dx = st.x - prev_x;
         const move_dz = st.z - prev_z;
-        const speed = @sqrt(move_dx * move_dx + move_dz * move_dz) / @max(dt, 0.001);
-        const target_blend = @min(speed / WalkFullSpeed, 1.5);
+        const speed = @sqrt(move_dx * move_dx + move_dz * move_dz) / Math.max(dt, 0.001);
+        const target_blend = Math.min(speed / WalkFullSpeed, 1.5);
         st.walk_blend += (target_blend - st.walk_blend) * wf;
         st.yaw = lerp_angle(st.yaw, tyaw, f);
         st.pitch = lerp_angle(st.pitch, tpitch, f);
@@ -223,9 +223,9 @@ pub fn draw(self: *SteveModel, local: *const Player) void {
 
     Rendering.gfx.api.bind_texture(ResourcePack.get_tex(.char).handle);
 
-    const idle_swing = (@sin(self.anim_time * std.math.tau * IdleSpeed) * 0.5 + 0.5) * IdleAmplitude;
+    const idle_swing = (Math.sin(self.anim_time * std.math.tau * IdleSpeed) * 0.5 + 0.5) * IdleAmplitude;
 
-    const walk_phase = @sin(self.anim_time * std.math.tau * WalkSpeed * 0.67) * 1.5;
+    const walk_phase = Math.sin(self.anim_time * std.math.tau * WalkSpeed * 0.67) * 1.5;
 
     for (&self.states) |*st| {
         if (!st.active) continue;

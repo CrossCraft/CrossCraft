@@ -5,6 +5,7 @@ const capabilities = @import("capabilities");
 const IsoBlockDrawer = @import("IsoBlockDrawer.zig");
 const Screen = @import("Screen.zig");
 pub const Colors = @import("../graphics/Color.zig");
+const Math = @import("math");
 
 const caps = capabilities.ClientType(ae);
 const Rendering = ae.Rendering;
@@ -61,7 +62,7 @@ pub fn add_text(self: *List, command: *const TextCmd) void {
 }
 pub fn add_iso_block(self: *List, payload: *const IsoBlockCmd) void {
     const extent = payload.half_extent_px * 2;
-    const bounds: ae.Ui.LogicalRect = .{ .x0 = @intFromFloat(@floor(payload.cx - extent)), .y0 = @intFromFloat(@floor(payload.cy - extent)), .x1 = @intFromFloat(@ceil(payload.cx + extent)), .y1 = @intFromFloat(@ceil(payload.cy + extent)) };
+    const bounds: ae.Ui.LogicalRect = .{ .x0 = @intFromFloat(Math.floor(payload.cx - extent)), .y0 = @intFromFloat(Math.floor(payload.cy - extent)), .x1 = @intFromFloat(Math.ceil(payload.cx + extent)), .y1 = @intFromFloat(Math.ceil(payload.cy + extent)) };
     var local = payload.*;
     local.cx -= @floatFromInt(bounds.x0);
     local.cy -= @floatFromInt(bounds.y0);

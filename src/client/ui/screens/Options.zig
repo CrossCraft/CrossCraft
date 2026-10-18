@@ -1,9 +1,8 @@
-const std = @import("std");
-
 const Ui = @import("../Ui.zig");
 const Options = @import("../../Options.zig");
 const config = @import("../../config.zig");
 const widget_id = @import("../widget_id.zig");
+const Math = @import("math");
 
 pub const Widget = enum(u16) {
     music = 1,
@@ -70,13 +69,13 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
         defer row.end();
 
         if (ui.slider(wid(.fov), &opt.fov, .{
-            .label = ui.fmt("FOV: {d}", .{@as(u32, @intFromFloat(@round(opt.fov)))}),
+            .label = ui.fmt("FOV: {d}", .{@as(u32, @intFromFloat(Math.round(opt.fov)))}),
             .width = WidgetW,
             .min = 30,
             .max = 110,
             .nudge = 0.0625,
         })) {
-            opt.fov = std.math.clamp(opt.fov, 30, 110);
+            opt.fov = Math.clamp(opt.fov, 30, 110);
             if (hooks.on_fov_changed) |f| f();
         }
         _ = ui.slider(wid(.sensitivity), &opt.sensitivity, .{
@@ -92,7 +91,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
         var row = ui.stack(.{ .axis = .horizontal, .gap = 4 });
         defer row.end();
 
-        const rd_max_u8: u8 = @intCast(@min(@as(u32, 255), config.current().chunk_radius));
+        const rd_max_u8: u8 = @intCast(Math.min(@as(u32, 255), config.current().chunk_radius));
         const rd_max: f32 = @floatFromInt(rd_max_u8);
         if (ui.slider(wid(.render_distance), rd_view, .{
             .label = ui.fmt("Render Distance: {d}", .{Options.capped_render_distance()}),
@@ -101,7 +100,7 @@ pub fn run(ui: *Ui, opt: *Options.Options, rd_view: *f32, hooks: Hooks) Result {
             .max = rd_max,
             .nudge = if (rd_max_u8 > 1) 1.0 / (rd_max - 1.0) else 0.05,
         })) {
-            const rounded: u8 = @intFromFloat(std.math.clamp(@round(rd_view.*), 1.0, rd_max));
+            const rounded: u8 = @intFromFloat(Math.clamp(Math.round(rd_view.*), 1.0, rd_max));
             opt.render_distance = rounded;
             rd_view.* = @floatFromInt(rounded);
         }
@@ -174,7 +173,7 @@ fn cycle_row(ui: *Ui, opt: *Options.Options, a: Toggle, b: Toggle) void {
 }
 
 fn pct_round(v: f32) u32 {
-    return @intFromFloat(@round(std.math.clamp(v, 0, 1) * 100));
+    return @intFromFloat(Math.round(Math.clamp(v, 0, 1) * 100));
 }
 
 fn bool_str(b: bool) []const u8 {

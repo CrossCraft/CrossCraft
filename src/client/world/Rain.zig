@@ -57,7 +57,7 @@ const MaxColumns: u32 = ColumnsDiam * ColumnsDiam;
 const SplashMaxQuads: u32 = @as(u32, SplashMax);
 
 fn streak_max_quads() u32 {
-    const base: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(World.data.dims.height)) / SectionHeight));
+    const base: u32 = @intFromFloat(Math.ceil(@as(f32, @floatFromInt(World.data.dims.height)) / SectionHeight));
     return MaxColumns * (base * 2) * QuadsPerSection;
 }
 
@@ -184,8 +184,8 @@ fn update_splashes(self: *Rain, dt: f32) void {
 
 fn maybe_spawn_splash(self: *Rain, camera: *const Camera) void {
     var rand = self.rng.random();
-    const cam_tile_x: i32 = @intFromFloat(@floor(camera.x));
-    const cam_tile_z: i32 = @intFromFloat(@floor(camera.z));
+    const cam_tile_x: i32 = @intFromFloat(Math.floor(camera.x));
+    const cam_tile_z: i32 = @intFromFloat(Math.floor(camera.z));
     const dx = @as(i32, @intCast(rand.intRangeLessThan(u32, 0, ColumnsDiam))) - Extent;
     const dz = @as(i32, @intCast(rand.intRangeLessThan(u32, 0, ColumnsDiam))) - Extent;
     const gx = cam_tile_x + dx;
@@ -212,8 +212,8 @@ fn maybe_spawn_splash(self: *Rain, camera: *const Camera) void {
 /// Caller must bind rain.png.
 pub fn draw_streaks(self: *Rain, camera: *const Camera) void {
     if (!Options.current.rain) return;
-    const cam_tile_x_i: i32 = @intFromFloat(@floor(camera.x));
-    const cam_tile_z_i: i32 = @intFromFloat(@floor(camera.z));
+    const cam_tile_x_i: i32 = @intFromFloat(Math.floor(camera.x));
+    const cam_tile_z_i: i32 = @intFromFloat(Math.floor(camera.z));
     if (self.streak_data.vertices.items.len == 0) return;
 
     const cam_tile_x: f32 = @floatFromInt(cam_tile_x_i);
@@ -252,8 +252,8 @@ pub fn draw_splashes(self: *Rain) void {
 }
 
 fn rebuild_streak_mesh(self: *Rain, camera: *const Camera) void {
-    const cam_tile_x_i: i32 = @intFromFloat(@floor(camera.x));
-    const cam_tile_z_i: i32 = @intFromFloat(@floor(camera.z));
+    const cam_tile_x_i: i32 = @intFromFloat(Math.floor(camera.x));
+    const cam_tile_z_i: i32 = @intFromFloat(Math.floor(camera.z));
     if (!self.streak_mesh_dirty and
         cam_tile_x_i == self.streak_cam_tile_x and
         cam_tile_z_i == self.streak_cam_tile_z)
@@ -270,7 +270,7 @@ fn rebuild_streak_mesh(self: *Rain, camera: *const Camera) void {
 }
 
 fn rebuild_splash_mesh(self: *Rain, camera: *const Camera) void {
-    const origin = Math.Vec3.new(@floor(camera.x), @floor(camera.y), @floor(camera.z));
+    const origin = Math.Vec3.new(Math.floor(camera.x), Math.floor(camera.y), Math.floor(camera.z));
     self.splash_billboards.begin(origin, camera.billboard_basis()) catch unreachable;
 
     const tu0 = self.particle_atlas.tile_u(DropTileCol);
@@ -302,7 +302,7 @@ fn build_streaks(mesh: *Rendering.MeshDataType(Vertex), cam_tile_x: i32, cam_til
 
             const dist_sq: f32 = @as(f32, @floatFromInt(dx * dx + dz * dz));
             const dist: f32 = @sqrt(dist_sq);
-            const fade = @max(0.0, 1.0 - dist / ExtentF);
+            const fade = Math.max(0.0, 1.0 - dist / ExtentF);
             if (fade <= 0.0) continue;
             const alpha_byte: u8 = @intFromFloat(fade * BaseAlpha);
             const color: u32 = @bitCast(Color.rgba(255, 255, 255, alpha_byte));
@@ -328,13 +328,13 @@ fn emit_column_quads(
 
     var section_bottom: f32 = bottom_y;
     while (section_bottom < top_y) {
-        const section_top: f32 = @min(section_bottom + SectionHeight, top_y);
+        const section_top: f32 = Math.min(section_bottom + SectionHeight, top_y);
         const section_h: f32 = section_top - section_bottom;
         if (section_h <= 0.0) break;
-        const section_diff: i32 = @intFromFloat(@round(section_h * VPerBlockF));
+        const section_diff: i32 = @intFromFloat(Math.round(section_h * VPerBlockF));
         assert(section_diff >= 0 and section_diff <= 32767);
 
-        const v_bot_raw: i32 = @intFromFloat(@round(section_bottom * VPerBlockF));
+        const v_bot_raw: i32 = @intFromFloat(Math.round(section_bottom * VPerBlockF));
         const v_bot_mod: i32 = @mod(v_bot_raw, 32768);
         const v_top_from_bot: i32 = v_bot_mod + section_diff;
 
@@ -454,7 +454,7 @@ fn emit_splash(self: *Rain, splash: *const Splash, uv: Rendering.BillboardBatche
 fn encode(world: f32) i16 {
     // Rain streaks retain their historical saturation at the compact limits;
     // their vertical sections and scrolling UV wrap remain game geometry.
-    return effect_positions.encoding.encode_component(std.math.clamp(world, -32768.0 / PosScale, 32767.0 / PosScale)) catch unreachable;
+    return effect_positions.encoding.encode_component(Math.clamp(world, -32768.0 / PosScale, 32767.0 / PosScale)) catch unreachable;
 }
 
 fn light_map_at(x: i32, z: i32) i32 {
@@ -484,12 +484,12 @@ fn out_of_world(wx: f32, wy: f32, wz: f32) bool {
 
 fn aabb_hits_solid(wx: f32, wy: f32, wz: f32) bool {
     const r: f32 = SplashHalfSize;
-    const bx0: i32 = @intFromFloat(@floor(wx - r));
-    const bx1: i32 = @intFromFloat(@floor(wx + r));
-    const by0: i32 = @intFromFloat(@floor(wy - r));
-    const by1: i32 = @intFromFloat(@floor(wy + r));
-    const bz0: i32 = @intFromFloat(@floor(wz - r));
-    const bz1: i32 = @intFromFloat(@floor(wz + r));
+    const bx0: i32 = @intFromFloat(Math.floor(wx - r));
+    const bx1: i32 = @intFromFloat(Math.floor(wx + r));
+    const by0: i32 = @intFromFloat(Math.floor(wy - r));
+    const by1: i32 = @intFromFloat(Math.floor(wy + r));
+    const bz0: i32 = @intFromFloat(Math.floor(wz - r));
+    const bz1: i32 = @intFromFloat(Math.floor(wz + r));
     var bx = bx0;
     while (bx <= bx1) : (bx += 1) {
         if (bx < 0 or bx >= World.data.dims.length) continue;

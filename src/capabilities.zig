@@ -5,11 +5,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const math = struct {
-    // Avoid compiler_rt floor/ceil calls on MIPS for finite worldgen values.
-    pub const integer_float_rounding = builtin.cpu.arch == .mipsel or builtin.cpu.arch == .mips;
-};
-
 pub const process = struct {
     pub const console_control_handler = builtin.os.tag == .windows;
 };

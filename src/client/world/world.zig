@@ -11,6 +11,7 @@ const Sky = @import("sky/sky.zig");
 const ParticleSystem = @import("ParticleSystem.zig");
 const Rain = @import("Rain.zig");
 const config = @import("../config.zig");
+const Math = @import("math");
 
 const assert = std.debug.assert;
 const Util = ae.Util;
@@ -261,8 +262,8 @@ pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, 
     const n: u32 = if (self.build_estimator.is_warming_up())
         1
     else
-        @intCast(@max(1, self.build_estimator.fit_in(available, .p75)));
-    const end = @min(self.build_cursor + n, self.build_end);
+        @intCast(Math.max(1, self.build_estimator.fit_in(available, .p75)));
+    const end = Math.min(self.build_cursor + n, self.build_end);
 
     for (self.build_cursor..end) |i| {
         const ref = self.build_queue[i];
@@ -323,7 +324,7 @@ pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera) void {
     // Sections close to the player need hardware clip planes to prevent
     // vertices from overflowing the PSP 4096 virtual viewport.
     const ClipSectionCount: u32 = 4;
-    self.frame_clip_count = @min(ClipSectionCount, self.frame_visible_count);
+    self.frame_clip_count = Math.min(ClipSectionCount, self.frame_visible_count);
     const clip_count = self.frame_clip_count;
 
     // Opaque sections render front-to-back.
@@ -746,7 +747,7 @@ fn grid_ref_less_than(cam: *const Camera, a: GridRef, b: GridRef) bool {
 }
 
 fn camera_chunk(pos: f32) i32 {
-    const v = @floor(pos / 16.0);
+    const v = Math.floor(pos / 16.0);
     if (v < -2147483648.0 or v > 2147483647.0) return 0;
     return @intFromFloat(v);
 }
@@ -759,7 +760,7 @@ fn set_terrain_fog(submerged: ?collision.Liquid) void {
     const fog_end: f32 = switch (submerged orelse .water) {
         .water => if (submerged != null) 16.0 else blk: {
             const rd: f32 = @floatFromInt(Options.capped_render_distance());
-            break :blk @max(rd * 16.0 - 16.0, 16.0);
+            break :blk Math.max(rd * 16.0 - 16.0, 16.0);
         },
         .lava => 2.0,
     };
