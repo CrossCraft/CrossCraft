@@ -9,6 +9,11 @@ pub const process = struct {
     pub const console_control_handler = builtin.os.tag == .windows;
 };
 
+pub const network = struct {
+    /// std sockets are raw AFD handles whose timed receives are unsupported.
+    pub const afd_sockets = builtin.os.tag == .windows;
+};
+
 /// Evaluated for the build host when imported by the resource pack tool.
 pub const resource_pack = struct {
     pub const windows_paths = builtin.os.tag == .windows;
