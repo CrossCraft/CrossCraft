@@ -16,7 +16,7 @@ Every era stays within the same source tree, allowing code changes to benefit al
 | Component | State  |
 |-----------|--------|
 | Client    | v1.1.2 |
-| Server    | v1.2.0 |
+| Server    | v1.2.1 |
 
 #### Next Version: Classic v1.2
 
