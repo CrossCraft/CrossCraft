@@ -23,6 +23,7 @@ const MB: u32 = 1024 * 1024;
 const KB: u32 = 1024;
 const NINTENDO_3DS_TOTAL_MEMORY_MB: u32 = 32;
 const SWITCH_TOTAL_MEMORY_MB: u32 = 224;
+const WEB_TOTAL_MEMORY_MB: u32 = 192;
 
 pub const HardwareClass = enum {
     desktop,
@@ -59,6 +60,24 @@ const desktop_profile: MemoryProfile = .{
     .rt_render = 416 * MB,
     .rt_audio = 512 * KB,
     .rt_user = 5 * MB,
+};
+
+const web_profile: MemoryProfile = .{
+    .hardware = .desktop,
+    .total_memory_mb = WEB_TOTAL_MEMORY_MB,
+    .chunk_radius = 8,
+    .lod_near_radius_blocks = 96,
+    .init_audio = desktop_profile.init_audio,
+    .init_user = desktop_profile.init_user,
+    .init_render = render_remainder(
+        WEB_TOTAL_MEMORY_MB,
+        desktop_profile.init_audio,
+        desktop_profile.init_user,
+    ),
+    .rt_audio = desktop_profile.rt_audio,
+    .rt_user = desktop_profile.rt_user,
+    // Leaves room for a 512x128x512 world's gameplay user budget.
+    .rt_render = render_remainder(WEB_TOTAL_MEMORY_MB, desktop_profile.rt_audio, 37 * MB),
 };
 
 const psp_phat_profile: MemoryProfile = .{
@@ -242,18 +261,21 @@ pub fn ClientType(comptime ae: type) type {
         };
 
         pub const memory = struct {
+            pub const outlives_main = ae.platform == .wasm;
             pub const resize_user_pool_to_world = ae.platform != .psp and ae.platform != .nintendo_3ds;
             pub const separate_worldgen_scratch = ae.platform == .wasm;
             // Capacity must cover every runtime model supported by the binary.
             pub const max_chunk_radius: u32 = switch (ae.platform) {
                 .psp => psp_slim_profile.chunk_radius,
                 .nintendo_3ds => new_3ds_profile.chunk_radius,
+                .wasm => web_profile.chunk_radius,
                 else => desktop_profile.chunk_radius,
             };
             pub const initial_profile: MemoryProfile = switch (ae.platform) {
                 .psp => psp_phat_profile,
                 .nintendo_3ds => old_3ds_profile,
                 .nintendo_switch => nintendo_switch_profile,
+                .wasm => web_profile,
                 else => desktop_profile,
             };
 

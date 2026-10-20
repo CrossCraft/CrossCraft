@@ -15,7 +15,6 @@ pub fn build(b: *std.Build) void {
     const lint_roots: []const []const u8 = &.{
         ".",
         "src/unit.zig",
-        "src/client/web_main.zig",
         "src/engine_services.zig",
     };
 
@@ -413,7 +412,7 @@ pub fn build(b: *std.Build) void {
     };
     const web_exe = Aether.modules.add_game(ae_dep.builder, b, .{
         .name = "CrossCraft-Classic",
-        .root_source_file = b.path("src/client/web_main.zig"),
+        .root_source_file = b.path("src/client/main.zig"),
         .target = web_target,
         .optimize = optimize,
         .overrides = web_overrides,

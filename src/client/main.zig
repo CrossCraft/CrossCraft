@@ -19,16 +19,16 @@ pub const aether_options: ae.Options = .{
     },
 };
 
+var menu_state: MenuState = undefined;
+var engine: ae.Engine = undefined;
+
 pub fn main(init: std.process.Init) !void {
     game_config.init();
 
     const memory = try init.gpa.alignedAlloc(u8, .fromByteUnits(16), game_config.main_memory_bytes());
-    defer init.gpa.free(memory);
+    defer if (!caps.memory.outlives_main) init.gpa.free(memory);
 
-    var menu_state: MenuState = undefined;
     const state = menu_state.state();
-
-    var engine: ae.Engine = undefined;
     try engine.init(init.io, init.environ_map, memory, &.{
         .memory = game_config.init_memory(),
         .width = 854,
@@ -38,8 +38,8 @@ pub fn main(init: std.process.Init) !void {
         .vsync = true,
         .resizable = true,
     }, &state);
-    defer engine.deinit();
-    defer ResourcePack.deinit();
+    defer if (!caps.memory.outlives_main) engine.deinit();
+    defer if (!caps.memory.outlives_main) ResourcePack.deinit();
 
     try engine.run();
 }

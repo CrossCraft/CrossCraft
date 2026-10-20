@@ -359,7 +359,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     Session.clear_disconnect_reason();
     const data_dir = engine.dirs.data;
     const server_scratch = if (comptime caps.memory.separate_worldgen_scratch)
-        std.heap.wasm_allocator
+        ae.Web.allocator
     else
         engine.allocator(.user);
     self.server_task = .{
