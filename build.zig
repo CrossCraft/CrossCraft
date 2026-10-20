@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
         .mesh_indexing = b.option(bool, "mesh-indexing", "Enable mesh index buffers (default: on except PSP/headless; override works on all backends)"),
     };
 
-    const skip_pack = b.option(bool, "skip-pack", "Skip zipping resources into pack.zip (for CI builds without LFS assets)") orelse false;
+    const skip_pack = b.option(bool, "skip-pack", "Skip fetching resources and zipping pack.zip (for builds that do not need assets)") orelse false;
 
     const config = Aether.config.Config.resolve(target, overrides);
     const policy = Capabilities.build_policy(config);
@@ -109,9 +109,9 @@ pub fn build(b: *std.Build) void {
 
     const console_client_dir = policy.client_dir;
 
-    // CI can skip packing when the LFS-backed resources are unavailable.
+    // Lazy so -Dskip-pack builds never download the assets.
     const pack_zip_path: ?std.Build.LazyPath = if (skip_pack) null else blk: {
-        const resources = b.dependency("resources", .{});
+        const resources = b.lazyDependency("resources", .{}) orelse break :blk null;
 
         const pack_tool = b.addExecutable(.{
             .name = "crosscraft-pack-zip",

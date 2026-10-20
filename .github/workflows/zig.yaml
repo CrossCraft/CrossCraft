@@ -22,8 +22,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          submodules: true
 
       - name: Check Zig package cache
         id: zig-pkg-cache
@@ -52,7 +50,7 @@ jobs:
           key: zig-pkg-${{ hashFiles('build.zig.zon', '.github/scripts/fetch-zig-packages.sh') }}
           enableCrossOsArchive: true
 
-  # Pull-request builds skip the LFS-backed resource pack.
+  # Pull-request builds skip the resource pack.
   dev:
     needs: zig-packages
     if: github.event_name == 'pull_request'
@@ -75,8 +73,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          submodules: true
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -131,11 +127,9 @@ jobs:
       # toolchain updates are deliberate workflow changes.
       image: devkitpro/devkita64@sha256:82575ea78651b530b2e232bb3799cfd1fe331514e053d5f724bb4b28191fb79d
     steps:
-      # Do not fetch LFS: this compile-only check deliberately skips pack.zip.
+      # Compile-only check: skip-pack avoids downloading the resources.
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          submodules: true
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -166,10 +160,9 @@ jobs:
           path: zig-out/bin/CrossCraft-Classic-Switch/
           if-no-files-found: error
 
-  # Full release-style builds on push to main / v* tags. Pulls LFS for game
-  # builds so pack.zip ships with real resources, runs per-platform artifact
-  # verification, and uploads each (kind, target) as a separate workflow
-  # artifact for download.
+  # Full release-style builds on push to main / v* tags. Ships pack.zip with
+  # game builds, runs per-platform artifact verification, and uploads each
+  # (kind, target) as a separate workflow artifact for download.
   rel:
     needs: zig-packages
     if: github.event_name == 'push'
@@ -192,11 +185,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          submodules: true
-          # Game builds need real resources to produce a valid pack.zip;
-          # server builds never touch the resources submodule, so skip LFS.
-          lfs: ${{ matrix.kind == 'game' }}
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -267,8 +255,8 @@ jobs:
           fi
           test -s "$bundle/saves/origins.cw" || { echo "missing bundled saves/origins.cw"; exit 1; }
 
-      # pack.zip size check guards against LFS regressions on every game
-      # platform: a pointer stub is ~130 B, a real pack is multi-MB.
+      # pack.zip size check guards against an empty or truncated pack on every
+      # game platform: a real pack is multi-MB.
       - name: Verify desktop game artifact
         if: matrix.kind == 'game' && (startsWith(matrix.name, 'linux') || startsWith(matrix.name, 'windows'))
         shell: bash
@@ -276,7 +264,7 @@ jobs:
           pack="zig-out/bin/pack.zip"
           test -f "$pack" || { echo "missing $pack"; exit 1; }
           size=$(wc -c <"$pack")
-          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
+          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (truncated?)"; exit 1; }
           echo "pack.zip OK ($size bytes)"
 
       - name: Verify macOS bundle
@@ -288,7 +276,7 @@ jobs:
           pack="zig-out/bin/CrossCraft-Classic.app/Contents/Resources/pack.zip"
           test -f "$pack" || { echo "missing $pack"; exit 1; }
           size=$(stat -f%z "$pack")
-          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
+          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (truncated?)"; exit 1; }
           echo "pack.zip OK ($size bytes)"
           save="zig-out/bin/CrossCraft-Classic.app/Contents/Resources/saves/origins.cw"
           test -s "$save" || { echo "missing bundled $save"; exit 1; }
@@ -308,7 +296,7 @@ jobs:
           test -s "$eboot" || { echo "missing or empty $eboot"; exit 1; }
           test -f "$pack" || { echo "missing $pack"; exit 1; }
           size=$(wc -c <"$pack")
-          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
+          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (truncated?)"; exit 1; }
           echo "PSP game OK (EBOOT.PBP + pack.zip $size bytes)"
 
       - name: Verify 3DS game artifact
@@ -319,7 +307,7 @@ jobs:
           test -s "$threedsx" || { echo "missing or empty $threedsx"; exit 1; }
           test -f "$pack" || { echo "missing $pack"; exit 1; }
           size=$(wc -c <"$pack")
-          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
+          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (truncated?)"; exit 1; }
           echo "3DS game OK (.3dsx + pack.zip $size bytes)"
 
       - name: Upload macOS .app
@@ -353,18 +341,8 @@ jobs:
       # toolchain updates are deliberate workflow changes.
       image: devkitpro/devkita64@sha256:82575ea78651b530b2e232bb3799cfd1fe331514e053d5f724bb4b28191fb79d
     steps:
-      # The devkitPro image provides Git but not Git LFS. Install it before
-      # checkout so actions/checkout can hydrate the resource submodule.
-      - name: Install Git LFS
-        run: |
-          apt-get update -qq
-          apt-get install --no-install-recommends -y git-lfs
-
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          submodules: true
-          lfs: true
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -387,8 +365,8 @@ jobs:
           cp -R saves "$bundle/"
           test -s "$bundle/saves/origins.cw" || { echo "missing bundled saves/origins.cw"; exit 1; }
 
-      # Guard against an LFS pointer being packaged instead of the resource
-      # pack, just as the other console release jobs do.
+      # Guard against an empty resource pack, just as the other console
+      # release jobs do.
       - name: Verify Nintendo Switch artifact
         shell: sh
         run: |
@@ -399,7 +377,7 @@ jobs:
           test -s "$elf" || { echo "missing or empty $elf"; exit 1; }
           test -f "$pack" || { echo "missing $pack"; exit 1; }
           size=$(wc -c <"$pack")
-          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (LFS stubs?)"; exit 1; }
+          test "$size" -gt 1000000 || { echo "pack.zip only $size bytes (truncated?)"; exit 1; }
           echo "Switch game OK (.nro + .elf + pack.zip $size bytes)"
 
       - name: Upload artifact
@@ -409,7 +387,7 @@ jobs:
           path: zig-out/bin/CrossCraft-Classic-Switch/
           if-no-files-found: error
 
-  # Host tests need no LFS resources. The golden corpus checks worldgen
+  # Host tests need no resources. The golden corpus checks worldgen
   # byte parity with the reference generator.
   tests:
     needs: zig-packages
@@ -418,8 +396,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          submodules: true
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
