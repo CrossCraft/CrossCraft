@@ -97,7 +97,7 @@ jobs:
 
       - name: Build
         if: matrix.name != 'mac'
-        run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=${{ (startsWith(matrix.name, 'windows') || matrix.name == '3ds') && 'ReleaseFast' || 'ReleaseSafe' }} ${{ matrix.extra }} -Dskip-pack=true
+        run: zig build ${{ matrix.kind }} -Dtarget=${{ matrix.target }} -Doptimize=safe ${{ matrix.extra }} -Dskip-pack=true
 
       # macOS builds natively. SDL's build demands --sysroot for any explicit
       # (non-native) -Dtarget, and --sysroot in turn breaks the absolute
@@ -106,7 +106,7 @@ jobs:
       # artifact.
       - name: Build (macOS)
         if: matrix.name == 'mac'
-        run: zig build ${{ matrix.kind }} -Doptimize=ReleaseSafe -Dskip-pack=true
+        run: zig build ${{ matrix.kind }} -Doptimize=safe -Dskip-pack=true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -148,7 +148,7 @@ jobs:
           enableCrossOsArchive: true
 
       - name: Build Nintendo Switch game
-        run: zig build game -Dtarget=aarch64-switch -Doptimize=ReleaseSafe -Dskip-pack=true
+        run: zig build game -Dtarget=aarch64-switch -Doptimize=safe -Dskip-pack=true
 
       - name: Verify Nintendo Switch artifact
         shell: sh
@@ -215,7 +215,7 @@ jobs:
       # Server never packs resources and only ships for PC targets.
       - name: Build server
         if: matrix.kind == 'server' && matrix.name != 'mac'
-        run: zig build server -Dtarget=${{ matrix.target }} -Doptimize=${{ startsWith(matrix.name, 'windows') && 'ReleaseFast' || 'ReleaseSafe' }} ${{ matrix.extra }} -Dskip-pack=true
+        run: zig build server -Dtarget=${{ matrix.target }} -Doptimize=safe ${{ matrix.extra }} -Dskip-pack=true
 
       # macOS (game + server) builds natively: SDL's build requires --sysroot
       # for any explicit (non-native) -Dtarget, and --sysroot breaks the
@@ -223,31 +223,31 @@ jobs:
       # is Apple Silicon, so native == aarch64-macos.
       - name: Build server (macOS)
         if: matrix.kind == 'server' && matrix.name == 'mac'
-        run: zig build server -Doptimize=ReleaseSafe -Dskip-pack=true
+        run: zig build server -Doptimize=safe -Dskip-pack=true
 
       # Desktop game (linux/windows): -Duse-cwd=true so pack.zip ships as a
       # loose file in zig-out/bin/ next to the binary.
       - name: Build game (desktop)
         if: matrix.kind == 'game' && (startsWith(matrix.name, 'linux') || startsWith(matrix.name, 'windows'))
-        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=${{ startsWith(matrix.name, 'windows') && 'ReleaseFast' || 'ReleaseSafe' }} ${{ matrix.extra }} -Duse-cwd=true
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=safe ${{ matrix.extra }} -Duse-cwd=true
 
       # macOS game: Aether.exportArtifact routes pack.zip into
       # CrossCraft-Classic.app/Contents/Resources/pack.zip — no -Duse-cwd.
       # Built natively (see "Build server (macOS)" above).
       - name: Build game (macOS)
         if: matrix.kind == 'game' && matrix.name == 'mac'
-        run: zig build game -Doptimize=ReleaseSafe
+        run: zig build game -Doptimize=safe
 
       # PSP game: build.zig installs pack.zip into the PSP
       # bundle dir alongside EBOOT.PBP / app.prx.
       - name: Build game (PSP)
         if: matrix.kind == 'game' && matrix.name == 'psp'
-        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe ${{ matrix.extra }}
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=safe ${{ matrix.extra }}
 
       # 3DS game: build.zig installs pack.zip beside the .3dsx artifact.
       - name: Build game (3DS)
         if: matrix.kind == 'game' && matrix.name == '3ds'
-        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast ${{ matrix.extra }}
+        run: zig build game -Dtarget=${{ matrix.target }} -Doptimize=safe ${{ matrix.extra }}
 
       # Ship the archival world with every release artifact. macOS game
       # bundles receive it from build.zig before signing; console builds and
@@ -377,7 +377,7 @@ jobs:
           enableCrossOsArchive: true
 
       - name: Build Nintendo Switch game
-        run: zig build game -Dtarget=aarch64-switch -Doptimize=ReleaseSafe
+        run: zig build game -Dtarget=aarch64-switch -Doptimize=safe
 
       - name: Bundle archival saves
         shell: sh
@@ -435,4 +435,4 @@ jobs:
         run: zig build test -Dskip-pack=true
 
       - name: Worldgen golden hashes (100 worlds)
-        run: zig build worldgen-test -Doptimize=ReleaseSafe -Dskip-pack=true
+        run: zig build worldgen-test -Doptimize=safe -Dskip-pack=true

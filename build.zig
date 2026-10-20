@@ -64,6 +64,7 @@ pub fn build(b: *std.Build) void {
     // Aether's maths without the engine, for Core, worldgen and host tools.
     // The client's engine imports this same module.
     const math = ae_dep.module("math");
+    if (optimize != .debug) math.optimize = .fast;
 
     const capabilities = b.addModule("capabilities", .{
         .root_source_file = b.path("src/capabilities.zig"),

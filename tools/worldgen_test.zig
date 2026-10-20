@@ -6,7 +6,7 @@
 //! Classic server driven through its Python/Docker harness). A mismatch means
 //! world generation no longer produces byte-identical worlds.
 //!
-//! Usage: zig build worldgen-test -Doptimize=ReleaseSafe
+//! Usage: zig build worldgen-test -Doptimize=safe
 //!
 //! Corpus provenance: the first 15 cases are hand-picked edges (seed
 //! extremes, dimension extremes, the Classic default 256x64x256); the
