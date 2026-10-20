@@ -20,8 +20,8 @@
             .hash = "zitrus-0.0.0-Ewix9KcGIADBrToWj8CSU_t7ew_VgLRk4s7DsLi4fpsT",
         },
         .lint = .{
-            .url = "git+https://gitlab.com/hanabi_dev/tiger_lint#3131804b31bd1898865415a507a502ef1118bf08",
-            .hash = "tiger_lint-0.0.0-bKhmM9agAwA8kiw7qOAMnu34tkOY2iAODMH3ejES5ILd",
+            .url = "git+https://gitlab.com/hanabi_dev/tiger_lint.git#1e4cc2379cb622c697360991538e86a99b9be5c1",
+            .hash = "tiger_lint-0.0.0-bKhmMxKmAwD6h8hPqJ3Jtd_7fBKlGCkhvdvPmUEzMNvd",
         },
         .luaz = .{
             .url = "git+https://github.com/mxpv/luaz#2e12d367d2251c65fdce5c95358cabc5be5d0a9d",

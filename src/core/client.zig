@@ -1,4 +1,5 @@
 const std = @import("std");
+const caps = @import("capabilities");
 const zb = @import("protocol");
 const Protocol = zb.Protocol;
 const blocks = @import("blocks.zig");
@@ -18,7 +19,6 @@ const Client = @This();
 const packet_buf_bytes = 1100;
 pub const ip_str_len = 15;
 const drain_buf_bytes = 64 * 1024;
-const recv_poll_timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(25), .clock = .real } };
 // Larger than any accepted client packet; invalid IDs disconnect immediately.
 const in_buf_bytes = 4096;
 
@@ -943,19 +943,67 @@ pub fn read_loop(self: *Client) void {
         std.crypto.secureZero(u8, inbuf[remaining..in_len]);
         in_len = remaining;
         assert(in_len < inbuf.len);
-        const msg = stream.socket.receiveTimeout(Server.io, inbuf[in_len..], recv_poll_timeout) catch |err| switch (err) {
+
+        const recv_poll_ms = 25;
+        const recv_poll_timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromMilliseconds(recv_poll_ms), .clock = .real } };
+
+        const received: usize = if (comptime caps.network.afd_sockets) recv: {
+            // Threaded's receiveTimeout always fails with ConcurrencyUnavailable
+            // on Windows sockets, so let FD enforce the poll timeout instead.
+            const windows = std.os.windows;
+            const NtStatus = @field(windows, "NTSTATUS");
+            var poll: extern struct {
+                timeout: i64,
+                handle_count: u32,
+                exclusive: u32,
+                handle: std.Io.net.Socket.Handle,
+                events: u32,
+                status: NtStatus,
+            } = .{
+                .timeout = -recv_poll_ms * 10_000,
+                .handle_count = 1,
+                .exclusive = 0,
+                .handle = stream.socket.handle,
+                .events = 0x01 | 0x08 | 0x10, // AFD_POLL_RECEIVE | DISCONNECT | ABORT
+                .status = @field(NtStatus, "SUCCESS"),
+            };
+            const poll_bytes = std.mem.asBytes(&poll);
+            const polled = Server.io.operate(.{ .device_io_control = .{
+                .file = .{ .handle = stream.socket.handle, .flags = .{ .nonblocking = true } },
+                .code = @field(@field(@field(windows, "IOCTL"), "AFD"), "POLL"),
+                .in = poll_bytes,
+                .out = poll_bytes,
+            } }) catch return;
+            switch (polled.device_io_control.u.Status) {
+                @field(NtStatus, "SUCCESS"), @field(NtStatus, "TIMEOUT") => if (poll.handle_count == 0) continue,
+                else => {
+                    self.mark_closed();
+                    return;
+                },
+            }
+
+            var bufs = [_][]u8{inbuf[in_len..]};
+            const read = Server.io.operate(.{ .net_read = .{
+                .socket_handle = stream.socket.handle,
+                .data = &bufs,
+            } }) catch return;
+            break :recv (read.net_read catch {
+                self.mark_closed();
+                return;
+            }).data_len;
+        } else (stream.socket.receiveTimeout(Server.io, inbuf[in_len..], recv_poll_timeout) catch |err| switch (err) {
             error.Timeout => continue,
             error.Canceled => return,
             else => {
                 self.mark_closed();
                 return;
             },
-        };
-        if (msg.data.len == 0) {
+        }).data.len;
+        if (received == 0) {
             self.mark_closed();
             return;
         }
-        in_len += msg.data.len;
+        in_len += received;
     }
 }
 
