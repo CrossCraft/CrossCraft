@@ -624,6 +624,7 @@ fn close_pause(self: *@This(), engine: *Engine) void {
     _ = engine.input.pop_context() catch {};
     bindings.refresh_active_context(&engine.input) catch |err| log.warn("failed to refresh gameplay controls: {}", .{err});
     self.player.look_delta = .{ 0, 0 };
+    self.player.gameplay_was_active = false;
     self.pause_ui_state.cancel_active_text();
     self.pause_options_ui_state.cancel_active_text();
     self.pause_controls_ui_state.cancel_active_text();
