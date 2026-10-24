@@ -178,7 +178,7 @@ pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf)
     }
     if (!all_opaque) compute_solid_leaves(buf, near_lod);
 
-    return count_section(buf);
+    return count_section(buf, sy);
 }
 
 /// All-opaque inner rows require classification only at their two borders.
@@ -260,7 +260,11 @@ const FaceMasks = struct {
     flu_yp_count: u8,
 };
 
-fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
+fn floor_row(sy: u32) u32 {
+    return if (sy == 0) 1 else BufY;
+}
+
+fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf, floor_by: u32) FaceMasks {
     assert(by > 0 and by < BufY - 1);
     assert(bz > 0 and bz < BufZ - 1);
     const cur = buf[by][bz];
@@ -282,7 +286,9 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const eff_zp = n_zp.opq | n_zp.solid_leaf;
     const eff_zn = n_zn.opq | n_zn.solid_leaf;
     const eff_yp = n_yp.opq | n_yp.solid_leaf;
-    const eff_yn = n_yn.opq | n_yn.solid_leaf;
+    // The y=0 fluid layer is unreachable, so faces above it can never be seen, therefore they can be culled, saving hugely
+    const floor_fluid = if (by - 1 == floor_by) n_yn.flu else 0;
+    const eff_yn = n_yn.opq | n_yn.solid_leaf | floor_fluid;
 
     // A fully opaque 18-bit row surrounded on Y/Z has no emitting masks.
     // Slabs, cross-plants, and fluids never contribute to eff_cur.
@@ -348,7 +354,7 @@ fn compute_face_masks(by: u32, bz: u32, buf: *const SectionBuf) FaceMasks {
     const tfl_zp = (trans & n_zp.flu) & SectionMask;
     const tfl_zn = (trans & n_zn.flu) & SectionMask;
     const tfl_yp = (trans & n_yp.flu) & SectionMask;
-    const tfl_yn = (trans & n_yn.flu) & SectionMask;
+    const tfl_yn = (trans & n_yn.flu & ~floor_fluid) & SectionMask;
 
     const xp_all = x_pos | flu_xp;
     const xn_all = x_neg | flu_xn;
@@ -412,11 +418,11 @@ fn counts_from_masks(f: FaceMasks) SectionCounts {
     };
 }
 
-pub fn count_section(buf: *const SectionBuf) SectionCounts {
+pub fn count_section(buf: *const SectionBuf, sy: u32) SectionCounts {
     var total: SectionCounts = .{ .opaque_verts = 0, .transparent_verts = 0, .fluid_verts = 0 };
     for (1..BufY - 1) |by| {
         for (1..BufZ - 1) |bz| {
-            const f = compute_face_masks(@intCast(by), @intCast(bz), buf);
+            const f = compute_face_masks(@intCast(by), @intCast(bz), buf, floor_row(sy));
             const row = counts_from_masks(f);
             total.opaque_verts += row.opaque_verts;
             total.transparent_verts += row.transparent_verts;
@@ -720,7 +726,7 @@ pub fn emit_section(
         const world_y: u32 = base_y + @as(u32, @intCast(ly));
         for (0..16) |lz| {
             const bz: u32 = @as(u32, @intCast(lz)) + 1;
-            const f = compute_face_masks(by, bz, buf);
+            const f = compute_face_masks(by, bz, buf, floor_row(sy));
 
             const any = f.x_pos | f.x_neg | f.y_pos | f.y_neg | f.z_pos | f.z_neg |
                 f.sl_xp | f.sl_xn | f.sl_yp | f.sl_yn | f.sl_zp | f.sl_zn |
