@@ -13,3 +13,6 @@ options.json
 .DS_Store
 .vscode/
 .direnv/
+
+# Experiment notes
+notes/
