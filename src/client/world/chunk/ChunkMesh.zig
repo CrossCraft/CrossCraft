@@ -79,9 +79,9 @@ pub fn clear(self: *ChunkMesh) void {
 }
 
 pub fn rebuild(self: *ChunkMesh, atlas: *const TextureAtlas) error{ OutOfMemory, IndexOverflow }!void {
-    self.opaque_data.clear_retaining_capacity();
-    self.trans_data.clear_retaining_capacity();
-    self.fluid_data.clear_retaining_capacity();
+    truncate(&self.opaque_data);
+    truncate(&self.trans_data);
+    truncate(&self.fluid_data);
     {
         // Network block updates must not change the world between counting
         // faces and emitting their geometry.
@@ -116,6 +116,12 @@ pub fn rebuild(self: *ChunkMesh, atlas: *const TextureAtlas) error{ OutOfMemory,
     inline for (&.{ .{ &self.opaque_data, &self.@"opaque" }, .{ &self.trans_data, &self.trans }, .{ &self.fluid_data, &self.fluid } }) |pair| {
         if (pair[0].vertices.items.len > 0) pair[1].update(pair[0]);
     }
+}
+
+/// Empty without clear_retaining_capacity, whose safe-build memset of the old contents cost up to ~0.7 ms per section on PSP.
+pub fn truncate(data: *BatchMeshData) void {
+    data.vertices.items.len = 0;
+    data.indices.items.len = 0;
 }
 
 /// Draw opaque geometry only. Call front-to-back.

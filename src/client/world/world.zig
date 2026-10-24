@@ -20,6 +20,7 @@ const Rendering = ae.Rendering;
 const World = core.World;
 
 const MaxActive: u32 = config.max_sections();
+const MaxColumns: u32 = MaxActive / (core.world_dims.max_height / core.world_dims.chunk_size);
 comptime {
     // Chunk coordinates must fit GridRef.
     assert(core.world_dims.max_length / core.world_dims.chunk_size <= std.math.maxInt(u8));
@@ -46,6 +47,10 @@ loaded: []bool,
 built: []bool,
 in_queue: []bool,
 needed: []bool,
+
+/// Unloaded columns that keep their meshes for reuse by entering columns.
+parked: [MaxColumns]ColumnRef,
+parked_len: u32,
 /// Overflow falls back to a full queue rescan.
 dirty_buf: [MaxDirtyBuf]GridRef,
 dirty_buf_len: u32,
@@ -89,6 +94,7 @@ allocator: std.mem.Allocator,
 io: std.Io,
 
 const GridRef = packed struct { cx: u8, cz: u8, sy: u8 };
+const ColumnRef = struct { cx: u8, cz: u8 };
 
 fn column_index(self: *const WorldRenderer, cx: usize, cz: usize) u32 {
     assert(cx < self.grid_cx);
@@ -137,6 +143,8 @@ pub fn init_in_place(
     @memset(self.loaded, false);
     @memset(self.built, false);
     @memset(self.in_queue, false);
+    self.parked = undefined;
+    self.parked_len = 0;
 
     self.dirty_buf = undefined;
     self.dirty_buf_len = 0;
@@ -200,6 +208,7 @@ pub fn deinit(self: *WorldRenderer) void {
             self.deinit_column(@intCast(cx), @intCast(cz));
         }
     }
+    for (self.parked[0..self.parked_len]) |ref| self.free_parked(ref);
     self.allocator.free(self.grid);
     self.allocator.free(self.loaded);
     self.allocator.free(self.built);
@@ -283,8 +292,13 @@ pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, 
             self.build_estimator.end(self.io);
         } else |_| {
             self.build_estimator.end(self.io);
-            // Evict one distant mesh and retry this section next frame.
-            _ = self.try_evict_farthest(camera);
+            // Release parked memory first, then one distant mesh, and retry this section next frame.
+            if (self.parked_len > 0) {
+                self.parked_len -= 1;
+                self.free_parked(self.parked[self.parked_len]);
+            } else {
+                _ = self.try_evict_farthest(camera);
+            }
             self.build_cursor = @intCast(i);
             return;
         }
@@ -414,6 +428,7 @@ fn recollect(self: *WorldRenderer, camera: *const Camera) void {
     self.cam_cx = camera_chunk(camera.x);
     self.cam_cz = camera_chunk(camera.z);
     self.cam_sy = camera_chunk(camera.y);
+    const radius_changed = Options.capped_render_distance() != self.applied_render_distance;
     self.applied_render_distance = Options.capped_render_distance();
 
     const rd: u32 = self.applied_render_distance;
@@ -442,23 +457,62 @@ fn recollect(self: *WorldRenderer, camera: *const Camera) void {
         }
     }
 
+    // Leaving columns are parked with their buffers instead of freed.
+    // Freeing memsets them in safe builds and reallocating fragments the render pool;
+    // Together that costs up to ~28 ms per chunk crossing on PSP.
+    if (radius_changed) {
+        for (self.parked[0..self.parked_len]) |ref| self.free_parked(ref);
+        self.parked_len = 0;
+    }
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
             const col = self.column_index(cx, cz);
-            if (self.loaded[col] and !self.needed[col]) {
-                self.deinit_column(@intCast(cx), @intCast(cz));
+            if (!self.loaded[col] or self.needed[col]) continue;
+            self.loaded[col] = false;
+            for (0..self.grid_sy) |sy| {
+                self.built[self.section_index(cx, cz, sy)] = false;
+                self.in_queue[self.section_index(cx, cz, sy)] = false;
             }
+            assert(self.parked_len < self.parked.len);
+            self.parked[self.parked_len] = .{ .cx = @intCast(cx), .cz = @intCast(cz) };
+            self.parked_len += 1;
         }
     }
 
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
             const col = self.column_index(cx, cz);
-            if (!self.loaded[col] and self.needed[col]) {
+            if (self.loaded[col] or !self.needed[col]) continue;
+            if (self.parked_len == 0) {
                 if (self.init_column(@intCast(cx), @intCast(cz), camera)) {
                     self.loaded[col] = true;
                 }
+                continue;
             }
+            // A column parked at this very position must be the one reused, or moving another into its slot would overwrite it.
+            var pick: u32 = self.parked_len - 1;
+            for (self.parked[0..self.parked_len], 0..) |ref, i| {
+                if (ref.cx == cx and ref.cz == cz) pick = @intCast(i);
+            }
+            const from = self.parked[pick];
+            self.parked_len -= 1;
+            self.parked[pick] = self.parked[self.parked_len];
+            for (0..self.grid_sy) |sy| {
+                const dst = self.section_index(cx, cz, sy);
+                self.grid[dst] = self.grid[self.section_index(from.cx, from.cz, sy)];
+                const sec = &self.grid[dst];
+                // Empty CPU data hides the stale GPU mesh until the rebuild.
+                ChunkMesh.truncate(&sec.opaque_data);
+                ChunkMesh.truncate(&sec.trans_data);
+                ChunkMesh.truncate(&sec.fluid_data);
+                sec.cx = @intCast(cx);
+                sec.cz = @intCast(cz);
+                sec.near_lod = target_near_lod(@intCast(cx), @intCast(sy), @intCast(cz), camera);
+                sec.ao_enabled = Options.current.ambient_occlusion;
+                sec.anim_progress = 1.0;
+                sec.first_build = true;
+            }
+            self.loaded[col] = true;
         }
     }
 
@@ -491,6 +545,11 @@ fn init_column(self: *WorldRenderer, cx: u8, cz: u8, cam: *const Camera) bool {
         count += 1;
     }
     return true;
+}
+
+fn free_parked(self: *WorldRenderer, ref: ColumnRef) void {
+    assert(!self.loaded[self.column_index(ref.cx, ref.cz)]);
+    for (0..self.grid_sy) |sy| self.grid[self.section_index(ref.cx, ref.cz, sy)].deinit();
 }
 
 fn deinit_column(self: *WorldRenderer, cx: u8, cz: u8) void {
