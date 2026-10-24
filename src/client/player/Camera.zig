@@ -71,11 +71,11 @@ pub fn billboard_basis(self: *const Camera) Rendering.BillboardBatcher.Basis {
     return Rendering.BillboardBatcher.Basis.from_view(camera.get_view_matrix()) catch unreachable;
 }
 
-pub fn apply(self: *Camera) void {
+/// Base state for this frame's world passes; also refreshes the frustum.
+pub fn render_state(self: *Camera) Rendering.RenderState {
     const result = self.matrices(Rendering.aspect_ratio()) catch unreachable;
-    Rendering.gfx.api.set_proj_matrix(&result.projection);
-    Rendering.gfx.api.set_view_matrix(&result.view);
     self.frustum = result.frustum;
+    return .{ .proj = result.projection, .view = result.view };
 }
 
 /// Conservative AABB frustum test for a 16x16x16 section.

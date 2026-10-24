@@ -293,16 +293,12 @@ fn mark_first_built(sec: *ChunkMesh) void {
     if (Options.current.bouncy_chunks) sec.anim_progress = 0.0;
 }
 
-/// Populate visibility and draw every world layer preceding fluids.
-pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera) void {
+/// Populate visibility and draw every world layer preceding fluids. `base` holds the camera matrices and terrain fog.
+pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera, base: *const Rendering.RenderState) void {
     const submerged = collision.liquid_at_point(camera.x, camera.y, camera.z);
 
-    Rendering.gfx.api.bind_texture(Rendering.Texture.Default.handle);
     Sky.clear(submerged);
-    self.sky.draw_plane(camera, submerged);
-
-    set_terrain_fog(submerged);
-    Rendering.gfx.api.bind_texture(self.terrain.handle);
+    self.sky.draw_plane(camera, submerged, base);
 
     self.frame_visible_count = 0;
     for (0..self.grid_cx) |cx| {
@@ -328,76 +324,82 @@ pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera) void {
     const clip_count = self.frame_clip_count;
 
     // Opaque sections render front-to-back.
-    Rendering.gfx.api.set_alpha_blend(false);
+    var terrain = base.*;
+    terrain.texture = self.terrain.handle;
+    terrain.blend = .solid;
     if (clip_count > 0) {
-        Rendering.gfx.api.set_clip_planes(true);
+        terrain.clip_planes = true;
+        Rendering.set_state(&terrain);
         for (visible[0..clip_count]) |ref| {
             self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque();
         }
-        Rendering.gfx.api.set_clip_planes(false);
+        terrain.clip_planes = false;
     }
+    Rendering.set_state(&terrain);
     for (visible[clip_count..]) |ref| {
         self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque();
     }
 
-    Rendering.gfx.api.bind_texture(self.clouds.handle);
-    self.sky.draw_clouds(camera, submerged);
+    var clouds = base.*;
+    clouds.texture = self.clouds.handle;
+    self.sky.draw_clouds(camera, submerged, &clouds);
 
     // Transparent blocks render back-to-front but retain depth writes.
-    set_terrain_fog(submerged);
-    Rendering.gfx.api.bind_texture(self.terrain.handle);
-    Rendering.gfx.api.set_alpha_blend(true);
+    terrain.blend = .alpha;
+    Rendering.set_state(&terrain);
     var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
         ri -= 1;
         self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_transparent();
     }
     if (clip_count > 0) {
-        Rendering.gfx.api.set_clip_planes(true);
+        terrain.clip_planes = true;
+        Rendering.set_state(&terrain);
         while (ri > 0) {
             ri -= 1;
             self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_transparent();
         }
-        Rendering.gfx.api.set_clip_planes(false);
+        terrain.clip_planes = false;
     }
 
-    self.particles.draw();
+    self.particles.draw(&terrain);
 }
 
 /// Rain renders after terrain and particles but before fluid overlays.
-pub fn draw_rain_pass(self: *WorldRenderer, camera: *const Camera) void {
+pub fn draw_rain_pass(self: *WorldRenderer, camera: *const Camera, base: *const Rendering.RenderState) void {
     if (!Options.current.rain) return;
-    Rendering.gfx.api.bind_texture(self.rain_tex.handle);
-    self.rain.draw_streaks(camera);
-    Rendering.gfx.api.bind_texture(self.particles_tex.handle);
-    self.rain.draw_splashes();
+    var state = base.*;
+    state.texture = self.rain_tex.handle;
+    self.rain.draw_streaks(camera, &state);
+    state.texture = self.particles_tex.handle;
+    self.rain.draw_splashes(&state);
 }
 
 /// Consume this frame's visibility list after callers insert world overlays.
-pub fn draw_fluid_pass(self: *WorldRenderer) void {
+pub fn draw_fluid_pass(self: *WorldRenderer, base: *const Rendering.RenderState) void {
     const visible = self.frame_visible[0..self.frame_visible_count];
     const clip_count = self.frame_clip_count;
 
-    Rendering.gfx.api.bind_texture(self.terrain.handle);
-    Rendering.gfx.api.set_alpha_blend(true);
-
     // Fluid pass (back-to-front): water/lava drawn with depth writes off so
     // fluid faces never occlude each other across section borders.
-    Rendering.gfx.api.set_depth_write(false);
+    var fluid = base.*;
+    fluid.texture = self.terrain.handle;
+    fluid.blend = .alpha;
+    fluid.depth_write = false;
+    Rendering.set_state(&fluid);
     var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
         ri -= 1;
         self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_fluid();
     }
     if (clip_count > 0) {
-        Rendering.gfx.api.set_clip_planes(true);
+        fluid.clip_planes = true;
+        Rendering.set_state(&fluid);
         while (ri > 0) {
             ri -= 1;
             self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_fluid();
         }
-        Rendering.gfx.api.set_clip_planes(false);
     }
-    Rendering.gfx.api.set_depth_write(true);
 }
 
 fn recollect(self: *WorldRenderer, camera: *const Camera) void {
@@ -752,7 +754,9 @@ fn camera_chunk(pos: f32) i32 {
     return @intFromFloat(v);
 }
 
-fn set_terrain_fog(submerged: ?collision.Liquid) void {
+/// Fog for terrain and the entities drawn among it.
+pub fn terrain_fog(camera: *const Camera) Rendering.FogState {
+    const submerged = collision.liquid_at_point(camera.x, camera.y, camera.z);
     const c = switch (submerged orelse .water) {
         .water => if (submerged != null) Colors.game_underwater else Colors.game_daytime,
         .lava => Colors.game_underlava,
@@ -765,14 +769,16 @@ fn set_terrain_fog(submerged: ?collision.Liquid) void {
         .lava => 2.0,
     };
     const fog_start: f32 = if (submerged != null) 0.0 else fog_end * 0.4;
-    Rendering.gfx.api.set_fog(
-        Options.current.fog or submerged != null,
-        Camera.near_plane,
-        Camera.far_plane,
-        fog_start,
-        fog_end,
-        @as(f32, @floatFromInt(c.r)) / 255.0,
-        @as(f32, @floatFromInt(c.g)) / 255.0,
-        @as(f32, @floatFromInt(c.b)) / 255.0,
-    );
+    return .{
+        .enabled = Options.current.fog or submerged != null,
+        .near = Camera.near_plane,
+        .far = Camera.far_plane,
+        .start = fog_start,
+        .end = fog_end,
+        .color = .{
+            @as(f32, @floatFromInt(c.r)) / 255.0,
+            @as(f32, @floatFromInt(c.g)) / 255.0,
+            @as(f32, @floatFromInt(c.b)) / 255.0,
+        },
+    };
 }

@@ -234,7 +234,8 @@ fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
     return World.is_sunlit(@intCast(bx), @intCast(by), @intCast(bz));
 }
 
-pub fn draw(self: *ParticleSystem) void {
+pub fn draw(self: *ParticleSystem, state: *const Rendering.RenderState) void {
+    Rendering.set_state(state);
     self.billboards.draw();
 }
 

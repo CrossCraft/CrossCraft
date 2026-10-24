@@ -1039,25 +1039,23 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
         DisconnectState.transition_here(engine);
         return;
     }
-    // UI draw lists leave culling and depth writes disabled across frames.
-    // Establish the world pass state before applying its camera and fog.
-    Rendering.set_state(&.{ .blend = .solid, .depth_write = true, .cull = true });
-    self.player.camera.apply();
-    self.world.draw_world_pass(&self.player.camera);
+    var world = self.player.camera.render_state();
+    world.fog = WorldRenderer.terrain_fog(&self.player.camera);
+    self.world.draw_world_pass(&self.player.camera, &world);
 
     // Rain depth-tests against terrain; the later fluid pass overlays it.
-    self.world.draw_rain_pass(&self.player.camera);
+    self.world.draw_rain_pass(&self.player.camera, &world);
 
     // Draw before fluids so water and lava occlude remote players.
-    self.steve.draw(&self.player);
-    self.steve.draw_nametags(&self.player, &self.font_batcher);
+    self.steve.draw(&self.player, &world);
+    self.steve.draw_nametags(&self.player, &self.font_batcher, &world);
 
     // Pull the block-bounds outline toward the camera to avoid coplanar z-fighting.
     if (self.player.selected) |hit| blk: {
         const block_id = World.data.get_block(hit.x, hit.y, hit.z);
         if (block_id.is_air()) break :blk;
         const bounds = block_id.bounds();
-        Rendering.gfx.api.bind_texture(Rendering.Texture.Default.handle);
+        Rendering.set_state(&world);
         var t = Rendering.Transform.new();
         const cp = Math.cos(self.player.camera.pitch);
         const toward_camera = .{
@@ -1082,35 +1080,24 @@ fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) 
     }
 
     // Fluids do not write depth, so render them after other world geometry.
-    self.world.draw_fluid_pass();
+    self.world.draw_fluid_pass(&world);
 
-    // The viewmodel leaves its projection active; the UI draw restores its own.
     if (!self.hud_hidden) {
-        self.held.draw(ResourcePack.get_tex(.terrain), &self.player.camera);
+        self.held.draw(ResourcePack.get_tex(.terrain), &self.player.camera, &world);
     }
 
-    Rendering.gfx.api.set_fog(false, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
-    // Depth clears preserve the sprite, block-icon, then text ordering.
-    Rendering.gfx.api.clear_depth();
-    self.ui_batcher.draw();
-
-    Rendering.gfx.api.clear_depth();
-    self.iso_blocks.draw();
-
-    Rendering.gfx.api.clear_depth();
-    self.font_batcher.draw();
-    Rendering.gfx.api.clear_depth();
-    if (self.inventory_prepared) |*prepared| prepared.draw();
-    if (self.hud_prepared) |*prepared| prepared.draw();
+    // UI layers stack in draw order: sprite, block-icon, then text. Without depth testing they need no depth clear between them.
+    const hud: Rendering.RenderState = .{ .depth_test = false };
+    self.ui_batcher.draw(&hud);
+    self.iso_blocks.draw(&hud);
+    self.font_batcher.draw(&hud);
+    if (self.inventory_prepared) |*prepared| prepared.draw(&hud);
+    if (self.hud_prepared) |*prepared| prepared.draw(&hud);
 
     if (self.paused) {
-        Rendering.gfx.api.clear_depth();
-        self.pause_batcher.draw();
-
-        Rendering.gfx.api.clear_depth();
-        self.pause_font_batcher.draw();
-        Rendering.gfx.api.clear_depth();
-        if (self.pause_prepared) |*prepared| prepared.draw();
+        self.pause_batcher.draw(&hud);
+        self.pause_font_batcher.draw(&hud);
+        if (self.pause_prepared) |*prepared| prepared.draw(&hud);
     }
 }
 

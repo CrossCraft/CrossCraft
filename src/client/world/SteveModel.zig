@@ -216,12 +216,14 @@ fn lerp_angle(current: f32, target: f32, f_factor: f32) f32 {
     return current + diff * f_factor;
 }
 
-pub fn draw(self: *SteveModel, local: *const Player) void {
+pub fn draw(self: *SteveModel, local: *const Player, base: *const Rendering.RenderState) void {
     const local_x = local.pos_x;
     const local_y = local.pos_y;
     const local_z = local.pos_z;
 
-    Rendering.gfx.api.bind_texture(ResourcePack.get_tex(.char).handle);
+    var state = base.*;
+    state.texture = ResourcePack.get_tex(.char).handle;
+    Rendering.set_state(&state);
 
     const idle_swing = (Math.sin(self.anim_time * std.math.tau * IdleSpeed) * 0.5 + 0.5) * IdleAmplitude;
 
@@ -275,8 +277,10 @@ pub fn draw(self: *SteveModel, local: *const Player) void {
     }
 }
 
-pub fn draw_nametags(self: *SteveModel, local: *const Player, fonts: *const FontBatcher) void {
-    Rendering.gfx.api.bind_texture(fonts.texture.handle);
+pub fn draw_nametags(self: *SteveModel, local: *const Player, fonts: *const FontBatcher, base: *const Rendering.RenderState) void {
+    var state = base.*;
+    state.texture = fonts.texture.handle;
+    Rendering.set_state(&state);
 
     for (&self.states, &self.name_tags, &self.name_aspects) |*st, *nt, aspect| {
         if (!st.active) continue;

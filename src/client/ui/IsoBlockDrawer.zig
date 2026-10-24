@@ -119,14 +119,16 @@ pub fn update(self: *IsoBlockDrawer) void {
     self.signature = signature;
 }
 
-pub fn draw(self: *IsoBlockDrawer) void {
+pub fn draw(self: *IsoBlockDrawer, base: *const Rendering.RenderState) void {
     if (self.mesh_data.vertices.items.len == 0) return;
 
-    Rendering.gfx.api.set_proj_matrix(&Math.Mat4.identity());
-    Rendering.gfx.api.set_view_matrix(&Math.Mat4.identity());
-    Rendering.set_state(&.{ .texture = self.terrain.handle, .depth_write = false });
-
     const ident = Math.Mat4.identity();
+    var state = base.*;
+    state.proj = ident;
+    state.view = ident;
+    state.texture = self.terrain.handle;
+    state.depth_write = false;
+    Rendering.set_state(&state);
     self.mesh.draw(&ident);
 }
 
@@ -309,10 +311,10 @@ fn prepare_commands(context: *anyopaque, commands: []const Ui.CustomRenderable.C
         self.prepared_count += 1;
     }
 }
-fn draw_commands(context: *anyopaque, commands: []const Ui.CustomRenderable.Command) void {
+fn draw_commands(context: *anyopaque, commands: []const Ui.CustomRenderable.Command, base: *const Rendering.RenderState) void {
     const self: *IsoBlockDrawer = @ptrCast(@alignCast(context));
     for (commands) |command| for (self.prepared.items[0..self.prepared_count]) |item| if (item.sequence == command.sequence) {
-        item.drawer.draw();
+        item.drawer.draw(base);
         break;
     };
 }

@@ -112,10 +112,11 @@ fn prepare_batches(self: *@This()) !void {
 
 fn draw(ctx: *anyopaque, _: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
-    self.batcher.draw();
-    self.font_batcher.draw();
+    const screen: Rendering.RenderState = .{};
+    self.batcher.draw(&screen);
+    self.font_batcher.draw(&screen);
     Rendering.gfx.api.clear_depth();
-    if (self.prepared_ui) |*prepared| prepared.draw();
+    if (self.prepared_ui) |*prepared| prepared.draw(&screen);
 }
 
 fn begin_ui(self: *@This(), list: *UiDrawList, in: *const ui_input.UiInput) Ui {

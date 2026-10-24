@@ -78,25 +78,26 @@ pub fn clear(submerged: ?collision.Liquid) void {
     );
 }
 
-pub fn draw_plane(self: *Sky, camera: *const Camera, submerged: ?collision.Liquid) void {
-    set_sky_fog(submerged);
-    Rendering.gfx.api.set_alpha_blend(false);
+pub fn draw_plane(self: *Sky, camera: *const Camera, submerged: ?collision.Liquid, base: *const Rendering.RenderState) void {
+    var state = base.*;
+    state.texture = Rendering.Texture.Default.handle;
+    state.fog = sky_fog(submerged);
+    state.blend = .solid;
+    // The camera-relative background can sit below the clouds. It must not
+    // occlude them or terrain as the camera changes height.
+    state.depth_write = false;
+    Rendering.set_state(&state);
     const m = Math.Mat4.scaling(PlaneSize, 1.0, PlaneSize)
         .mul(Math.Mat4.translation(
         camera.x - HalfSize,
         camera.y + SkyYOffset,
         camera.z - HalfSize,
     ));
-    // The camera-relative background can sit below the clouds. It must not
-    // occlude them or terrain as the camera changes height.
-    Rendering.gfx.api.set_depth_write(false);
     self.plane_mesh.draw(&m);
-    Rendering.gfx.api.set_depth_write(true);
 }
 
-pub fn draw_clouds(self: *Sky, _: *const Camera, submerged: ?collision.Liquid) void {
-    set_sky_fog(submerged);
-    Rendering.gfx.api.set_alpha_blend(true);
+/// `base` carries the cloud texture.
+pub fn draw_clouds(self: *Sky, _: *const Camera, submerged: ?collision.Liquid, base: *const Rendering.RenderState) void {
     const dims = World.data.dims;
     const center: f32 = @floatFromInt(dims.length / 2);
     const cloud_y: f32 = @floatFromInt(dims.height + CloudYMargin);
@@ -106,26 +107,30 @@ pub fn draw_clouds(self: *Sky, _: *const Camera, submerged: ?collision.Liquid) v
         cloud_y,
         center - HalfSize,
     ));
-    Rendering.gfx.api.set_uv_offset(-self.scroll / CloudUvPeriod, 0.0);
-    Rendering.gfx.api.set_culling(false);
+    var state = base.*;
+    state.fog = sky_fog(submerged);
+    state.blend = .alpha;
+    state.uv_offset = .{ -self.scroll / CloudUvPeriod, 0.0 };
+    state.cull = false;
+    Rendering.set_state(&state);
     self.cloud_mesh.draw(&m);
-    Rendering.gfx.api.set_culling(true);
-    Rendering.gfx.api.set_uv_offset(0.0, 0.0);
 }
 
-fn set_sky_fog(submerged: ?collision.Liquid) void {
+fn sky_fog(submerged: ?collision.Liquid) Rendering.FogState {
     const c = fog_color(submerged);
     const params = fog_params(submerged);
-    Rendering.gfx.api.set_fog(
-        true,
-        Camera.near_plane,
-        Camera.far_plane,
-        params[0],
-        params[1],
-        @as(f32, @floatFromInt(c.r)) / 255.0,
-        @as(f32, @floatFromInt(c.g)) / 255.0,
-        @as(f32, @floatFromInt(c.b)) / 255.0,
-    );
+    return .{
+        .enabled = true,
+        .near = Camera.near_plane,
+        .far = Camera.far_plane,
+        .start = params[0],
+        .end = params[1],
+        .color = .{
+            @as(f32, @floatFromInt(c.r)) / 255.0,
+            @as(f32, @floatFromInt(c.g)) / 255.0,
+            @as(f32, @floatFromInt(c.b)) / 255.0,
+        },
+    };
 }
 
 fn fog_color(submerged: ?collision.Liquid) Color {
