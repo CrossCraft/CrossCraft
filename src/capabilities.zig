@@ -184,6 +184,11 @@ pub fn ClientType(comptime ae: type) type {
             // Compensate for the fixed-point vertex format's quantization.
             pub const opaque_chunk_scale: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32753.0 else 16.0;
             pub const translucent_chunk_scale: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32763.0 else 16.0;
+            /// Chunk build time per drawn frame. The first build of a frame always runs.
+            pub const chunk_build_budget_ns: i64 = switch (ae.platform) {
+                .psp, .nintendo_3ds, .nintendo_switch => 4 * 1_000_000,
+                else => 2 * 1_000_000,
+            };
             pub const present_paces_loading = ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
         };
 

@@ -702,7 +702,7 @@ fn begin_pause_ui(self: *@This(), list: *UiDrawList, ui_state: *UiState, in: *co
     });
 }
 
-fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetContext) anyerror!void {
+fn update(ctx: *anyopaque, engine: *Engine, dt: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
 
     if (self.conn.take_position()) |pose| self.player.apply_server_position(pose);
@@ -816,7 +816,7 @@ fn update(ctx: *anyopaque, engine: *Engine, dt: f32, budget: *const Util.BudgetC
     }
 
     self.steve.update(dt, &self.player_list, &self.font_batcher);
-    self.world.update(dt, budget, &self.player.camera);
+    self.world.update(dt, &self.player.camera);
     SoundManager.update(
         dt,
         self.player.camera.x,

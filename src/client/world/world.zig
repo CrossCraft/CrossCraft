@@ -11,9 +11,11 @@ const Sky = @import("sky/sky.zig");
 const ParticleSystem = @import("ParticleSystem.zig");
 const Rain = @import("Rain.zig");
 const config = @import("../config.zig");
+const capabilities = @import("capabilities");
 const Math = @import("math");
 
 const assert = std.debug.assert;
+const caps = capabilities.ClientType(ae);
 const Util = ae.Util;
 const Rendering = ae.Rendering;
 
@@ -70,6 +72,9 @@ build_queue: [MaxActive]GridRef,
 build_cursor: u32,
 build_end: u32,
 build_estimator: Util.Estimator,
+
+/// Chunk build time spent since the last drawn frame.
+frame_build_ns: i64,
 
 /// Shared across opaque and fluid passes so overlays can render between them.
 frame_visible: [MaxActive]GridRef,
@@ -160,6 +165,7 @@ pub fn init_in_place(
     self.build_cursor = 0;
     self.build_end = 0;
     self.build_estimator = Util.Estimator.init();
+    self.frame_build_ns = 0;
     self.frame_visible = undefined;
     self.frame_visible_count = 0;
     self.frame_clip_count = 0;
@@ -217,7 +223,7 @@ pub fn deinit(self: *WorldRenderer) void {
     self.* = undefined;
 }
 
-pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
+pub fn update(self: *WorldRenderer, dt: f32, camera: *const Camera) void {
     assert(std.math.isFinite(dt) and dt >= 0.0);
     assert(self.build_cursor <= self.build_end);
     assert(self.build_end <= self.build_queue.len);
@@ -273,40 +279,45 @@ pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, 
         self.dirty_preserve_order = false;
     }
 
-    if (self.build_cursor >= self.build_end) return;
-
-    const available = budget.safe_remaining();
-    const n: u32 = if (self.build_estimator.is_warming_up())
-        1
-    else
-        @intCast(Math.max(1, self.build_estimator.fit_in(available, .p75)));
-    const end = Math.min(self.build_cursor + n, self.build_end);
-
-    for (self.build_cursor..end) |i| {
-        const ref = self.build_queue[i];
+    // Several fixed updates can run in one late frame, so the budget spans the frame.
+    // Per-step budgets let catch-up steps stack builds onto it.
+    const budget_ns = caps.render.chunk_build_budget_ns;
+    while (self.build_cursor < self.build_end) {
+        const ref = self.build_queue[self.build_cursor];
         const idx = self.section_index(ref.cx, ref.cz, ref.sy);
-        self.build_estimator.begin(self.io);
         assert(self.loaded[self.column_index(ref.cx, ref.cz)]);
         assert(self.in_queue[idx]);
-        if (self.grid[idx].rebuild(&self.atlas)) {
-            self.build_estimator.end(self.io);
-        } else |_| {
-            self.build_estimator.end(self.io);
-            // Release parked memory first, then one distant mesh, and retry this section next frame.
-            if (self.parked_len > 0) {
-                self.parked_len -= 1;
-                self.free_parked(self.parked[self.parked_len]);
-            } else {
-                _ = self.try_evict_farthest(camera);
-            }
-            self.build_cursor = @intCast(i);
-            return;
+        const sec = &self.grid[idx];
+        // Empty sections need no build slot, and their near-zero cost would drag the estimate below real builds.
+        if (World.data.is_chunk_all_air(ref.cx, ref.sy, ref.cz)) {
+            ChunkMesh.truncate(&sec.opaque_data);
+            ChunkMesh.truncate(&sec.trans_data);
+            ChunkMesh.truncate(&sec.fluid_data);
+        } else {
+            if (self.frame_build_ns > 0 and
+                self.frame_build_ns + self.build_estimator.estimate_cost(.p75) > budget_ns) return;
+            var clock = std.Io.Clock.boot;
+            const t0 = clock.now(self.io).toNanoseconds();
+            const result = sec.rebuild(&self.atlas);
+            const elapsed: i64 = @intCast(clock.now(self.io).toNanoseconds() - t0);
+            self.frame_build_ns += elapsed;
+            result catch {
+                // Release parked memory first, then one distant mesh, and retry this section next frame.
+                if (self.parked_len > 0) {
+                    self.parked_len -= 1;
+                    self.free_parked(self.parked[self.parked_len]);
+                } else {
+                    _ = self.try_evict_farthest(camera);
+                }
+                return;
+            };
+            self.build_estimator.record(elapsed);
         }
-        mark_first_built(&self.grid[idx]);
+        mark_first_built(sec);
         self.built[idx] = true;
         self.in_queue[idx] = false;
+        self.build_cursor += 1;
     }
-    self.build_cursor = end;
 }
 
 fn mark_first_built(sec: *ChunkMesh) void {
@@ -322,6 +333,7 @@ pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera, base: *const
     Sky.clear(submerged);
     self.sky.draw_plane(camera, submerged, base);
 
+    self.frame_build_ns = 0;
     self.frame_visible_count = 0;
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
