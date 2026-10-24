@@ -28,6 +28,8 @@ near_lod: bool,
 ao_enabled: bool,
 /// Face pairs joined through non-opaque cells, for cave culling. Unbuilt sections stay fully connected so culling never hides them.
 connectivity: u16,
+/// First opaque quad of each face direction in mesher.opaque_dir_faces order, then the opaque quad count.
+opaque_dir_start: [7]u16,
 /// Rises from 16 blocks below its position at 0 to rest at 1.
 anim_progress: f32,
 first_build: bool,
@@ -49,6 +51,7 @@ pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !ChunkMesh 
         .near_lod = false,
         .ao_enabled = false,
         .connectivity = mesher.all_faces_connected,
+        .opaque_dir_start = @splat(0),
         .anim_progress = 1.0,
         .first_build = true,
         .allocator = allocator,
@@ -111,7 +114,7 @@ pub fn rebuild(self: *ChunkMesh, atlas: *const TextureAtlas) error{ OutOfMemory,
             .@"opaque" = &self.opaque_data,
             .transparent = &self.trans_data,
             .fluid = &self.fluid_data,
-        }, atlas, self.ao_enabled);
+        }, atlas, self.ao_enabled, &self.opaque_dir_start);
 
         // Counting and emission must agree, including double-sided fluid faces.
         const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
@@ -131,11 +134,41 @@ pub fn truncate(data: *BatchMeshData) void {
     data.indices.items.len = 0;
 }
 
-/// Draw opaque geometry only. Call front-to-back.
-pub fn draw_opaque(self: *ChunkMesh) void {
+/// Draw opaque geometry only. Call front-to-back. Directions whose faces all point away from `eye` are skipped.
+pub fn draw_opaque(self: *ChunkMesh, eye: [3]f32) void {
     if (self.opaque_data.vertices.items.len == 0) return;
     const m = model_matrix(self, scale_opaque);
-    self.@"opaque".draw(&m);
+    // The bounce animation moves the section off its grid bounds.
+    if (self.anim_progress < 1.0) {
+        self.@"opaque".draw(&m);
+        return;
+    }
+    const lo = [3]f32{
+        @floatFromInt(self.cx * 16),
+        @floatFromInt(self.sy * 16),
+        @floatFromInt(self.cz * 16),
+    };
+
+    // A face toward -axis can only be seen from before the section's far side on that axis, and a face toward +axis only from beyond its near side.
+    var keep: [7]bool = undefined;
+    for (0..3) |axis| {
+        keep[axis * 2] = eye[axis] < lo[axis] + 16.0;
+        keep[axis * 2 + 1] = eye[axis] > lo[axis];
+    }
+    keep[6] = false;
+    var d: usize = 0;
+    while (d < 6) {
+        if (!keep[d]) {
+            d += 1;
+            continue;
+        }
+        const first = self.opaque_dir_start[d];
+        while (keep[d]) d += 1;
+        const quads: u32 = self.opaque_dir_start[d] - first;
+        if (quads == 0) continue;
+        // Six elements per quad: indices when indexed, vertices otherwise.
+        self.@"opaque".draw_range(&m, @as(u32, first) * 6, quads * 6);
+    }
 }
 
 /// Draw transparent geometry (leaves, glass, cross-plants). Call back-to-front.

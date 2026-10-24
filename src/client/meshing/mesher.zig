@@ -709,8 +709,19 @@ fn emit_fluid_overlay_mask(
     }
 }
 
-/// Meshes have the exact capacities returned by `pack_section`; masks are
-/// recomputed here to avoid a persistent cache on constrained platforms.
+/// Opaque faces are emitted grouped by direction, in connectivity face order, so renderers can skip directions that cannot face the camera.
+pub const opaque_dir_faces = [6]Face{ .x_neg, .x_pos, .y_neg, .y_pos, .z_neg, .z_pos };
+
+/// One row's opaque emission, deferred to the direction-major pass.
+const OpaqueRow = struct {
+    /// Inner 16 bits of the opaque-routed masks, in `opaque_dir_faces` order.
+    faces: [6]u16,
+    solid_leaf: [6]u16,
+    chunk_row: *const [SectionH]Block,
+};
+
+/// Meshes have the exact capacities returned by `pack_section`; masks are recomputed here to avoid a persistent cache on constrained platforms.
+/// `opaque_dir_start` receives each direction's first opaque quad, and the total in its last slot.
 pub fn emit_section(
     buf: *const SectionBuf,
     cx: u32,
@@ -719,13 +730,18 @@ pub fn emit_section(
     m: Meshes,
     atlas: *const TextureAtlas,
     ao: bool,
+    opaque_dir_start: *[7]u16,
 ) void {
     const base_y: u32 = sy * SectionH;
+    var opaque_rows: [SectionH * SectionH]OpaqueRow = undefined;
+    var opaque_row_used: [SectionH * SectionH]bool = undefined;
     for (0..SectionH) |ly| {
         const by: u32 = @as(u32, @intCast(ly)) + 1;
         const world_y: u32 = base_y + @as(u32, @intCast(ly));
         for (0..16) |lz| {
             const bz: u32 = @as(u32, @intCast(lz)) + 1;
+            const row_index = ly * SectionH + lz;
+            opaque_row_used[row_index] = false;
             const f = compute_face_masks(by, bz, buf, floor_row(sy));
 
             const any = f.x_pos | f.x_neg | f.y_pos | f.y_neg | f.z_pos | f.z_neg |
@@ -736,19 +752,25 @@ pub fn emit_section(
 
             const chunk_row = World.data.get_chunk_row(@intCast(cx * SectionH), @intCast(world_y), @intCast(cz * SectionH + lz));
 
-            if (f.x_pos != 0) emit_mask(f.x_pos, world_y, @intCast(lz), cx, cz, .x_pos, m, atlas, chunk_row, buf, by, bz, ao);
-            if (f.x_neg != 0) emit_mask(f.x_neg, world_y, @intCast(lz), cx, cz, .x_neg, m, atlas, chunk_row, buf, by, bz, ao);
-            if (f.z_pos != 0) emit_mask(f.z_pos, world_y, @intCast(lz), cx, cz, .z_pos, m, atlas, chunk_row, buf, by, bz, ao);
-            if (f.z_neg != 0) emit_mask(f.z_neg, world_y, @intCast(lz), cx, cz, .z_neg, m, atlas, chunk_row, buf, by, bz, ao);
-            if (f.y_pos != 0) emit_mask(f.y_pos, world_y, @intCast(lz), cx, cz, .y_pos, m, atlas, chunk_row, buf, by, bz, ao);
-            if (f.y_neg != 0) emit_mask(f.y_neg, world_y, @intCast(lz), cx, cz, .y_neg, m, atlas, chunk_row, buf, by, bz, ao);
+            // Matches emit_mask's routing: opaque blocks and slabs go to the opaque mesh.
+            const routed = buf[by][bz].opq | buf[by][bz].slab;
+            const dir_masks = [6]u32{ f.x_neg, f.x_pos, f.y_neg, f.y_pos, f.z_neg, f.z_pos };
+            const leaf_masks = [6]u32{ f.sl_xn, f.sl_xp, f.sl_yn, f.sl_yp, f.sl_zn, f.sl_zp };
+            var deferred: u32 = 0;
+            const row = &opaque_rows[row_index];
 
-            if (f.sl_xp != 0) emit_opaque_leaf_mask(f.sl_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
-            if (f.sl_xn != 0) emit_opaque_leaf_mask(f.sl_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
-            if (f.sl_zp != 0) emit_opaque_leaf_mask(f.sl_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
-            if (f.sl_zn != 0) emit_opaque_leaf_mask(f.sl_zn, world_y, @intCast(lz), cx, cz, .z_neg, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
-            if (f.sl_yp != 0) emit_opaque_leaf_mask(f.sl_yp, world_y, @intCast(lz), cx, cz, .y_pos, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
-            if (f.sl_yn != 0) emit_opaque_leaf_mask(f.sl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.@"opaque", atlas, chunk_row, buf, by, bz, ao);
+            for (dir_masks, leaf_masks, 0..) |mask, leaf, d| {
+                row.faces[d] = @truncate((mask & routed) >> 1);
+                row.solid_leaf[d] = @truncate(leaf >> 1);
+                deferred |= (mask & routed) | leaf;
+                const rest = mask & ~routed;
+                if (rest != 0) emit_mask(rest, world_y, @intCast(lz), cx, cz, opaque_dir_faces[d], m, atlas, chunk_row, buf, by, bz, ao);
+            }
+
+            if (deferred != 0) {
+                row.chunk_row = chunk_row;
+                opaque_row_used[row_index] = true;
+            }
 
             if (f.cross != 0) emit_cross_mask(f.cross, world_y, @intCast(lz), cx, cz, m.transparent, atlas, chunk_row);
 
@@ -760,6 +782,24 @@ pub fn emit_section(
             if (f.tfl_yn != 0) emit_fluid_overlay_mask(f.tfl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.fluid, atlas);
         }
     }
+
+    const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
+    for (opaque_dir_faces, 0..) |face, d| {
+        opaque_dir_start[d] = @intCast(m.@"opaque".vertices.items.len / verts_per_quad);
+        for (0..SectionH * SectionH) |row_index| {
+            if (!opaque_row_used[row_index]) continue;
+            const row = &opaque_rows[row_index];
+            const ly: u32 = @intCast(row_index / SectionH);
+            const lz: u32 = @intCast(row_index % SectionH);
+            const world_y = base_y + ly;
+            const faces = @as(u32, row.faces[d]) << 1;
+            const leaves = @as(u32, row.solid_leaf[d]) << 1;
+            if (faces != 0) emit_mask(faces, world_y, lz, cx, cz, face, m, atlas, row.chunk_row, buf, ly + 1, lz + 1, ao);
+            if (leaves != 0) emit_opaque_leaf_mask(leaves, world_y, lz, cx, cz, face, m.@"opaque", atlas, row.chunk_row, buf, ly + 1, lz + 1, ao);
+        }
+    }
+    opaque_dir_start[6] = @intCast(m.@"opaque".vertices.items.len / verts_per_quad);
+    assert(opaque_dir_start[0] == 0);
 }
 
 /// Bit for an unordered pair of section faces, indexed x-, x+, y-, y+, z-, z+.

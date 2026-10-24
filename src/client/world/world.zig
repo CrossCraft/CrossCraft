@@ -424,13 +424,13 @@ pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera, base: *const
         terrain.clip_planes = true;
         Rendering.set_state(&terrain);
         for (visible[0..clip_count]) |ref| {
-            self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque();
+            self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque(.{ camera.x, camera.y, camera.z });
         }
         terrain.clip_planes = false;
     }
     Rendering.set_state(&terrain);
     for (visible[clip_count..]) |ref| {
-        self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque();
+        self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque(.{ camera.x, camera.y, camera.z });
     }
 
     var clouds = base.*;
