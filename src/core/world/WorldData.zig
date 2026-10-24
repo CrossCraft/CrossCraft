@@ -219,6 +219,11 @@ fn update_light_column(self: *WorldData, x: u16, y: u16, z: u16, block: Block) v
     }
 }
 
+/// One more than the y of the column's top light-blocking block.
+pub fn light_height(self: *const WorldData, x: u16, z: u16) u8 {
+    return self.light_map[self.column_index(z, x)];
+}
+
 pub fn is_sunlit(self: *const WorldData, x: u16, y: u16, z: u16) bool {
     return y + 1 >= self.light_map[self.column_index(z, x)];
 }

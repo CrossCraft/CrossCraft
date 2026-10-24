@@ -17,7 +17,6 @@ const Math = @import("math");
 
 const assert = std.debug.assert;
 const caps = capabilities.ClientType(ae);
-const Util = ae.Util;
 const Rendering = ae.Rendering;
 
 const World = core.World;
@@ -78,8 +77,16 @@ applied_ao: bool,
 build_queue: [MaxActive]GridRef,
 build_cursor: u32,
 build_end: u32,
-build_estimator: Util.Estimator,
-
+/// The one section build in progress; its steps share the frame budget.
+job: meshing.mesher.BuildJob,
+job_target: ?GridRef,
+/// The section changed mid-build; restart from a fresh snapshot.
+job_stale: bool,
+/// Output buffers, swapped into the section when the job finishes.
+job_out: [3]ChunkMesh.BatchMeshData,
+job_out_sized: bool,
+/// Build time spent on the current job across frames.
+job_ns: i64,
 /// Chunk build time spent since the last drawn frame.
 frame_build_ns: i64,
 
@@ -191,7 +198,11 @@ pub fn init_in_place(
     self.build_queue = undefined;
     self.build_cursor = 0;
     self.build_end = 0;
-    self.build_estimator = Util.Estimator.init();
+    self.job_target = null;
+    self.job_stale = false;
+    self.job_out = @splat(.{ .vertices = .empty, .indices = .empty });
+    self.job_out_sized = false;
+    self.job_ns = 0;
     self.frame_build_ns = 0;
     self.frame_visible = undefined;
     self.frame_visible_count = 0;
@@ -218,16 +229,14 @@ pub fn init_in_place(
 
     self.recollect(camera);
 
-    while (self.build_cursor < self.build_end and self.build_estimator.is_warming_up()) {
-        const ref = self.build_queue[self.build_cursor];
-        const idx = self.section_index(ref.cx, ref.cz, ref.sy);
-        self.build_estimator.begin(io);
-        self.grid[idx].rebuild(&self.atlas) catch break;
-        self.build_estimator.end(io);
-        mark_first_built(&self.grid[idx]);
-        self.built[idx] = true;
-        self.in_queue[idx] = false;
-        self.build_cursor += 1;
+    // Fill the first view synchronously so the world appears complete.
+    var warmup_builds: u32 = 0;
+    while (warmup_builds < 64) {
+        switch (self.build_step(camera)) {
+            .idle, .blocked => break,
+            .finished => warmup_builds += 1,
+            .worked => {},
+        }
     }
 }
 
@@ -245,6 +254,7 @@ pub fn deinit(self: *WorldRenderer) void {
     // State transitions drain the GPU, so retired buffers are free to go.
     for (self.retired[0..self.retired_len]) |*r| r.data.deinit(self.allocator);
     for (self.spares[0..self.spares_len]) |*d| d.deinit(self.allocator);
+    for (&self.job_out) |*d| d.deinit(self.allocator);
     self.allocator.free(self.grid);
     self.allocator.free(self.loaded);
     self.allocator.free(self.built);
@@ -314,45 +324,163 @@ pub fn update(self: *WorldRenderer, dt: f32, camera: *const Camera) void {
 
     // Several fixed updates can run in one late frame, so the budget spans the frame.
     // Per-step budgets let catch-up steps stack builds onto it.
+    // Build steps are short, so the first always runs and the last may run over by one step.
     const budget_ns = caps.render.chunk_build_budget_ns;
+    var clock = std.Io.Clock.boot;
+    while (self.frame_build_ns < budget_ns) {
+        const t0 = clock.now(self.io).toNanoseconds();
+        const progress = self.build_step(camera);
+        const elapsed: i64 = @intCast(clock.now(self.io).toNanoseconds() - t0);
+        self.frame_build_ns += elapsed;
+        self.job_ns += elapsed;
+        switch (progress) {
+            .idle, .blocked => return,
+            .finished => self.job_ns = 0,
+            .worked => {},
+        }
+    }
+}
+
+const BuildProgress = enum {
+    /// Nothing queued.
+    idle,
+    /// A step ran; the build continues.
+    worked,
+    /// A section build completed this step.
+    finished,
+    /// Out of memory; retry next frame.
+    blocked,
+};
+
+/// Advance section building by one short step: start the next queued build, run one job stage, or install a finished job's meshes.
+fn build_step(self: *WorldRenderer, camera: *const Camera) BuildProgress {
+    const target = self.job_target orelse return self.start_job();
+    const idx = self.section_index(target.cx, target.cz, target.sy);
+    const sec = &self.grid[idx];
+    // Unloading or recycling the column moved the section out from under the job.
+    if (!self.loaded[self.column_index(target.cx, target.cz)] or
+        sec.cx != target.cx or sec.cz != target.cz or sec.sy != target.sy)
+    {
+        self.job_target = null;
+        return .worked;
+    }
+    if (self.job_stale) {
+        self.begin_job(target, sec);
+        return .worked;
+    }
+    const job = &self.job;
+    switch (job.stage) {
+        .pack => job.step_pack(),
+        .count => job.step_count(),
+        .connect => job.step_connect(),
+        .emit_rows, .emit_opaque => {
+            if (!self.job_out_sized) {
+                const counts = job.counts;
+                assert(counts.opaque_verts % 6 == 0 and counts.transparent_verts % 6 == 0 and counts.fluid_verts % 6 == 0);
+                const quads = [3]u32{ counts.opaque_verts / 6, counts.transparent_verts / 6, counts.fluid_verts / 6 };
+                for (&self.job_out, quads) |*out, n| {
+                    out.ensure_quad_capacity(self.allocator, n) catch {
+                        // Release parked memory first, then one distant mesh.
+                        if (self.parked_len > 0) {
+                            self.parked_len -= 1;
+                            self.free_parked(self.parked[self.parked_len]);
+                        } else {
+                            _ = self.try_evict_farthest(camera);
+                        }
+                        return .blocked;
+                    };
+                }
+                self.job_out_sized = true;
+                // Allocation can be slow in a fragmented pool; give it its own step.
+                return .worked;
+            }
+            job.step_emit(.{
+                .@"opaque" = &self.job_out[0],
+                .transparent = &self.job_out[1],
+                .fluid = &self.job_out[2],
+            }, &self.atlas);
+        },
+        .done => {
+            self.finish_job(sec, idx);
+            return .finished;
+        },
+    }
+    return .worked;
+}
+
+/// Take the next unbuilt section from the queue. Empty ones finish at once.
+fn start_job(self: *WorldRenderer) BuildProgress {
     while (self.build_cursor < self.build_end) {
         const ref = self.build_queue[self.build_cursor];
         const idx = self.section_index(ref.cx, ref.cz, ref.sy);
-        assert(self.loaded[self.column_index(ref.cx, ref.cz)]);
-        assert(self.in_queue[idx]);
+        self.build_cursor += 1;
+        // A finished job may have built a section queued again behind it.
+        if (self.built[idx] or !self.loaded[self.column_index(ref.cx, ref.cz)]) continue;
         const sec = &self.grid[idx];
-        // Empty sections need no build slot, and their near-zero cost would drag the estimate below real builds.
         if (World.data.is_chunk_all_air(ref.cx, ref.sy, ref.cz)) {
             sec.connectivity = meshing.mesher.all_faces_connected;
             ChunkMesh.truncate(&sec.opaque_data);
             ChunkMesh.truncate(&sec.trans_data);
             ChunkMesh.truncate(&sec.fluid_data);
-        } else {
-            if (self.frame_build_ns > 0 and
-                self.frame_build_ns + self.build_estimator.estimate_cost(.p75) > budget_ns) return;
-            var clock = std.Io.Clock.boot;
-            const t0 = clock.now(self.io).toNanoseconds();
-            self.detach_drawn_buffers(sec);
-            const result = sec.rebuild(&self.atlas);
-            const elapsed: i64 = @intCast(clock.now(self.io).toNanoseconds() - t0);
-            self.frame_build_ns += elapsed;
-            result catch {
-                // Release parked memory first, then one distant mesh, and retry this section next frame.
-                if (self.parked_len > 0) {
-                    self.parked_len -= 1;
-                    self.free_parked(self.parked[self.parked_len]);
-                } else {
-                    _ = self.try_evict_farthest(camera);
-                }
-                return;
-            };
-            self.build_estimator.record(elapsed);
+            mark_first_built(sec);
+            self.built[idx] = true;
+            self.in_queue[idx] = false;
+            continue;
         }
-        mark_first_built(sec);
-        self.built[idx] = true;
-        self.in_queue[idx] = false;
-        self.build_cursor += 1;
+        self.job_ns = 0;
+        self.begin_job(ref, sec);
+        return .worked;
     }
+    return .idle;
+}
+
+fn begin_job(self: *WorldRenderer, ref: GridRef, sec: *const ChunkMesh) void {
+    assert(sec.cx == ref.cx and sec.cz == ref.cz and sec.sy == ref.sy);
+    assert(!World.data.is_chunk_all_air(ref.cx, ref.sy, ref.cz));
+    {
+        // The snapshot is the build's only read of the world.
+        World.lock_world_shared();
+        defer World.unlock_world_shared();
+
+        self.job.begin(ref.cx, ref.sy, ref.cz, sec.near_lod, sec.ao_enabled);
+    }
+    self.job_target = ref;
+    self.job_stale = false;
+    self.job_out_sized = false;
+    for (&self.job_out) |*out| ChunkMesh.truncate(out);
+}
+
+/// Swap the job's meshes into the section. Its old buffers go back to the job unless an in-flight frame may still draw them.
+fn finish_job(self: *WorldRenderer, sec: *ChunkMesh, idx: u32) void {
+    const job = &self.job;
+    assert(job.stage == .done and self.job_out_sized);
+    assert(!self.built[idx]);
+    // Counting and emission must agree, including double-sided fluid faces.
+    const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
+    assert(self.job_out[0].vertices.items.len == job.counts.opaque_verts / 6 * verts_per_quad);
+    assert(self.job_out[1].vertices.items.len == job.counts.transparent_verts / 6 * verts_per_quad);
+    assert(self.job_out[2].vertices.items.len == job.counts.fluid_verts / 6 * verts_per_quad);
+
+    const fence_passed = Rendering.gfx.api.gpu_fence_passed(sec.drawn_fence);
+    inline for (.{ &sec.opaque_data, &sec.trans_data, &sec.fluid_data }, .{ &sec.@"opaque", &sec.trans, &sec.fluid }, 0..) |data, mesh, k| {
+        const old = data.*;
+        data.* = self.job_out[k];
+        self.job_out[k] = old;
+        if (!fence_passed and (old.vertices.capacity > 0 or old.indices.capacity > 0)) {
+            self.retire(old, sec.drawn_fence);
+            self.job_out[k] = if (self.spares_len > 0) blk: {
+                self.spares_len -= 1;
+                break :blk self.spares[self.spares_len];
+            } else .{ .vertices = .empty, .indices = .empty };
+        }
+        if (data.vertices.items.len > 0) mesh.update(data);
+    }
+    sec.connectivity = job.connectivity;
+    sec.opaque_dir_start = job.opaque_dir_start;
+    mark_first_built(sec);
+    self.built[idx] = true;
+    self.in_queue[idx] = false;
+    self.job_target = null;
 }
 
 fn mark_first_built(sec: *ChunkMesh) void {
@@ -648,20 +776,6 @@ fn free_parked(self: *WorldRenderer, ref: ColumnRef) void {
     }
 }
 
-/// Swap in spare buffers when the GPU may still read the section's own, so a rebuild never writes memory an in-flight frame draws from.
-fn detach_drawn_buffers(self: *WorldRenderer, sec: *ChunkMesh) void {
-    if (Rendering.gfx.api.gpu_fence_passed(sec.drawn_fence)) return;
-    inline for (.{ &sec.opaque_data, &sec.trans_data, &sec.fluid_data }) |data| {
-        if (data.vertices.capacity > 0 or data.indices.capacity > 0) {
-            self.retire(data.*, sec.drawn_fence);
-            data.* = if (self.spares_len > 0) blk: {
-                self.spares_len -= 1;
-                break :blk self.spares[self.spares_len];
-            } else .{ .vertices = .empty, .indices = .empty };
-        }
-    }
-}
-
 /// Hand buffers the GPU may still read to the retired list and leave the section empty, so freeing it does not release memory in use.
 fn retire_drawn_buffers(self: *WorldRenderer, sec: *ChunkMesh) void {
     if (Rendering.gfx.api.gpu_fence_passed(sec.drawn_fence)) return;
@@ -792,6 +906,15 @@ fn flush_ordered_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
         count += 1;
     }
 
+    // Block edits rebuild in their own order, so an unrelated build in progress yields and requeues right behind them.
+    if (self.job_target) |target| {
+        self.job_target = null;
+        if (!contains_grid_ref(front[0..front_len], target) and count < MaxActive) {
+            reordered[count] = target;
+            count += 1;
+        }
+    }
+
     for (self.build_queue[self.build_cursor..self.build_end]) |ref| {
         if (contains_grid_ref(front[0..front_len], ref)) continue;
         if (count >= MaxActive) {
@@ -874,6 +997,9 @@ fn mark_section_dirty_impl(self: *WorldRenderer, cx: u8, sy: u8, cz: u8, track_q
     self.rain.mark_dirty();
     if (!self.loaded[col]) return;
     self.built[idx] = false;
+    if (self.job_target) |target| {
+        if (target.cx == cx and target.cz == cz and target.sy == sy) self.job_stale = true;
+    }
     if (self.in_queue[idx] and !track_queued) return;
     self.record_dirty_ref(.{ .cx = cx, .cz = cz, .sy = sy }, preserve_order);
 }

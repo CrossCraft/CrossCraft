@@ -2,9 +2,7 @@
 const std = @import("std");
 const ae = @import("aether");
 const Vertex = @import("aether").Rendering.Vertex;
-const World = @import("core").World;
 const capabilities = @import("capabilities");
-const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
 const mesher = @import("meshing").mesher;
 
 const assert = std.debug.assert;
@@ -87,50 +85,6 @@ pub fn clear(self: *ChunkMesh) void {
     self.opaque_data.clear_and_free(a);
     self.trans_data.clear_and_free(a);
     self.fluid_data.clear_and_free(a);
-}
-
-pub fn rebuild(self: *ChunkMesh, atlas: *const TextureAtlas) error{ OutOfMemory, IndexOverflow }!void {
-    truncate(&self.opaque_data);
-    truncate(&self.trans_data);
-    truncate(&self.fluid_data);
-    {
-        // Network block updates must not change the world between counting
-        // faces and emitting their geometry.
-        World.lock_world_shared();
-        defer World.unlock_world_shared();
-
-        if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) {
-            self.connectivity = mesher.all_faces_connected;
-            return;
-        }
-
-        var buf: mesher.SectionBuf = undefined;
-        const counts = mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
-        self.connectivity = mesher.section_connectivity(&buf);
-        assert(counts.opaque_verts % 6 == 0);
-        assert(counts.transparent_verts % 6 == 0);
-        assert(counts.fluid_verts % 6 == 0);
-        const a = self.allocator;
-        try self.opaque_data.ensure_quad_capacity(a, counts.opaque_verts / 6);
-        try self.trans_data.ensure_quad_capacity(a, counts.transparent_verts / 6);
-        try self.fluid_data.ensure_quad_capacity(a, counts.fluid_verts / 6);
-
-        mesher.emit_section(&buf, self.cx, self.sy, self.cz, .{
-            .@"opaque" = &self.opaque_data,
-            .transparent = &self.trans_data,
-            .fluid = &self.fluid_data,
-        }, atlas, self.ao_enabled, &self.opaque_dir_start);
-
-        // Counting and emission must agree, including double-sided fluid faces.
-        const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
-        assert(self.opaque_data.vertices.items.len == counts.opaque_verts / 6 * verts_per_quad);
-        assert(self.trans_data.vertices.items.len == counts.transparent_verts / 6 * verts_per_quad);
-        assert(self.fluid_data.vertices.items.len == counts.fluid_verts / 6 * verts_per_quad);
-    }
-
-    inline for (&.{ .{ &self.opaque_data, &self.@"opaque" }, .{ &self.trans_data, &self.trans }, .{ &self.fluid_data, &self.fluid } }) |pair| {
-        if (pair[0].vertices.items.len > 0) pair[1].update(pair[0]);
-    }
 }
 
 /// Empty without clear_retaining_capacity, whose safe-build memset of the old contents cost up to ~0.7 ms per section on PSP.

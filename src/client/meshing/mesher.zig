@@ -12,32 +12,32 @@ const Face = face_mod.Face;
 const SectionH: u32 = core.world_dims.chunk_size;
 const Block = core.blocks.Block;
 
-fn face_sunlit(wx: u16, y: u32, wz: u16, face: Face) bool {
-    const nx: i32 = @as(i32, wx) + switch (face) {
-        .x_pos => @as(i32, 1),
-        .x_neg => @as(i32, -1),
-        else => @as(i32, 0),
+/// Whether the cell beside padded (bx, by, bz) across `face` is sunlit.
+/// Cells outside the world count as sunlit (sky above, world edge).
+fn face_sunlit(snap: *const Snapshot, bx: u32, by: u32, bz: u32, face: Face) bool {
+    const nx: u32 = switch (face) {
+        .x_pos => bx + 1,
+        .x_neg => bx - 1,
+        else => bx,
     };
-    const ny: i32 = @as(i32, @intCast(y)) + switch (face) {
-        .y_pos => @as(i32, 1),
-        .y_neg => @as(i32, -1),
-        else => @as(i32, 0),
+    const ny: u32 = switch (face) {
+        .y_pos => by + 1,
+        .y_neg => by - 1,
+        else => by,
     };
-    const nz: i32 = @as(i32, wz) + switch (face) {
-        .z_pos => @as(i32, 1),
-        .z_neg => @as(i32, -1),
-        else => @as(i32, 0),
+    const nz: u32 = switch (face) {
+        .z_pos => bz + 1,
+        .z_neg => bz - 1,
+        else => bz,
     };
-    // Out-of-bounds neighbors are treated as sunlit (sky above / world edge)
-    const dims = World.data.dims;
-    const max_x: i32 = @intCast(dims.length);
-    const max_y: i32 = @intCast(dims.height);
-    const max_z: i32 = @intCast(dims.depth);
-    if (nx < 0 or nx >= max_x or
-        nz < 0 or nz >= max_z or
-        ny < 0 or ny >= max_y)
-        return true;
-    return World.is_sunlit(@intCast(nx), @intCast(ny), @intCast(nz));
+    return cell_sunlit(snap, nx, ny, nz);
+}
+
+fn cell_sunlit(snap: *const Snapshot, bx: u32, by: u32, bz: u32) bool {
+    assert(bx < BufZ and by < BufY and bz < BufZ);
+    const wy: i32 = @as(i32, @intCast(snap.sy * SectionH + by)) - 1;
+    if (wy < 0) return true;
+    return wy + 1 >= snap.light[bz][bx];
 }
 
 /// Bits 1..16 set: the 16 inner columns of the 18-wide padded row.
@@ -67,13 +67,70 @@ pub const SectionCounts = struct {
     fluid_verts: u32,
 };
 
-fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
+/// Everything a section build reads, captured once so the remaining build steps run without the world lock and can span frames.
+/// A streaming world can fill it from a page plus its neighbors' borders.
+pub const Snapshot = struct {
+    /// Padded [y][z][x]: the section and a one-block border. Cells outside the world hold air; packing classifies them by position.
+    blocks: [BufY][BufZ][BufZ]Block,
+    /// Light height (y + 1 of the top light blocker) of each padded column [z][x]; 0 outside the world, which reads as sunlit.
+    light: [BufZ][BufZ]u8,
+    cx: u32,
+    sy: u32,
+    cz: u32,
+    world_length: u32,
+    world_height: u32,
+    world_depth: u32,
+    all_opaque: bool,
+};
+
+/// Capture a section for building. The caller holds the world lock.
+pub fn gather(snap: *Snapshot, cx: u32, sy: u32, cz: u32) void {
     const dims = World.data.dims;
+    assert(cx < dims.chunks_x and sy < dims.chunks_y and cz < dims.chunks_z);
+    snap.cx = cx;
+    snap.sy = sy;
+    snap.cz = cz;
+    snap.world_length = dims.length;
+    snap.world_height = dims.height;
+    snap.world_depth = dims.depth;
+    snap.all_opaque = World.data.is_chunk_all_opaque(cx, sy, cz);
+    const x0: i32 = @as(i32, @intCast(cx * SectionH)) - 1;
+    const z0: i32 = @as(i32, @intCast(cz * SectionH)) - 1;
+    const y0: i32 = @as(i32, @intCast(sy * SectionH)) - 1;
+    for (0..BufY) |by| {
+        const y = y0 + @as(i32, @intCast(by));
+        for (0..BufZ) |bz| {
+            const z = z0 + @as(i32, @intCast(bz));
+            const row = &snap.blocks[by][bz];
+            if (y < 0 or y >= dims.height or z < 0 or z >= dims.depth) {
+                @memset(row, .air);
+                continue;
+            }
+            // The inner 16 blocks are one contiguous chunk row.
+            row[1..17].* = World.data.get_chunk_row(@intCast(cx * SectionH), @intCast(y), @intCast(z)).*;
+            row[0] = if (x0 >= 0) World.get_block(@intCast(x0), @intCast(y), @intCast(z)) else .air;
+            row[17] = if (x0 + 17 < dims.length) World.get_block(@intCast(x0 + 17), @intCast(y), @intCast(z)) else .air;
+        }
+    }
+    for (0..BufZ) |bz| {
+        const z = z0 + @as(i32, @intCast(bz));
+        for (0..BufZ) |bx| {
+            const x = x0 + @as(i32, @intCast(bx));
+            snap.light[bz][bx] = if (x < 0 or z < 0 or x >= dims.length or z >= dims.depth)
+                0
+            else
+                World.data.light_height(@intCast(x), @intCast(z));
+        }
+    }
+}
+
+fn pack_row(snap: *const Snapshot, by: u32, bz: u32) Row {
     const Air: Row = .{ .opq = 0, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
     const Boundary: Row = .{ .opq = 0x3FFFF, .vis = 0, .flu = 0, .cross = 0, .leaf = 0, .slab = 0, .glass = 0, .solid_leaf = 0 };
-    const world_h: i32 = @intCast(dims.height);
-    if (y >= world_h) return Air;
-    if (wz_raw < 0 or wz_raw >= @as(i32, @intCast(dims.depth))) return Boundary;
+    const y: i32 = @as(i32, @intCast(snap.sy * SectionH + by)) - 1;
+    const z: i32 = @as(i32, @intCast(snap.cz * SectionH + bz)) - 1;
+    if (y >= snap.world_height) return Air;
+    if (z < 0 or z >= snap.world_depth) return Boundary;
     if (y < 0) return Boundary;
 
     var opq: u32 = 0;
@@ -83,28 +140,14 @@ fn pack_row(cx: u32, y: i32, wz_raw: i32) Row {
     var leaf: u32 = 0;
     var slab: u32 = 0;
     var glass: u32 = 0;
-    const wy: u16 = @intCast(y);
-    const wz: u16 = @intCast(wz_raw);
-
-    // Inner bits share one contiguous chunk row, avoiding 16 index lookups.
-    const chunk_row = World.data.get_chunk_row(@intCast(cx * SectionH), wy, wz);
-
+    const row = &snap.blocks[by][bz];
     for (0..BufZ) |i| {
-        const wx_raw: i32 = @as(i32, @intCast(cx)) * SectionH + @as(i32, @intCast(i)) - 1;
-        if (wx_raw < 0 or wx_raw >= @as(i32, @intCast(dims.length))) {
+        const x: i32 = @as(i32, @intCast(snap.cx * SectionH + i)) - 1;
+        if (x < 0 or x >= snap.world_length) {
             opq |= @as(u32, 1) << @intCast(i);
             continue;
         }
-        const block = if (i >= 1 and i <= 16) chunk_row[i - 1] else World.get_block(@intCast(wx_raw), wy, wz);
-        const p = block.mesh_props();
-        const bit: u32 = @as(u32, 1) << @intCast(i);
-        if (p.@"opaque") opq |= bit;
-        if (p.visible) vis |= bit;
-        if (p.fluid) flu |= bit;
-        if (p.cross) cross |= bit;
-        if (p.leaf) leaf |= bit;
-        if (p.slab) slab |= bit;
-        if (p.glass) glass |= bit;
+        classify_block(row[i], @intCast(i), &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
     }
     return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .glass = glass, .solid_leaf = 0 };
 }
@@ -159,33 +202,21 @@ fn compute_solid_leaves(buf: *SectionBuf, near_lod: bool) void {
     }
 }
 
-/// Return exact mesh capacities. Emission recomputes masks because retaining
-/// them across passes costs more memory than the repeated bit operations.
-pub fn pack_section(cx: u32, sy: u32, cz: u32, near_lod: bool, buf: *SectionBuf) SectionCounts {
-    const all_opaque = World.data.is_chunk_all_opaque(cx, sy, cz);
-    const base_y: i32 = @as(i32, @intCast(sy)) * SectionH - 1;
-
+/// Fill `buf` with the snapshot's row masks.
+pub fn pack_section(snap: *const Snapshot, near_lod: bool, buf: *SectionBuf) void {
     for (0..BufY) |by| {
-        const wy: i32 = base_y + @as(i32, @intCast(by));
-
         for (0..BufZ) |bz| {
-            const wz_raw: i32 = @as(i32, @intCast(cz)) * SectionH + @as(i32, @intCast(bz)) - 1;
-            buf[by][bz] = if (all_opaque and by >= 1 and by <= 16 and bz >= 1 and bz <= 16)
-                pack_row_opaque(cx, wy, wz_raw)
+            buf[by][bz] = if (snap.all_opaque and by >= 1 and by <= 16 and bz >= 1 and bz <= 16)
+                pack_row_opaque(snap, @intCast(by), @intCast(bz))
             else
-                pack_row(cx, wy, wz_raw);
+                pack_row(snap, @intCast(by), @intCast(bz));
         }
     }
-    if (!all_opaque) compute_solid_leaves(buf, near_lod);
-
-    return count_section(buf, sy);
+    if (!snap.all_opaque) compute_solid_leaves(buf, near_lod);
 }
 
 /// All-opaque inner rows require classification only at their two borders.
-fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
-    const dims = World.data.dims;
-    assert(y >= 0 and y < dims.height);
-    assert(wz_raw >= 0 and wz_raw < dims.depth);
+fn pack_row_opaque(snap: *const Snapshot, by: u32, bz: u32) Row {
     var opq: u32 = SectionMask;
     var vis: u32 = SectionMask;
     var flu: u32 = 0;
@@ -193,23 +224,17 @@ fn pack_row_opaque(cx: u32, y: i32, wz_raw: i32) Row {
     var leaf: u32 = 0;
     var slab: u32 = 0;
     var glass: u32 = 0;
-    const wy: u16 = @intCast(y);
-    const wz: u16 = @intCast(wz_raw);
-
-    const left_x: i32 = @as(i32, @intCast(cx)) * SectionH - 1;
-    if (left_x < 0) {
+    const row = &snap.blocks[by][bz];
+    if (snap.cx == 0) {
         opq |= 1;
     } else {
-        classify_block(World.get_block(@intCast(left_x), wy, wz), 0, &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
+        classify_block(row[0], 0, &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
     }
-
-    const right_x: u32 = (cx + 1) * SectionH;
-    if (right_x >= dims.length) {
+    if ((snap.cx + 1) * SectionH >= snap.world_length) {
         opq |= @as(u32, 1) << 17;
     } else {
-        classify_block(World.get_block(@intCast(right_x), wy, wz), 17, &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
+        classify_block(row[17], 17, &opq, &vis, &flu, &cross, &leaf, &slab, &glass);
     }
-
     return .{ .opq = opq, .vis = vis, .flu = flu, .cross = cross, .leaf = leaf, .slab = slab, .glass = glass, .solid_leaf = 0 };
 }
 
@@ -541,29 +566,24 @@ pub const Meshes = struct {
 
 fn emit_mask(
     mask: u32,
-    y: u32,
-    lz: u32,
-    cx: u32,
-    cz: u32,
+    snap: *const Snapshot,
     face: Face,
     m: Meshes,
     atlas: *const TextureAtlas,
-    chunk_row: *const [SectionH]Block,
     buf: *const SectionBuf,
     by: u32,
     bz: u32,
     ao: bool,
 ) void {
-    const local_y: u32 = y % SectionH;
+    const local_y: u32 = by - 1;
+    const lz: u32 = bz - 1;
     var bits = mask;
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
         bits &= bits - 1;
 
         const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * SectionH + lx);
-        const wz: u16 = @intCast(cz * SectionH + lz);
-        const block = chunk_row[lx];
+        const block = snap.blocks[by][bz][bit_pos];
         const tile = block.face_tile(face);
 
         const p = block.mesh_props();
@@ -576,7 +596,7 @@ fn emit_mask(
         else
             m.transparent;
 
-        const shadowed = !face_sunlit(wx, y, wz, face) and !p.emits_light;
+        const shadowed = !face_sunlit(snap, bit_pos, by, bz, face) and !p.emits_light;
 
         if (face == .y_pos and is_fluid) {
             assert_has_room(mesh, 2);
@@ -602,20 +622,17 @@ fn emit_mask(
 
 fn emit_opaque_leaf_mask(
     mask: u32,
-    y: u32,
-    lz: u32,
-    cx: u32,
-    cz: u32,
+    snap: *const Snapshot,
     face: Face,
     opaque_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
-    chunk_row: *const [SectionH]Block,
     buf: *const SectionBuf,
     by: u32,
     bz: u32,
     ao: bool,
 ) void {
-    const local_y: u32 = y % SectionH;
+    const local_y: u32 = by - 1;
+    const lz: u32 = bz - 1;
     var bits = mask;
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
@@ -623,11 +640,9 @@ fn emit_opaque_leaf_mask(
         assert_has_room(opaque_mesh, 1);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * SectionH + lx);
-        const wz: u16 = @intCast(cz * SectionH + lz);
-        const block = chunk_row[lx];
+        const block = snap.blocks[by][bz][bit_pos];
         const tile = block.face_tile(face);
-        const shadowed = !face_sunlit(wx, y, wz, face);
+        const shadowed = !face_sunlit(snap, bit_pos, by, bz, face);
         if (ao) {
             const colors = compute_ao_colors(buf, by, bz, bit_pos, face, shadowed);
             face_mod.emit_face_colors(opaque_mesh, face, lx, local_y, lz, tile, atlas, colors);
@@ -639,15 +654,12 @@ fn emit_opaque_leaf_mask(
 
 fn emit_cross_mask(
     mask: u32,
-    y: u32,
-    lz: u32,
-    cx: u32,
-    cz: u32,
+    snap: *const Snapshot,
     transparent_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
-    chunk_row: *const [SectionH]Block,
+    by: u32,
+    bz: u32,
 ) void {
-    const local_y: u32 = y % SectionH;
     var bits = mask;
     while (bits != 0) {
         const bit_pos: u5 = @intCast(@ctz(bits));
@@ -655,40 +667,31 @@ fn emit_cross_mask(
         assert_has_room(transparent_mesh, 4);
 
         const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * SectionH + lx);
-        const wz: u16 = @intCast(cz * SectionH + lz);
-        const block = chunk_row[lx];
+        const block = snap.blocks[by][bz][bit_pos];
         const tile = block.face_tile(.y_pos);
-        face_mod.emit_cross(transparent_mesh, lx, local_y, lz, tile, atlas, !World.is_sunlit(wx, @intCast(y), wz));
+        face_mod.emit_cross(transparent_mesh, lx, by - 1, bz - 1, tile, atlas, !cell_sunlit(snap, bit_pos, by, bz));
     }
 }
 
-/// Neighbor texture lookup may cross a chunk boundary.
+/// The overlay takes the neighbor's texture, which may lie in the border.
 fn emit_fluid_overlay_mask(
     mask: u32,
-    y: u32,
-    lz: u32,
-    cx: u32,
-    cz: u32,
+    snap: *const Snapshot,
     face: Face,
     fluid_mesh: *BatchMesh,
     atlas: *const TextureAtlas,
+    by: u32,
+    bz: u32,
 ) void {
-    const local_y: u32 = y % SectionH;
-    const dx: i32 = switch (face) {
-        .x_pos => 1,
-        .x_neg => -1,
-        else => 0,
+    const ny: u32 = switch (face) {
+        .y_pos => by + 1,
+        .y_neg => by - 1,
+        else => by,
     };
-    const dy: i32 = switch (face) {
-        .y_pos => 1,
-        .y_neg => -1,
-        else => 0,
-    };
-    const dz: i32 = switch (face) {
-        .z_pos => 1,
-        .z_neg => -1,
-        else => 0,
+    const nz: u32 = switch (face) {
+        .z_pos => bz + 1,
+        .z_neg => bz - 1,
+        else => bz,
     };
     var bits = mask;
     while (bits != 0) {
@@ -696,16 +699,15 @@ fn emit_fluid_overlay_mask(
         bits &= bits - 1;
         assert_has_room(fluid_mesh, 1);
 
-        const lx: u32 = @as(u32, bit_pos) - 1;
-        const wx: u16 = @intCast(cx * SectionH + lx);
-        const wz: u16 = @intCast(cz * SectionH + lz);
-        const nx: u16 = @intCast(@as(i32, wx) + dx);
-        const ny: u16 = @intCast(@as(i32, @intCast(y)) + dy);
-        const nz: u16 = @intCast(@as(i32, wz) + dz);
-        const neighbor = World.get_block(nx, ny, nz);
+        const nx: u32 = switch (face) {
+            .x_pos => @as(u32, bit_pos) + 1,
+            .x_neg => @as(u32, bit_pos) - 1,
+            else => bit_pos,
+        };
+        const neighbor = snap.blocks[ny][nz][nx];
         const tile = neighbor.face_tile(face);
-        const shadowed = !face_sunlit(wx, y, wz, face) and !neighbor.emits_light();
-        face_mod.emit_fluid_overlay(fluid_mesh, face, lx, local_y, lz, tile, atlas, shadowed);
+        const shadowed = !face_sunlit(snap, bit_pos, by, bz, face) and !neighbor.emits_light();
+        face_mod.emit_fluid_overlay(fluid_mesh, face, @as(u32, bit_pos) - 1, by - 1, bz - 1, tile, atlas, shadowed);
     }
 }
 
@@ -717,90 +719,138 @@ const OpaqueRow = struct {
     /// Inner 16 bits of the opaque-routed masks, in `opaque_dir_faces` order.
     faces: [6]u16,
     solid_leaf: [6]u16,
-    chunk_row: *const [SectionH]Block,
 };
 
-/// Meshes have the exact capacities returned by `pack_section`; masks are recomputed here to avoid a persistent cache on constrained platforms.
-/// `opaque_dir_start` receives each direction's first opaque quad, and the total in its last slot.
-pub fn emit_section(
-    buf: *const SectionBuf,
-    cx: u32,
-    sy: u32,
-    cz: u32,
-    m: Meshes,
-    atlas: *const TextureAtlas,
+/// A section build split into steps short enough to spread across frames.
+/// Only `begin` touches the world, through `gather`.
+pub const BuildJob = struct {
+    snap: Snapshot,
+    buf: SectionBuf,
+    opaque_rows: [SectionH * SectionH]OpaqueRow,
+    opaque_row_used: [SectionH * SectionH]bool,
+    counts: SectionCounts,
+    connectivity: u16,
+    /// First opaque quad of each direction in `opaque_dir_faces` order, then the opaque quad count.
+    opaque_dir_start: [7]u16,
+    near_lod: bool,
     ao: bool,
-    opaque_dir_start: *[7]u16,
-) void {
-    const base_y: u32 = sy * SectionH;
-    var opaque_rows: [SectionH * SectionH]OpaqueRow = undefined;
-    var opaque_row_used: [SectionH * SectionH]bool = undefined;
-    for (0..SectionH) |ly| {
-        const by: u32 = @as(u32, @intCast(ly)) + 1;
-        const world_y: u32 = base_y + @as(u32, @intCast(ly));
-        for (0..16) |lz| {
-            const bz: u32 = @as(u32, @intCast(lz)) + 1;
-            const row_index = ly * SectionH + lz;
-            opaque_row_used[row_index] = false;
-            const f = compute_face_masks(by, bz, buf, floor_row(sy));
+    stage: Stage,
+    /// Next row of the first emit pass, or next direction of the opaque pass.
+    cursor: u32,
 
-            const any = f.x_pos | f.x_neg | f.y_pos | f.y_neg | f.z_pos | f.z_neg |
-                f.sl_xp | f.sl_xn | f.sl_yp | f.sl_yn | f.sl_zp | f.sl_zn |
-                f.cross |
-                f.tfl_xp | f.tfl_xn | f.tfl_yp | f.tfl_yn | f.tfl_zp | f.tfl_zn;
-            if (any == 0) continue;
+    pub const Stage = enum { pack, count, connect, emit_rows, emit_opaque, done };
 
-            const chunk_row = World.data.get_chunk_row(@intCast(cx * SectionH), @intCast(world_y), @intCast(cz * SectionH + lz));
+    /// Rows per first-pass emit step; a quarter of the section.
+    const rows_per_step: u32 = 64;
 
-            // Matches emit_mask's routing: opaque blocks and slabs go to the opaque mesh.
-            const routed = buf[by][bz].opq | buf[by][bz].slab;
-            const dir_masks = [6]u32{ f.x_neg, f.x_pos, f.y_neg, f.y_pos, f.z_neg, f.z_pos };
-            const leaf_masks = [6]u32{ f.sl_xn, f.sl_xp, f.sl_yn, f.sl_yp, f.sl_zn, f.sl_zp };
-            var deferred: u32 = 0;
-            const row = &opaque_rows[row_index];
+    /// Start a build; the caller holds the world lock.
+    pub fn begin(self: *BuildJob, cx: u32, sy: u32, cz: u32, near_lod: bool, ao: bool) void {
+        gather(&self.snap, cx, sy, cz);
+        self.near_lod = near_lod;
+        self.ao = ao;
+        self.stage = .pack;
+        self.cursor = 0;
+    }
 
-            for (dir_masks, leaf_masks, 0..) |mask, leaf, d| {
-                row.faces[d] = @truncate((mask & routed) >> 1);
-                row.solid_leaf[d] = @truncate(leaf >> 1);
-                deferred |= (mask & routed) | leaf;
-                const rest = mask & ~routed;
-                if (rest != 0) emit_mask(rest, world_y, @intCast(lz), cx, cz, opaque_dir_faces[d], m, atlas, chunk_row, buf, by, bz, ao);
-            }
+    pub fn step_pack(self: *BuildJob) void {
+        assert(self.stage == .pack);
+        pack_section(&self.snap, self.near_lod, &self.buf);
+        self.stage = .count;
+    }
 
-            if (deferred != 0) {
-                row.chunk_row = chunk_row;
-                opaque_row_used[row_index] = true;
-            }
+    /// Afterwards `counts` holds exact capacities for the output meshes.
+    pub fn step_count(self: *BuildJob) void {
+        assert(self.stage == .count);
+        self.counts = count_section(&self.buf, self.snap.sy);
+        self.stage = .connect;
+    }
 
-            if (f.cross != 0) emit_cross_mask(f.cross, world_y, @intCast(lz), cx, cz, m.transparent, atlas, chunk_row);
+    /// The flood fill is as long as counting on PSP, so it is its own step.
+    pub fn step_connect(self: *BuildJob) void {
+        assert(self.stage == .connect);
+        self.connectivity = section_connectivity(&self.buf);
+        self.stage = .emit_rows;
+    }
 
-            if (f.tfl_xp != 0) emit_fluid_overlay_mask(f.tfl_xp, world_y, @intCast(lz), cx, cz, .x_pos, m.fluid, atlas);
-            if (f.tfl_xn != 0) emit_fluid_overlay_mask(f.tfl_xn, world_y, @intCast(lz), cx, cz, .x_neg, m.fluid, atlas);
-            if (f.tfl_zp != 0) emit_fluid_overlay_mask(f.tfl_zp, world_y, @intCast(lz), cx, cz, .z_pos, m.fluid, atlas);
-            if (f.tfl_zn != 0) emit_fluid_overlay_mask(f.tfl_zn, world_y, @intCast(lz), cx, cz, .z_neg, m.fluid, atlas);
-            if (f.tfl_yp != 0) emit_fluid_overlay_mask(f.tfl_yp, world_y, @intCast(lz), cx, cz, .y_pos, m.fluid, atlas);
-            if (f.tfl_yn != 0) emit_fluid_overlay_mask(f.tfl_yn, world_y, @intCast(lz), cx, cz, .y_neg, m.fluid, atlas);
+    /// Meshes must start empty with the capacities from `counts`, and stay the same across steps.
+    pub fn step_emit(self: *BuildJob, m: Meshes, atlas: *const TextureAtlas) void {
+        assert(self.cursor <= SectionH * SectionH);
+        switch (self.stage) {
+            .emit_rows => {
+                const end = if (self.cursor + rows_per_step < SectionH * SectionH) self.cursor + rows_per_step else SectionH * SectionH;
+                for (self.cursor..end) |row_index| self.emit_row(@intCast(row_index), m, atlas);
+                self.cursor = end;
+                if (end == SectionH * SectionH) {
+                    // Nothing else routes to the opaque mesh before its pass.
+                    assert(m.@"opaque".vertices.items.len == 0);
+                    self.stage = .emit_opaque;
+                    self.cursor = 0;
+                }
+            },
+            .emit_opaque => {
+                const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
+                const d = self.cursor;
+                const face = opaque_dir_faces[d];
+                self.opaque_dir_start[d] = @intCast(m.@"opaque".vertices.items.len / verts_per_quad);
+                for (0..SectionH * SectionH) |row_index| {
+                    if (!self.opaque_row_used[row_index]) continue;
+                    const row = &self.opaque_rows[row_index];
+                    const by: u32 = @as(u32, @intCast(row_index / SectionH)) + 1;
+                    const bz: u32 = @as(u32, @intCast(row_index % SectionH)) + 1;
+                    const faces = @as(u32, row.faces[d]) << 1;
+                    const leaves = @as(u32, row.solid_leaf[d]) << 1;
+                    if (faces != 0) emit_mask(faces, &self.snap, face, m, atlas, &self.buf, by, bz, self.ao);
+                    if (leaves != 0) emit_opaque_leaf_mask(leaves, &self.snap, face, m.@"opaque", atlas, &self.buf, by, bz, self.ao);
+                }
+                self.cursor += 1;
+                if (self.cursor == opaque_dir_faces.len) {
+                    self.opaque_dir_start[6] = @intCast(m.@"opaque".vertices.items.len / verts_per_quad);
+                    self.stage = .done;
+                }
+            },
+            else => unreachable,
         }
     }
 
-    const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
-    for (opaque_dir_faces, 0..) |face, d| {
-        opaque_dir_start[d] = @intCast(m.@"opaque".vertices.items.len / verts_per_quad);
-        for (0..SectionH * SectionH) |row_index| {
-            if (!opaque_row_used[row_index]) continue;
-            const row = &opaque_rows[row_index];
-            const ly: u32 = @intCast(row_index / SectionH);
-            const lz: u32 = @intCast(row_index % SectionH);
-            const world_y = base_y + ly;
-            const faces = @as(u32, row.faces[d]) << 1;
-            const leaves = @as(u32, row.solid_leaf[d]) << 1;
-            if (faces != 0) emit_mask(faces, world_y, lz, cx, cz, face, m, atlas, row.chunk_row, buf, ly + 1, lz + 1, ao);
-            if (leaves != 0) emit_opaque_leaf_mask(leaves, world_y, lz, cx, cz, face, m.@"opaque", atlas, row.chunk_row, buf, ly + 1, lz + 1, ao);
+    /// Emit a row's transparent and fluid geometry and defer its opaque faces.
+    fn emit_row(self: *BuildJob, row_index: u32, m: Meshes, atlas: *const TextureAtlas) void {
+        const by: u32 = row_index / SectionH + 1;
+        const bz: u32 = row_index % SectionH + 1;
+        self.opaque_row_used[row_index] = false;
+        const buf = &self.buf;
+        const f = compute_face_masks(by, bz, buf, floor_row(self.snap.sy));
+
+        const any = f.x_pos | f.x_neg | f.y_pos | f.y_neg | f.z_pos | f.z_neg |
+            f.sl_xp | f.sl_xn | f.sl_yp | f.sl_yn | f.sl_zp | f.sl_zn |
+            f.cross |
+            f.tfl_xp | f.tfl_xn | f.tfl_yp | f.tfl_yn | f.tfl_zp | f.tfl_zn;
+        if (any == 0) return;
+
+        // Matches emit_mask's routing: opaque blocks and slabs go to the opaque mesh.
+        const routed = buf[by][bz].opq | buf[by][bz].slab;
+        const dir_masks = [6]u32{ f.x_neg, f.x_pos, f.y_neg, f.y_pos, f.z_neg, f.z_pos };
+        const leaf_masks = [6]u32{ f.sl_xn, f.sl_xp, f.sl_yn, f.sl_yp, f.sl_zn, f.sl_zp };
+        var deferred: u32 = 0;
+        const row = &self.opaque_rows[row_index];
+        for (dir_masks, leaf_masks, 0..) |mask, leaf, d| {
+            row.faces[d] = @truncate((mask & routed) >> 1);
+            row.solid_leaf[d] = @truncate(leaf >> 1);
+            deferred |= (mask & routed) | leaf;
+            const rest = mask & ~routed;
+            if (rest != 0) emit_mask(rest, &self.snap, opaque_dir_faces[d], m, atlas, buf, by, bz, self.ao);
         }
+        self.opaque_row_used[row_index] = deferred != 0;
+
+        if (f.cross != 0) emit_cross_mask(f.cross, &self.snap, m.transparent, atlas, by, bz);
+
+        if (f.tfl_xp != 0) emit_fluid_overlay_mask(f.tfl_xp, &self.snap, .x_pos, m.fluid, atlas, by, bz);
+        if (f.tfl_xn != 0) emit_fluid_overlay_mask(f.tfl_xn, &self.snap, .x_neg, m.fluid, atlas, by, bz);
+        if (f.tfl_zp != 0) emit_fluid_overlay_mask(f.tfl_zp, &self.snap, .z_pos, m.fluid, atlas, by, bz);
+        if (f.tfl_zn != 0) emit_fluid_overlay_mask(f.tfl_zn, &self.snap, .z_neg, m.fluid, atlas, by, bz);
+        if (f.tfl_yp != 0) emit_fluid_overlay_mask(f.tfl_yp, &self.snap, .y_pos, m.fluid, atlas, by, bz);
+        if (f.tfl_yn != 0) emit_fluid_overlay_mask(f.tfl_yn, &self.snap, .y_neg, m.fluid, atlas, by, bz);
     }
-    opaque_dir_start[6] = @intCast(m.@"opaque".vertices.items.len / verts_per_quad);
-    assert(opaque_dir_start[0] == 0);
-}
+};
 
 /// Bit for an unordered pair of section faces, indexed x-, x+, y-, y+, z-, z+.
 fn face_pair_bit(a: u3, b: u3) u16 {
