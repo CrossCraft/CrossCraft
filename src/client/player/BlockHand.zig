@@ -13,7 +13,7 @@ const Vertex = @import("aether").Rendering.Vertex;
 const capabilities = @import("capabilities");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Camera = @import("Camera.zig");
-const face_mod = @import("../world/chunk/face.zig");
+const face_mod = @import("meshing").face;
 
 const assert = std.debug.assert;
 const caps = capabilities.ClientType(ae);

@@ -19,7 +19,7 @@ const Block = @import("core").blocks.Block;
 
 const Vertex = @import("aether").Rendering.Vertex;
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
-const Face = @import("../world/chunk/face.zig").Face;
+const Face = @import("meshing").face.Face;
 const Scaling = Ui.Scaling;
 
 const IsoBlockDrawer = @This();

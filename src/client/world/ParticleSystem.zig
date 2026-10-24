@@ -10,7 +10,7 @@ const World = core.World;
 const effect_positions = @import("../graphics/effect_positions.zig");
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
-const face_mod = @import("chunk/face.zig");
+const face_mod = @import("meshing").face;
 const Block = core.blocks.Block;
 
 const MaxParticles: u16 = 512;

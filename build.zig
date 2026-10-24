@@ -161,6 +161,7 @@ pub fn build(b: *std.Build) void {
     client_root.addImport("math", math);
     client_root.addImport("protocol", protocol);
     add_engine_services(b, client_root, core);
+    add_meshing(b, client_root, core, math);
 
     if (should_embed) {
         client_root.addAnonymousImport("default_pack", .{
@@ -316,6 +317,7 @@ pub fn build(b: *std.Build) void {
             root.addImport("core", core);
             root.addImport("luaz", luaz_module);
             root.addImport("engine_services", client_root.import_table.get("engine_services").?);
+            root.addImport("meshing", client_root.import_table.get("meshing").?);
             break :unit_tests_root root;
         },
         .filters = test_filters,
@@ -324,6 +326,13 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
     const hosts_step = b.step("test-hosts", "Run client and server host tests");
     hosts_step.dependOn(&run_unit_tests.step);
+
+    const meshing_tests = b.addTest(.{
+        .name = "meshing_tests",
+        .root_module = client_root.import_table.get("meshing").?,
+        .filters = test_filters,
+    });
+    test_step.dependOn(&b.addRunArtifact(meshing_tests).step);
 
     const core_tests = b.addTest(.{
         .root_module = core_tests_root: {
@@ -423,6 +432,7 @@ pub fn build(b: *std.Build) void {
     web_root.addImport("math", math);
     web_root.addImport("protocol", protocol);
     add_engine_services(b, web_root, core);
+    add_meshing(b, web_root, core, math);
 
     const web_build_options = b.addOptions();
     web_build_options.addOption(bool, "embed_pack", false);
@@ -451,6 +461,21 @@ pub fn build(b: *std.Build) void {
 
     const serve_web_step = b.step("serve-web", "Serve zig-out/web with WASM MIME and COOP/COEP headers");
     serve_web_step.dependOn(&serve_web_cmd.step);
+}
+
+/// Meshing dominates chunk-load hitches, so it stays ReleaseFast even in
+/// ReleaseSafe and Debug clients, as worldgen does.
+fn add_meshing(b: *std.Build, root: *std.Build.Module, core: *std.Build.Module, math: *std.Build.Module) void {
+    root.addImport("meshing", b.createModule(.{
+        .root_source_file = b.path("src/client/meshing/root.zig"),
+        .target = root.resolved_target.?,
+        .optimize = .fast,
+        .imports = &.{
+            .{ .name = "aether", .module = root.import_table.get("aether").? },
+            .{ .name = "core", .module = core },
+            .{ .name = "math", .module = math },
+        },
+    }));
 }
 
 fn add_engine_services(b: *std.Build, root: *std.Build.Module, core: *std.Build.Module) void {

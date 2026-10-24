@@ -5,7 +5,7 @@ const Vertex = @import("aether").Rendering.Vertex;
 const World = @import("core").World;
 const capabilities = @import("capabilities");
 const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
-const mesher = @import("mesher.zig");
+const mesher = @import("meshing").mesher;
 
 const assert = std.debug.assert;
 const caps = capabilities.ClientType(ae);

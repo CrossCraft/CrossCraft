@@ -18,7 +18,7 @@ const Colors = @import("../graphics/Color.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
 const SoundManager = @import("../SoundManager.zig");
-const Face = @import("../world/chunk/face.zig").Face;
+const Face = @import("meshing").face.Face;
 const Options = @import("../Options.zig");
 
 const assert = std.debug.assert;
