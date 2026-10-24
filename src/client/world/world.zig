@@ -81,6 +81,10 @@ particles: ParticleSystem,
 rain: Rain,
 cam_cx: i32,
 cam_cz: i32,
+cam_sy: i32,
+
+sphere_center: [3]f32,
+sphere_radius_sq: f32,
 allocator: std.mem.Allocator,
 io: std.Io,
 
@@ -158,6 +162,9 @@ pub fn init_in_place(
     self.atlas = atlas;
     self.cam_cx = camera_chunk(camera.x);
     self.cam_cz = camera_chunk(camera.z);
+    self.cam_sy = camera_chunk(camera.y);
+    self.sphere_center = .{ camera.x, camera.y, camera.z };
+    self.sphere_radius_sq = 0;
     self.allocator = allocator;
     self.io = io;
 
@@ -221,7 +228,8 @@ pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, 
 
     const new_cx = camera_chunk(camera.x);
     const new_cz = camera_chunk(camera.z);
-    if (new_cx != self.cam_cx or new_cz != self.cam_cz or Options.capped_render_distance() != self.applied_render_distance) {
+    const new_sy = camera_chunk(camera.y);
+    if (new_cx != self.cam_cx or new_cz != self.cam_cz or new_sy != self.cam_sy or Options.capped_render_distance() != self.applied_render_distance) {
         self.recollect(camera);
     }
 
@@ -305,10 +313,10 @@ pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera, base: *const
         for (0..self.grid_cz) |cz| {
             if (!self.loaded[self.column_index(cx, cz)]) continue;
             for (0..self.grid_sy) |sy| {
-                const sec = &self.grid[self.section_index(cx, cz, sy)];
-                if (!camera.section_visible(sec.cx, sec.sy, sec.cz)) continue;
+                const ref: GridRef = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
+                if (!self.in_sphere(ref) or !camera.section_visible(ref.cx, ref.sy, ref.cz)) continue;
                 assert(self.frame_visible_count < self.frame_visible.len);
-                self.frame_visible[self.frame_visible_count] = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
+                self.frame_visible[self.frame_visible_count] = ref;
                 self.frame_visible_count += 1;
             }
         }
@@ -405,12 +413,15 @@ pub fn draw_fluid_pass(self: *WorldRenderer, base: *const Rendering.RenderState)
 fn recollect(self: *WorldRenderer, camera: *const Camera) void {
     self.cam_cx = camera_chunk(camera.x);
     self.cam_cz = camera_chunk(camera.z);
+    self.cam_sy = camera_chunk(camera.y);
     self.applied_render_distance = Options.capped_render_distance();
 
     const rd: u32 = self.applied_render_distance;
     const r: i32 = @intCast(rd);
     const radius_blocks: f32 = @as(f32, @floatFromInt(rd)) * 16.0 + 11.5;
     const radius_blocks_sq = radius_blocks * radius_blocks;
+    self.sphere_center = .{ camera.x, camera.y, camera.z };
+    self.sphere_radius_sq = radius_blocks_sq;
 
     @memset(self.needed, false);
 
@@ -501,13 +512,10 @@ fn queue_unbuilt_sections(self: *WorldRenderer, cam: *const Camera) void {
             if (!self.loaded[self.column_index(cx, cz)]) continue;
             for (0..self.grid_sy) |sy| {
                 const idx = self.section_index(cx, cz, sy);
-                if (!self.built[idx]) {
+                const ref: GridRef = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
+                if (!self.built[idx] and self.in_sphere(ref)) {
                     assert(build_idx < MaxActive);
-                    self.build_queue[build_idx] = .{
-                        .cx = @intCast(cx),
-                        .cz = @intCast(cz),
-                        .sy = @intCast(sy),
-                    };
+                    self.build_queue[build_idx] = ref;
                     self.in_queue[idx] = true;
                     build_idx += 1;
                 }
@@ -531,7 +539,7 @@ fn flush_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
 
     var added: u32 = 0;
     for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
-        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)]) continue;
+        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)] or !self.in_sphere(ref)) continue;
         if (self.in_queue[self.section_index(ref.cx, ref.cz, ref.sy)]) continue;
         if (self.build_end >= MaxActive) {
             self.queue_unbuilt_sections(cam);
@@ -554,7 +562,7 @@ fn flush_ordered_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
     var front_len: u32 = 0;
 
     for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
-        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)]) continue;
+        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)] or !self.in_sphere(ref)) continue;
         if (contains_grid_ref(front[0..front_len], ref)) continue;
         front[front_len] = ref;
         front_len += 1;
@@ -728,6 +736,13 @@ fn refresh_lod_states(self: *WorldRenderer, cam: *const Camera) void {
 
 fn sort_build_queue(queue: []GridRef, cam: *const Camera) void {
     std.sort.pdq(GridRef, queue, cam, grid_ref_less_than);
+}
+
+fn in_sphere(self: *const WorldRenderer, ref: GridRef) bool {
+    const dx = @as(f32, @floatFromInt(@as(u32, ref.cx) * 16)) + 8.0 - self.sphere_center[0];
+    const dy = @as(f32, @floatFromInt(@as(u32, ref.sy) * 16)) + 8.0 - self.sphere_center[1];
+    const dz = @as(f32, @floatFromInt(@as(u32, ref.cz) * 16)) + 8.0 - self.sphere_center[2];
+    return dx * dx + dy * dy + dz * dz <= self.sphere_radius_sq;
 }
 
 fn grid_ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
