@@ -50,6 +50,12 @@ loaded: []bool,
 built: []bool,
 in_queue: []bool,
 needed: []bool,
+/// Section buffers the GPU may still read, reused or freed once their fence passes.
+/// Only sections rebuilt or freed within a frame of being drawn land here, so this holds a section or two at a time.
+retired: [MaxRetired]Retired,
+retired_len: u32,
+spares: [MaxSpares]ChunkMesh.BatchMeshData,
+spares_len: u32,
 
 /// Unloaded columns that keep their meshes for reuse by entering columns.
 parked: [MaxColumns]ColumnRef,
@@ -111,6 +117,10 @@ const no_face: u3 = 6;
 /// Search directions in connectivity face order: x-, x+, y-, y+, z-, z+.
 const face_steps = [6][3]i32{ .{ -1, 0, 0 }, .{ 1, 0, 0 }, .{ 0, -1, 0 }, .{ 0, 1, 0 }, .{ 0, 0, -1 }, .{ 0, 0, 1 } };
 const ColumnRef = struct { cx: u8, cz: u8 };
+const Retired = struct { data: ChunkMesh.BatchMeshData, fence: u32 };
+const MaxRetired: u32 = 48;
+/// One section's worth of opaque, transparent, and fluid buffers.
+const MaxSpares: u32 = 3;
 
 fn column_index(self: *const WorldRenderer, cx: usize, cz: usize) u32 {
     assert(cx < self.grid_cx);
@@ -163,6 +173,10 @@ pub fn init_in_place(
     @memset(self.in_queue, false);
     self.parked = undefined;
     self.parked_len = 0;
+    self.retired = undefined;
+    self.retired_len = 0;
+    self.spares = undefined;
+    self.spares_len = 0;
 
     self.dirty_buf = undefined;
     self.dirty_buf_len = 0;
@@ -228,6 +242,9 @@ pub fn deinit(self: *WorldRenderer) void {
         }
     }
     for (self.parked[0..self.parked_len]) |ref| self.free_parked(ref);
+    // State transitions drain the GPU, so retired buffers are free to go.
+    for (self.retired[0..self.retired_len]) |*r| r.data.deinit(self.allocator);
+    for (self.spares[0..self.spares_len]) |*d| d.deinit(self.allocator);
     self.allocator.free(self.grid);
     self.allocator.free(self.loaded);
     self.allocator.free(self.built);
@@ -254,6 +271,8 @@ pub fn update(self: *WorldRenderer, dt: f32, camera: *const Camera) void {
             }
         }
     }
+
+    self.collect_retired();
 
     const new_cx = camera_chunk(camera.x);
     const new_cz = camera_chunk(camera.z);
@@ -313,6 +332,7 @@ pub fn update(self: *WorldRenderer, dt: f32, camera: *const Camera) void {
                 self.frame_build_ns + self.build_estimator.estimate_cost(.p75) > budget_ns) return;
             var clock = std.Io.Clock.boot;
             const t0 = clock.now(self.io).toNanoseconds();
+            self.detach_drawn_buffers(sec);
             const result = sec.rebuild(&self.atlas);
             const elapsed: i64 = @intCast(clock.now(self.io).toNanoseconds() - t0);
             self.frame_build_ns += elapsed;
@@ -621,7 +641,66 @@ fn init_column(self: *WorldRenderer, cx: u8, cz: u8, cam: *const Camera) bool {
 
 fn free_parked(self: *WorldRenderer, ref: ColumnRef) void {
     assert(!self.loaded[self.column_index(ref.cx, ref.cz)]);
-    for (0..self.grid_sy) |sy| self.grid[self.section_index(ref.cx, ref.cz, sy)].deinit();
+    for (0..self.grid_sy) |sy| {
+        const sec = &self.grid[self.section_index(ref.cx, ref.cz, sy)];
+        self.retire_drawn_buffers(sec);
+        sec.deinit();
+    }
+}
+
+/// Swap in spare buffers when the GPU may still read the section's own, so a rebuild never writes memory an in-flight frame draws from.
+fn detach_drawn_buffers(self: *WorldRenderer, sec: *ChunkMesh) void {
+    if (Rendering.gfx.api.gpu_fence_passed(sec.drawn_fence)) return;
+    inline for (.{ &sec.opaque_data, &sec.trans_data, &sec.fluid_data }) |data| {
+        if (data.vertices.capacity > 0 or data.indices.capacity > 0) {
+            self.retire(data.*, sec.drawn_fence);
+            data.* = if (self.spares_len > 0) blk: {
+                self.spares_len -= 1;
+                break :blk self.spares[self.spares_len];
+            } else .{ .vertices = .empty, .indices = .empty };
+        }
+    }
+}
+
+/// Hand buffers the GPU may still read to the retired list and leave the section empty, so freeing it does not release memory in use.
+fn retire_drawn_buffers(self: *WorldRenderer, sec: *ChunkMesh) void {
+    if (Rendering.gfx.api.gpu_fence_passed(sec.drawn_fence)) return;
+    inline for (.{ &sec.opaque_data, &sec.trans_data, &sec.fluid_data }) |data| {
+        if (data.vertices.capacity > 0 or data.indices.capacity > 0) {
+            self.retire(data.*, sec.drawn_fence);
+            data.* = .{ .vertices = .empty, .indices = .empty };
+        }
+    }
+}
+
+fn retire(self: *WorldRenderer, data: ChunkMesh.BatchMeshData, fence: u32) void {
+    if (self.retired_len == MaxRetired) {
+        Rendering.gfx.api.drain_gpu();
+        self.collect_retired();
+    }
+    assert(self.retired_len < MaxRetired);
+    self.retired[self.retired_len] = .{ .data = data, .fence = fence };
+    self.retired_len += 1;
+}
+
+fn collect_retired(self: *WorldRenderer) void {
+    var i: u32 = 0;
+    while (i < self.retired_len) {
+        const r = &self.retired[i];
+        if (!Rendering.gfx.api.gpu_fence_passed(r.fence)) {
+            i += 1;
+            continue;
+        }
+        if (self.spares_len < MaxSpares) {
+            ChunkMesh.truncate(&r.data);
+            self.spares[self.spares_len] = r.data;
+            self.spares_len += 1;
+        } else {
+            r.data.deinit(self.allocator);
+        }
+        self.retired_len -= 1;
+        self.retired[i] = self.retired[self.retired_len];
+    }
 }
 
 fn deinit_column(self: *WorldRenderer, cx: u8, cz: u8) void {
@@ -752,6 +831,7 @@ fn try_evict_farthest(self: *WorldRenderer, cam: *const Camera) bool {
 
     const ref = best_ref orelse return false;
     const best = self.section_index(ref.cx, ref.cz, ref.sy);
+    self.retire_drawn_buffers(&self.grid[best]);
     self.grid[best].clear();
     self.built[best] = false;
     return true;

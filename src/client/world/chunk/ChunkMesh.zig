@@ -30,6 +30,8 @@ ao_enabled: bool,
 connectivity: u16,
 /// First opaque quad of each face direction in mesher.opaque_dir_faces order, then the opaque quad count.
 opaque_dir_start: [7]u16,
+/// GPU fence of the last frame that drew this section; its buffers must not be rewritten or freed before it passes.
+drawn_fence: u32,
 /// Rises from 16 blocks below its position at 0 to rest at 1.
 anim_progress: f32,
 first_build: bool,
@@ -37,14 +39,16 @@ allocator: std.mem.Allocator,
 
 const ChunkMesh = @This();
 
+const fenced_desc: Rendering.mesh.Desc = .{ .retention = .fenced };
+
 pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !ChunkMesh {
     return .{
         .opaque_data = try BatchMeshData.init(allocator),
-        .@"opaque" = try BatchMesh.init(&.{}),
+        .@"opaque" = try BatchMesh.init(&fenced_desc),
         .trans_data = try BatchMeshData.init(allocator),
-        .trans = try BatchMesh.init(&.{}),
+        .trans = try BatchMesh.init(&fenced_desc),
         .fluid_data = try BatchMeshData.init(allocator),
-        .fluid = try BatchMesh.init(&.{}),
+        .fluid = try BatchMesh.init(&fenced_desc),
         .cx = cx,
         .sy = sy,
         .cz = cz,
@@ -52,6 +56,7 @@ pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !ChunkMesh 
         .ao_enabled = false,
         .connectivity = mesher.all_faces_connected,
         .opaque_dir_start = @splat(0),
+        .drawn_fence = 0,
         .anim_progress = 1.0,
         .first_build = true,
         .allocator = allocator,
@@ -137,6 +142,7 @@ pub fn truncate(data: *BatchMeshData) void {
 /// Draw opaque geometry only. Call front-to-back. Directions whose faces all point away from `eye` are skipped.
 pub fn draw_opaque(self: *ChunkMesh, eye: [3]f32) void {
     if (self.opaque_data.vertices.items.len == 0) return;
+    self.drawn_fence = Rendering.gfx.api.gpu_fence();
     const m = model_matrix(self, scale_opaque);
     // The bounce animation moves the section off its grid bounds.
     if (self.anim_progress < 1.0) {
@@ -174,6 +180,7 @@ pub fn draw_opaque(self: *ChunkMesh, eye: [3]f32) void {
 /// Draw transparent geometry (leaves, glass, cross-plants). Call back-to-front.
 pub fn draw_transparent(self: *ChunkMesh) void {
     if (self.trans_data.vertices.items.len == 0) return;
+    self.drawn_fence = Rendering.gfx.api.gpu_fence();
     const m = model_matrix(self, scale_trans);
     self.trans.draw(&m);
 }
@@ -181,6 +188,7 @@ pub fn draw_transparent(self: *ChunkMesh) void {
 /// Draw fluid geometry (water, lava). Call back-to-front with depth writes off.
 pub fn draw_fluid(self: *ChunkMesh) void {
     if (self.fluid_data.vertices.items.len == 0) return;
+    self.drawn_fence = Rendering.gfx.api.gpu_fence();
     const m = model_matrix(self, scale_trans);
     self.fluid.draw(&m);
 }

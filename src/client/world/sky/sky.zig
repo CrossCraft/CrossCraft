@@ -36,6 +36,9 @@ const CloudSpeed: f32 = 0.175;
 
 const Sky = @This();
 
+// Both meshes are built once; overlapping backends can borrow them as-is.
+const static_desc: Rendering.mesh.Desc = .{ .retention = .static };
+
 plane_data: BatchMeshData,
 plane_mesh: BatchMesh,
 cloud_data: BatchMeshData,
@@ -46,9 +49,9 @@ allocator: std.mem.Allocator,
 pub fn init(allocator: std.mem.Allocator) !Sky {
     var self: Sky = .{
         .plane_data = try BatchMeshData.init(allocator),
-        .plane_mesh = try BatchMesh.init(&.{}),
+        .plane_mesh = try BatchMesh.init(&static_desc),
         .cloud_data = try BatchMeshData.init(allocator),
-        .cloud_mesh = try BatchMesh.init(&.{}),
+        .cloud_mesh = try BatchMesh.init(&static_desc),
         .scroll = 0,
         .allocator = allocator,
     };
