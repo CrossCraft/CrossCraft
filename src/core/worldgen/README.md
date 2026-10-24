@@ -4,7 +4,7 @@ This core module generates the same deterministic block buffer for the playable 
 
 Generation is byte-accurate and tuned for constrained targets, especially PSP. Preserve floating-point operation order and random draw order when changing it.
 
-Run `zig build test` for focused behavior checks and `zig build worldgen-test -Doptimize=ReleaseSafe` for the 100-case golden-hash corpus.
+Run `zig build test` for focused behavior checks and `zig build worldgen-test -Doptimize=safe` for the 100-case golden-hash corpus.
 
 ## Provenance
 

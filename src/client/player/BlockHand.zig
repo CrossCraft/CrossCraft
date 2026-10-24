@@ -13,7 +13,7 @@ const Vertex = @import("aether").Rendering.Vertex;
 const capabilities = @import("capabilities");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
 const Camera = @import("Camera.zig");
-const face_mod = @import("../world/chunk/face.zig");
+const face_mod = @import("meshing").face;
 
 const assert = std.debug.assert;
 const caps = capabilities.ClientType(ae);
@@ -197,15 +197,16 @@ fn rebuild(self: *BlockHand, block: Block, shadowed: bool) void {
     self.mesh.update(&self.mesh_data);
 }
 
-pub fn draw(self: *BlockHand, terrain: *const Rendering.Texture, camera: *const Camera) void {
+pub fn draw(self: *BlockHand, terrain: *const Rendering.Texture, camera: *const Camera, base: *const Rendering.RenderState) void {
     if (self.cached_block.is_air() or self.mesh_data.vertices.items.len == 0) return;
 
     Rendering.gfx.api.clear_depth();
 
+    var state = base.*;
+    state.texture = terrain.handle;
     const hand_fov: f32 = 70.0 * std.math.pi / 180.0;
-    if (camera.fov != hand_fov) set_projection(hand_fov);
-
-    Rendering.gfx.api.bind_texture(terrain.handle);
+    if (camera.fov != hand_fov) state.proj = projection(hand_fov);
+    Rendering.set_state(&state);
 
     const anim = self.compute_anim();
     const held_p = self.cached_block.mesh_props();
@@ -237,16 +238,13 @@ pub fn draw(self: *BlockHand, terrain: *const Rendering.Texture, camera: *const 
         .mul(view_ry_inv)
         .mul(view_t_inv);
     self.mesh.draw(&model);
-
-    if (camera.fov != hand_fov) set_projection(camera.fov);
 }
 
-fn set_projection(fov: f32) void {
+fn projection(fov: f32) Math.Mat4 {
     const screen_w = Rendering.gfx.surface.get_width();
     const screen_h = Rendering.gfx.surface.get_height();
     const aspect: f32 = @as(f32, @floatFromInt(screen_w)) / @as(f32, @floatFromInt(screen_h));
-    const proj = Math.Mat4.perspective_fov_rh(fov, aspect, hand_near_plane, hand_far_plane);
-    Rendering.gfx.api.set_proj_matrix(&proj);
+    return Math.Mat4.perspective_fov_rh(fov, aspect, hand_near_plane, hand_far_plane);
 }
 
 const Anim = struct {

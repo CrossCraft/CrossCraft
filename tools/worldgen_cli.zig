@@ -9,7 +9,7 @@
 //!   worldgen_cli --serve
 //!     Persistent v2 worker (Classic-Worldgen-RE fuzzer_v2/ORACLE.md).
 //!
-//! Usage: zig build worldgen-cli -Doptimize=ReleaseSafe
+//! Usage: zig build worldgen-cli -Doptimize=safe
 //!        zig-out/bin/worldgen_cli --serve
 
 const std = @import("std");

@@ -21,12 +21,15 @@ const sine_table: [65_536]f32 = blk: {
     }
     break :blk table;
 };
+// Runtime indexing of the comptime value makes the C backend (Switch) rebuild
+// all 256 KiB on the stack per lookup; the pointer pins one static copy.
+const sine_lookup: *const [65_536]f32 = &sine_table;
 
 pub fn trajectory_sine(angle: f32) f32 {
     const scaled: f32 = angle * @as(f32, 10_430.378);
     const integral: i32 = @intFromFloat(scaled);
     const index: u16 = @truncate(@as(u32, @bitCast(integral)));
-    return sine_table[index];
+    return sine_lookup[index];
 }
 
 fn trajectory_cosine(angle: f32) f32 {
@@ -34,7 +37,7 @@ fn trajectory_cosine(angle: f32) f32 {
     const shifted: f32 = scaled + @as(f32, 16_384.0);
     const integral: i32 = @intFromFloat(shifted);
     const index: u16 = @truncate(@as(u32, @bitCast(integral)));
-    return sine_table[index];
+    return sine_lookup[index];
 }
 
 pub const point_32 = struct {

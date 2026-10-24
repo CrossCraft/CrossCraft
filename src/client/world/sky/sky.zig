@@ -14,21 +14,30 @@ const World = @import("core").World;
 const BatchMesh = Rendering.MeshType(Vertex);
 const BatchMeshData = Rendering.MeshDataType(Vertex);
 
-const PlaneGrid: u32 = 64;
-const PlaneSize: f32 = 1024.0;
-const HalfSize: f32 = 512.0;
+// Fog reaches its end at 120 blocks, past which the plane equals the clear color; the plane only needs to reach that far at the screen's edges. The GE pays per vertex, so the grid stays coarse.
+const PlaneGrid: u32 = 16;
+const PlaneSize: f32 = 384.0;
+const PlaneHalfSize: f32 = 192.0;
 const SkyYOffset: f32 = 48.0;
 
 const CloudGrid: u32 = 64;
+const CloudSize: f32 = 1024.0;
+const CloudHalfSize: f32 = 512.0;
+const cloud_cell: f32 = CloudSize / @as(f32, @floatFromInt(CloudGrid));
+/// Cloud cells beyond this many from the camera are fully fogged.
+const CloudDrawRadiusCells: i32 = 11;
 const CloudUvRepeats: u32 = 1;
 /// Scales cloud UV density without changing the mesh.
 const CloudTexScale: u32 = 2;
-const CloudUvPeriod: f32 = PlaneSize * @as(f32, @floatFromInt(CloudTexScale)) / @as(f32, @floatFromInt(CloudUvRepeats));
+const CloudUvPeriod: f32 = CloudSize * @as(f32, @floatFromInt(CloudTexScale)) / @as(f32, @floatFromInt(CloudUvRepeats));
 /// Keep clouds above tall worlds; the classic 64-block height gives Y=72.
 const CloudYMargin: u32 = 8;
 const CloudSpeed: f32 = 0.175;
 
 const Sky = @This();
+
+// Both meshes are built once; overlapping backends can borrow them as-is.
+const static_desc: Rendering.mesh.Desc = .{ .retention = .static };
 
 plane_data: BatchMeshData,
 plane_mesh: BatchMesh,
@@ -40,9 +49,9 @@ allocator: std.mem.Allocator,
 pub fn init(allocator: std.mem.Allocator) !Sky {
     var self: Sky = .{
         .plane_data = try BatchMeshData.init(allocator),
-        .plane_mesh = try BatchMesh.init(&.{}),
+        .plane_mesh = try BatchMesh.init(&static_desc),
         .cloud_data = try BatchMeshData.init(allocator),
-        .cloud_mesh = try BatchMesh.init(&.{}),
+        .cloud_mesh = try BatchMesh.init(&static_desc),
         .scroll = 0,
         .allocator = allocator,
     };
@@ -78,54 +87,77 @@ pub fn clear(submerged: ?collision.Liquid) void {
     );
 }
 
-pub fn draw_plane(self: *Sky, camera: *const Camera, submerged: ?collision.Liquid) void {
-    set_sky_fog(submerged);
-    Rendering.gfx.api.set_alpha_blend(false);
-    const m = Math.Mat4.scaling(PlaneSize, 1.0, PlaneSize)
-        .mul(Math.Mat4.translation(
-        camera.x - HalfSize,
-        camera.y + SkyYOffset,
-        camera.z - HalfSize,
-    ));
+pub fn draw_plane(self: *Sky, camera: *const Camera, submerged: ?collision.Liquid, base: *const Rendering.RenderState) void {
+    var state = base.*;
+    state.texture = Rendering.Texture.Default.handle;
+    state.fog = sky_fog(submerged);
+    state.blend = .solid;
     // The camera-relative background can sit below the clouds. It must not
     // occlude them or terrain as the camera changes height.
-    Rendering.gfx.api.set_depth_write(false);
+    state.depth_write = false;
+    Rendering.set_state(&state);
+    const m = Math.Mat4.scaling(PlaneSize, 1.0, PlaneSize)
+        .mul(Math.Mat4.translation(
+        camera.x - PlaneHalfSize,
+        camera.y + SkyYOffset,
+        camera.z - PlaneHalfSize,
+    ));
     self.plane_mesh.draw(&m);
-    Rendering.gfx.api.set_depth_write(true);
 }
 
-pub fn draw_clouds(self: *Sky, _: *const Camera, submerged: ?collision.Liquid) void {
-    set_sky_fog(submerged);
-    Rendering.gfx.api.set_alpha_blend(true);
+/// `base` carries the cloud texture.
+pub fn draw_clouds(self: *Sky, camera: *const Camera, submerged: ?collision.Liquid, base: *const Rendering.RenderState) void {
     const dims = World.data.dims;
     const center: f32 = @floatFromInt(dims.length / 2);
     const cloud_y: f32 = @floatFromInt(dims.height + CloudYMargin);
-    const m = Math.Mat4.scaling(PlaneSize, 1.0, PlaneSize)
+    const m = Math.Mat4.scaling(CloudSize, 1.0, CloudSize)
         .mul(Math.Mat4.translation(
-        center - HalfSize,
+        center - CloudHalfSize,
         cloud_y,
-        center - HalfSize,
+        center - CloudHalfSize,
     ));
-    Rendering.gfx.api.set_uv_offset(-self.scroll / CloudUvPeriod, 0.0);
-    Rendering.gfx.api.set_culling(false);
-    self.cloud_mesh.draw(&m);
-    Rendering.gfx.api.set_culling(true);
-    Rendering.gfx.api.set_uv_offset(0.0, 0.0);
+    var state = base.*;
+    state.fog = sky_fog(submerged);
+    state.blend = .alpha;
+    state.uv_offset = .{ -self.scroll / CloudUvPeriod, 0.0 };
+    state.cull = false;
+    Rendering.set_state(&state);
+    // Rows are emitted z-major, so each row's visible cells are one range.
+    const origin = center - CloudHalfSize;
+    const cam_x: i32 = @intFromFloat(Math.floor((camera.x - origin) / cloud_cell));
+    const cam_z: i32 = @intFromFloat(Math.floor((camera.z - origin) / cloud_cell));
+    const last: i32 = @intCast(CloudGrid - 1);
+    if (cam_x + CloudDrawRadiusCells < 0 or cam_x - CloudDrawRadiusCells > last or
+        cam_z + CloudDrawRadiusCells < 0 or cam_z - CloudDrawRadiusCells > last) return;
+    const x0 = Math.clamp(cam_x - CloudDrawRadiusCells, 0, last);
+    const x1 = Math.clamp(cam_x + CloudDrawRadiusCells, 0, last);
+    const z0 = Math.clamp(cam_z - CloudDrawRadiusCells, 0, last);
+    const z1 = Math.clamp(cam_z + CloudDrawRadiusCells, 0, last);
+    var z = z0;
+
+    while (z <= z1) : (z += 1) {
+        const first: u32 = @intCast(z * @as(i32, @intCast(CloudGrid)) + x0);
+        const quads: u32 = @intCast(x1 - x0 + 1);
+        // Six elements per quad: indices when indexed, vertices otherwise.
+        self.cloud_mesh.draw_range(&m, first * 6, quads * 6);
+    }
 }
 
-fn set_sky_fog(submerged: ?collision.Liquid) void {
+fn sky_fog(submerged: ?collision.Liquid) Rendering.FogState {
     const c = fog_color(submerged);
     const params = fog_params(submerged);
-    Rendering.gfx.api.set_fog(
-        true,
-        Camera.near_plane,
-        Camera.far_plane,
-        params[0],
-        params[1],
-        @as(f32, @floatFromInt(c.r)) / 255.0,
-        @as(f32, @floatFromInt(c.g)) / 255.0,
-        @as(f32, @floatFromInt(c.b)) / 255.0,
-    );
+    return .{
+        .enabled = true,
+        .near = Camera.near_plane,
+        .far = Camera.far_plane,
+        .start = params[0],
+        .end = params[1],
+        .color = .{
+            @as(f32, @floatFromInt(c.r)) / 255.0,
+            @as(f32, @floatFromInt(c.g)) / 255.0,
+            @as(f32, @floatFromInt(c.b)) / 255.0,
+        },
+    };
 }
 
 fn fog_color(submerged: ?collision.Liquid) Color {

@@ -209,8 +209,8 @@ fn maybe_spawn_splash(self: *Rain, camera: *const Camera) void {
     self.splash_count += 1;
 }
 
-/// Caller must bind rain.png.
-pub fn draw_streaks(self: *Rain, camera: *const Camera) void {
+/// `base` carries rain.png.
+pub fn draw_streaks(self: *Rain, camera: *const Camera, base: *const Rendering.RenderState) void {
     if (!Options.current.rain) return;
     const cam_tile_x_i: i32 = @intFromFloat(Math.floor(camera.x));
     const cam_tile_z_i: i32 = @intFromFloat(Math.floor(camera.z));
@@ -219,35 +219,28 @@ pub fn draw_streaks(self: *Rain, camera: *const Camera) void {
     const cam_tile_x: f32 = @floatFromInt(cam_tile_x_i);
     const cam_tile_z: f32 = @floatFromInt(cam_tile_z_i);
 
-    Rendering.gfx.api.set_alpha_blend(true);
-    Rendering.gfx.api.set_depth_write(false);
-    defer Rendering.gfx.api.set_depth_write(true);
-
-    Rendering.gfx.api.set_clip_planes(true);
-    defer Rendering.gfx.api.set_clip_planes(false);
-
-    Rendering.gfx.api.set_culling(false);
-    defer Rendering.gfx.api.set_culling(true);
-
-    Rendering.gfx.api.set_uv_offset(0.0, @as(f32, @floatFromInt(@mod(self.scroll_v, 32768))) / 32768.0);
-    defer Rendering.gfx.api.set_uv_offset(0.0, 0.0);
+    var state = base.*;
+    state.blend = .alpha;
+    state.depth_write = false;
+    state.clip_planes = true;
+    state.cull = false;
+    state.uv_offset = .{ 0.0, @as(f32, @floatFromInt(@mod(self.scroll_v, 32768))) / 32768.0 };
+    Rendering.set_state(&state);
 
     const m = Math.Mat4.scaling(ModelScale, ModelScale, ModelScale)
         .mul(Math.Mat4.translation(cam_tile_x, 0, cam_tile_z));
     self.streak_mesh.draw(&m);
 }
 
-/// Caller must bind particles.png.
-pub fn draw_splashes(self: *Rain) void {
+/// `base` carries particles.png.
+pub fn draw_splashes(self: *Rain, base: *const Rendering.RenderState) void {
     if (!Options.current.rain) return;
     if (self.splash_billboards.count == 0) return;
 
-    Rendering.gfx.api.set_alpha_blend(true);
-    Rendering.gfx.api.set_depth_write(true);
-    Rendering.gfx.api.set_culling(false);
-    defer Rendering.gfx.api.set_culling(true);
-
-    Rendering.gfx.api.set_uv_offset(0.0, 0.0);
+    var state = base.*;
+    state.blend = .alpha;
+    state.cull = false;
+    Rendering.set_state(&state);
     self.splash_billboards.draw();
 }
 

@@ -92,8 +92,8 @@ pub const Prepared = struct {
         self.allocator.destroy(self.registry);
         self.* = undefined;
     }
-    pub fn draw(self: *Prepared) void {
-        self.implementation.draw();
+    pub fn draw(self: *Prepared, base: *const Rendering.RenderState) void {
+        self.implementation.draw(base);
     }
 };
 pub fn prepare(self: *List, fonts: *const ae.Ui.FontBatcher, iso: ?*const IsoBlockDrawer) !Prepared {

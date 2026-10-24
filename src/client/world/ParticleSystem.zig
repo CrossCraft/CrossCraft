@@ -10,7 +10,7 @@ const World = core.World;
 const effect_positions = @import("../graphics/effect_positions.zig");
 const Camera = @import("../player/Camera.zig");
 const TextureAtlas = @import("../graphics/TextureAtlas.zig").TextureAtlas;
-const face_mod = @import("chunk/face.zig");
+const face_mod = @import("meshing").face;
 const Block = core.blocks.Block;
 
 const MaxParticles: u16 = 512;
@@ -234,7 +234,8 @@ fn point_sunlit(wx: f32, wy: f32, wz: f32) bool {
     return World.is_sunlit(@intCast(bx), @intCast(by), @intCast(bz));
 }
 
-pub fn draw(self: *ParticleSystem) void {
+pub fn draw(self: *ParticleSystem, state: *const Rendering.RenderState) void {
+    Rendering.set_state(state);
     self.billboards.draw();
 }
 

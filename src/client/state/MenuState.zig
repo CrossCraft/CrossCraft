@@ -792,15 +792,18 @@ fn apply_control_options(engine: *Engine) void {
 fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
     _ = engine;
-    self.batcher.draw();
-    self.font_batcher.draw();
+    const screen: Rendering.RenderState = .{};
+    self.batcher.draw(&screen);
+    self.font_batcher.draw(&screen);
     Rendering.gfx.api.clear_depth();
-    if (self.prepared_ui) |*prepared| prepared.draw();
+    if (self.prepared_ui) |*prepared| prepared.draw(&screen);
 
     if (self.active_screen == .main) {
         const pulse = Math.sin(self.time * 15.0) * 0.05 + 2.0;
         const model = self.font_batcher.mesh_matrix("Classic!", 0, 1, 112, 72, .top_center, .top_center, 22, pulse, 2);
-        Rendering.set_state(&.{ .texture = ResourcePack.get_tex(.font).handle });
+        var splash = screen;
+        splash.texture = ResourcePack.get_tex(.font).handle;
+        Rendering.set_state(&splash);
         self.splash_mesh.draw(&model);
     }
 }

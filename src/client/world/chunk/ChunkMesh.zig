@@ -2,10 +2,8 @@
 const std = @import("std");
 const ae = @import("aether");
 const Vertex = @import("aether").Rendering.Vertex;
-const World = @import("core").World;
 const capabilities = @import("capabilities");
-const TextureAtlas = @import("../../graphics/TextureAtlas.zig").TextureAtlas;
-const mesher = @import("mesher.zig");
+const mesher = @import("meshing").mesher;
 
 const assert = std.debug.assert;
 const caps = capabilities.ClientType(ae);
@@ -26,6 +24,12 @@ sy: u32,
 cz: u32,
 near_lod: bool,
 ao_enabled: bool,
+/// Face pairs joined through non-opaque cells, for cave culling. Unbuilt sections stay fully connected so culling never hides them.
+connectivity: u16,
+/// First opaque quad of each face direction in mesher.opaque_dir_faces order, then the opaque quad count.
+opaque_dir_start: [7]u16,
+/// GPU fence of the last frame that drew this section; its buffers must not be rewritten or freed before it passes.
+drawn_fence: u32,
 /// Rises from 16 blocks below its position at 0 to rest at 1.
 anim_progress: f32,
 first_build: bool,
@@ -33,19 +37,24 @@ allocator: std.mem.Allocator,
 
 const ChunkMesh = @This();
 
+const fenced_desc: Rendering.mesh.Desc = .{ .retention = .fenced };
+
 pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !ChunkMesh {
     return .{
         .opaque_data = try BatchMeshData.init(allocator),
-        .@"opaque" = try BatchMesh.init(&.{}),
+        .@"opaque" = try BatchMesh.init(&fenced_desc),
         .trans_data = try BatchMeshData.init(allocator),
-        .trans = try BatchMesh.init(&.{}),
+        .trans = try BatchMesh.init(&fenced_desc),
         .fluid_data = try BatchMeshData.init(allocator),
-        .fluid = try BatchMesh.init(&.{}),
+        .fluid = try BatchMesh.init(&fenced_desc),
         .cx = cx,
         .sy = sy,
         .cz = cz,
         .near_lod = false,
         .ao_enabled = false,
+        .connectivity = mesher.all_faces_connected,
+        .opaque_dir_start = @splat(0),
+        .drawn_fence = 0,
         .anim_progress = 1.0,
         .first_build = true,
         .allocator = allocator,
@@ -78,56 +87,54 @@ pub fn clear(self: *ChunkMesh) void {
     self.fluid_data.clear_and_free(a);
 }
 
-pub fn rebuild(self: *ChunkMesh, atlas: *const TextureAtlas) error{ OutOfMemory, IndexOverflow }!void {
-    self.opaque_data.clear_retaining_capacity();
-    self.trans_data.clear_retaining_capacity();
-    self.fluid_data.clear_retaining_capacity();
-    {
-        // Network block updates must not change the world between counting
-        // faces and emitting their geometry.
-        World.lock_world_shared();
-        defer World.unlock_world_shared();
-
-        if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) return;
-
-        var buf: mesher.SectionBuf = undefined;
-        const counts = mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
-        assert(counts.opaque_verts % 6 == 0);
-        assert(counts.transparent_verts % 6 == 0);
-        assert(counts.fluid_verts % 6 == 0);
-        const a = self.allocator;
-        try self.opaque_data.ensure_quad_capacity(a, counts.opaque_verts / 6);
-        try self.trans_data.ensure_quad_capacity(a, counts.transparent_verts / 6);
-        try self.fluid_data.ensure_quad_capacity(a, counts.fluid_verts / 6);
-
-        mesher.emit_section(&buf, self.cx, self.sy, self.cz, .{
-            .@"opaque" = &self.opaque_data,
-            .transparent = &self.trans_data,
-            .fluid = &self.fluid_data,
-        }, atlas, self.ao_enabled);
-
-        // Counting and emission must agree, including double-sided fluid faces.
-        const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
-        assert(self.opaque_data.vertices.items.len == counts.opaque_verts / 6 * verts_per_quad);
-        assert(self.trans_data.vertices.items.len == counts.transparent_verts / 6 * verts_per_quad);
-        assert(self.fluid_data.vertices.items.len == counts.fluid_verts / 6 * verts_per_quad);
-    }
-
-    inline for (&.{ .{ &self.opaque_data, &self.@"opaque" }, .{ &self.trans_data, &self.trans }, .{ &self.fluid_data, &self.fluid } }) |pair| {
-        if (pair[0].vertices.items.len > 0) pair[1].update(pair[0]);
-    }
+/// Empty without clear_retaining_capacity, whose safe-build memset of the old contents cost up to ~0.7 ms per section on PSP.
+pub fn truncate(data: *BatchMeshData) void {
+    data.vertices.items.len = 0;
+    data.indices.items.len = 0;
 }
 
-/// Draw opaque geometry only. Call front-to-back.
-pub fn draw_opaque(self: *ChunkMesh) void {
+/// Draw opaque geometry only. Call front-to-back. Directions whose faces all point away from `eye` are skipped.
+pub fn draw_opaque(self: *ChunkMesh, eye: [3]f32) void {
     if (self.opaque_data.vertices.items.len == 0) return;
+    self.drawn_fence = Rendering.gfx.api.gpu_fence();
     const m = model_matrix(self, scale_opaque);
-    self.@"opaque".draw(&m);
+    // The bounce animation moves the section off its grid bounds.
+    if (self.anim_progress < 1.0) {
+        self.@"opaque".draw(&m);
+        return;
+    }
+    const lo = [3]f32{
+        @floatFromInt(self.cx * 16),
+        @floatFromInt(self.sy * 16),
+        @floatFromInt(self.cz * 16),
+    };
+
+    // A face toward -axis can only be seen from before the section's far side on that axis, and a face toward +axis only from beyond its near side.
+    var keep: [7]bool = undefined;
+    for (0..3) |axis| {
+        keep[axis * 2] = eye[axis] < lo[axis] + 16.0;
+        keep[axis * 2 + 1] = eye[axis] > lo[axis];
+    }
+    keep[6] = false;
+    var d: usize = 0;
+    while (d < 6) {
+        if (!keep[d]) {
+            d += 1;
+            continue;
+        }
+        const first = self.opaque_dir_start[d];
+        while (keep[d]) d += 1;
+        const quads: u32 = self.opaque_dir_start[d] - first;
+        if (quads == 0) continue;
+        // Six elements per quad: indices when indexed, vertices otherwise.
+        self.@"opaque".draw_range(&m, @as(u32, first) * 6, quads * 6);
+    }
 }
 
 /// Draw transparent geometry (leaves, glass, cross-plants). Call back-to-front.
 pub fn draw_transparent(self: *ChunkMesh) void {
     if (self.trans_data.vertices.items.len == 0) return;
+    self.drawn_fence = Rendering.gfx.api.gpu_fence();
     const m = model_matrix(self, scale_trans);
     self.trans.draw(&m);
 }
@@ -135,6 +142,7 @@ pub fn draw_transparent(self: *ChunkMesh) void {
 /// Draw fluid geometry (water, lava). Call back-to-front with depth writes off.
 pub fn draw_fluid(self: *ChunkMesh) void {
     if (self.fluid_data.vertices.items.len == 0) return;
+    self.drawn_fence = Rendering.gfx.api.gpu_fence();
     const m = model_matrix(self, scale_trans);
     self.fluid.draw(&m);
 }

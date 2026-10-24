@@ -22,7 +22,7 @@ pub const resource_pack = struct {
 const MB: u32 = 1024 * 1024;
 const KB: u32 = 1024;
 const NINTENDO_3DS_TOTAL_MEMORY_MB: u32 = 32;
-const SWITCH_TOTAL_MEMORY_MB: u32 = 224;
+const WEB_TOTAL_MEMORY_MB: u32 = 192;
 
 pub const HardwareClass = enum {
     desktop,
@@ -30,7 +30,6 @@ pub const HardwareClass = enum {
     psp_slim,
     old_3ds,
     new_3ds,
-    nintendo_switch,
 };
 
 pub const MemoryProfile = struct {
@@ -59,6 +58,28 @@ const desktop_profile: MemoryProfile = .{
     .rt_render = 416 * MB,
     .rt_audio = 512 * KB,
     .rt_user = 5 * MB,
+};
+
+const web_profile: MemoryProfile = .{
+    .hardware = .desktop,
+    .total_memory_mb = WEB_TOTAL_MEMORY_MB,
+    .chunk_radius = 8,
+    .lod_near_radius_blocks = 96,
+    .init_audio = desktop_profile.init_audio,
+    .init_user = desktop_profile.init_user,
+    // Comptime arithmetic rejects pools larger than the total.
+    .init_render = WEB_TOTAL_MEMORY_MB * MB - desktop_profile.init_audio - desktop_profile.init_user,
+    .rt_audio = desktop_profile.rt_audio,
+    .rt_user = desktop_profile.rt_user,
+    // Leaves room for a 512x128x512 world's gameplay user budget.
+    .rt_render = WEB_TOTAL_MEMORY_MB * MB - desktop_profile.rt_audio - 37 * MB,
+};
+
+/// Switch shares desktop memory; a smaller fancy-leaf radius keeps it at 60 fps
+const nintendo_switch_profile: MemoryProfile = blk: {
+    var profile = desktop_profile;
+    profile.lod_near_radius_blocks = 40;
+    break :blk profile;
 };
 
 const psp_phat_profile: MemoryProfile = .{
@@ -106,38 +127,6 @@ const new_3ds_profile: MemoryProfile = blk: {
     break :blk profile;
 };
 
-const nintendo_switch_profile: MemoryProfile = .{
-    .hardware = .nintendo_switch,
-    .total_memory_mb = SWITCH_TOTAL_MEMORY_MB,
-    .chunk_radius = 12,
-    .lod_near_radius_blocks = 40,
-    .init_audio = desktop_profile.init_audio,
-    .init_user = desktop_profile.init_user,
-    .init_render = render_remainder(
-        SWITCH_TOTAL_MEMORY_MB,
-        desktop_profile.init_audio,
-        desktop_profile.init_user,
-    ),
-    .rt_audio = desktop_profile.rt_audio,
-    .rt_user = desktop_profile.rt_user,
-    .rt_render = render_remainder(
-        SWITCH_TOTAL_MEMORY_MB,
-        desktop_profile.rt_audio,
-        desktop_profile.rt_user,
-    ),
-};
-
-fn render_remainder(
-    comptime total_memory_mb: u32,
-    comptime audio: u32,
-    comptime user: u32,
-) u32 {
-    const total = total_memory_mb * MB;
-    const reserved = audio + user;
-    if (reserved > total) @compileError("non-render memory pools exceed total memory");
-    return total - reserved;
-}
-
 /// Instantiate with the client's engine module; SDK paths remain lazy so
 /// std-only consumers and builds for other targets do not need console SDKs.
 pub fn ClientType(comptime ae: type) type {
@@ -165,6 +154,12 @@ pub fn ClientType(comptime ae: type) type {
             // Compensate for the fixed-point vertex format's quantization.
             pub const opaque_chunk_scale: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32753.0 else 16.0;
             pub const translucent_chunk_scale: f32 = if (ae.platform == .psp) 16.0 * 32768.0 / 32763.0 else 16.0;
+            /// Chunk build time per drawn frame. The first build of a frame always runs.
+            pub const chunk_build_budget_ns: i64 = switch (ae.platform) {
+                .psp, .nintendo_3ds => 4 * 1_000_000,
+                .nintendo_switch => 6 * 1_000_000,
+                else => 2 * 1_000_000,
+            };
             pub const present_paces_loading = ae.platform == .nintendo_3ds or ae.platform == .nintendo_switch;
         };
 
@@ -242,18 +237,20 @@ pub fn ClientType(comptime ae: type) type {
         };
 
         pub const memory = struct {
-            pub const resize_user_pool_to_world = ae.platform != .psp and ae.platform != .nintendo_3ds;
+            pub const outlives_main = ae.platform == .wasm;
             pub const separate_worldgen_scratch = ae.platform == .wasm;
             // Capacity must cover every runtime model supported by the binary.
             pub const max_chunk_radius: u32 = switch (ae.platform) {
                 .psp => psp_slim_profile.chunk_radius,
                 .nintendo_3ds => new_3ds_profile.chunk_radius,
+                .wasm => web_profile.chunk_radius,
                 else => desktop_profile.chunk_radius,
             };
             pub const initial_profile: MemoryProfile = switch (ae.platform) {
                 .psp => psp_phat_profile,
                 .nintendo_3ds => old_3ds_profile,
                 .nintendo_switch => nintendo_switch_profile,
+                .wasm => web_profile,
                 else => desktop_profile,
             };
 
@@ -377,7 +374,6 @@ fn TestEngineType(comptime target_platform: TestPlatform, comptime headless: boo
                 return .{ .hardware = switch (target_platform) {
                     .psp => .psp_phat,
                     .nintendo_3ds => if (N3ds.new_hardware) .new_3ds else .old_3ds,
-                    .nintendo_switch => .nintendo_switch,
                     else => .desktop,
                 } };
             }

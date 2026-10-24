@@ -9,11 +9,13 @@
             .hash = "ZeeBuffer-0.2.0-RVIQu7v-AQACD5HRRz3Y9hfeI1FkL7VwGDN_DJfxVp_O",
         },
         .resources = .{
-            .path = "resources",
+            .url = "git+https://github.com/CrossCraft/CrossCraft-Resources#012365789ecc04e8d2518e61da236c97775eff07",
+            .hash = "N-V-__8AAJg6DAU2K0xxZTEB1PlPTOwMhclHwyCEPeFcdcKg",
+            .lazy = true,
         },
         .engine = .{
-            .url = "git+https://github.com/AetherEngine/Aether#c5197014f77b280237154ce6d710e0e58f53b3d2",
-            .hash = "Aether-0.1.0-cjG28hueGwAxnYiRwMWio7UDkxethWg-ATVyiBZDwmCE",
+            .url = "git+https://github.com/AetherEngine/Aether#af38d334550a7687f0d59afbbfa008ffa0ff4917",
+            .hash = "Aether-0.1.0-cjG28v9tHAAAxb9VbdFtG-6-D0HI3t_GwNLgkJX5OeC-",
         },
         .zitrus = .{
             .url = "git+https://codeberg.org/GasInfinity/zitrus#35cb3ecddb5a7abf4051d731757e73a16da3e64c",

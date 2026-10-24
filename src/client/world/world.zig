@@ -11,15 +11,18 @@ const Sky = @import("sky/sky.zig");
 const ParticleSystem = @import("ParticleSystem.zig");
 const Rain = @import("Rain.zig");
 const config = @import("../config.zig");
+const meshing = @import("meshing");
+const capabilities = @import("capabilities");
 const Math = @import("math");
 
 const assert = std.debug.assert;
-const Util = ae.Util;
+const caps = capabilities.ClientType(ae);
 const Rendering = ae.Rendering;
 
 const World = core.World;
 
 const MaxActive: u32 = config.max_sections();
+const MaxColumns: u32 = MaxActive / (core.world_dims.max_height / core.world_dims.chunk_size);
 comptime {
     // Chunk coordinates must fit GridRef.
     assert(core.world_dims.max_length / core.world_dims.chunk_size <= std.math.maxInt(u8));
@@ -46,6 +49,16 @@ loaded: []bool,
 built: []bool,
 in_queue: []bool,
 needed: []bool,
+/// Section buffers the GPU may still read, reused or freed once their fence passes.
+/// Only sections rebuilt or freed within a frame of being drawn land here, so this holds a section or two at a time.
+retired: [MaxRetired]Retired,
+retired_len: u32,
+spares: [MaxSpares]ChunkMesh.BatchMeshData,
+spares_len: u32,
+
+/// Unloaded columns that keep their meshes for reuse by entering columns.
+parked: [MaxColumns]ColumnRef,
+parked_len: u32,
 /// Overflow falls back to a full queue rescan.
 dirty_buf: [MaxDirtyBuf]GridRef,
 dirty_buf_len: u32,
@@ -64,10 +77,25 @@ applied_ao: bool,
 build_queue: [MaxActive]GridRef,
 build_cursor: u32,
 build_end: u32,
-build_estimator: Util.Estimator,
+/// The one section build in progress; its steps share the frame budget.
+job: meshing.mesher.BuildJob,
+job_target: ?GridRef,
+/// The section changed mid-build; restart from a fresh snapshot.
+job_stale: bool,
+/// Output buffers, swapped into the section when the job finishes.
+job_out: [3]ChunkMesh.BatchMeshData,
+job_out_sized: bool,
+/// Build time spent on the current job across frames.
+job_ns: i64,
+/// Chunk build time spent since the last drawn frame.
+frame_build_ns: i64,
 
 /// Shared across opaque and fluid passes so overlays can render between them.
 frame_visible: [MaxActive]GridRef,
+frame_queue: [MaxActive]Visit,
+
+/// One flag per world section, reset by each cave-culling search.
+visited: []bool,
 frame_visible_count: u32,
 frame_clip_count: u32,
 
@@ -81,10 +109,25 @@ particles: ParticleSystem,
 rain: Rain,
 cam_cx: i32,
 cam_cz: i32,
+cam_sy: i32,
+
+sphere_center: [3]f32,
+sphere_radius_sq: f32,
 allocator: std.mem.Allocator,
 io: std.Io,
 
 const GridRef = packed struct { cx: u8, cz: u8, sy: u8 };
+/// Cave-culling search state: the face a section was entered through
+/// (`no_face` for the camera's own section) and the directions taken so far.
+const Visit = struct { ref: GridRef, entry: u3, traveled: u6 };
+const no_face: u3 = 6;
+/// Search directions in connectivity face order: x-, x+, y-, y+, z-, z+.
+const face_steps = [6][3]i32{ .{ -1, 0, 0 }, .{ 1, 0, 0 }, .{ 0, -1, 0 }, .{ 0, 1, 0 }, .{ 0, 0, -1 }, .{ 0, 0, 1 } };
+const ColumnRef = struct { cx: u8, cz: u8 };
+const Retired = struct { data: ChunkMesh.BatchMeshData, fence: u32 };
+const MaxRetired: u32 = 48;
+/// One section's worth of opaque, transparent, and fluid buffers.
+const MaxSpares: u32 = 3;
 
 fn column_index(self: *const WorldRenderer, cx: usize, cz: usize) u32 {
     assert(cx < self.grid_cx);
@@ -130,9 +173,17 @@ pub fn init_in_place(
     errdefer allocator.free(self.in_queue);
     self.needed = try allocator.alloc(bool, column_count);
     errdefer allocator.free(self.needed);
+    self.visited = try allocator.alloc(bool, section_count);
+    errdefer allocator.free(self.visited);
     @memset(self.loaded, false);
     @memset(self.built, false);
     @memset(self.in_queue, false);
+    self.parked = undefined;
+    self.parked_len = 0;
+    self.retired = undefined;
+    self.retired_len = 0;
+    self.spares = undefined;
+    self.spares_len = 0;
 
     self.dirty_buf = undefined;
     self.dirty_buf_len = 0;
@@ -147,7 +198,12 @@ pub fn init_in_place(
     self.build_queue = undefined;
     self.build_cursor = 0;
     self.build_end = 0;
-    self.build_estimator = Util.Estimator.init();
+    self.job_target = null;
+    self.job_stale = false;
+    self.job_out = @splat(.{ .vertices = .empty, .indices = .empty });
+    self.job_out_sized = false;
+    self.job_ns = 0;
+    self.frame_build_ns = 0;
     self.frame_visible = undefined;
     self.frame_visible_count = 0;
     self.frame_clip_count = 0;
@@ -158,6 +214,9 @@ pub fn init_in_place(
     self.atlas = atlas;
     self.cam_cx = camera_chunk(camera.x);
     self.cam_cz = camera_chunk(camera.z);
+    self.cam_sy = camera_chunk(camera.y);
+    self.sphere_center = .{ camera.x, camera.y, camera.z };
+    self.sphere_radius_sq = 0;
     self.allocator = allocator;
     self.io = io;
 
@@ -170,16 +229,14 @@ pub fn init_in_place(
 
     self.recollect(camera);
 
-    while (self.build_cursor < self.build_end and self.build_estimator.is_warming_up()) {
-        const ref = self.build_queue[self.build_cursor];
-        const idx = self.section_index(ref.cx, ref.cz, ref.sy);
-        self.build_estimator.begin(io);
-        self.grid[idx].rebuild(&self.atlas) catch break;
-        self.build_estimator.end(io);
-        mark_first_built(&self.grid[idx]);
-        self.built[idx] = true;
-        self.in_queue[idx] = false;
-        self.build_cursor += 1;
+    // Fill the first view synchronously so the world appears complete.
+    var warmup_builds: u32 = 0;
+    while (warmup_builds < 64) {
+        switch (self.build_step(camera)) {
+            .idle, .blocked => break,
+            .finished => warmup_builds += 1,
+            .worked => {},
+        }
     }
 }
 
@@ -193,15 +250,21 @@ pub fn deinit(self: *WorldRenderer) void {
             self.deinit_column(@intCast(cx), @intCast(cz));
         }
     }
+    for (self.parked[0..self.parked_len]) |ref| self.free_parked(ref);
+    // State transitions drain the GPU, so retired buffers are free to go.
+    for (self.retired[0..self.retired_len]) |*r| r.data.deinit(self.allocator);
+    for (self.spares[0..self.spares_len]) |*d| d.deinit(self.allocator);
+    for (&self.job_out) |*d| d.deinit(self.allocator);
     self.allocator.free(self.grid);
     self.allocator.free(self.loaded);
     self.allocator.free(self.built);
     self.allocator.free(self.in_queue);
     self.allocator.free(self.needed);
+    self.allocator.free(self.visited);
     self.* = undefined;
 }
 
-pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, camera: *const Camera) void {
+pub fn update(self: *WorldRenderer, dt: f32, camera: *const Camera) void {
     assert(std.math.isFinite(dt) and dt >= 0.0);
     assert(self.build_cursor <= self.build_end);
     assert(self.build_end <= self.build_queue.len);
@@ -219,9 +282,12 @@ pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, 
         }
     }
 
+    self.collect_retired();
+
     const new_cx = camera_chunk(camera.x);
     const new_cz = camera_chunk(camera.z);
-    if (new_cx != self.cam_cx or new_cz != self.cam_cz or Options.capped_render_distance() != self.applied_render_distance) {
+    const new_sy = camera_chunk(camera.y);
+    if (new_cx != self.cam_cx or new_cz != self.cam_cz or new_sy != self.cam_sy or Options.capped_render_distance() != self.applied_render_distance) {
         self.recollect(camera);
     }
 
@@ -256,35 +322,165 @@ pub fn update(self: *WorldRenderer, dt: f32, budget: *const Util.BudgetContext, 
         self.dirty_preserve_order = false;
     }
 
-    if (self.build_cursor >= self.build_end) return;
-
-    const available = budget.safe_remaining();
-    const n: u32 = if (self.build_estimator.is_warming_up())
-        1
-    else
-        @intCast(Math.max(1, self.build_estimator.fit_in(available, .p75)));
-    const end = Math.min(self.build_cursor + n, self.build_end);
-
-    for (self.build_cursor..end) |i| {
-        const ref = self.build_queue[i];
-        const idx = self.section_index(ref.cx, ref.cz, ref.sy);
-        self.build_estimator.begin(self.io);
-        assert(self.loaded[self.column_index(ref.cx, ref.cz)]);
-        assert(self.in_queue[idx]);
-        if (self.grid[idx].rebuild(&self.atlas)) {
-            self.build_estimator.end(self.io);
-        } else |_| {
-            self.build_estimator.end(self.io);
-            // Evict one distant mesh and retry this section next frame.
-            _ = self.try_evict_farthest(camera);
-            self.build_cursor = @intCast(i);
-            return;
+    // Several fixed updates can run in one late frame, so the budget spans the frame.
+    // Per-step budgets let catch-up steps stack builds onto it.
+    // Build steps are short, so the first always runs and the last may run over by one step.
+    const budget_ns = caps.render.chunk_build_budget_ns;
+    var clock = std.Io.Clock.boot;
+    while (self.frame_build_ns < budget_ns) {
+        const t0 = clock.now(self.io).toNanoseconds();
+        const progress = self.build_step(camera);
+        const elapsed: i64 = @intCast(clock.now(self.io).toNanoseconds() - t0);
+        self.frame_build_ns += elapsed;
+        self.job_ns += elapsed;
+        switch (progress) {
+            .idle, .blocked => return,
+            .finished => self.job_ns = 0,
+            .worked => {},
         }
-        mark_first_built(&self.grid[idx]);
-        self.built[idx] = true;
-        self.in_queue[idx] = false;
     }
-    self.build_cursor = end;
+}
+
+const BuildProgress = enum {
+    /// Nothing queued.
+    idle,
+    /// A step ran; the build continues.
+    worked,
+    /// A section build completed this step.
+    finished,
+    /// Out of memory; retry next frame.
+    blocked,
+};
+
+/// Advance section building by one short step: start the next queued build, run one job stage, or install a finished job's meshes.
+fn build_step(self: *WorldRenderer, camera: *const Camera) BuildProgress {
+    const target = self.job_target orelse return self.start_job();
+    const idx = self.section_index(target.cx, target.cz, target.sy);
+    const sec = &self.grid[idx];
+    // Unloading or recycling the column moved the section out from under the job.
+    if (!self.loaded[self.column_index(target.cx, target.cz)] or
+        sec.cx != target.cx or sec.cz != target.cz or sec.sy != target.sy)
+    {
+        self.job_target = null;
+        return .worked;
+    }
+    if (self.job_stale) {
+        self.begin_job(target, sec);
+        return .worked;
+    }
+    const job = &self.job;
+    switch (job.stage) {
+        .pack => job.step_pack(),
+        .count => job.step_count(),
+        .connect => job.step_connect(),
+        .emit_rows, .emit_opaque => {
+            if (!self.job_out_sized) {
+                const counts = job.counts;
+                assert(counts.opaque_verts % 6 == 0 and counts.transparent_verts % 6 == 0 and counts.fluid_verts % 6 == 0);
+                const quads = [3]u32{ counts.opaque_verts / 6, counts.transparent_verts / 6, counts.fluid_verts / 6 };
+                for (&self.job_out, quads) |*out, n| {
+                    out.ensure_quad_capacity(self.allocator, n) catch {
+                        // Release parked memory first, then one distant mesh.
+                        if (self.parked_len > 0) {
+                            self.parked_len -= 1;
+                            self.free_parked(self.parked[self.parked_len]);
+                        } else {
+                            _ = self.try_evict_farthest(camera);
+                        }
+                        return .blocked;
+                    };
+                }
+                self.job_out_sized = true;
+                // Allocation can be slow in a fragmented pool; give it its own step.
+                return .worked;
+            }
+            job.step_emit(.{
+                .@"opaque" = &self.job_out[0],
+                .transparent = &self.job_out[1],
+                .fluid = &self.job_out[2],
+            }, &self.atlas);
+        },
+        .done => {
+            self.finish_job(sec, idx);
+            return .finished;
+        },
+    }
+    return .worked;
+}
+
+/// Take the next unbuilt section from the queue. Empty ones finish at once.
+fn start_job(self: *WorldRenderer) BuildProgress {
+    while (self.build_cursor < self.build_end) {
+        const ref = self.build_queue[self.build_cursor];
+        const idx = self.section_index(ref.cx, ref.cz, ref.sy);
+        self.build_cursor += 1;
+        // A finished job may have built a section queued again behind it.
+        if (self.built[idx] or !self.loaded[self.column_index(ref.cx, ref.cz)]) continue;
+        const sec = &self.grid[idx];
+        if (World.data.is_chunk_all_air(ref.cx, ref.sy, ref.cz)) {
+            sec.connectivity = meshing.mesher.all_faces_connected;
+            ChunkMesh.truncate(&sec.opaque_data);
+            ChunkMesh.truncate(&sec.trans_data);
+            ChunkMesh.truncate(&sec.fluid_data);
+            mark_first_built(sec);
+            self.built[idx] = true;
+            self.in_queue[idx] = false;
+            continue;
+        }
+        self.job_ns = 0;
+        self.begin_job(ref, sec);
+        return .worked;
+    }
+    return .idle;
+}
+
+fn begin_job(self: *WorldRenderer, ref: GridRef, sec: *const ChunkMesh) void {
+    assert(sec.cx == ref.cx and sec.cz == ref.cz and sec.sy == ref.sy);
+    assert(!World.data.is_chunk_all_air(ref.cx, ref.sy, ref.cz));
+    {
+        // The snapshot is the build's only read of the world.
+        World.lock_world_shared();
+        defer World.unlock_world_shared();
+
+        self.job.begin(ref.cx, ref.sy, ref.cz, sec.near_lod, sec.ao_enabled);
+    }
+    self.job_target = ref;
+    self.job_stale = false;
+    self.job_out_sized = false;
+    for (&self.job_out) |*out| ChunkMesh.truncate(out);
+}
+
+/// Swap the job's meshes into the section. Its old buffers go back to the job unless an in-flight frame may still draw them.
+fn finish_job(self: *WorldRenderer, sec: *ChunkMesh, idx: u32) void {
+    const job = &self.job;
+    assert(job.stage == .done and self.job_out_sized);
+    assert(!self.built[idx]);
+    // Counting and emission must agree, including double-sided fluid faces.
+    const verts_per_quad: usize = if (Rendering.mesh.indexing_enabled) 4 else 6;
+    assert(self.job_out[0].vertices.items.len == job.counts.opaque_verts / 6 * verts_per_quad);
+    assert(self.job_out[1].vertices.items.len == job.counts.transparent_verts / 6 * verts_per_quad);
+    assert(self.job_out[2].vertices.items.len == job.counts.fluid_verts / 6 * verts_per_quad);
+
+    const fence_passed = Rendering.gfx.api.gpu_fence_passed(sec.drawn_fence);
+    inline for (.{ &sec.opaque_data, &sec.trans_data, &sec.fluid_data }, .{ &sec.@"opaque", &sec.trans, &sec.fluid }, 0..) |data, mesh, k| {
+        const old = data.*;
+        data.* = self.job_out[k];
+        self.job_out[k] = old;
+        if (!fence_passed and (old.vertices.capacity > 0 or old.indices.capacity > 0)) {
+            self.retire(old, sec.drawn_fence);
+            self.job_out[k] = if (self.spares_len > 0) blk: {
+                self.spares_len -= 1;
+                break :blk self.spares[self.spares_len];
+            } else .{ .vertices = .empty, .indices = .empty };
+        }
+        if (data.vertices.items.len > 0) mesh.update(data);
+    }
+    sec.connectivity = job.connectivity;
+    sec.opaque_dir_start = job.opaque_dir_start;
+    mark_first_built(sec);
+    self.built[idx] = true;
+    self.in_queue[idx] = false;
+    self.job_target = null;
 }
 
 fn mark_first_built(sec: *ChunkMesh) void {
@@ -293,27 +489,68 @@ fn mark_first_built(sec: *ChunkMesh) void {
     if (Options.current.bouncy_chunks) sec.anim_progress = 0.0;
 }
 
-/// Populate visibility and draw every world layer preceding fluids.
-pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera) void {
+/// Populate visibility and draw every world layer preceding fluids. `base` holds the camera matrices and terrain fog.
+pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera, base: *const Rendering.RenderState) void {
     const submerged = collision.liquid_at_point(camera.x, camera.y, camera.z);
 
-    Rendering.gfx.api.bind_texture(Rendering.Texture.Default.handle);
     Sky.clear(submerged);
-    self.sky.draw_plane(camera, submerged);
+    self.sky.draw_plane(camera, submerged, base);
 
-    set_terrain_fog(submerged);
-    Rendering.gfx.api.bind_texture(self.terrain.handle);
-
+    self.frame_build_ns = 0;
     self.frame_visible_count = 0;
-    for (0..self.grid_cx) |cx| {
-        for (0..self.grid_cz) |cz| {
-            if (!self.loaded[self.column_index(cx, cz)]) continue;
-            for (0..self.grid_sy) |sy| {
-                const sec = &self.grid[self.section_index(cx, cz, sy)];
-                if (!camera.section_visible(sec.cx, sec.sy, sec.cz)) continue;
+    const start: GridRef = .{
+        .cx = @intCast(Math.clamp(camera_chunk(camera.x), 0, @as(i32, @intCast(self.grid_cx)) - 1)),
+        .cz = @intCast(Math.clamp(camera_chunk(camera.z), 0, @as(i32, @intCast(self.grid_cz)) - 1)),
+        .sy = @intCast(Math.clamp(camera_chunk(camera.y), 0, @as(i32, @intCast(self.grid_sy)) - 1)),
+    };
+    if (self.loaded[self.column_index(start.cx, start.cz)]) {
+        // Walk outward from the camera, leaving a section only through a face its interior connects to the entry face, and never turning back toward the camera.
+        // Sealed caves are never reached.
+        @memset(self.visited, false);
+        self.visited[self.section_index(start.cx, start.cz, start.sy)] = true;
+        self.frame_queue[0] = .{ .ref = start, .entry = no_face, .traveled = 0 };
+        var queue_len: u32 = 1;
+        var head: u32 = 0;
+        while (head < queue_len) : (head += 1) {
+            const visit = self.frame_queue[head];
+            const ref = visit.ref;
+            if (self.in_sphere(ref) and camera.section_visible(ref.cx, ref.sy, ref.cz)) {
                 assert(self.frame_visible_count < self.frame_visible.len);
-                self.frame_visible[self.frame_visible_count] = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
+                self.frame_visible[self.frame_visible_count] = ref;
                 self.frame_visible_count += 1;
+            }
+            const connectivity = self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].connectivity;
+            for (face_steps, 0..) |step, face_usize| {
+                const face: u3 = @intCast(face_usize);
+                if (visit.traveled & (@as(u6, 1) << (face ^ 1)) != 0) continue;
+                if (visit.entry != no_face and !meshing.mesher.faces_connected(connectivity, visit.entry, face)) continue;
+                const nx = @as(i32, ref.cx) + step[0];
+                const ny = @as(i32, ref.sy) + step[1];
+                const nz = @as(i32, ref.cz) + step[2];
+                if (nx < 0 or ny < 0 or nz < 0 or nx >= self.grid_cx or ny >= self.grid_sy or nz >= self.grid_cz) continue;
+                const next: GridRef = .{ .cx = @intCast(nx), .cz = @intCast(nz), .sy = @intCast(ny) };
+                if (!self.loaded[self.column_index(next.cx, next.cz)]) continue;
+                const next_idx = self.section_index(next.cx, next.cz, next.sy);
+                if (self.visited[next_idx]) continue;
+                if (!camera.section_visible(next.cx, next.sy, next.cz)) continue;
+                self.visited[next_idx] = true;
+                assert(queue_len < self.frame_queue.len);
+                self.frame_queue[queue_len] = .{ .ref = next, .entry = face ^ 1, .traveled = visit.traveled | (@as(u6, 1) << face) };
+                queue_len += 1;
+            }
+        }
+    } else {
+        // With no loaded column at the camera there is nowhere to start the search, so every loaded section is a candidate.
+        for (0..self.grid_cx) |cx| {
+            for (0..self.grid_cz) |cz| {
+                if (!self.loaded[self.column_index(cx, cz)]) continue;
+                for (0..self.grid_sy) |sy| {
+                    const ref: GridRef = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
+                    if (!self.in_sphere(ref) or !camera.section_visible(ref.cx, ref.sy, ref.cz)) continue;
+                    assert(self.frame_visible_count < self.frame_visible.len);
+                    self.frame_visible[self.frame_visible_count] = ref;
+                    self.frame_visible_count += 1;
+                }
             }
         }
     }
@@ -328,87 +565,97 @@ pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera) void {
     const clip_count = self.frame_clip_count;
 
     // Opaque sections render front-to-back.
-    Rendering.gfx.api.set_alpha_blend(false);
+    var terrain = base.*;
+    terrain.texture = self.terrain.handle;
+    terrain.blend = .solid;
     if (clip_count > 0) {
-        Rendering.gfx.api.set_clip_planes(true);
+        terrain.clip_planes = true;
+        Rendering.set_state(&terrain);
         for (visible[0..clip_count]) |ref| {
-            self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque();
+            self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque(.{ camera.x, camera.y, camera.z });
         }
-        Rendering.gfx.api.set_clip_planes(false);
+        terrain.clip_planes = false;
     }
+    Rendering.set_state(&terrain);
     for (visible[clip_count..]) |ref| {
-        self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque();
+        self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].draw_opaque(.{ camera.x, camera.y, camera.z });
     }
 
-    Rendering.gfx.api.bind_texture(self.clouds.handle);
-    self.sky.draw_clouds(camera, submerged);
+    var clouds = base.*;
+    clouds.texture = self.clouds.handle;
+    self.sky.draw_clouds(camera, submerged, &clouds);
 
     // Transparent blocks render back-to-front but retain depth writes.
-    set_terrain_fog(submerged);
-    Rendering.gfx.api.bind_texture(self.terrain.handle);
-    Rendering.gfx.api.set_alpha_blend(true);
+    terrain.blend = .alpha;
+    Rendering.set_state(&terrain);
     var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
         ri -= 1;
         self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_transparent();
     }
     if (clip_count > 0) {
-        Rendering.gfx.api.set_clip_planes(true);
+        terrain.clip_planes = true;
+        Rendering.set_state(&terrain);
         while (ri > 0) {
             ri -= 1;
             self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_transparent();
         }
-        Rendering.gfx.api.set_clip_planes(false);
+        terrain.clip_planes = false;
     }
 
-    self.particles.draw();
+    self.particles.draw(&terrain);
 }
 
 /// Rain renders after terrain and particles but before fluid overlays.
-pub fn draw_rain_pass(self: *WorldRenderer, camera: *const Camera) void {
+pub fn draw_rain_pass(self: *WorldRenderer, camera: *const Camera, base: *const Rendering.RenderState) void {
     if (!Options.current.rain) return;
-    Rendering.gfx.api.bind_texture(self.rain_tex.handle);
-    self.rain.draw_streaks(camera);
-    Rendering.gfx.api.bind_texture(self.particles_tex.handle);
-    self.rain.draw_splashes();
+    var state = base.*;
+    state.texture = self.rain_tex.handle;
+    self.rain.draw_streaks(camera, &state);
+    state.texture = self.particles_tex.handle;
+    self.rain.draw_splashes(&state);
 }
 
 /// Consume this frame's visibility list after callers insert world overlays.
-pub fn draw_fluid_pass(self: *WorldRenderer) void {
+pub fn draw_fluid_pass(self: *WorldRenderer, base: *const Rendering.RenderState) void {
     const visible = self.frame_visible[0..self.frame_visible_count];
     const clip_count = self.frame_clip_count;
 
-    Rendering.gfx.api.bind_texture(self.terrain.handle);
-    Rendering.gfx.api.set_alpha_blend(true);
-
     // Fluid pass (back-to-front): water/lava drawn with depth writes off so
     // fluid faces never occlude each other across section borders.
-    Rendering.gfx.api.set_depth_write(false);
+    var fluid = base.*;
+    fluid.texture = self.terrain.handle;
+    fluid.blend = .alpha;
+    fluid.depth_write = false;
+    Rendering.set_state(&fluid);
     var ri: u32 = self.frame_visible_count;
     while (ri > clip_count) {
         ri -= 1;
         self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_fluid();
     }
     if (clip_count > 0) {
-        Rendering.gfx.api.set_clip_planes(true);
+        fluid.clip_planes = true;
+        Rendering.set_state(&fluid);
         while (ri > 0) {
             ri -= 1;
             self.grid[self.section_index(visible[ri].cx, visible[ri].cz, visible[ri].sy)].draw_fluid();
         }
-        Rendering.gfx.api.set_clip_planes(false);
     }
-    Rendering.gfx.api.set_depth_write(true);
 }
 
 fn recollect(self: *WorldRenderer, camera: *const Camera) void {
     self.cam_cx = camera_chunk(camera.x);
     self.cam_cz = camera_chunk(camera.z);
+    self.cam_sy = camera_chunk(camera.y);
+    const radius_changed = Options.capped_render_distance() != self.applied_render_distance;
     self.applied_render_distance = Options.capped_render_distance();
 
     const rd: u32 = self.applied_render_distance;
     const r: i32 = @intCast(rd);
     const radius_blocks: f32 = @as(f32, @floatFromInt(rd)) * 16.0 + 11.5;
     const radius_blocks_sq = radius_blocks * radius_blocks;
+    self.sphere_center = .{ camera.x, camera.y, camera.z };
+    self.sphere_radius_sq = radius_blocks_sq;
 
     @memset(self.needed, false);
 
@@ -429,23 +676,63 @@ fn recollect(self: *WorldRenderer, camera: *const Camera) void {
         }
     }
 
+    // Leaving columns are parked with their buffers instead of freed.
+    // Freeing memsets them in safe builds and reallocating fragments the render pool;
+    // Together that costs up to ~28 ms per chunk crossing on PSP.
+    if (radius_changed) {
+        for (self.parked[0..self.parked_len]) |ref| self.free_parked(ref);
+        self.parked_len = 0;
+    }
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
             const col = self.column_index(cx, cz);
-            if (self.loaded[col] and !self.needed[col]) {
-                self.deinit_column(@intCast(cx), @intCast(cz));
+            if (!self.loaded[col] or self.needed[col]) continue;
+            self.loaded[col] = false;
+            for (0..self.grid_sy) |sy| {
+                self.built[self.section_index(cx, cz, sy)] = false;
+                self.in_queue[self.section_index(cx, cz, sy)] = false;
             }
+            assert(self.parked_len < self.parked.len);
+            self.parked[self.parked_len] = .{ .cx = @intCast(cx), .cz = @intCast(cz) };
+            self.parked_len += 1;
         }
     }
 
     for (0..self.grid_cx) |cx| {
         for (0..self.grid_cz) |cz| {
             const col = self.column_index(cx, cz);
-            if (!self.loaded[col] and self.needed[col]) {
+            if (self.loaded[col] or !self.needed[col]) continue;
+            if (self.parked_len == 0) {
                 if (self.init_column(@intCast(cx), @intCast(cz), camera)) {
                     self.loaded[col] = true;
                 }
+                continue;
             }
+            // A column parked at this very position must be the one reused, or moving another into its slot would overwrite it.
+            var pick: u32 = self.parked_len - 1;
+            for (self.parked[0..self.parked_len], 0..) |ref, i| {
+                if (ref.cx == cx and ref.cz == cz) pick = @intCast(i);
+            }
+            const from = self.parked[pick];
+            self.parked_len -= 1;
+            self.parked[pick] = self.parked[self.parked_len];
+            for (0..self.grid_sy) |sy| {
+                const dst = self.section_index(cx, cz, sy);
+                self.grid[dst] = self.grid[self.section_index(from.cx, from.cz, sy)];
+                const sec = &self.grid[dst];
+                // Empty CPU data hides the stale GPU mesh until the rebuild.
+                ChunkMesh.truncate(&sec.opaque_data);
+                ChunkMesh.truncate(&sec.trans_data);
+                ChunkMesh.truncate(&sec.fluid_data);
+                sec.cx = @intCast(cx);
+                sec.cz = @intCast(cz);
+                sec.near_lod = target_near_lod(@intCast(cx), @intCast(sy), @intCast(cz), camera);
+                sec.ao_enabled = Options.current.ambient_occlusion;
+                sec.anim_progress = 1.0;
+                sec.first_build = true;
+                sec.connectivity = meshing.mesher.all_faces_connected;
+            }
+            self.loaded[col] = true;
         }
     }
 
@@ -480,6 +767,56 @@ fn init_column(self: *WorldRenderer, cx: u8, cz: u8, cam: *const Camera) bool {
     return true;
 }
 
+fn free_parked(self: *WorldRenderer, ref: ColumnRef) void {
+    assert(!self.loaded[self.column_index(ref.cx, ref.cz)]);
+    for (0..self.grid_sy) |sy| {
+        const sec = &self.grid[self.section_index(ref.cx, ref.cz, sy)];
+        self.retire_drawn_buffers(sec);
+        sec.deinit();
+    }
+}
+
+/// Hand buffers the GPU may still read to the retired list and leave the section empty, so freeing it does not release memory in use.
+fn retire_drawn_buffers(self: *WorldRenderer, sec: *ChunkMesh) void {
+    if (Rendering.gfx.api.gpu_fence_passed(sec.drawn_fence)) return;
+    inline for (.{ &sec.opaque_data, &sec.trans_data, &sec.fluid_data }) |data| {
+        if (data.vertices.capacity > 0 or data.indices.capacity > 0) {
+            self.retire(data.*, sec.drawn_fence);
+            data.* = .{ .vertices = .empty, .indices = .empty };
+        }
+    }
+}
+
+fn retire(self: *WorldRenderer, data: ChunkMesh.BatchMeshData, fence: u32) void {
+    if (self.retired_len == MaxRetired) {
+        Rendering.gfx.api.drain_gpu();
+        self.collect_retired();
+    }
+    assert(self.retired_len < MaxRetired);
+    self.retired[self.retired_len] = .{ .data = data, .fence = fence };
+    self.retired_len += 1;
+}
+
+fn collect_retired(self: *WorldRenderer) void {
+    var i: u32 = 0;
+    while (i < self.retired_len) {
+        const r = &self.retired[i];
+        if (!Rendering.gfx.api.gpu_fence_passed(r.fence)) {
+            i += 1;
+            continue;
+        }
+        if (self.spares_len < MaxSpares) {
+            ChunkMesh.truncate(&r.data);
+            self.spares[self.spares_len] = r.data;
+            self.spares_len += 1;
+        } else {
+            r.data.deinit(self.allocator);
+        }
+        self.retired_len -= 1;
+        self.retired[i] = self.retired[self.retired_len];
+    }
+}
+
 fn deinit_column(self: *WorldRenderer, cx: u8, cz: u8) void {
     assert(self.loaded[self.column_index(cx, cz)]);
     for (0..self.grid_sy) |sy| {
@@ -499,13 +836,10 @@ fn queue_unbuilt_sections(self: *WorldRenderer, cam: *const Camera) void {
             if (!self.loaded[self.column_index(cx, cz)]) continue;
             for (0..self.grid_sy) |sy| {
                 const idx = self.section_index(cx, cz, sy);
-                if (!self.built[idx]) {
+                const ref: GridRef = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
+                if (!self.built[idx] and self.in_sphere(ref)) {
                     assert(build_idx < MaxActive);
-                    self.build_queue[build_idx] = .{
-                        .cx = @intCast(cx),
-                        .cz = @intCast(cz),
-                        .sy = @intCast(sy),
-                    };
+                    self.build_queue[build_idx] = ref;
                     self.in_queue[idx] = true;
                     build_idx += 1;
                 }
@@ -529,7 +863,7 @@ fn flush_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
 
     var added: u32 = 0;
     for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
-        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)]) continue;
+        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)] or !self.in_sphere(ref)) continue;
         if (self.in_queue[self.section_index(ref.cx, ref.cz, ref.sy)]) continue;
         if (self.build_end >= MaxActive) {
             self.queue_unbuilt_sections(cam);
@@ -552,7 +886,7 @@ fn flush_ordered_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
     var front_len: u32 = 0;
 
     for (self.dirty_buf[0..self.dirty_buf_len]) |ref| {
-        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)]) continue;
+        if (self.built[self.section_index(ref.cx, ref.cz, ref.sy)] or !self.in_sphere(ref)) continue;
         if (contains_grid_ref(front[0..front_len], ref)) continue;
         front[front_len] = ref;
         front_len += 1;
@@ -570,6 +904,15 @@ fn flush_ordered_dirty_sections(self: *WorldRenderer, cam: *const Camera) void {
         reordered[count] = ref;
         self.in_queue[self.section_index(ref.cx, ref.cz, ref.sy)] = true;
         count += 1;
+    }
+
+    // Block edits rebuild in their own order, so an unrelated build in progress yields and requeues right behind them.
+    if (self.job_target) |target| {
+        self.job_target = null;
+        if (!contains_grid_ref(front[0..front_len], target) and count < MaxActive) {
+            reordered[count] = target;
+            count += 1;
+        }
     }
 
     for (self.build_queue[self.build_cursor..self.build_end]) |ref| {
@@ -611,6 +954,7 @@ fn try_evict_farthest(self: *WorldRenderer, cam: *const Camera) bool {
 
     const ref = best_ref orelse return false;
     const best = self.section_index(ref.cx, ref.cz, ref.sy);
+    self.retire_drawn_buffers(&self.grid[best]);
     self.grid[best].clear();
     self.built[best] = false;
     return true;
@@ -653,6 +997,9 @@ fn mark_section_dirty_impl(self: *WorldRenderer, cx: u8, sy: u8, cz: u8, track_q
     self.rain.mark_dirty();
     if (!self.loaded[col]) return;
     self.built[idx] = false;
+    if (self.job_target) |target| {
+        if (target.cx == cx and target.cz == cz and target.sy == sy) self.job_stale = true;
+    }
     if (self.in_queue[idx] and !track_queued) return;
     self.record_dirty_ref(.{ .cx = cx, .cz = cz, .sy = sy }, preserve_order);
 }
@@ -728,6 +1075,13 @@ fn sort_build_queue(queue: []GridRef, cam: *const Camera) void {
     std.sort.pdq(GridRef, queue, cam, grid_ref_less_than);
 }
 
+fn in_sphere(self: *const WorldRenderer, ref: GridRef) bool {
+    const dx = @as(f32, @floatFromInt(@as(u32, ref.cx) * 16)) + 8.0 - self.sphere_center[0];
+    const dy = @as(f32, @floatFromInt(@as(u32, ref.sy) * 16)) + 8.0 - self.sphere_center[1];
+    const dz = @as(f32, @floatFromInt(@as(u32, ref.cz) * 16)) + 8.0 - self.sphere_center[2];
+    return dx * dx + dy * dy + dz * dz <= self.sphere_radius_sq;
+}
+
 fn grid_ref_dist_sq(ref: GridRef, cam: *const Camera) f32 {
     const wx: f32 = @as(f32, @floatFromInt(@as(u32, ref.cx) * 16)) + 8.0;
     const wy: f32 = @as(f32, @floatFromInt(@as(u32, ref.sy) * 16)) + 8.0;
@@ -752,7 +1106,9 @@ fn camera_chunk(pos: f32) i32 {
     return @intFromFloat(v);
 }
 
-fn set_terrain_fog(submerged: ?collision.Liquid) void {
+/// Fog for terrain and the entities drawn among it.
+pub fn terrain_fog(camera: *const Camera) Rendering.FogState {
+    const submerged = collision.liquid_at_point(camera.x, camera.y, camera.z);
     const c = switch (submerged orelse .water) {
         .water => if (submerged != null) Colors.game_underwater else Colors.game_daytime,
         .lava => Colors.game_underlava,
@@ -765,14 +1121,16 @@ fn set_terrain_fog(submerged: ?collision.Liquid) void {
         .lava => 2.0,
     };
     const fog_start: f32 = if (submerged != null) 0.0 else fog_end * 0.4;
-    Rendering.gfx.api.set_fog(
-        Options.current.fog or submerged != null,
-        Camera.near_plane,
-        Camera.far_plane,
-        fog_start,
-        fog_end,
-        @as(f32, @floatFromInt(c.r)) / 255.0,
-        @as(f32, @floatFromInt(c.g)) / 255.0,
-        @as(f32, @floatFromInt(c.b)) / 255.0,
-    );
+    return .{
+        .enabled = Options.current.fog or submerged != null,
+        .near = Camera.near_plane,
+        .far = Camera.far_plane,
+        .start = fog_start,
+        .end = fog_end,
+        .color = .{
+            @as(f32, @floatFromInt(c.r)) / 255.0,
+            @as(f32, @floatFromInt(c.g)) / 255.0,
+            @as(f32, @floatFromInt(c.b)) / 255.0,
+        },
+    };
 }

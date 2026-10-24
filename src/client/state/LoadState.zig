@@ -359,7 +359,7 @@ fn init(ctx: *anyopaque, engine: *Engine) anyerror!void {
     Session.clear_disconnect_reason();
     const data_dir = engine.dirs.data;
     const server_scratch = if (comptime caps.memory.separate_worldgen_scratch)
-        std.heap.wasm_allocator
+        ae.Web.allocator
     else
         engine.allocator(.user);
     self.server_task = .{
@@ -520,8 +520,9 @@ fn prepare_batches(self: *@This()) !void {
 fn draw(ctx: *anyopaque, engine: *Engine, _: f32, _: *const Util.BudgetContext) anyerror!void {
     var self = Util.ctx_to_self(@This(), ctx);
 
-    self.batcher.draw();
-    self.font_batcher.draw();
+    const screen: Rendering.RenderState = .{};
+    self.batcher.draw(&screen);
+    self.font_batcher.draw(&screen);
 
     // Throttle to ~20 FPS while server generates on background thread;
     // avoids burning CPU on draw calls that show a static progress bar.

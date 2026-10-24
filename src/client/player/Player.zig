@@ -18,7 +18,7 @@ const Colors = @import("../graphics/Color.zig");
 const ParticleSystem = @import("../world/ParticleSystem.zig");
 const BlockHand = @import("BlockHand.zig");
 const SoundManager = @import("../SoundManager.zig");
-const Face = @import("../world/chunk/face.zig").Face;
+const Face = @import("meshing").face.Face;
 const Options = @import("../Options.zig");
 
 const assert = std.debug.assert;
@@ -210,6 +210,9 @@ break_held: bool,
 place_held: bool,
 break_repeat_timer: f32,
 place_repeat_timer: f32,
+// A button held while gameplay regains focus must be released before it repeats.
+break_suppressed: bool,
+place_suppressed: bool,
 
 playerlist_held: bool,
 playerlist_edge: bool,
@@ -283,6 +286,8 @@ pub fn init(self: *Player, x: f32, y: f32, z: f32, writer: *std.Io.Writer) !void
         .place_held = false,
         .break_repeat_timer = 0,
         .place_repeat_timer = 0,
+        .break_suppressed = false,
+        .place_suppressed = false,
         .playerlist_held = false,
         .playerlist_edge = false,
         .playerlist_edge_controller = false,
@@ -390,7 +395,9 @@ pub fn update(self: *Player, sys: *input.InputSystem, dt: f32) void {
     // Rising edges fire the first action; held inputs drive repeat timers.
     const break_any_held = self.break_held or (self.shoulder_r_held and !self.shoulder_l_held);
     const place_any_held = self.place_held or (self.shoulder_l_held and !self.shoulder_r_held);
-    if (break_any_held) {
+    if (!break_any_held) self.break_suppressed = false;
+    if (!place_any_held) self.place_suppressed = false;
+    if (break_any_held and !self.break_suppressed) {
         self.break_repeat_timer += dt;
         if (self.break_repeat_timer >= RepeatDelay) {
             self.break_repeat_timer -= RepeatInterval;
@@ -399,7 +406,7 @@ pub fn update(self: *Player, sys: *input.InputSystem, dt: f32) void {
     } else {
         self.break_repeat_timer = 0;
     }
-    if (place_any_held) {
+    if (place_any_held and !self.place_suppressed) {
         self.place_repeat_timer += dt;
         if (self.place_repeat_timer >= RepeatDelay) {
             self.place_repeat_timer -= RepeatInterval;
@@ -1173,6 +1180,8 @@ fn poll_inputs(self: *Player, sys: *input.InputSystem, dt: f32) void {
             self.prev_inputs.hotbar_slot[i] = sys.button(actions.hotbar_slot[i]).current;
         }
         self.reset_jump_taps();
+        self.break_suppressed = true;
+        self.place_suppressed = true;
         return;
     }
 
