@@ -11,6 +11,7 @@ const Sky = @import("sky/sky.zig");
 const ParticleSystem = @import("ParticleSystem.zig");
 const Rain = @import("Rain.zig");
 const config = @import("../config.zig");
+const meshing = @import("meshing");
 const capabilities = @import("capabilities");
 const Math = @import("math");
 
@@ -78,6 +79,10 @@ frame_build_ns: i64,
 
 /// Shared across opaque and fluid passes so overlays can render between them.
 frame_visible: [MaxActive]GridRef,
+frame_queue: [MaxActive]Visit,
+
+/// One flag per world section, reset by each cave-culling search.
+visited: []bool,
 frame_visible_count: u32,
 frame_clip_count: u32,
 
@@ -99,6 +104,12 @@ allocator: std.mem.Allocator,
 io: std.Io,
 
 const GridRef = packed struct { cx: u8, cz: u8, sy: u8 };
+/// Cave-culling search state: the face a section was entered through
+/// (`no_face` for the camera's own section) and the directions taken so far.
+const Visit = struct { ref: GridRef, entry: u3, traveled: u6 };
+const no_face: u3 = 6;
+/// Search directions in connectivity face order: x-, x+, y-, y+, z-, z+.
+const face_steps = [6][3]i32{ .{ -1, 0, 0 }, .{ 1, 0, 0 }, .{ 0, -1, 0 }, .{ 0, 1, 0 }, .{ 0, 0, -1 }, .{ 0, 0, 1 } };
 const ColumnRef = struct { cx: u8, cz: u8 };
 
 fn column_index(self: *const WorldRenderer, cx: usize, cz: usize) u32 {
@@ -145,6 +156,8 @@ pub fn init_in_place(
     errdefer allocator.free(self.in_queue);
     self.needed = try allocator.alloc(bool, column_count);
     errdefer allocator.free(self.needed);
+    self.visited = try allocator.alloc(bool, section_count);
+    errdefer allocator.free(self.visited);
     @memset(self.loaded, false);
     @memset(self.built, false);
     @memset(self.in_queue, false);
@@ -220,6 +233,7 @@ pub fn deinit(self: *WorldRenderer) void {
     self.allocator.free(self.built);
     self.allocator.free(self.in_queue);
     self.allocator.free(self.needed);
+    self.allocator.free(self.visited);
     self.* = undefined;
 }
 
@@ -290,6 +304,7 @@ pub fn update(self: *WorldRenderer, dt: f32, camera: *const Camera) void {
         const sec = &self.grid[idx];
         // Empty sections need no build slot, and their near-zero cost would drag the estimate below real builds.
         if (World.data.is_chunk_all_air(ref.cx, ref.sy, ref.cz)) {
+            sec.connectivity = meshing.mesher.all_faces_connected;
             ChunkMesh.truncate(&sec.opaque_data);
             ChunkMesh.truncate(&sec.trans_data);
             ChunkMesh.truncate(&sec.fluid_data);
@@ -335,15 +350,59 @@ pub fn draw_world_pass(self: *WorldRenderer, camera: *const Camera, base: *const
 
     self.frame_build_ns = 0;
     self.frame_visible_count = 0;
-    for (0..self.grid_cx) |cx| {
-        for (0..self.grid_cz) |cz| {
-            if (!self.loaded[self.column_index(cx, cz)]) continue;
-            for (0..self.grid_sy) |sy| {
-                const ref: GridRef = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
-                if (!self.in_sphere(ref) or !camera.section_visible(ref.cx, ref.sy, ref.cz)) continue;
+    const start: GridRef = .{
+        .cx = @intCast(Math.clamp(camera_chunk(camera.x), 0, @as(i32, @intCast(self.grid_cx)) - 1)),
+        .cz = @intCast(Math.clamp(camera_chunk(camera.z), 0, @as(i32, @intCast(self.grid_cz)) - 1)),
+        .sy = @intCast(Math.clamp(camera_chunk(camera.y), 0, @as(i32, @intCast(self.grid_sy)) - 1)),
+    };
+    if (self.loaded[self.column_index(start.cx, start.cz)]) {
+        // Walk outward from the camera, leaving a section only through a face its interior connects to the entry face, and never turning back toward the camera.
+        // Sealed caves are never reached.
+        @memset(self.visited, false);
+        self.visited[self.section_index(start.cx, start.cz, start.sy)] = true;
+        self.frame_queue[0] = .{ .ref = start, .entry = no_face, .traveled = 0 };
+        var queue_len: u32 = 1;
+        var head: u32 = 0;
+        while (head < queue_len) : (head += 1) {
+            const visit = self.frame_queue[head];
+            const ref = visit.ref;
+            if (self.in_sphere(ref) and camera.section_visible(ref.cx, ref.sy, ref.cz)) {
                 assert(self.frame_visible_count < self.frame_visible.len);
                 self.frame_visible[self.frame_visible_count] = ref;
                 self.frame_visible_count += 1;
+            }
+            const connectivity = self.grid[self.section_index(ref.cx, ref.cz, ref.sy)].connectivity;
+            for (face_steps, 0..) |step, face_usize| {
+                const face: u3 = @intCast(face_usize);
+                if (visit.traveled & (@as(u6, 1) << (face ^ 1)) != 0) continue;
+                if (visit.entry != no_face and !meshing.mesher.faces_connected(connectivity, visit.entry, face)) continue;
+                const nx = @as(i32, ref.cx) + step[0];
+                const ny = @as(i32, ref.sy) + step[1];
+                const nz = @as(i32, ref.cz) + step[2];
+                if (nx < 0 or ny < 0 or nz < 0 or nx >= self.grid_cx or ny >= self.grid_sy or nz >= self.grid_cz) continue;
+                const next: GridRef = .{ .cx = @intCast(nx), .cz = @intCast(nz), .sy = @intCast(ny) };
+                if (!self.loaded[self.column_index(next.cx, next.cz)]) continue;
+                const next_idx = self.section_index(next.cx, next.cz, next.sy);
+                if (self.visited[next_idx]) continue;
+                if (!camera.section_visible(next.cx, next.sy, next.cz)) continue;
+                self.visited[next_idx] = true;
+                assert(queue_len < self.frame_queue.len);
+                self.frame_queue[queue_len] = .{ .ref = next, .entry = face ^ 1, .traveled = visit.traveled | (@as(u6, 1) << face) };
+                queue_len += 1;
+            }
+        }
+    } else {
+        // With no loaded column at the camera there is nowhere to start the search, so every loaded section is a candidate.
+        for (0..self.grid_cx) |cx| {
+            for (0..self.grid_cz) |cz| {
+                if (!self.loaded[self.column_index(cx, cz)]) continue;
+                for (0..self.grid_sy) |sy| {
+                    const ref: GridRef = .{ .cx = @intCast(cx), .cz = @intCast(cz), .sy = @intCast(sy) };
+                    if (!self.in_sphere(ref) or !camera.section_visible(ref.cx, ref.sy, ref.cz)) continue;
+                    assert(self.frame_visible_count < self.frame_visible.len);
+                    self.frame_visible[self.frame_visible_count] = ref;
+                    self.frame_visible_count += 1;
+                }
             }
         }
     }
@@ -523,6 +582,7 @@ fn recollect(self: *WorldRenderer, camera: *const Camera) void {
                 sec.ao_enabled = Options.current.ambient_occlusion;
                 sec.anim_progress = 1.0;
                 sec.first_build = true;
+                sec.connectivity = meshing.mesher.all_faces_connected;
             }
             self.loaded[col] = true;
         }

@@ -26,6 +26,8 @@ sy: u32,
 cz: u32,
 near_lod: bool,
 ao_enabled: bool,
+/// Face pairs joined through non-opaque cells, for cave culling. Unbuilt sections stay fully connected so culling never hides them.
+connectivity: u16,
 /// Rises from 16 blocks below its position at 0 to rest at 1.
 anim_progress: f32,
 first_build: bool,
@@ -46,6 +48,7 @@ pub fn init(allocator: std.mem.Allocator, cx: u32, sy: u32, cz: u32) !ChunkMesh 
         .cz = cz,
         .near_lod = false,
         .ao_enabled = false,
+        .connectivity = mesher.all_faces_connected,
         .anim_progress = 1.0,
         .first_build = true,
         .allocator = allocator,
@@ -88,10 +91,14 @@ pub fn rebuild(self: *ChunkMesh, atlas: *const TextureAtlas) error{ OutOfMemory,
         World.lock_world_shared();
         defer World.unlock_world_shared();
 
-        if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) return;
+        if (World.data.is_chunk_all_air(self.cx, self.sy, self.cz)) {
+            self.connectivity = mesher.all_faces_connected;
+            return;
+        }
 
         var buf: mesher.SectionBuf = undefined;
         const counts = mesher.pack_section(self.cx, self.sy, self.cz, self.near_lod, &buf);
+        self.connectivity = mesher.section_connectivity(&buf);
         assert(counts.opaque_verts % 6 == 0);
         assert(counts.transparent_verts % 6 == 0);
         assert(counts.fluid_verts % 6 == 0);

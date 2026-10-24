@@ -761,3 +761,120 @@ pub fn emit_section(
         }
     }
 }
+
+/// Bit for an unordered pair of section faces, indexed x-, x+, y-, y+, z-, z+.
+fn face_pair_bit(a: u3, b: u3) u16 {
+    assert(a != b and a < 6 and b < 6);
+    const lo: u32 = if (a < b) a else b;
+    const hi: u32 = if (a < b) b else a;
+    return @as(u16, 1) << @intCast(lo * (11 - lo) / 2 + hi - lo - 1);
+}
+
+pub const all_faces_connected: u16 = (1 << 15) - 1;
+
+pub fn faces_connected(connectivity: u16, a: u3, b: u3) bool {
+    return connectivity & face_pair_bit(a, b) != 0;
+}
+
+/// Grow `seed` along X through the open cells of one row.
+fn fill_row(seed: u16, open: u16) u16 {
+    var s = seed & open;
+    defer assert(s & ~open == 0);
+
+    while (true) {
+        const n = (s | (s << 1) | (s >> 1)) & open;
+        if (n == s) return s;
+        s = n;
+    }
+}
+
+/// Which pairs of section faces see each other through non-opaque cells.
+/// Only regions touching the boundary matter, so floods start there and sealed pockets are never visited.
+pub fn section_connectivity(buf: *const SectionBuf) u16 {
+    var open: [SectionH][SectionH]u16 = undefined;
+    var any: u16 = 0;
+    var every: u16 = 0xFFFF;
+    for (0..SectionH) |y| {
+        for (0..SectionH) |z| {
+            const row: u16 = @truncate(~buf[y + 1][z + 1].opq >> 1);
+            open[y][z] = row;
+            any |= row;
+            every &= row;
+        }
+    }
+    if (any == 0) return 0;
+    if (every == 0xFFFF) return all_faces_connected;
+
+    var result: u16 = 0;
+    var comp: [SectionH][SectionH]u16 = undefined;
+    while (result != all_faces_connected) {
+        var seed_y: usize = 0;
+        var seed_z: usize = 0;
+        var seed_bits: u16 = 0;
+        search: for (0..SectionH) |y| {
+            for (0..SectionH) |z| {
+                const edge_row = y == 0 or y == SectionH - 1 or z == 0 or z == SectionH - 1;
+                const candidates = if (edge_row) open[y][z] else open[y][z] & 0x8001;
+                if (candidates != 0) {
+                    seed_y = y;
+                    seed_z = z;
+                    seed_bits = candidates & (0 -% candidates);
+                    break :search;
+                }
+            }
+        }
+        if (seed_bits == 0) break;
+        assert(@popCount(seed_bits) == 1 and seed_bits & open[seed_y][seed_z] != 0);
+
+        @memset(std.mem.asBytes(&comp), 0);
+        comp[seed_y][seed_z] = fill_row(seed_bits, open[seed_y][seed_z]);
+        // Alternating sweeps carry the fill across the whole section per pass.
+        var changed = true;
+        while (changed) {
+            changed = false;
+            for (0..2) |pass| {
+                for (0..SectionH) |i| {
+                    const y = if (pass == 0) i else SectionH - 1 - i;
+                    for (0..SectionH) |j| {
+                        const z = if (pass == 0) j else SectionH - 1 - j;
+                        var s = comp[y][z];
+                        if (y > 0) s |= comp[y - 1][z];
+                        if (y + 1 < SectionH) s |= comp[y + 1][z];
+                        if (z > 0) s |= comp[y][z - 1];
+                        if (z + 1 < SectionH) s |= comp[y][z + 1];
+                        s = fill_row(s, open[y][z]);
+                        if (s != comp[y][z]) {
+                            comp[y][z] = s;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        var faces: u8 = 0;
+        assert(comp[seed_y][seed_z] & seed_bits != 0);
+        for (0..SectionH) |y| {
+            for (0..SectionH) |z| {
+                const row = comp[y][z];
+                if (row == 0) continue;
+                if (row & 1 != 0) faces |= 1 << 0;
+                if (row & 0x8000 != 0) faces |= 1 << 1;
+                if (y == 0) faces |= 1 << 2;
+                if (y == SectionH - 1) faces |= 1 << 3;
+                if (z == 0) faces |= 1 << 4;
+                if (z == SectionH - 1) faces |= 1 << 5;
+                assert(row & ~open[y][z] == 0);
+                open[y][z] &= ~row;
+            }
+        }
+        for (0..6) |a| {
+            if (faces & (@as(u8, 1) << @intCast(a)) == 0) continue;
+            for (a + 1..6) |b| {
+                if (faces & (@as(u8, 1) << @intCast(b)) != 0) result |= face_pair_bit(@intCast(a), @intCast(b));
+            }
+        }
+    }
+    assert(result & ~all_faces_connected == 0);
+    return result;
+}
