@@ -238,7 +238,6 @@ pub fn ClientType(comptime ae: type) type {
 
         pub const memory = struct {
             pub const outlives_main = ae.platform == .wasm;
-            pub const resize_user_pool_to_world = ae.platform != .psp and ae.platform != .nintendo_3ds;
             pub const separate_worldgen_scratch = ae.platform == .wasm;
             // Capacity must cover every runtime model supported by the binary.
             pub const max_chunk_radius: u32 = switch (ae.platform) {

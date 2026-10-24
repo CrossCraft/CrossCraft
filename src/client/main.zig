@@ -45,6 +45,13 @@ pub fn main(init: std.process.Init) !void {
 
     engine.run() catch |err| {
         log.err("game loop failed: {s}", .{@errorName(err)});
+        if (err == error.OutOfMemory) {
+            const diag = engine.memory_diagnostics();
+            for (diag.pools) |pool| {
+                log.err("  pool {s}: used {d} of {d}, high water {d}, last failed request {?d}", .{ pool.name, pool.used, pool.budget, pool.high_water, pool.last_failed_request });
+            }
+            log.err("  physical {d} of {d}, largest free run {d}", .{ diag.physical_used, diag.physical_capacity, diag.physical_largest_free_run });
+        }
         return err;
     };
 }

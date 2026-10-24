@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 const ae = @import("aether");
 const core = @import("core");
 const capabilities = @import("capabilities");
@@ -54,19 +55,21 @@ pub fn init_memory() Util.MemoryConfig {
 const gameplay_user_slack: u32 = 4 * Mb;
 
 pub fn gameplay_user_budget(dims: core.world_dims.WorldDims) u32 {
-    if (!caps.memory.resize_user_pool_to_world) return 0;
     const world_bytes: u64 = dims.volume() +
         dims.length * dims.depth + // light_map
         4 * dims.chunk_count(); // chunk_counts + chunk_non_opaque (2 x u16)
     return @intCast(world_bytes + gameplay_user_slack);
 }
 
+/// The world lives in the user pool, so a world larger than the profile assumed (e.g. 128 tall on the PSP) takes its extra bytes from render.
 pub fn apply_runtime_budgets(engine: *Engine) void {
     const profile = current();
-    set_budget_clamped(engine, .render, profile.rt_render);
+    const user = Math.max(profile.rt_user, gameplay_user_budget(core.World.data.dims));
+    const total: u32 = @intCast(main_memory_bytes());
+    assert(user + profile.rt_audio < total);
     set_budget_clamped(engine, .audio, profile.rt_audio);
-    const want = Math.max(profile.rt_user, gameplay_user_budget(core.World.data.dims));
-    set_budget_clamped(engine, .user, want);
+    set_budget_clamped(engine, .user, user);
+    set_budget_clamped(engine, .render, Math.min(profile.rt_render, total - profile.rt_audio - user));
 }
 
 /// Restore the startup pool layout.
