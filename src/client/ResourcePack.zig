@@ -173,7 +173,8 @@ pub fn tick_animations() void {
     const step: f64 = @floatFromInt(anim_tick / anim_period_ticks);
     blit_frame(terrain, water, step, water_tile_col, water_tile_row);
     blit_frame(terrain, lava, step, lava_tile_col, lava_tile_row);
-    terrain.update() catch {};
+    terrain.update_region(water_tile_col * tile_size, water_tile_row * tile_size, tile_size, tile_size) catch {};
+    terrain.update_region(lava_tile_col * tile_size, lava_tile_row * tile_size, tile_size, tile_size) catch {};
 }
 
 fn blit_frame(destination: *Rendering.Texture, animation: *const Animation, step: f64, col: u32, row: u32) void {
