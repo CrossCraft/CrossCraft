@@ -1,5 +1,7 @@
 const std = @import("std");
 const ae = @import("aether");
+const log = std.log.scoped(.main);
+
 pub const build_options = @import("build_options");
 const capabilities = @import("capabilities");
 const MenuState = @import("state/MenuState.zig");
@@ -41,5 +43,8 @@ pub fn main(init: std.process.Init) !void {
     defer if (!caps.memory.outlives_main) engine.deinit();
     defer if (!caps.memory.outlives_main) ResourcePack.deinit();
 
-    try engine.run();
+    engine.run() catch |err| {
+        log.err("game loop failed: {s}", .{@errorName(err)});
+        return err;
+    };
 }
