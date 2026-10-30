@@ -66,7 +66,7 @@ fn generate(allocator: std.mem.Allocator, seed: i64, dimensions: dimensions_type
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
 
-    const generated = try worldgen.generate(allocator, scratch.allocator(), seed, dimensions);
+    const generated = try worldgen.generate(allocator, scratch.allocator(), seed, dimensions, null);
     assert(generated.blocks.len == dimensions.volume());
     return generated.blocks;
 }

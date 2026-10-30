@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 pub const level = @import("level.zig");
+pub const generation_phase = level.generation_phase;
 const Random = @import("random.zig");
 const noise = @import("noise.zig");
 const terrain = @import("terrain.zig");
@@ -16,6 +17,7 @@ pub fn generate(
     scratch: std.mem.Allocator,
     seed: i64,
     dimensions: level.world_dimensions,
+    on_phase: ?*const fn (generation_phase) void,
 ) std.mem.Allocator.Error!level {
     assert(dimensions.validate());
 
@@ -24,7 +26,7 @@ pub fn generate(
     };
     errdefer allocator.free(generated_level.blocks);
 
-    try generated_level.generate(scratch, seed, dimensions);
+    try generated_level.generate(scratch, seed, dimensions, on_phase);
 
     return generated_level;
 }
