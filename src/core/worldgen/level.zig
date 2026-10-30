@@ -23,6 +23,17 @@ const lattice_position = struct { x: i32, y: i32, z: i32 };
 
 blocks: []u8,
 
+pub const generation_phase = enum(u8) {
+    raising,
+    strata,
+    caves,
+    ores,
+    water,
+    lava,
+    surface,
+    plants,
+};
+
 fn horizontal_inside(dimensions: world_dimensions, point: horizontal_walk_point) bool {
     const width: i32 = @intCast(dimensions.width);
     const depth: i32 = @intCast(dimensions.depth);
@@ -375,27 +386,35 @@ fn tree_pass(generator_random: *random_state, level_random: *random_state, field
     }
 }
 
-pub fn generate(self: *level, scratch: std.mem.Allocator, seed: i64, dimensions: world_dimensions) std.mem.Allocator.Error!void {
+pub fn generate(self: *level, scratch: std.mem.Allocator, seed: i64, dimensions: world_dimensions, on_phase: ?*const fn (generation_phase) void) std.mem.Allocator.Error!void {
     assert(dimensions.validate());
     assert(self.blocks.len == dimensions.volume());
     @memset(self.blocks, terrain.air_id);
 
     const field = terrain.block_field.init(dimensions, self.blocks);
     var generator_random = random_state.init(seed);
+    if (on_phase) |report| report(.raising);
     const elevation = terrain.elevation_noise.init(&generator_random);
     var heights = try terrain.elevation_cache.init(scratch, &elevation, dimensions);
     defer heights.deinit(scratch);
 
+    if (on_phase) |report| report(.strata);
     terrain.soil(field, &heights);
 
+    if (on_phase) |report| report(.caves);
     carve.cave_pass(&generator_random, field);
+    if (on_phase) |report| report(.ores);
     ore.all_resource_passes(&generator_random, field);
+    if (on_phase) |report| report(.water);
     try terrain.boundary_water_pass(scratch, field);
     try terrain.inland_water_pass(scratch, &generator_random, field);
+    if (on_phase) |report| report(.lava);
     try terrain.lava_pass(scratch, &generator_random, field);
 
+    if (on_phase) |report| report(.surface);
     const surface_noise = terrain.surface_noise.init(&generator_random);
     terrain.surface(field, &heights, &surface_noise);
+    if (on_phase) |report| report(.plants);
     flower_pass(&generator_random, field, &heights);
     mushroom_pass(&generator_random, field, &heights);
 

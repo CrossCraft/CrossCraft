@@ -25,7 +25,7 @@ const log = std.log.scoped(.world);
 
 pub const LoadStatus = union(enum) {
     loading,
-    generating,
+    generating: worldgen.generation_phase,
     downloading: u8,
     complete,
 };
@@ -66,7 +66,10 @@ pub fn get_load_status() LoadStatus {
     if (encoded >= load_status_downloading_base) {
         return .{ .downloading = @intCast(Math.min(encoded - load_status_downloading_base, 100)) };
     }
-    if (encoded >= load_status_generating_base) return .generating;
+    if (encoded >= load_status_generating_base) {
+        const max_phase: u16 = @backingInt(worldgen.generation_phase.plants);
+        return .{ .generating = @fromBackingInt(@intCast(Math.min(encoded - load_status_generating_base, max_phase))) };
+    }
     return .loading;
 }
 
@@ -74,10 +77,16 @@ pub fn set_load_status(status: LoadStatus) void {
     const encoded: u16 = switch (status) {
         .loading => load_status_loading,
         .complete => load_status_complete,
-        .generating => load_status_generating_base,
+        .generating => |phase| load_status_generating_base + @as(u16, @backingInt(phase)),
         .downloading => |pct| load_status_downloading_base + @as(u16, pct),
     };
     load_status_atomic.store(encoded, .release);
+}
+
+fn set_generation_phase(phase: worldgen.generation_phase) void {
+    set_load_status(.{ .generating = phase });
+    // Cooperative schedulers would otherwise never present a phase frame before generation ends.
+    saver.io.sleep(.fromMilliseconds(1), .real) catch {};
 }
 
 /// Allocate empty world state. Multiplayer callers leave saving disabled.
@@ -137,7 +146,7 @@ pub fn init(
 
     if (!saver.try_load(&data, scratch)) {
         data.seed = seed;
-        set_load_status(.generating);
+        set_load_status(.{ .generating = .raising });
         const start = std.Io.Clock.Timestamp.now(io, .boot);
 
         const visited_len = (data.dims.volume() / wd.chunk_size + 7) / 8;
@@ -150,6 +159,7 @@ pub fn init(
             scratch,
             @bitCast(data.seed),
             .{ .width = data.dims.length, .height = data.dims.height, .depth = data.dims.depth },
+            set_generation_phase,
         );
         WorldData.remap_yzx_to_chunk_aware(data.dims, generated.blocks, visited);
         data.adopt_blocks(generated.blocks);

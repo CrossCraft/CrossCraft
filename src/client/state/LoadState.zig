@@ -428,7 +428,7 @@ fn prepare_batches(self: *@This()) !void {
     const load_status = World.get_load_status();
     const progress: f32 = switch (load_status) {
         .loading => Math.min(self.time / 3.0, 1.0),
-        .generating => Math.min(self.time / 3.0, 1.0),
+        .generating => |phase| @as(f32, @floatFromInt(@backingInt(phase))) / @as(f32, @floatFromInt(std.enums.values(@TypeOf(phase)).len)),
         .downloading => |pct| @as(f32, @floatFromInt(pct)) / 100.0,
         .complete => 1.0,
     };
@@ -497,7 +497,16 @@ fn prepare_batches(self: *@This()) !void {
         }
         break :blk switch (load_status) {
             .loading => "Loading...",
-            .generating => "Generating level...",
+            .generating => |phase| switch (phase) {
+                .raising => "Raising...",
+                .strata => "Layering...",
+                .caves => "Carving...",
+                .ores => "Placing ores...",
+                .water => "Flooding water...",
+                .lava => "Flooding lava...",
+                .surface => "Surfacing...",
+                .plants => "Planting...",
+            },
             .downloading => "Receiving chunks...",
             .complete => "Done!",
         };

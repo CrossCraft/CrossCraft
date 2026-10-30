@@ -160,7 +160,7 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         }
 
-        const generated = try worldgen.generate(gpa, scratch.allocator(), case.seed, dimensions);
+        const generated = try worldgen.generate(gpa, scratch.allocator(), case.seed, dimensions, null);
         defer gpa.free(generated.blocks);
 
         total_blocks += generated.blocks.len;
